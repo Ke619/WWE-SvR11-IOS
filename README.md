@@ -25,21 +25,6 @@ Other iPhones and iPads haven't been tested. It's an early port, so expect rough
 
 ---
 
-## Screenshots
-
-> **TODO (author):** add screenshots of the port running on an iPhone: title screen, a match with the touch controls, and the graphics page. Put them in `docs/screenshots/` and show them here, for example:
->
-> ```html
-> <table>
->   <tr>
->     <td width="50%"><img src="docs/screenshots/ios-title.jpg" alt="Title screen"></td>
->     <td width="50%"><img src="docs/screenshots/ios-match.jpg" alt="A match with touch controls"></td>
->   </tr>
-> </table>
-> ```
-
----
-
 ## Contents
 
 - [Status](#status)
@@ -202,10 +187,6 @@ The Windows build steps (LLVM, PowerShell, the launcher) are in the [original RE
 - **The app won't open after about a week.** Apps signed with a free Apple ID expire after 7 days. Refresh or re-sign it in your sideloading tool.
 - **It's slow.** Open **My WWE → Options → Graphics → Quality**. Set **Shadows & effects** to **Normal**, lower **Render resolution**, turn **Anti-aliasing** off, and set **Textures** to **Medium**. If entrances still stutter, set **Entrance frame rate** to **30 fps**. The first time a scene is shown can hitch while its shaders are prepared. They're kept in `UserData/cache/` for next time.
 - **Something is drawn wrong.** Report it with a screenshot and the crash report if there is one. The Emulated renderer isn't available on iOS, so there's no fallback to try.
-- **My entrance song isn't in the list.** Entrance music from your own songs isn't available on iOS yet.
-- **A superstar's logos 3 and up are blank.** Their images are in `Saves/.logos`. Copy that folder along with the superstar's save file.
-- **The costume is missing in the entrance.** Edit the superstar's **Entrance Attire** as well as the match one.
-- **Online modes** aren't available in this port.
 
 ---
 
@@ -222,7 +203,7 @@ The Windows build steps (LLVM, PowerShell, the launcher) are in the [original RE
 | 🛠️ | [**plume**](https://github.com/renderbag/plume) | The graphics layer the native renderer draws through (MIT license). |
 | 🛠️ | [**XenosRecomp**](https://github.com/hedge-dev/XenosRecomp) | Converts the game's shaders. |
 
-The original PC port says it was developed with Claude Code, and has its own AI disclosure. See its [README](https://github.com/KaikoClanworth1/wwe-svr2011-pc#contributors) and `CONTRIBUTORS.md` for the full list of contributors and credits, including the people who made the parts of the PC port that this one inherits.
+The original PC port were developed with Claude Code, and has its own AI disclosure. See its [README](https://github.com/KaikoClanworth1/wwe-svr2011-pc#contributors) and `CONTRIBUTORS.md` for the full list of contributors and credits, including the people who made the parts of the PC port that this one inherits.
 
 ---
 

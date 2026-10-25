@@ -128,19 +128,16 @@ The game itself is the same, so most of the PC port's features are in the code. 
 | Touch controls | ✅ Working |
 | Saves as plain files | ✅ Working |
 | Wide-screen matches and entrances | ✅ Working |
-| Up to 10 HD logos per superstar | ❓ Set up, not tested in play |
-| Entrance movies | ❓ The game reads `Custom Movies/`, but the movie maker is a Windows launcher tool. Movies made on a PC may work if you copy them over. |
-| DLC | ❓ Untested |
-| Mods (`.svrmod`) | ❓ Untested. The Mod Maker is a PC tool. |
-| Texture packs | ❓ Untested |
-| Achievements | ❓ Untested |
-| Languages (English, French, German, Spanish, Italian) | ❓ Untested |
+| Up to 10 HD logos per superstar | ❌ Not available on iOS yet |
+| Entrance movies | ❌ Not available on iOS yet |
+| DLC | ❌ Not available on iOS yet |
+| Mods (`.svrmod`) | ❌ Not available on iOS yet |
+| Texture packs | ❌ Not available on iOS yet |
+| Achievements | ❌ Not available on iOS yet |
 | Entrance music from your own songs | ❌ Not available on iOS yet |
-| Windows launcher tabs (Paint Tool, Saves, Movies, DLC) | ❌ PC only. You can use the PC launcher on a PC and copy the `Saves` folder across. |
-| Online modes | ❌ Not available (same as the PC port) |
+| Launcher tabs (Paint Tool, Saves, Movies, DLC) | ❌ Not available on iOS yet |
+| Online modes | ❌ Not available on iOS yet |
 | Discord status, Steam Deck, Android | ➖ Not part of this port. See the original README. |
-
-If you test one of the ❓ items, please [open an issue](https://github.com/Ke619/wwe-svr2011-ios/issues) and say whether it worked.
 
 ---
 

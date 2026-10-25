@@ -214,7 +214,6 @@ The Windows build steps (LLVM, PowerShell, the launcher) are in the [original RE
 | | Who | What |
 |---|---|---|
 | 📱 | [**Ke619**](https://github.com/Ke619) | The iOS port: the Apple build, memory fixes and app. |
-| 🤝 | **TODO (author)** | Your friend who helped. Add their name and what they did. |
 | 🧑‍💻 | [**KaikoClanworth1**](https://github.com/KaikoClanworth1) | Author of the [PC port](https://github.com/KaikoClanworth1/wwe-svr2011-pc) this is built on: the recompilation setup, native renderer, saves, menus and features. |
 | 🛠️ | [**ReXGlue**](https://github.com/rexglue/rexglue-sdk) | The static recompiler and runtime this port is built on. |
 | 🛠️ | [**Xenia**](https://github.com/xenia-project/xenia) | The Xbox 360 emulator whose code the ReXGlue runtime is derived from. |

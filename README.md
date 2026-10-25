@@ -1,6 +1,6 @@
 # WWE SmackDown vs. Raw 2011 — iOS Port
 
-This is an unofficial iPhone port of the 2010 Xbox 360 game *WWE SmackDown vs. Raw 2011*. It builds on KaikoClanworth1's [native PC port](https://github.com/KaikoClanworth1/wwe-svr2011-pc) and isn't an emulator. The game's code is statically recompiled to C++ with the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) and built into an iOS app. It runs on the SDK's Xenia-derived runtime and draws with the PC port's native renderer on Vulkan, which [MoltenVK](https://github.com/KhronosGroup/MoltenVK) translates to Apple's Metal.
+This is an unofficial iPhone port of the 2010 Xbox 360 game *WWE SmackDown vs. Raw 2011*. It builds on KaikoClanworth1's [original port](https://github.com/KaikoClanworth1/wwe-svr2011-pc) and isn't an emulator. The game's code is statically recompiled to C++ with the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) and built into an iOS app. It runs on the SDK's Xenia-derived runtime and draws with the PC port's native renderer on Vulkan, which [MoltenVK](https://github.com/KhronosGroup/MoltenVK) translates to Apple's Metal.
 
 > [!IMPORTANT]
 > **This repository has no game in it.** It holds no disc image, XEX, game data, movies, music or recompiled game code. You need your **own copy of the Xbox 360 game**.
@@ -19,7 +19,7 @@ Tested on an **iPhone 15 Pro (A17 Pro)**, running inside LiveContainer:
 - Saves are plain files in the game folder.
 - On the iPhone's wide screen, matches and entrances fill the whole screen.
 
-Other iPhones and iPads haven't been tested. It's an early port, so expect rough edges. See [What carries over from the PC port](#what-carries-over-from-the-pc-port) for what is and isn't available.
+Other iPhones and iPads haven't been tested. It's an early port, so expect rough edges. See [What carries over from the OG port](#what-carries-over-from-the-pc-port) for what is and isn't available.
 
 <!-- TODO(author): add a tested-devices table here once more people have tried it. -->
 
@@ -32,7 +32,7 @@ Other iPhones and iPads haven't been tested. It's an early port, so expect rough
 - [Install and play](#install-and-play)
 - [Controls](#controls)
 - [Settings](#settings)
-- [What carries over from the PC port](#what-carries-over-from-the-pc-port)
+- [What carries over from the OG port](#what-carries-over-from-the-og-port)
 - [Building from source](#building-from-source)
 - [Troubleshooting](#troubleshooting)
 - [Credits](#credits)
@@ -103,9 +103,8 @@ Settings are saved in `svr2011.toml` in the game folder. <!-- TODO(author): conf
 
 ---
 
-## What carries over from the PC port
+## What carries over from the OG port
 
-The game itself is the same, so most of the PC port's features are in the code. What's different is that the PC port's **launcher** is a Windows program, so anything that needs it isn't available on the phone itself. This table is honest about what has and hasn't been checked on an iPhone.
 
 | Feature | On iOS |
 |---|---|
@@ -195,7 +194,7 @@ The Windows build steps (LLVM, PowerShell, the launcher) are in the [original RE
 | | Who | What |
 |---|---|---|
 | 📱 | [**Ke619**](https://github.com/Ke619) | The iOS port: the Apple build, memory fixes and app. |
-| 🧑‍💻 | [**KaikoClanworth1**](https://github.com/KaikoClanworth1) | Author of the [PC port](https://github.com/KaikoClanworth1/wwe-svr2011-pc) this is built on: the recompilation setup, native renderer, saves, menus and features. |
+| 🧑‍💻 | [**KaikoClanworth1**](https://github.com/KaikoClanworth1) | Author of the [OG port](https://github.com/KaikoClanworth1/wwe-svr2011-pc) this is built on: the recompilation setup, native renderer, saves, menus and features. |
 | 🛠️ | [**ReXGlue**](https://github.com/rexglue/rexglue-sdk) | The static recompiler and runtime this port is built on. |
 | 🛠️ | [**Xenia**](https://github.com/xenia-project/xenia) | The Xbox 360 emulator whose code the ReXGlue runtime is derived from. |
 | 🛠️ | [**MoltenVK**](https://github.com/KhronosGroup/MoltenVK) | Runs Vulkan on top of Apple's Metal. |

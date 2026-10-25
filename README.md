@@ -1,6 +1,11 @@
 # WWE SmackDown vs. Raw 2011 — iOS Port
 
 This is an unofficial iPhone port of the 2010 Xbox 360 game *WWE SmackDown vs. Raw 2011*. It builds on KaikoClanworth1's [original port](https://github.com/KaikoClanworth1/wwe-svr2011-pc) and isn't an emulator. The game's code is statically recompiled to C++ with the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) and built into an iOS app. It runs on the SDK's Xenia-derived runtime and draws with the PC port's native renderer on Vulkan, which [MoltenVK](https://github.com/KhronosGroup/MoltenVK) translates to Apple's Metal.
+<p align="center">
+  <img src="Art.png" alt="WWE SmackDown vs. Raw 2011 running on iPhone" width="700">
+</p>
+
+# WWE SmackDown vs. Raw 2011 — iOS Port
 
 > [!IMPORTANT]
 > **This repository has no game in it.** It holds no disc image, XEX, game data, movies, music or recompiled game code. You need your **own copy of the Xbox 360 game**.

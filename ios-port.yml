@@ -1,0 +1,1563 @@
+name: ios-port
+# Builds the port (generated game code + port/src) for iOS arm64. Lives in the PRIVATE repo.
+on:
+  workflow_dispatch: {}
+
+env:
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_MAXSIZE: 2G
+  CCACHE_SLOPPINESS: pch_defines,time_macros,include_file_mtime,include_file_ctime
+
+jobs:
+  port:
+    runs-on: macos-15
+    timeout-minutes: 330
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the generated code is here (and no game file)
+        run: |
+          test -f generated/rexglue.cmake && echo "rexglue.cmake ok"
+          test -f generated/default/sources.cmake && echo "sources.cmake ok"
+          test -f generated/default/svr2011_pch.h && echo "pch ok"
+          echo "files in generated: $(find generated -type f | wc -l)"
+          if find . -name "default.xex" | grep -q .; then echo "ERROR: default.xex is in this repo"; exit 1; fi
+
+      - uses: actions/cache/restore@v4
+        with:
+          path: .ccache
+          key: ccache-${{ github.run_id }}
+          restore-keys: ccache-
+
+      - name: Tools
+        run: brew install ninja ccache || true
+
+      - name: Fetch SDK (pinned), the port, and plume (pinned)
+        run: |
+          git clone https://github.com/rexglue/rexglue-sdk sdk
+          git -C sdk checkout c94f5ebdcb3c9d1a460ca48e04f9758448f8d518
+          git -C sdk submodule update --init --recursive --jobs 8
+          git clone --depth 1 https://github.com/KaikoClanworth1/wwe-svr2011-pc port-src
+          git clone https://github.com/renderbag/plume plume
+          git -C plume checkout d723793
+          git -C plume submodule update --init --recursive --jobs 8
+
+      - name: Apply patches (the port's own, plus our iOS fixes)
+        run: |
+          git -C sdk apply --whitespace=nowarn ../port-src/port/patches/rexglue-sdk-svr2011.patch
+          git -C plume apply --whitespace=nowarn ../port-src/port/patches/plume-svr2011.patch
+
+          # SDK: MoltenVK has no AppKit on iOS; thread id; no mach_vm.h on iOS
+          perl -i -pe 's/^(\s*find_library\(APPKIT_LIBRARY.*)$/if(NOT IOS)\n$1\nendif()/' sdk/thirdparty/moltenvk/Common/CMakeLists.txt
+          perl -i -pe 's/return pthread_gettid_np\(thread_\);/return [&]{ uint64_t t__ = 0; pthread_threadid_np(thread_, &t__); return static_cast<pid_t>(t__); }();/' sdk/src/core/threading_posix.cpp
+          cat > sdk/src/core/ios_mach_vm_shim.h <<'EOF'
+          // iOS: the SDK has no mach/mach_vm.h; vm_region_64 does the same job.
+          #pragma once
+          #include <mach/mach.h>
+          #include <mach/mach_init.h>
+          #include <mach/vm_map.h>
+          #include <mach/vm_region.h>
+          static inline kern_return_t mach_vm_region(vm_map_t task, mach_vm_address_t* address,
+                                                     mach_vm_size_t* size, vm_region_flavor_t flavor,
+                                                     vm_region_info_t info, mach_msg_type_number_t* count,
+                                                     mach_port_t* object_name) {
+            vm_address_t a = static_cast<vm_address_t>(*address);
+            vm_size_t s = 0;
+            kern_return_t kr = vm_region_64(task, &a, &s, flavor, info, count, object_name);
+            *address = a;
+            *size = s;
+            return kr;
+          }
+          EOF
+          perl -i -pe 's{#\s*include\s*[<"]mach/mach_vm\.h[>"]}{#include "ios_mach_vm_shim.h"}' sdk/src/core/memory_posix.cpp
+          echo "---- mach_vm.h users in the SDK (should only be the shim now) ----"
+          grep -rn "mach_vm.h\|ios_mach_vm_shim" sdk/src sdk/include | head
+
+          # plume: no Metal backend on iOS (Vulkan only)
+          perl -0pi -e 's/if\(APPLE\)\n(\s+list\(APPEND PLUME_SOURCES\n\s+plume_metal\.cpp)/if(APPLE AND NOT IOS)\n$1/' plume/CMakeLists.txt
+
+          # port: ObjC languages, the launcher/ Bink + include dir on iOS, gettid on Apple
+          sed -i '' 's/^project(svr2011 LANGUAGES C CXX)/project(svr2011 LANGUAGES C CXX OBJC OBJCXX)/' port-src/port/CMakeLists.txt
+          sed -i '' 's/^if(WIN32 OR ANDROID)$/if(WIN32 OR ANDROID OR IOS)/' port-src/port/CMakeLists.txt
+          cat >> port-src/port/src/compat.h <<'EOF'
+
+          #if defined(__APPLE__) && defined(__cplusplus)
+          #include <pthread.h>
+          #include <sys/types.h>
+          #include <cstdint>
+          inline pid_t gettid() { uint64_t t = 0; pthread_threadid_np(nullptr, &t); return static_cast<pid_t>(t); }
+          #endif
+          EOF
+          grep -n "^project\|WIN32 OR ANDROID" port-src/port/CMakeLists.txt
+
+      - name: Patch bink_decode.c for Apple (malloc.h -> malloc/malloc.h)
+        run: |
+          f=port-src/port/launcher/bink_decode.c
+          perl -0pi -e 's|#include <malloc\.h>\n#define _msize malloc_usable_size|#ifdef __APPLE__\n#include <malloc/malloc.h>\n#define _msize malloc_size\n#else\n#include <malloc.h>\n#define _msize malloc_usable_size\n#endif|' "$f"
+          echo "---- edited lines ----"
+          sed -n 20,35p "$f"
+          grep -q 'malloc/malloc.h' "$f"
+
+      - name: iOS link fixes (music stubs + plume window wrapper)
+        run: |
+          # 1) the port's music.cpp is Windows/Android-only: no-op versions of the 8 functions the link asked for
+          cat > port-src/port/src/ios_stubs.cpp <<'EOF'
+          // iOS: no user music / host sound player yet. No-ops so the game links.
+          #include "music.h"
+          #include <cstdio>
+          #include <cstdlib>
+          #include <ctime>
+          #include <string>
+          #include <sys/stat.h>
+          #include <filesystem>
+          #include <system_error>
+          #include <vector>
+          #include <mach-o/dyld.h>
+
+          // iOS boot log: before main() runs, send stdout/stderr to Documents/boot.log so a
+          // startup failure leaves text behind (works from any sideload method).
+          namespace {
+          __attribute__((constructor(101))) void IosBootLog() {
+            const char* home = std::getenv("HOME");
+            if (!home) return;
+            std::string dir = std::string(home) + "/Documents";
+            mkdir(dir.c_str(), 0755);
+            std::string file = dir + "/boot.log";
+            if (!freopen(file.c_str(), "a", stderr)) return;
+            freopen(file.c_str(), "a", stdout);
+            setvbuf(stderr, nullptr, _IONBF, 0);
+            setvbuf(stdout, nullptr, _IOLBF, 0);
+            std::fprintf(stderr, "[boot] started t=%ld home=%s\n", static_cast<long>(std::time(nullptr)), home);
+            std::atexit([] { std::fprintf(stderr, "[boot] process exit\n"); });
+          }
+          }  // namespace
+
+          // The native renderer's shader pack ships inside the app (<bundle>/native_shaders). Copy
+          // it into Documents/native_shaders when a file is missing there or its size differs.
+          namespace {
+          __attribute__((constructor(102))) void IosInstallBundledShaders() {
+            namespace fs = std::filesystem;
+            const char* home = std::getenv("HOME");
+            if (!home) return;
+            uint32_t size = 0;
+            _NSGetExecutablePath(nullptr, &size);
+            std::vector<char> buf(size + 1, 0);
+            if (_NSGetExecutablePath(buf.data(), &size) != 0) return;
+            std::error_code ec;
+            const fs::path src_dir = fs::path(buf.data()).parent_path() / "native_shaders";
+            if (!fs::is_directory(src_dir, ec)) {
+              std::fprintf(stderr, "[boot] shaders: none bundled in the app\n");
+              return;
+            }
+            const fs::path dst_dir = fs::path(home) / "Documents" / "native_shaders";
+            fs::create_directories(dst_dir, ec);
+            for (fs::directory_iterator it(src_dir, ec), end; !ec && it != end; it.increment(ec)) {
+              std::error_code e1;
+              if (!it->is_regular_file(e1)) continue;
+              const fs::path dst = dst_dir / it->path().filename();
+              const bool have = fs::is_regular_file(dst, e1);
+              std::error_code e2, e3;
+              if (have && fs::file_size(dst, e2) == fs::file_size(it->path(), e3)) continue;
+              std::error_code e4;
+              fs::copy_file(it->path(), dst, fs::copy_options::overwrite_existing, e4);
+              std::fprintf(stderr, "[boot] shaders: %s %s\n", it->path().filename().c_str(),
+                           e4 ? e4.message().c_str() : "copied");
+            }
+          }
+          }  // namespace
+
+          namespace svr2011 {
+          std::vector<std::filesystem::path> UserMusicSongs() { return {}; }
+          void SetSongGain(const std::filesystem::path&, float) {}
+          void PlayClip(const std::filesystem::path&) {}
+          int HostSoundStart(const std::filesystem::path&, bool, float) { return -1; }
+          void HostSoundStop(int) {}
+          void HostSoundPause(int, bool) {}
+          void HostSoundVolume(int, float) {}
+          bool HostSoundActive(int) { return false; }
+          }  // namespace svr2011
+          EOF
+          cat >> port-src/port/CMakeLists.txt <<'EOF'
+
+          if(IOS)
+            target_sources(svr2011 PRIVATE src/ios_stubs.cpp)
+          endif()
+          EOF
+
+          # 2) plume: UIKit version of CocoaWindow (plume_apple.mm is AppKit-only)
+          cat > plume/plume_ios.mm <<'EOF'
+          // iOS version of plume::CocoaWindow (the macOS one in plume_apple.mm uses AppKit).
+          // The handle is expected to be a UIWindow*, UIView* or CALayer* (not yet tested at run time).
+          #include "plume_apple.h"
+          #import <UIKit/UIKit.h>
+          #import <QuartzCore/QuartzCore.h>
+          #import <Foundation/Foundation.h>
+          #include <cmath>
+
+          namespace plume {
+              static bool plumeIosReadSize(void* handle, CocoaWindowAttributes* out) {
+                  id obj = (__bridge id)handle;
+                  CGRect b = CGRectZero;
+                  CGFloat scale = 1.0;
+                  if ([obj isKindOfClass:[UIWindow class]]) {
+                      UIWindow* w = (UIWindow*)obj;
+                      b = w.bounds;
+                      scale = w.screen.nativeScale;
+                  } else if ([obj isKindOfClass:[UIView class]]) {
+                      UIView* v = (UIView*)obj;
+                      b = v.bounds;
+                      scale = v.contentScaleFactor;
+                  } else if ([obj isKindOfClass:[CALayer class]]) {
+                      CALayer* l = (CALayer*)obj;
+                      b = l.bounds;
+                      scale = l.contentsScale;
+                  } else {
+                      return false;
+                  }
+                  out->x = (int)std::lround(b.origin.x);
+                  out->y = (int)std::lround(b.origin.y);
+                  out->width = (int)std::lround(b.size.width * scale);
+                  out->height = (int)std::lround(b.size.height * scale);
+                  return true;
+              }
+
+              CocoaWindow::CocoaWindow(void* window)
+                  : windowHandle(window), cachedAttributes{}, cachedRefreshRate(0) {
+                  updateWindowAttributesInternal(false);
+              }
+
+              CocoaWindow::~CocoaWindow() {}
+
+              void CocoaWindow::updateWindowAttributesInternal(bool forceSync) {
+                  auto updateBlock = ^{
+                      CocoaWindowAttributes a = {};
+                      if (plumeIosReadSize(windowHandle, &a)) {
+                          std::lock_guard<std::mutex> lock(attributesMutex);
+                          cachedAttributes = a;
+                      }
+                  };
+                  if (forceSync && ![NSThread isMainThread]) {
+                      dispatch_sync(dispatch_get_main_queue(), updateBlock);
+                  } else if ([NSThread isMainThread]) {
+                      updateBlock();
+                  } else {
+                      dispatch_async(dispatch_get_main_queue(), updateBlock);
+                  }
+              }
+
+              void CocoaWindow::updateRefreshRateInternal(bool forceSync) {
+                  auto updateBlock = ^{
+                      int fps = 60;
+                      id obj = (__bridge id)windowHandle;
+                      if ([obj isKindOfClass:[UIWindow class]]) {
+                          fps = (int)((UIWindow*)obj).screen.maximumFramesPerSecond;
+                      } else if ([obj isKindOfClass:[UIView class]] && ((UIView*)obj).window) {
+                          fps = (int)((UIView*)obj).window.screen.maximumFramesPerSecond;
+                      }
+                      cachedRefreshRate.store(fps);
+                  };
+                  if (forceSync && ![NSThread isMainThread]) {
+                      dispatch_sync(dispatch_get_main_queue(), updateBlock);
+                  } else if ([NSThread isMainThread]) {
+                      updateBlock();
+                  } else {
+                      dispatch_async(dispatch_get_main_queue(), updateBlock);
+                  }
+              }
+
+              void CocoaWindow::getWindowAttributes(CocoaWindowAttributes* attributes) const {
+                  const_cast<CocoaWindow*>(this)->updateWindowAttributesInternal(false);
+                  std::lock_guard<std::mutex> lock(attributesMutex);
+                  *attributes = cachedAttributes;
+              }
+
+              int CocoaWindow::getRefreshRate() const {
+                  const_cast<CocoaWindow*>(this)->updateRefreshRateInternal(false);
+                  int r = cachedRefreshRate.load();
+                  return r > 0 ? r : 60;
+              }
+
+              void CocoaWindow::toggleFullscreen() {}
+          }
+          EOF
+          cat >> plume/CMakeLists.txt <<'EOF'
+
+          if(IOS)
+            target_sources(plume PRIVATE plume_ios.mm)
+          endif()
+          EOF
+          echo "---- tails ----"
+          tail -n 5 port-src/port/CMakeLists.txt
+          tail -n 5 plume/CMakeLists.txt
+          test -f port-src/port/src/ios_stubs.cpp && test -f plume/plume_ios.mm
+          grep -q "plume_ios.mm" plume/CMakeLists.txt && grep -q "ios_stubs.cpp" port-src/port/CMakeLists.txt
+
+      - name: iOS paths and startup (game folder, GPU plugin, SDL entry point)
+        run: |
+          set -euo pipefail
+          F=sdk/src/core/filesystem_posix.cpp
+          P=sdk/src/system/gpu_plugin_loader.cpp
+          perl -0pi -e 's/\A/#if defined(__APPLE__)\n#include <TargetConditionals.h>\n#endif\n#include <cstdlib>\n#include <system_error>\n/' "$F" "$P"
+          perl -0pi -e 's/(std::filesystem::path GetExecutableFolder\(\) \{\n)/$1#if defined(__APPLE__) && TARGET_OS_IPHONE\n  \/\/ [ios] The app bundle is read-only: the game folder is the app\x27s Documents folder.\n  if (const char* home = std::getenv("HOME")) {\n    std::filesystem::path docs = std::filesystem::path(home) \/ "Documents";\n    std::error_code ec;\n    std::filesystem::create_directories(docs, ec);\n    return docs;\n  }\n#endif\n/' "$F"
+          perl -0pi -e 's/  auto path = rex::filesystem::GetExecutableFolder\(\) \/ PluginFileName\(name\);\n/#if defined(__APPLE__) && TARGET_OS_IPHONE\n  auto path = rex::filesystem::GetExecutablePath().parent_path() \/ "Frameworks" \/ PluginFileName(name);\n#else\n  auto path = rex::filesystem::GetExecutableFolder() \/ PluginFileName(name);\n#endif\n/' "$P"
+          echo "---- edited lines ----"
+          grep -n -A9 "GetExecutableFolder() {" "$F" | head -14
+          grep -n -B2 -A5 "Frameworks" "$P"
+          grep -q "TARGET_OS_IPHONE" "$F"
+          grep -q 'Frameworks' "$P"
+
+          # SDL must own the iOS entry point (UIApplicationMain), so main has to become SDL_main:
+          # without this SDL_InitSubSystem(VIDEO) fails and the app exits with code 1.
+          M=sdk/src/ui/windowed_app_main_sdl.cpp
+          perl -0pi -e 's/(#include <rex\/ui\/windowed_app_context_sdl\.h>\n)/$1\n#if defined(__APPLE__)\n#include <TargetConditionals.h>\n#if TARGET_OS_IPHONE\n#include <SDL3\/SDL_main.h>\n#endif\n#endif\n/' "$M"
+          # MoltenVK (Metal) has no geometry shaders or non-solid fill mode: do not require them.
+          perl -0pi -e 's/(  rex::cvar::ApplyEnvironment\(\);\n)(  rex::InitLoggingEarly\(\);)/$1#if defined(__APPLE__) && TARGET_OS_IPHONE\n  rex::cvar::SetFlagByName("vulkan_require_geometry_shader", "false");\n  rex::cvar::SetFlagByName("vulkan_require_fill_mode_non_solid", "false");\n#endif\n$2/' "$M"
+          # The SDK treats every Apple platform as macOS (REX_PLATFORM_MAC) and forces SDL's "cocoa"
+          # video driver, which does not exist on iOS ("cocoa not available"). iOS needs "uikit".
+          C=sdk/src/ui/windowed_app_context_sdl.cpp
+          perl -0pi -e 's/\A/#if defined(__APPLE__)\n#include <TargetConditionals.h>\n#endif\n/' "$C"
+          perl -0pi -e 's/requested_driver = "cocoa";/#if defined(TARGET_OS_IPHONE) \&\& TARGET_OS_IPHONE\n    requested_driver = "uikit";\n#else\n    requested_driver = "cocoa";\n#endif/' "$C"
+          # The Vulkan runtime lives in <app bundle>/vulkan. The SDK looks beside "the executable
+          # folder", which on iOS is now Documents, so point this one lookup at the bundle.
+          V=sdk/src/ui/vulkan/vulkan_moltenvk.cpp
+          perl -0pi -e 's/\A/#if defined(__APPLE__)\n#include <TargetConditionals.h>\n#endif\n/' "$V"
+          perl -0pi -e 's/  const fs::path executable_dir = rex::filesystem::GetExecutableFolder\(\);\n/#if defined(TARGET_OS_IPHONE) \&\& TARGET_OS_IPHONE\n  const fs::path executable_dir = rex::filesystem::GetExecutablePath().parent_path();\n#else\n  const fs::path executable_dir = rex::filesystem::GetExecutableFolder();\n#endif\n/' "$V"
+          # The iOS sandbox refuses shm_open, which is how the 4.5 GB guest memory is created
+          # ("Unable to reserve the 4gb guest address space"). Use a plain file in the app's tmp
+          # folder, deleted at once (the open handle keeps it alive; it stays sparse on APFS).
+          python3 - <<'PYEOF'
+          p = "sdk/src/core/memory_posix.cpp"
+          s = open(p).read()
+          anchor = "#else\n  int oflag;\n  switch (access) {\n"
+          assert s.count(anchor) == 1, "anchor count %d" % s.count(anchor)
+          new = """#elif defined(__APPLE__) && TARGET_OS_IPHONE
+            (void)access;
+            (void)commit;
+            const char* ios_tmp = std::getenv("TMPDIR");
+            std::filesystem::path ios_dir = ios_tmp ? ios_tmp : "/tmp";
+            std::error_code ios_ec;
+            std::filesystem::create_directories(ios_dir, ios_ec);
+            std::filesystem::path ios_backing = ios_dir / path.filename();
+            int ios_fd = open(ios_backing.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0600);
+            if (ios_fd < 0) {
+              return kFileMappingHandleInvalid;
+            }
+            unlink(ios_backing.c_str());
+            if (rex_ftruncate64(ios_fd, static_cast<off_t>(length)) != 0) {
+              close(ios_fd);
+              return kFileMappingHandleInvalid;
+            }
+            return static_cast<FileMappingHandle>(ios_fd);
+          """
+          s = s.replace(anchor, new + anchor)
+          s = "#if defined(__APPLE__)\n#include <TargetConditionals.h>\n#endif\n#include <cstdlib>\n" + s
+          open(p, "w").write(s)
+          PYEOF
+          echo "---- memory_posix.cpp edit ----"
+          grep -n -A6 "ios_tmp" sdk/src/core/memory_posix.cpp | head -12
+          grep -q "ios_backing" sdk/src/core/memory_posix.cpp
+          echo "---- vulkan_moltenvk.cpp edit ----"
+          grep -n -B1 -A5 "GetExecutablePath" "$V"
+          grep -q "GetExecutablePath" "$V"
+          echo "---- windowed_app_context_sdl.cpp edit ----"
+          grep -n -B2 -A6 '"uikit"' "$C"
+          grep -q '"uikit"' "$C"
+          echo "---- windowed_app_main_sdl.cpp edits ----"
+          grep -n -B1 -A6 "TargetConditionals" "$M"
+          grep -n -B2 -A3 "vulkan_require_geometry_shader" "$M"
+          grep -q "SDL3/SDL_main.h" "$M"
+          grep -q "vulkan_require_fill_mode_non_solid" "$M"
+
+      - name: iOS touch controls on by default
+        run: |
+          set -euo pipefail
+          T=port-src/port/src/touch_controls.cpp
+          perl -0pi -e 's/#if defined\(__ANDROID__\)\nREXCVAR_DEFINE_BOOL\(touch_controls, true/#if defined(__APPLE__)\n#include <TargetConditionals.h>\n#endif\n#if defined(__ANDROID__) || (defined(__APPLE__) && TARGET_OS_IPHONE)\nREXCVAR_DEFINE_BOOL(touch_controls, true/' "$T"
+          echo "---- touch_controls edit ----"
+          grep -n -B5 -A4 "TARGET_OS_IPHONE" "$T"
+          grep -q "TARGET_OS_IPHONE" "$T"
+
+      - name: iOS uses the phone defaults (scale 1, Vulkan, thread recording)
+        run: |
+          python3 - <<'PYEOF'
+          IOS = "defined(__ANDROID__) || defined(__ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__)"
+          edits = [
+              ("port-src/port/src/svr2011_app.cpp",
+               "#if defined(__ANDROID__)\n  // The phone: Vulkan, SDL controllers"),
+              ("port-src/port/src/svr2011_app.cpp",
+               "#if defined(__ANDROID__)\n  // The phone draws natively on Vulkan only"),
+              ("port-src/port/src/native/native_renderer.cpp",
+               "#if defined(__ANDROID__)\nconstexpr bool kScaleEffectsDefault = false;"),
+              ("port-src/port/src/native/native_renderer.cpp",
+               "#if defined(__ANDROID__)\nconstexpr bool kRecordThreadDefault = true;"),
+              ("port-src/port/src/graphics_page.cpp",
+               "#if defined(__ANDROID__)\n// (the phone: the window is the screen"),
+          ]
+          for path, old in edits:
+              s = open(path).read()
+              assert s.count(old) == 1, (path, old, s.count(old))
+              open(path, "w").write(s.replace(old, old.replace("defined(__ANDROID__)", IOS, 1)))
+              print("patched:", path, "|", old.splitlines()[1][:50])
+
+          # MoltenVK: the big texture table (descriptor indexing) loses textures and can fault the
+          # GPU; the compact mode (each draw binds its own textures) is stable. Default it on for iOS.
+          path = "port-src/port/src/native/backend_vulkan.cpp"
+          s = open(path).read()
+          start = s.index('REXCVAR_DEFINE_BOOL(native_compact_tables, false, "GPU",')
+          end = s.index(");\n", start) + 3
+          stmt = s[start:end]
+          ios_stmt = stmt.replace("native_compact_tables, false,", "native_compact_tables, true,", 1)
+          block = ("#if defined(__ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__)\n" + ios_stmt +
+                   "#else\n" + stmt + "#endif\n")
+          open(path, "w").write(s[:start] + block + s[end:])
+          print("patched: backend_vulkan.cpp native_compact_tables default on iOS")
+          PYEOF
+          grep -n "__ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__" port-src/port/src/svr2011_app.cpp port-src/port/src/native/native_renderer.cpp port-src/port/src/graphics_page.cpp port-src/port/src/native/backend_vulkan.cpp
+          grep -n -B1 -A6 "native_compact_tables, true" port-src/port/src/native/backend_vulkan.cpp
+
+      - name: iOS launcher (Play screen before the game starts)
+        run: |
+          set -euo pipefail
+          cat > port-src/port/src/ios_launcher.mm <<'EOF'
+          // iOS launcher: a tabbed screen shown before the game starts (Play, Settings, Online, ...), the
+          // phone launcher's tabs as on Android. (A file named skip_launcher in Documents turns it off.)
+          #import <UIKit/UIKit.h>
+          #include <cmath>
+          #include <cstdio>
+          #include <cstdlib>
+          #include <fstream>
+          #include <string>
+          #include <vector>
+          #include <sys/stat.h>
+          #include <unistd.h>
+
+          #define SVR_BG [UIColor colorWithRed:0.04 green:0.04 blue:0.06 alpha:1.0]
+          #define SVR_RED [UIColor colorWithRed:0.75 green:0.05 blue:0.08 alpha:1.0]
+          #define SVR_DIM [UIColor colorWithWhite:0.6 alpha:1.0]
+          #define SVR_TEXT [UIColor whiteColor]
+
+          static bool SvrFileExists(const std::string& path) {
+            struct stat st;
+            return stat(path.c_str(), &st) == 0;
+          }
+
+          static std::string SvrStd(NSString* s) {
+            return s ? std::string([s UTF8String]) : std::string();
+          }
+
+          static NSString* SvrNS(const std::string& s) {
+            NSString* r = [NSString stringWithUTF8String:s.c_str()];
+            return r ? r : @"";
+          }
+
+          // A string from a JSON value (empty when it is not a string).
+          static std::string SvrStr(id v) {
+            return [v isKindOfClass:[NSString class]] ? SvrStd((NSString*)v) : std::string();
+          }
+
+          // ---- the settings file (Documents/svr2011.toml): flat "key = value" lines ----
+
+          static std::string SvrConfigPath() {
+            const char* home = getenv("HOME");
+            return home ? std::string(home) + "/Documents/svr2011.toml" : std::string();
+          }
+
+          static std::string SvrTrim(const std::string& s) {
+            const size_t a = s.find_first_not_of(" \t\r");
+            if (a == std::string::npos) return std::string();
+            const size_t b = s.find_last_not_of(" \t\r");
+            return s.substr(a, b - a + 1);
+          }
+
+          static std::vector<std::string> SvrReadConfig() {
+            std::vector<std::string> lines;
+            std::ifstream in(SvrConfigPath());
+            for (std::string line; std::getline(in, line);) lines.push_back(line);
+            return lines;
+          }
+
+          // The value of a top-level key (quotes removed), or `fallback` when the key is not there.
+          static std::string SvrGet(const std::vector<std::string>& lines, const std::string& key,
+                                    const std::string& fallback) {
+            for (const std::string& l : lines) {
+              const size_t first = l.find_first_not_of(" \t");
+              if (first == std::string::npos || l[first] == '#') continue;
+              if (l[first] == '[') break;
+              const size_t eq = l.find('=');
+              if (eq == std::string::npos) continue;
+              if (SvrTrim(l.substr(first, eq - first)) != key) continue;
+              std::string v = l.substr(eq + 1);
+              const size_t hash = v.find(" #");
+              if (hash != std::string::npos) v = v.substr(0, hash);
+              v = SvrTrim(v);
+              if (v.size() >= 2 && v.front() == '"' && v.back() == '"') v = v.substr(1, v.size() - 2);
+              return v;
+            }
+            return fallback;
+          }
+
+          // A TOML string: the text in quotes (quote, backslash and line breaks cannot be in these fields).
+          static std::string SvrQuote(const std::string& v) {
+            std::string out = "\"";
+            for (char c : v) {
+              if (c != '"' && c != '\\' && c != '\n' && c != '\r') out += c;
+            }
+            return out + "\"";
+          }
+
+          // Sets `key = value` among the top-level keys, keeping every other line (as the game does).
+          static void SvrSet(const std::string& key, const std::string& value) {
+            std::vector<std::string> lines = SvrReadConfig();
+            const std::string entry = key + " = " + value;
+            size_t insert_at = lines.size();
+            bool done = false;
+            for (size_t i = 0; i < lines.size(); ++i) {
+              const std::string& l = lines[i];
+              const size_t first = l.find_first_not_of(" \t");
+              if (first == std::string::npos) continue;
+              if (l[first] == '[') {
+                insert_at = i;
+                break;
+              }
+              const size_t eq = l.find('=');
+              if (eq == std::string::npos || l[first] == '#') continue;
+              if (SvrTrim(l.substr(first, eq - first)) == key) {
+                lines[i] = entry;
+                done = true;
+                break;
+              }
+            }
+            if (!done) lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(insert_at), entry);
+            const std::string path = SvrConfigPath();
+            const std::string tmp = path + ".tmp";
+            {
+              std::ofstream out(tmp, std::ios::trunc);
+              for (const std::string& l : lines) out << l << "\n";
+              if (!out) {
+                std::fprintf(stderr, "[boot] settings: could not write the settings file\n");
+                return;
+              }
+            }
+            if (std::rename(tmp.c_str(), path.c_str()) != 0) {
+              std::fprintf(stderr, "[boot] settings: could not replace the settings file\n");
+            }
+          }
+
+          // ---- the graphics options (the same values the in-game GRAPHICS page writes) ----
+
+          struct SvrScale {
+            int max_scale;
+            double res;
+            int height;
+          };
+          static const SvrScale kSvrScales[] = {
+              {1, 0.5, 0}, {1, 2.0 / 3.0, 0}, {1, 1.0, 0}, {2, 1.0, 900}, {2, 1.0, 1080}};  // 360p 480p 720p 900p 1080p
+          static const char* const kSvrTextureQualities[] = {"high", "medium", "low"};
+
+          // ---- small UIKit helpers ----
+
+          static UILabel* SvrLabel(NSString* text, CGFloat size, UIColor* color, BOOL bold) {
+            UILabel* l = [[UILabel alloc] init];
+            l.text = text;
+            l.textColor = color;
+            l.font = bold ? [UIFont boldSystemFontOfSize:size] : [UIFont systemFontOfSize:size];
+            l.numberOfLines = 0;
+            return l;
+          }
+
+          static UIView* SvrRow(NSString* title, UIView* control) {
+            UILabel* label = SvrLabel(title, 16.0, SVR_TEXT, NO);
+            [label.widthAnchor constraintEqualToConstant:150.0].active = YES;
+            UIStackView* row = [[UIStackView alloc] initWithArrangedSubviews:@[ label, control ]];
+            row.axis = UILayoutConstraintAxisHorizontal;
+            row.alignment = UIStackViewAlignmentCenter;
+            row.spacing = 16.0;
+            return row;
+          }
+
+          static UISegmentedControl* SvrSegment(NSArray<NSString*>* items, NSInteger selected,
+                                                void (^onChange)(NSInteger)) {
+            UISegmentedControl* seg = [[UISegmentedControl alloc] initWithItems:items];
+            seg.selectedSegmentIndex = selected;
+            __weak UISegmentedControl* weakSeg = seg;
+            [seg addAction:[UIAction actionWithHandler:^(__kindof UIAction* action) {
+              UISegmentedControl* s = weakSeg;
+              if (s) onChange(s.selectedSegmentIndex);
+            }] forControlEvents:UIControlEventValueChanged];
+            return seg;
+          }
+
+          static UISwitch* SvrToggle(BOOL on, void (^onChange)(BOOL)) {
+            UISwitch* sw = [[UISwitch alloc] init];
+            sw.on = on;
+            __weak UISwitch* weakSw = sw;
+            [sw addAction:[UIAction actionWithHandler:^(__kindof UIAction* action) {
+              UISwitch* s = weakSw;
+              if (s) onChange(s.isOn);
+            }] forControlEvents:UIControlEventValueChanged];
+            return sw;
+          }
+
+          static UITextField* SvrField(NSString* placeholder, BOOL secure) {
+            UITextField* f = [[UITextField alloc] init];
+            f.borderStyle = UITextBorderStyleRoundedRect;
+            f.placeholder = placeholder;
+            f.secureTextEntry = secure;
+            f.autocapitalizationType = UITextAutocapitalizationTypeNone;
+            f.autocorrectionType = UITextAutocorrectionTypeNo;
+            f.spellCheckingType = UITextSpellCheckingTypeNo;
+            f.returnKeyType = UIReturnKeyDone;
+            f.keyboardAppearance = UIKeyboardAppearanceDark;
+            [f.heightAnchor constraintGreaterThanOrEqualToConstant:36.0].active = YES;
+            __weak UITextField* weakField = f;
+            [f addAction:[UIAction actionWithHandler:^(__kindof UIAction* action) {
+              [weakField resignFirstResponder];
+            }] forControlEvents:UIControlEventEditingDidEndOnExit];
+            return f;
+          }
+
+          static UIButton* SvrButton(NSString* title, BOOL filled, void (^onTap)(void)) {
+            UIButtonConfiguration* cfg =
+                filled ? [UIButtonConfiguration filledButtonConfiguration] : [UIButtonConfiguration tintedButtonConfiguration];
+            cfg.title = title;
+            cfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+            if (filled) cfg.baseBackgroundColor = SVR_RED;
+            UIButton* b = [UIButton buttonWithConfiguration:cfg primaryAction:nil];
+            [b addAction:[UIAction actionWithHandler:^(__kindof UIAction* action) {
+              onTap();
+            }] forControlEvents:UIControlEventTouchUpInside];
+            return b;
+          }
+
+          // A scrolling page: a vertical stack as wide as the page.
+          static UIScrollView* SvrScrollPage(UIStackView** outStack) {
+            UIScrollView* scroll = [[UIScrollView alloc] init];
+            scroll.keyboardDismissMode = UIScrollViewKeyboardDismissModeInteractive;
+            scroll.alwaysBounceVertical = YES;
+            UIStackView* stack = [[UIStackView alloc] init];
+            stack.axis = UILayoutConstraintAxisVertical;
+            stack.spacing = 14.0;
+            stack.translatesAutoresizingMaskIntoConstraints = NO;
+            [scroll addSubview:stack];
+            [NSLayoutConstraint activateConstraints:@[
+              [stack.topAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.topAnchor],
+              [stack.bottomAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.bottomAnchor],
+              [stack.leadingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.leadingAnchor],
+              [stack.trailingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.trailingAnchor],
+              [stack.widthAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.widthAnchor],
+            ]];
+            *outStack = stack;
+            return scroll;
+          }
+
+          // ---- the Settings page ----
+
+          static UIView* SvrBuildSettingsPage(void) {
+            UIStackView* stack = nil;
+            UIScrollView* page = SvrScrollPage(&stack);
+
+            if (!SvrFileExists(SvrConfigPath())) {
+              [stack addArrangedSubview:SvrLabel(@"The settings file does not exist yet.\nPress PLAY once so the game creates it, then come back here.",
+                                                 15.0, SVR_DIM, NO)];
+              return page;
+            }
+
+            const std::vector<std::string> cfg = SvrReadConfig();
+
+            // Resolution: the three keys the in-game "RENDER RESOLUTION" row sets together.
+            {
+              const int max_scale = std::atoi(SvrGet(cfg, "native_max_scale", "1").c_str());
+              const double res = std::atof(SvrGet(cfg, "native_render_scale", "1").c_str());
+              const int height = std::atoi(SvrGet(cfg, "native_scene_height", "0").c_str());
+              NSInteger current = UISegmentedControlNoSegment;
+              for (NSInteger i = 0; i < 5; ++i) {
+                if (kSvrScales[i].max_scale == max_scale && std::fabs(kSvrScales[i].res - res) < 0.01 &&
+                    kSvrScales[i].height == height) {
+                  current = i;
+                }
+              }
+              [stack addArrangedSubview:SvrRow(@"Resolution", SvrSegment(@[ @"360p", @"480p", @"720p", @"900p", @"1080p" ], current,
+                                                                         ^(NSInteger i) {
+                if (i < 0 || i > 4) return;
+                char buf[16];
+                std::snprintf(buf, sizeof(buf), "%.4f", kSvrScales[i].res);
+                SvrSet("native_max_scale", std::to_string(kSvrScales[i].max_scale));
+                SvrSet("native_render_scale", buf);
+                SvrSet("native_scene_height", std::to_string(kSvrScales[i].height));
+              }))];
+            }
+
+            // Texture quality
+            {
+              const std::string q = SvrGet(cfg, "native_texture_quality", "high");
+              NSInteger current = 0;
+              for (NSInteger i = 0; i < 3; ++i) {
+                if (q == kSvrTextureQualities[i]) current = i;
+              }
+              [stack addArrangedSubview:SvrRow(@"Textures", SvrSegment(@[ @"High", @"Medium", @"Low" ], current, ^(NSInteger i) {
+                if (i < 0 || i > 2) return;
+                SvrSet("native_texture_quality", std::string("\"") + kSvrTextureQualities[i] + "\"");
+              }))];
+            }
+
+            // Anti-aliasing: native_aa 1 (off), 2x, 3x, 4x; native_2x_msaa follows.
+            {
+              int aa = std::atoi(SvrGet(cfg, "native_aa", "0").c_str());
+              if (aa < 1 || aa > 4) aa = SvrGet(cfg, "native_2x_msaa", "true") == "false" ? 1 : 2;
+              [stack addArrangedSubview:SvrRow(@"Anti-aliasing", SvrSegment(@[ @"Off", @"2x", @"3x", @"4x" ], aa - 1,
+                                                                            ^(NSInteger i) {
+                if (i < 0 || i > 3) return;
+                const int value = static_cast<int>(i) + 1;
+                SvrSet("native_aa", std::to_string(value));
+                SvrSet("native_2x_msaa", value >= 2 ? "true" : "false");
+              }))];
+            }
+
+            // Frame rate
+            {
+              const int fps = std::atoi(SvrGet(cfg, "frame_rate", "60").c_str());
+              [stack addArrangedSubview:SvrRow(@"Frame rate", SvrSegment(@[ @"30", @"60" ], fps == 30 ? 0 : 1, ^(NSInteger i) {
+                SvrSet("frame_rate", i == 0 ? "30" : "60");
+              }))];
+            }
+
+            // On / off options
+            [stack addArrangedSubview:SvrRow(@"Soft filter", SvrToggle(SvrGet(cfg, "soft_filter", "false") == "true", ^(BOOL on) {
+              SvrSet("soft_filter", on ? "true" : "false");
+            }))];
+            [stack addArrangedSubview:SvrRow(@"Motion blur", SvrToggle(SvrGet(cfg, "motion_blur", "true") == "true", ^(BOOL on) {
+              SvrSet("motion_blur", on ? "true" : "false");
+            }))];
+            [stack addArrangedSubview:SvrRow(@"Depth of field", SvrToggle(SvrGet(cfg, "depth_of_field", "true") == "true", ^(BOOL on) {
+              SvrSet("depth_of_field", on ? "true" : "false");
+            }))];
+            [stack addArrangedSubview:SvrRow(@"Crowd", SvrToggle(SvrGet(cfg, "arena_crowd", "on") != "off", ^(BOOL on) {
+              SvrSet("arena_crowd", on ? "\"on\"" : "\"off\"");
+            }))];
+            [stack addArrangedSubview:SvrRow(@"Touch controls", SvrToggle(SvrGet(cfg, "touch_controls", "true") == "true", ^(BOOL on) {
+              SvrSet("touch_controls", on ? "true" : "false");
+            }))];
+            return page;
+          }
+
+          // ---- the Online page: server, account, friends (the server's JSON API, as on Android) ----
+
+          static NSString* const kSvrDefaultServer = @"https://sho-ti.me/svr";
+          static NSString* const kSvrCustomServer = @"127.0.0.1:8411";
+
+          // GETs (body nil) or POSTs JSON; calls `done` on the main queue with the answer's JSON (any status,
+          // "_status" added) or, when the server could not be reached, a failure text.
+          static void SvrRequest(NSString* url, NSDictionary* body, NSString* token,
+                                 void (^done)(NSDictionary* json, NSString* failure)) {
+            NSURL* u = [NSURL URLWithString:url];
+            if (!u) {
+              done(nil, @"the server address is not valid");
+              return;
+            }
+            NSMutableURLRequest* req = [NSMutableURLRequest requestWithURL:u
+                                                               cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
+                                                           timeoutInterval:20.0];
+            req.HTTPMethod = body ? @"POST" : @"GET";
+            if (token.length) [req setValue:[@"Bearer " stringByAppendingString:token] forHTTPHeaderField:@"Authorization"];
+            if (body) {
+              [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+              req.HTTPBody = [NSJSONSerialization dataWithJSONObject:body options:0 error:nil];
+            }
+            NSURLSessionDataTask* task = [[NSURLSession sharedSession]
+                dataTaskWithRequest:req
+                  completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
+                    NSMutableDictionary* json = [NSMutableDictionary dictionary];
+                    NSString* failure = nil;
+                    if (error) {
+                      failure = error.localizedDescription;
+                    } else {
+                      id parsed = data.length ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+                      if ([parsed isKindOfClass:[NSDictionary class]]) [json addEntriesFromDictionary:parsed];
+                      json[@"_status"] = @([(NSHTTPURLResponse*)response statusCode]);
+                    }
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                      done(failure ? nil : json, failure);
+                    });
+                  }];
+            [task resume];
+          }
+
+          static NSString* SvrErrorText(NSDictionary* r, NSString* failure, BOOL create) {
+            if (r) {
+              id e = r[@"error"];
+              if ([e isKindOfClass:[NSString class]] && [(NSString*)e length]) return e;
+              const NSInteger code = [r[@"_status"] integerValue];
+              if (code == 403) return create ? @"That name is taken." : @"Wrong name or password.";
+              if (code == 429) return @"Too many tries - wait a little and try again.";
+              return [NSString stringWithFormat:@"The server said no (%ld).", (long)code];
+            }
+            return failure.length ? [@"Could not reach the server: " stringByAppendingString:failure]
+                                  : @"Could not reach the server.";
+          }
+
+          @interface SvrOnlinePage : NSObject
+          @property(nonatomic, strong) UIScrollView* view;
+          @property(nonatomic) BOOL busy;
+          @property(nonatomic) BOOL friendsBusy;
+          - (void)refresh;
+          @end
+
+          @implementation SvrOnlinePage {
+            UIStackView* _main;
+            UILabel* _noFile;
+            UISwitch* _enabled;
+            UISegmentedControl* _kind;
+            UITextField* _address;
+            UITextField* _name;
+            UITextField* _password;
+            UITextField* _friendName;
+            UILabel* _who;
+            UILabel* _accountStatus;
+            UILabel* _friendsStatus;
+            UIStackView* _serverBox;
+            UIStackView* _signedIn;
+            UIStackView* _signedOut;
+            UIStackView* _friendsBox;
+            UIStackView* _friendRows;
+            UIButton* _signInBtn;
+            UIButton* _createBtn;
+            UIButton* _signOutBtn;
+          }
+
+          - (instancetype)init {
+            self = [super init];
+            if (!self) return nil;
+            UIStackView* stack = nil;
+            _view = SvrScrollPage(&stack);
+            _main = stack;
+            __weak SvrOnlinePage* weakSelf = self;
+
+            [stack addArrangedSubview:SvrLabel(@"Community Creations: share Created Superstars, Paint Tool logos, highlight reels and more with other players, through a Community Creations server (the original servers closed in 2014). Online matches too: Player Match and Royal Rumble.",
+                                               14.0, SVR_DIM, NO)];
+            _noFile = SvrLabel(@"The settings file does not exist yet.\nPress PLAY once so the game creates it, then come back here.",
+                               15.0, SVR_TEXT, NO);
+            [stack addArrangedSubview:_noFile];
+
+            _enabled = SvrToggle(NO, ^(BOOL on) {
+              SvrSet("online_enabled", on ? "true" : "false");
+            });
+            [stack addArrangedSubview:SvrRow(@"Play online", _enabled)];
+
+            _kind = SvrSegment(@[ @"Default", @"Custom" ], 0, ^(NSInteger i) {
+              [weakSelf serverKindChanged:i];
+            });
+            [stack addArrangedSubview:SvrRow(@"Server", _kind)];
+            _address = SvrField(kSvrCustomServer, NO);
+            _address.keyboardType = UIKeyboardTypeURL;
+            [_address addAction:[UIAction actionWithHandler:^(__kindof UIAction* action) {
+              [weakSelf saveServer];
+            }] forControlEvents:UIControlEventEditingDidEnd];
+            _serverBox = [[UIStackView alloc] initWithArrangedSubviews:@[ SvrRow(@"Address", _address) ]];
+            _serverBox.axis = UILayoutConstraintAxisVertical;
+            [stack addArrangedSubview:_serverBox];
+
+            [stack addArrangedSubview:SvrLabel(@"Account", 18.0, SVR_TEXT, YES)];
+            _who = SvrLabel(@"", 16.0, SVR_TEXT, NO);
+            _signedIn = [[UIStackView alloc] initWithArrangedSubviews:@[ _who ]];
+            _signedIn.axis = UILayoutConstraintAxisVertical;
+            [stack addArrangedSubview:_signedIn];
+            _name = SvrField(@"3-15 letters, digits, space _ . -", NO);
+            _password = SvrField(@"at least 6 characters", YES);
+            _signedOut = [[UIStackView alloc] initWithArrangedSubviews:@[ SvrRow(@"Name", _name), SvrRow(@"Password", _password) ]];
+            _signedOut.axis = UILayoutConstraintAxisVertical;
+            _signedOut.spacing = 10.0;
+            [stack addArrangedSubview:_signedOut];
+            _accountStatus = SvrLabel(@"", 13.0, SVR_DIM, NO);
+            [stack addArrangedSubview:_accountStatus];
+            _signInBtn = SvrButton(@"Sign in", YES, ^{
+              [weakSelf signIn:NO];
+            });
+            _createBtn = SvrButton(@"Create account", NO, ^{
+              [weakSelf signIn:YES];
+            });
+            _signOutBtn = SvrButton(@"Sign out", NO, ^{
+              [weakSelf signOut];
+            });
+            UIStackView* buttons = [[UIStackView alloc] initWithArrangedSubviews:@[ _signInBtn, _createBtn, _signOutBtn ]];
+            buttons.axis = UILayoutConstraintAxisHorizontal;
+            buttons.spacing = 12.0;
+            buttons.distribution = UIStackViewDistributionFillEqually;
+            [stack addArrangedSubview:buttons];
+
+            _friendRows = [[UIStackView alloc] init];
+            _friendRows.axis = UILayoutConstraintAxisVertical;
+            _friendsStatus = SvrLabel(@"", 13.0, SVR_DIM, NO);
+            _friendName = SvrField(@"Type a name, or tap a friend", NO);
+            UIButton* add = SvrButton(@"Add friend", YES, ^{
+              [weakSelf changeFriend:YES];
+            });
+            UIButton* remove = SvrButton(@"Remove", NO, ^{
+              [weakSelf changeFriend:NO];
+            });
+            UIButton* reload = SvrButton(@"Refresh", NO, ^{
+              [weakSelf fetchFriends:nil];
+            });
+            UIStackView* friendButtons = [[UIStackView alloc] initWithArrangedSubviews:@[ add, remove, reload ]];
+            friendButtons.axis = UILayoutConstraintAxisHorizontal;
+            friendButtons.spacing = 12.0;
+            friendButtons.distribution = UIStackViewDistributionFillEqually;
+            _friendsBox = [[UIStackView alloc] initWithArrangedSubviews:@[
+              SvrLabel(@"Friends", 18.0, SVR_TEXT, YES), _friendRows, _friendsStatus, SvrRow(@"Player", _friendName),
+              friendButtons
+            ]];
+            _friendsBox.axis = UILayoutConstraintAxisVertical;
+            _friendsBox.spacing = 10.0;
+            [stack addArrangedSubview:_friendsBox];
+
+            [self refresh];
+            return self;
+          }
+
+          + (NSString*)baseFor:(NSString*)server {
+            NSString* b = [server containsString:@"://"] ? server : [@"http://" stringByAppendingString:server];
+            while ([b hasSuffix:@"/"]) b = [b substringToIndex:b.length - 1];
+            return b;
+          }
+
+          + (BOOL)validName:(NSString*)n {
+            if (n.length < 3 || n.length > 15) return NO;
+            for (NSUInteger i = 0; i < n.length; ++i) {
+              const unichar c = [n characterAtIndex:i];
+              const BOOL ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == ' ' ||
+                              c == '_' || c == '.' || c == '-';
+              if (!ok) return NO;
+            }
+            return YES;
+          }
+
+          - (NSString*)currentServer {
+            return SvrNS(SvrGet(SvrReadConfig(), "online_server", SvrStd(kSvrDefaultServer)));
+          }
+
+          // Reads the saved state into the controls.
+          - (void)refresh {
+            const BOOL hasFile = SvrFileExists(SvrConfigPath());
+            _noFile.hidden = hasFile;
+            NSArray<UIView*>* all = _main.arrangedSubviews;
+            for (NSUInteger i = 2; i < all.count; ++i) all[i].hidden = !hasFile;
+            if (!hasFile) return;
+            const std::vector<std::string> cfg = SvrReadConfig();
+            _enabled.on = SvrGet(cfg, "online_enabled", "false") == "true";
+            const std::string server = SvrGet(cfg, "online_server", SvrStd(kSvrDefaultServer));
+            const BOOL custom = !server.empty() && server != SvrStd(kSvrDefaultServer);
+            _kind.selectedSegmentIndex = custom ? 1 : 0;
+            _serverBox.hidden = !custom;
+            _address.text = custom ? SvrNS(server) : kSvrCustomServer;
+            [self refreshAccount];
+          }
+
+          - (void)refreshAccount {
+            const std::vector<std::string> cfg = SvrReadConfig();
+            const std::string token = SvrGet(cfg, "online_token", "");
+            const std::string name = SvrGet(cfg, "online_name", "");
+            const std::string server = SvrGet(cfg, "online_server", SvrStd(kSvrDefaultServer));
+            const BOOL custom = !server.empty() && server != SvrStd(kSvrDefaultServer);
+            const BOOL in = !token.empty();
+            _signedIn.hidden = !in;
+            _signedOut.hidden = in;
+            _who.text = [NSString stringWithFormat:@"Signed in as %@%@.", SvrNS(name),
+                                                   custom ? [@" on " stringByAppendingString:SvrNS(server)] : @""];
+            if (!in && _name.text.length == 0) _name.text = SvrNS(name);
+            _signInBtn.hidden = in;
+            _createBtn.hidden = in;
+            _signOutBtn.hidden = !in;
+            // (an account works on the server that made it: sign out to change servers)
+            _kind.enabled = !in;
+            _address.enabled = !in;
+            _signInBtn.enabled = !self.busy;
+            _createBtn.enabled = !self.busy;
+            _signOutBtn.enabled = !self.busy;
+            _friendsBox.hidden = !in;
+            if (in) {
+              [self fetchFriends:nil];
+            } else {
+              for (UIView* v in [_friendRows.arrangedSubviews copy]) [v removeFromSuperview];
+            }
+          }
+
+          - (void)serverKindChanged:(NSInteger)i {
+            const BOOL custom = i == 1;
+            _serverBox.hidden = !custom;
+            if (custom && _address.text.length == 0) _address.text = kSvrCustomServer;
+            [self saveServer];
+          }
+
+          - (void)saveServer {
+            const BOOL custom = _kind.selectedSegmentIndex == 1;
+            const std::string value = custom ? SvrTrim(SvrStd(_address.text)) : SvrStd(kSvrDefaultServer);
+            if (custom && value.empty()) return;
+            SvrSet("online_server", SvrQuote(value));
+          }
+
+          - (void)signIn:(BOOL)create {
+            if (self.busy) return;
+            NSString* name = [_name.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+            NSString* password = _password.text ? _password.text : @"";
+            if (![SvrOnlinePage validName:name]) {
+              _accountStatus.text = @"Names are 3-15 letters, digits, spaces or _ . -";
+              return;
+            }
+            if (password.length < 6) {
+              _accountStatus.text = @"Passwords are at least 6 characters.";
+              return;
+            }
+            self.busy = YES;
+            _accountStatus.text = create ? @"Creating the account…" : @"Signing in…";
+            [self refreshAccount];
+            NSString* base = [SvrOnlinePage baseFor:[self currentServer]];
+            __weak SvrOnlinePage* weakSelf = self;
+            SvrRequest([base stringByAppendingString:create ? @"/api/register" : @"/api/login"],
+                       @{@"name" : name, @"password" : password}, nil, ^(NSDictionary* r, NSString* failure) {
+                         [weakSelf finishSignIn:r failure:failure create:create name:name];
+                       });
+          }
+
+          - (void)finishSignIn:(NSDictionary*)r failure:(NSString*)failure create:(BOOL)create name:(NSString*)name {
+            self.busy = NO;
+            if (r && [r[@"ok"] boolValue]) {
+              std::string shown = SvrStr(r[@"name"]);
+              if (shown.empty()) shown = SvrStd(name);
+              SvrSet("online_token", SvrQuote(SvrStr(r[@"token"])));
+              SvrSet("online_xuid", SvrQuote(SvrStr(r[@"xuid"])));
+              SvrSet("online_name", SvrQuote(shown));
+              SvrSet("online_enabled", "true");
+              _password.text = @"";
+              _accountStatus.text = create ? @"Account created. Signed in - online play is on."
+                                           : @"Signed in - online play is on.";
+              [self refresh];
+            } else {
+              _accountStatus.text = SvrErrorText(r, failure, create);
+              [self refreshAccount];
+            }
+          }
+
+          - (void)signOut {
+            if (self.busy) return;
+            const std::string token = SvrGet(SvrReadConfig(), "online_token", "");
+            NSString* base = [SvrOnlinePage baseFor:[self currentServer]];
+            self.busy = YES;
+            [self refreshAccount];
+            __weak SvrOnlinePage* weakSelf = self;
+            // (signed out here whatever the server says)
+            SvrRequest([base stringByAppendingString:@"/api/logout"], @{}, SvrNS(token),
+                       ^(NSDictionary* r, NSString* failure) {
+                         [weakSelf finishSignOut];
+                       });
+          }
+
+          - (void)finishSignOut {
+            self.busy = NO;
+            SvrSet("online_token", "\"\"");
+            SvrSet("online_xuid", "\"\"");
+            _accountStatus.text = @"Signed out.";
+            [self refreshAccount];
+          }
+
+          // body nil: the list; else {"add": name} / {"remove": name}.
+          - (void)fetchFriends:(NSDictionary*)body {
+            const std::string token = SvrGet(SvrReadConfig(), "online_token", "");
+            if (token.empty() || self.friendsBusy) return;
+            self.friendsBusy = YES;
+            NSString* url = [[SvrOnlinePage baseFor:[self currentServer]] stringByAppendingString:@"/api/friends"];
+            __weak SvrOnlinePage* weakSelf = self;
+            SvrRequest(url, body, SvrNS(token), ^(NSDictionary* r, NSString* failure) {
+              SvrOnlinePage* s = weakSelf;
+              if (!s) return;
+              s.friendsBusy = NO;
+              [s showFriends:r failure:failure];
+            });
+          }
+
+          - (void)addFriendRow:(NSString*)name status:(NSString*)status online:(BOOL)on {
+            UIButtonConfiguration* cfg = [UIButtonConfiguration plainButtonConfiguration];
+            cfg.title = [NSString stringWithFormat:@"%@   -   %@", name, status];
+            cfg.baseForegroundColor = on ? [UIColor colorWithRed:0.3 green:0.85 blue:0.39 alpha:1.0] : SVR_TEXT;
+            UIButton* row = [UIButton buttonWithConfiguration:cfg primaryAction:nil];
+            row.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeading;
+            __weak UITextField* field = _friendName;
+            [row addAction:[UIAction actionWithHandler:^(__kindof UIAction* action) {
+              field.text = name;
+            }] forControlEvents:UIControlEventTouchUpInside];
+            [_friendRows addArrangedSubview:row];
+          }
+
+          - (void)showFriends:(NSDictionary*)r failure:(NSString*)failure {
+            if (SvrGet(SvrReadConfig(), "online_token", "").empty()) return;
+            id list = r ? r[@"friends"] : nil;
+            if (![list isKindOfClass:[NSArray class]]) {
+              const NSInteger code = [r[@"_status"] integerValue];
+              id e = r ? r[@"error"] : nil;
+              const BOOL noError = ![e isKindOfClass:[NSString class]] || [(NSString*)e length] == 0;
+              _friendsStatus.text = (r && code == 404 && noError) ? @"This server has no friends list yet."
+                                                                  : SvrErrorText(r, failure, NO);
+              return;
+            }
+            for (UIView* v in [_friendRows.arrangedSubviews copy]) [v removeFromSuperview];
+            NSUInteger online = 0;
+            for (id item in (NSArray*)list) {
+              if (![item isKindOfClass:[NSDictionary class]]) continue;
+              NSDictionary* f = item;
+              NSString* status = [f[@"status"] isKindOfClass:[NSString class]] ? f[@"status"] : @"";
+              NSString* name = [f[@"name"] isKindOfClass:[NSString class]] ? f[@"name"] : @"";
+              NSString* label = @"Offline";
+              if ([status isEqualToString:@"playing"]) {
+                label = @"In an online match";
+                online++;
+              } else if ([status isEqualToString:@"online"]) {
+                label = @"Online";
+                online++;
+              } else if (![f[@"mutual"] boolValue]) {
+                label = @"Offline (hasn't added you)";
+              }
+              [self addFriendRow:name status:label online:![status isEqualToString:@"offline"]];
+            }
+            id added = r[@"added_you"];
+            if ([added isKindOfClass:[NSArray class]]) {
+              for (id n in (NSArray*)added) {
+                if ([n isKindOfClass:[NSString class]]) [self addFriendRow:n status:@"Added you - add them back" online:NO];
+              }
+            }
+            const NSUInteger count = [(NSArray*)list count];
+            NSMutableString* text = [NSMutableString string];
+            if (count == 0) {
+              [text appendString:@"No friends yet: type a player's name and add them."];
+            } else {
+              [text appendFormat:@"%lu of %lu friend%@ online.", (unsigned long)online, (unsigned long)count,
+                                 count == 1 ? @"" : @"s"];
+            }
+            id now = r[@"online_now"];
+            if ([now isKindOfClass:[NSNumber class]] && [now integerValue] >= 0) {
+              [text appendFormat:@"  %ld player%@ playing now.", (long)[now integerValue], [now integerValue] == 1 ? @"" : @"s"];
+            }
+            _friendsStatus.text = text;
+          }
+
+          - (void)changeFriend:(BOOL)add {
+            NSString* name = [_friendName.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+            if (name.length == 0) {
+              _friendsStatus.text = add ? @"Type the player's name to add." : @"Tap a friend (or type the name) to remove.";
+              return;
+            }
+            NSString* action = add ? @"add" : @"remove";
+            [self fetchFriends:@{action : name}];
+            if (add) _friendName.text = @"";
+          }
+
+          @end
+
+          // ---- the launcher screen ----
+
+          @interface SvrLauncherViewController : UIViewController
+          @property(nonatomic, copy) void (^onPlay)(void);
+          @end
+
+          @implementation SvrLauncherViewController {
+            UIView* _content;
+            UIView* _playPage;
+            SvrOnlinePage* _online;
+          }
+
+          - (UIView*)buildPlayPage {
+            const char* home = getenv("HOME");
+            const std::string docs = home ? std::string(home) + "/Documents" : std::string();
+            const bool hasGame = SvrFileExists(docs + "/default.xex");
+            const bool hasShaders = SvrFileExists(docs + "/native_shaders/shaders.spv.pak");
+
+            UILabel* title = SvrLabel(@"SmackDown vs. Raw 2011", 32.0, SVR_TEXT, YES);
+            title.textAlignment = NSTextAlignmentCenter;
+
+            NSString* version = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
+            UILabel* sub = SvrLabel([NSString stringWithFormat:@"iPhone port  %@", version ? version : @""], 14.0, SVR_DIM, NO);
+            sub.textAlignment = NSTextAlignmentCenter;
+
+            NSMutableString* info = [NSMutableString string];
+            [info appendFormat:@"Game files: %@\n", hasGame ? @"found" : @"NOT found"];
+            [info appendFormat:@"Shaders: %@\n", hasShaders ? @"found" : @"NOT found"];
+            if (!hasGame) {
+              [info appendString:@"\nCopy your game folder (the one with default.xex) into:\n"];
+            } else {
+              [info appendString:@"\nGame folder:\n"];
+            }
+            [info appendString:SvrNS(docs)];
+            UILabel* status = SvrLabel(info, 12.0, [UIColor colorWithWhite:0.8 alpha:1.0], NO);
+            status.lineBreakMode = NSLineBreakByCharWrapping;
+            status.font = [UIFont monospacedSystemFontOfSize:12.0 weight:UIFontWeightRegular];
+            status.textAlignment = NSTextAlignmentCenter;
+
+            __weak SvrLauncherViewController* weakSelf = self;
+            UIButton* play = SvrButton(@"PLAY", YES, ^{
+              SvrLauncherViewController* strongSelf = weakSelf;
+              if (strongSelf && strongSelf.onPlay) strongSelf.onPlay();
+            });
+            play.enabled = hasGame;
+
+            UIStackView* stack = [[UIStackView alloc] initWithArrangedSubviews:@[ title, sub, status, play ]];
+            stack.axis = UILayoutConstraintAxisVertical;
+            stack.spacing = 16.0;
+            stack.alignment = UIStackViewAlignmentCenter;
+            stack.translatesAutoresizingMaskIntoConstraints = NO;
+            UIView* page = [[UIView alloc] init];
+            [page addSubview:stack];
+            [NSLayoutConstraint activateConstraints:@[
+              [stack.centerXAnchor constraintEqualToAnchor:page.centerXAnchor],
+              [stack.centerYAnchor constraintEqualToAnchor:page.centerYAnchor],
+              [stack.widthAnchor constraintLessThanOrEqualToAnchor:page.widthAnchor],
+              [play.widthAnchor constraintEqualToConstant:260.0],
+            ]];
+            return page;
+          }
+
+          - (void)showPage:(NSInteger)index {
+            [self.view endEditing:YES];
+            for (UIView* v in [_content.subviews copy]) [v removeFromSuperview];
+            UIView* page = nil;
+            if (index == 1) {
+              page = SvrBuildSettingsPage();  // rebuilt each time, so it shows what is saved
+            } else if (index == 2) {
+              [_online refresh];
+              page = _online.view;
+            } else {
+              page = _playPage;
+            }
+            page.translatesAutoresizingMaskIntoConstraints = NO;
+            [_content addSubview:page];
+            [NSLayoutConstraint activateConstraints:@[
+              [page.topAnchor constraintEqualToAnchor:_content.topAnchor],
+              [page.bottomAnchor constraintEqualToAnchor:_content.bottomAnchor],
+              [page.leadingAnchor constraintEqualToAnchor:_content.leadingAnchor],
+              [page.trailingAnchor constraintEqualToAnchor:_content.trailingAnchor],
+            ]];
+          }
+
+          - (void)viewDidLoad {
+            [super viewDidLoad];
+            self.view.backgroundColor = SVR_BG;
+
+            UISegmentedControl* tabs = [[UISegmentedControl alloc] initWithItems:@[ @"Play", @"Settings", @"Online" ]];
+            tabs.selectedSegmentIndex = 0;
+            tabs.translatesAutoresizingMaskIntoConstraints = NO;
+            [self.view addSubview:tabs];
+            _content = [[UIView alloc] init];
+            _content.translatesAutoresizingMaskIntoConstraints = NO;
+            [self.view addSubview:_content];
+
+            UILayoutGuide* safe = self.view.safeAreaLayoutGuide;
+            [NSLayoutConstraint activateConstraints:@[
+              [tabs.topAnchor constraintEqualToAnchor:safe.topAnchor constant:8.0],
+              [tabs.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:40.0],
+              [tabs.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-40.0],
+              [_content.topAnchor constraintEqualToAnchor:tabs.bottomAnchor constant:10.0],
+              [_content.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:40.0],
+              [_content.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-40.0],
+              [_content.bottomAnchor constraintEqualToAnchor:self.view.keyboardLayoutGuide.topAnchor constant:-4.0],
+            ]];
+
+            _playPage = [self buildPlayPage];
+            _online = [[SvrOnlinePage alloc] init];
+            __weak SvrLauncherViewController* weakSelf = self;
+            [tabs addAction:[UIAction actionWithHandler:^(__kindof UIAction* action) {
+              UISegmentedControl* t = (UISegmentedControl*)action.sender;
+              [weakSelf showPage:t.selectedSegmentIndex];
+            }] forControlEvents:UIControlEventValueChanged];
+            [self showPage:0];
+          }
+
+          - (UIInterfaceOrientationMask)supportedInterfaceOrientations {
+            return UIInterfaceOrientationMaskLandscape;
+          }
+
+          - (BOOL)prefersStatusBarHidden {
+            return YES;
+          }
+
+          @end
+
+          extern "C" void SvrIosLauncherShow(void) {
+            @autoreleasepool {
+              const char* home = getenv("HOME");
+              if (home && SvrFileExists(std::string(home) + "/Documents/skip_launcher")) {
+                std::fprintf(stderr, "[boot] launcher: skipped (skip_launcher file)\n");
+                return;
+              }
+              UIWindowScene* scene = nil;
+              for (UIScene* candidate in [UIApplication sharedApplication].connectedScenes) {
+                if ([candidate isKindOfClass:[UIWindowScene class]]) {
+                  scene = (UIWindowScene*)candidate;
+                  break;
+                }
+              }
+              if (!scene) {
+                std::fprintf(stderr, "[boot] launcher: no window scene, starting the game directly\n");
+                return;
+              }
+              __block BOOL play = NO;
+              SvrLauncherViewController* controller = [[SvrLauncherViewController alloc] init];
+              controller.onPlay = ^{ play = YES; };
+              UIWindow* window = [[UIWindow alloc] initWithWindowScene:scene];
+              window.rootViewController = controller;
+              [window makeKeyAndVisible];
+              std::fprintf(stderr, "[boot] launcher: shown\n");
+              NSRunLoop* loop = [NSRunLoop currentRunLoop];
+              while (!play) {
+                BOOL ran = [loop runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+                if (!ran) usleep(10000);
+              }
+              std::fprintf(stderr, "[boot] launcher: Play pressed\n");
+              window.hidden = YES;
+              window.rootViewController = nil;
+            }
+          }
+          EOF
+
+          cat >> port-src/port/CMakeLists.txt <<'EOF'
+
+          if(IOS)
+            target_sources(svr2011 PRIVATE src/ios_launcher.mm)
+            set_source_files_properties(src/ios_launcher.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+          endif()
+          EOF
+
+          # call the launcher at the start of main (before SDL makes the game window)
+          python3 - <<'PYEOF'
+          p = "sdk/src/ui/windowed_app_main_sdl.cpp"
+          s = open(p).read()
+          old = "int main(int argc, char* argv[]) {\n  return RunWindowedApp(argc, argv);\n}"
+          assert s.count(old) == 1, s.count(old)
+          new = ("#if defined(__APPLE__) && TARGET_OS_IPHONE\n"
+                 "extern \"C\" void SvrIosLauncherShow(void);\n"
+                 "#endif\n"
+                 "int main(int argc, char* argv[]) {\n"
+                 "#if defined(__APPLE__) && TARGET_OS_IPHONE\n"
+                 "  SvrIosLauncherShow();\n"
+                 "#endif\n"
+                 "  return RunWindowedApp(argc, argv);\n"
+                 "}")
+          open(p, "w").write(s.replace(old, new))
+          PYEOF
+          echo "---- main() after the launcher edit ----"
+          grep -n -B3 -A8 "SvrIosLauncherShow" sdk/src/ui/windowed_app_main_sdl.cpp
+          tail -n 6 port-src/port/CMakeLists.txt
+          test -f port-src/port/src/ios_launcher.mm
+          grep -q "SvrIosLauncherShow();" sdk/src/ui/windowed_app_main_sdl.cpp
+
+      - name: Put the generated code in place, and stop codegen re-running
+        run: |
+          cp -R generated port-src/port/generated
+          F=port-src/port/generated/rexglue.cmake
+          perl -0pi -e 's/add_custom_command\(\s*OUTPUT "\$\{CMAKE_CURRENT_SOURCE_DIR\}\/generated\/default\/codegen\.build\.stamp".*?add_custom_target\(svr2011_codegen\s+DEPENDS "[^"]*"\)/add_custom_target(svr2011_codegen)/s' "$F"
+          echo "---- end of rexglue.cmake after patch ----"; tail -n 12 "$F"
+
+      - name: Configure the port (iOS arm64)
+        run: |
+          set -o pipefail
+          cmake -S port-src/port -B build -G Ninja \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT=iphoneos \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_SYSTEM_PROCESSOR=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \
+            -DCMAKE_MACOSX_BUNDLE=OFF \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_FLAGS_RELEASE="-O1 -DNDEBUG" \
+            -DCMAKE_CXX_FLAGS_RELEASE="-O1 -DNDEBUG" \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_SHARED_LINKER_FLAGS="-framework UIKit -framework CoreGraphics" \
+            -DCMAKE_EXE_LINKER_FLAGS="-framework UIKit -framework CoreGraphics" \
+            -DREXSDK_DIR="$PWD/sdk" \
+            -DREXGLUE_ROOT="$PWD/sdk" \
+            -DPLUME_DIR="$PWD/plume" \
+            -DREXGLUE_USE_VULKAN=ON \
+            -DREXGLUE_ENABLE_TRACY=OFF \
+            2>&1 | tee configure.log
+
+      - name: Build svr2011 (keeps going to show every error, then fails if there were any)
+        run: |
+          set -o pipefail
+          cmake --build build --target svr2011 -- -j3 -k 0 2>&1 | tee build.log
+
+      - name: Inspect the binary (platform, size, dependencies)
+        run: |
+          set -euo pipefail
+          exec > >(tee -a package.log) 2>&1
+          B=build/svr2011
+          ls -l "$B"
+          file "$B"
+          otool -l "$B" | grep -A5 LC_BUILD_VERSION
+          echo "---- exe dependencies ----"
+          otool -L "$B"
+          echo "---- exe rpaths ----"
+          otool -l "$B" | grep -A2 LC_RPATH || echo "(none)"
+          echo "---- SDK dylibs ----"
+          ls -l sdk/out/mac-arm64/*.dylib
+          for d in librexruntime.dylib librexgpu-xenos.dylib libMoltenVK.dylib; do
+            echo "== $d"; otool -L "sdk/out/mac-arm64/$d"
+          done
+
+      - name: Package unsigned IPA (best-effort first version)
+        run: |
+          set -euo pipefail
+          exec > >(tee -a package.log) 2>&1
+          APP="ipa/Payload/SvR2011.app"
+          FW="$APP/Frameworks"
+          rm -rf ipa svr2011-unsigned.ipa
+          mkdir -p "$FW"
+          cp build/svr2011 "$APP/svr2011"
+
+          # the SDK's own staged Vulkan runtime (lib/ + share/vulkan/icd.d/); the app looks in <bundle>/vulkan
+          test -f build/vulkan/lib/libvulkan.1.dylib
+          test -f build/vulkan/lib/libMoltenVK.dylib
+          test -f build/vulkan/share/vulkan/icd.d/MoltenVK_icd.json
+          cp -RL build/vulkan "$APP/vulkan"
+
+          # the native renderer's shader pack (private repo: shaders/); the app copies it to Documents
+          if [ -d shaders ]; then
+            mkdir -p "$APP/native_shaders"
+            cp shaders/* "$APP/native_shaders/"
+            echo "bundled shaders:"; ls -l "$APP/native_shaders"
+          else
+            echo "NOTE: no shaders/ folder in the repo - the IPA has no shaders (add them as described)."
+          fi
+
+          # real dylib files (symlink names resolved to the real file)
+          for n in librexruntime.dylib librexgpu-xenos.dylib; do
+            src="sdk/out/mac-arm64/$n"
+            cp -L "$src" "$FW/$(basename "$(realpath "$src")")"
+          done
+
+          # point every dependency that lives in the build tree at @rpath/<file>, pulling it into Frameworks
+          for pass in 1 2 3; do
+            for f in "$APP/svr2011" "$FW"/*.dylib; do
+              otool -L "$f" | tail -n +2 | awk '{print $1}' | while read -r dep; do
+                case "$dep" in
+                  /usr/lib/*|/System/*) continue ;;
+                  @rpath/*) cand="sdk/out/mac-arm64/${dep#@rpath/}" ;;
+                  /*) cand="$dep" ;;
+                  *) continue ;;
+                esac
+                [ -e "$cand" ] || { echo "MISSING: $f -> $dep"; continue; }
+                base="$(basename "$(realpath "$cand")")"
+                [ -e "$FW/$base" ] || cp -L "$cand" "$FW/$base"
+                install_name_tool -change "$dep" "@rpath/$base" "$f"
+              done
+            done
+          done
+
+          # each dylib: own name; every file: drop build-machine rpaths, add the app's
+          for f in "$FW"/*.dylib; do install_name_tool -id "@rpath/$(basename "$f")" "$f"; done
+          for f in "$APP/svr2011" "$FW"/*.dylib; do
+            for rp in $(otool -l "$f" | awk '/LC_RPATH/{r=1} r && /path /{print $2; r=0}'); do
+              case "$rp" in /Users/*) install_name_tool -delete_rpath "$rp" "$f" ;; esac
+            done
+          done
+          install_name_tool -add_rpath "@executable_path/Frameworks" "$APP/svr2011"
+          for f in "$FW"/*.dylib; do install_name_tool -add_rpath "@loader_path" "$f"; done
+
+          cat > "$APP/Info.plist" <<'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleIdentifier</key><string>com.ke619.svr2011</string>
+            <key>CFBundleName</key><string>SvR2011</string>
+            <key>CFBundleDisplayName</key><string>SvR 2011</string>
+            <key>CFBundleExecutable</key><string>svr2011</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>0.1</string>
+            <key>CFBundleVersion</key><string>1</string>
+            <key>CFBundleSupportedPlatforms</key><array><string>iPhoneOS</string></array>
+            <key>MinimumOSVersion</key><string>17.0</string>
+            <key>UIDeviceFamily</key><array><integer>1</integer></array>
+            <key>NSAppTransportSecurity</key>
+            <dict><key>NSAllowsArbitraryLoads</key><true/></dict>
+            <key>NSLocalNetworkUsageDescription</key>
+            <string>Lets the game reach a Community Creations server on your local network.</string>
+            <key>CFBundleIcons</key>
+            <dict>
+              <key>CFBundlePrimaryIcon</key>
+              <dict>
+                <key>CFBundleIconFiles</key>
+                <array><string>AppIcon60x60</string></array>
+              </dict>
+            </dict>
+            <key>UIRequiredDeviceCapabilities</key><array><string>arm64</string></array>
+            <key>UISupportedInterfaceOrientations</key>
+            <array><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>
+            <key>UIRequiresFullScreen</key><true/>
+            <key>UIStatusBarHidden</key><true/>
+            <key>UIApplicationSupportsIndirectInputEvents</key><true/>
+            <key>UILaunchScreen</key><dict/>
+            <key>UIFileSharingEnabled</key><true/>
+            <key>LSSupportsOpeningDocumentsInPlace</key><true/>
+          </dict>
+          </plist>
+          EOF
+          plutil -lint "$APP/Info.plist"
+
+          # the home-screen icon: icon/icon.png from the repo, made into the two sizes iPhones use
+          if [ -f icon/icon.png ]; then
+            sips -s format jpeg icon/icon.png --out "$RUNNER_TEMP/icon.jpg" > /dev/null
+            sips -s format png -z 120 120 "$RUNNER_TEMP/icon.jpg" --out "$APP/AppIcon60x60@2x.png" > /dev/null
+            sips -s format png -z 180 180 "$RUNNER_TEMP/icon.jpg" --out "$APP/AppIcon60x60@3x.png" > /dev/null
+            echo "icon files:"; ls -l "$APP"/AppIcon60x60*
+          else
+            echo "NOTE: no icon/icon.png in the repo - the app keeps the blank icon."
+          fi
+
+          # leftover references to the build machine would make the app fail at launch
+          if otool -L "$APP/svr2011" "$FW"/*.dylib "$APP/vulkan/lib"/*.dylib | grep "/Users/"; then
+            echo "ERROR: build-machine paths left in the binaries"; exit 1
+          fi
+
+          # ad-hoc signature (sideload tools replace it)
+          codesign --force --sign - "$FW"/*.dylib "$APP/vulkan/lib"/*.dylib
+          codesign --force --sign - "$APP/svr2011"
+
+          (cd ipa && zip -qry ../svr2011-unsigned.ipa Payload)
+          ls -l svr2011-unsigned.ipa
+          echo "---- app contents ----"
+          ls -l "$APP" "$FW"
+          find "$APP/vulkan" -type f -exec ls -l {} \;
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: svr2011-unsigned-ipa
+          path: svr2011-unsigned.ipa
+          retention-days: 3
+
+      - name: Cache stats
+        if: always()
+        run: ccache -s || true
+
+      - name: Error summary
+        if: always()
+        run: |
+          {
+            echo "### port on iOS"
+            echo '```'
+            grep -hE "error:|CMake Error|FAILED:|fatal error|Undefined symbols" configure.log build.log 2>/dev/null | sed -E 's#/Users/runner/work/[^/]+/[^/]+/##' | sort -u | head -80 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: port-logs
+          path: |
+            configure.log
+            build.log
+            package.log
+
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: .ccache
+          key: ccache-${{ github.run_id }}

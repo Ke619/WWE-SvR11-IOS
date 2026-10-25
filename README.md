@@ -29,8 +29,6 @@ Tested on an **iPhone 15 Pro (A17 Pro)**, running inside LiveContainer:
 
 Other iPhones and iPads haven't been tested. It's an early port, so expect rough edges. See [What carries over from the OG port](#what-carries-over-from-the-og-port) for what is and isn't available.
 
-<!-- TODO(author): add a tested-devices table here once more people have tried it. -->
-
 ---
 
 ## Contents
@@ -57,7 +55,7 @@ Other iPhones and iPads haven't been tested. It's an early port, so expect rough
 | 📱 **iPhone** | Tested on an iPhone 15 Pro. The app is built as an iPhone app for **iOS 17 or later** and runs in **landscape**. Other devices are untested, and older or lower-memory ones may not run it. |
 | 💾 **Storage** | About 6 GB: 5.3 GB for the game, plus room for saves and caches. |
 | 🔧 **A way to sideload** | This can't go on the App Store. Use AltStore, SideStore, LiveContainer, or any tool that installs an IPA. It has been tested through LiveContainer. The game doesn't generate code at run time, so **JIT isn't needed**. |
-| 🎮 **Controller** | Optional. The on-screen touch controls work without one. <!-- TODO(author): say whether physical controllers work, and which. (The iOS build turns on SDL controller input like the Android build, so they may work, but it's untested.) --> |
+| 🎮 **Controller** | Optional. The on-screen touch controls work without one. |
 
 ---
 
@@ -67,20 +65,18 @@ Other iPhones and iPads haven't been tested. It's an early port, so expect rough
    - **Option A: download the IPA** from [**Releases**](https://github.com/Ke619/wwe-svr2011-ios/releases/latest). It holds no game data, but it does contain code generated from the game's executable, so download it only if you own the game.
    - **Option B: build it yourself.** See [Building from source](#building-from-source). This keeps all game-derived code on your own machine.
 
-   <!-- TODO(author): if you decide not to publish an IPA, delete Option A. -->
-
 2. **Install it with your sideloading tool.** Add the IPA in AltStore, SideStore or LiveContainer, and follow that tool's steps. Apps signed with a free Apple ID usually expire after 7 days, and need refreshing in your tool.
 
 3. **Put the game on the phone.** The app plays from an extracted game folder that it looks for in its own **Documents** folder.
    1. On a PC, extract your disc image so you have a folder containing `default.xex` and the rest of the game files.
-   2. Copy the contents of that folder into the app's **Documents** folder with the Files app (file sharing is turned on for the app). `default.xex` must sit **directly** in `Documents`, not in a subfolder. <!-- TODO(author): exact Files path, including where it is under LiveContainer. -->
+   2. Copy the contents of that folder into the app's **Documents** folder with the Files app (file sharing is turned on for the app). `default.xex` must sit **directly** in `Documents`, not in a subfolder. 
    3. It's about 5.3 GB, so the copy takes a while.
 
    You don't need to supply shaders. They ship inside the app and are copied into `Documents/native_shaders/` on start-up.
 
 4. **Start the app and play.** The launcher's **Play** tab should say the game files and shaders were found. Press **PLAY**. The first launch creates the settings file.
 
-**Updating:** install the new IPA over the old one. Your saves are in the game folder inside the app. <!-- TODO(author): confirm that saves survive an update with your sideloading tool, and say which tools you checked. -->
+**Updating:** install the new IPA over the old one. Your saves are in the game folder inside the app.
 
 ---
 
@@ -102,7 +98,7 @@ To skip the launcher, create an empty file named `skip_launcher` in the game fol
 
 iOS uses the same touch-control system as the PC port's Android build, so the match controls and the layout editor work the same way. The original README describes them in its [Android section](https://github.com/KaikoClanworth1/wwe-svr2011-pc#android).
 
-**Physical controller.** <!-- TODO(author): fill in once you've tested one. -->
+**Physical controller.**
 
 The game's main menu has an **EXIT** entry at the bottom.
 
@@ -145,20 +141,20 @@ Settings are saved in `svr2011.toml` in the game folder (the app's **Documents**
 | Entrance music from your own songs | ❌ Not available on iOS yet |
 | iOS launcher (Play, Settings, Online tabs) | ✅ Working |
 | Launcher tabs from the PC port (Paint Tool, Saves, Movies, DLC) | ❌ Not available on iOS yet |
-| Online (Community Creations account and friends in the launcher) | ⚠️ Coming Soon <!-- TODO(author): say whether online matches and Community Creations work in-game. --> |
+| Online (Community Creations account and friends in the launcher) | ⚠️ Coming Soon |
 | Discord status, Steam Deck, Android | ➖ Not part of this port. See the original README. |
 
 ---
 
 ## Building from source
 
-The recompiled game code is **generated on your machine from your own game files**. It isn't stored in this repository. The build itself runs on GitHub's macOS runners, so **you don't need a Mac**. The exact commands are in `.github/workflows/ios-port.yml`, which is the source of truth if anything below is out of date. <!-- TODO(author): confirm ios-port.yml is published in this repo, and delete or re-add the earlier ios-sdk.yml / plume-ios.yml mentions. -->
+The recompiled game code is **generated on your machine from your own game files**. It isn't stored in this repository. The build itself runs on GitHub's macOS runners, so **you don't need a Mac**. The exact commands are in `.github/workflows/ios-port.yml`, which is the source of truth if anything below is out of date. 
 
 **You need:**
 
 - A **GitHub account** with Actions, and a **private** repository. The build needs your generated game code, which must not be public.
 - A PC to run the ReXGlue code generator on your own **`default.xex`**.
-- The native renderer's shader pack. <!-- TODO(author): say where this comes from and how to make it. -->
+- The native renderer's shader pack. (Already in the IPA, Can be obtained from the OG repo)
 
 **Steps:**
 
@@ -174,8 +170,6 @@ The recompiled game code is **generated on your machine from your own game files
    - applies the PC port's own patches, then the iOS changes in the table below;
    - builds the app for iOS arm64 (iOS 17.0, Release at `-O1`, with a compiler cache so later runs are faster);
    - assembles the `.app` (executable, `Frameworks/`, the Vulkan runtime with MoltenVK, shaders, `Info.plist`, icon), fixes the library paths, signs it ad hoc and zips an **unsigned IPA**.
-
-   <!-- TODO(author): the workflow clones the PC port at its latest commit. Pin it to a commit (or to this fork) so a later upstream change can't break the patches. -->
 5. **Download** the `svr2011-unsigned-ipa` artifact (kept for 3 days) and install it with your sideloading tool, which re-signs it. If the build fails, the job summary lists the compile errors, and the `port-logs` artifact has the full logs.
 
 **What the build changes for iOS:**
@@ -197,7 +191,7 @@ The recompiled game code is **generated on your machine from your own game files
 | Path | What's there |
 |---|---|
 | `port/` | The PC port, as it is in the original repo, except where noted. |
-| `port/patches/ios/` | The iOS fixes to the ReXGlue SDK's runtime, as patch files. <!-- TODO(author): the workflow I saw applies the iOS changes as inline edits. Keep this row only if these patch files exist and are used. --> |
+| `port/patches/ios/` | The iOS fixes to the ReXGlue SDK's runtime, as patch files.|
 | `ios/` | iOS-only sources and packaging (launcher, stubs, `Info.plist`). There's no Xcode project: the app is built with CMake. <!-- TODO(author): adjust to what's really in this folder. --> |
 | `.github/workflows/` | The iOS build workflow. |
 | `docs/` | Install guides and screenshots. |

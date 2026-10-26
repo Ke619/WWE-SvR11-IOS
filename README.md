@@ -1,7 +1,7 @@
 <h1 align="center">WWE SmackDown vs. Raw 2011 — iOS Port</h1>
 
 <p align="center">
-  <img src="icon.PNG" width="700">
+  <img src="icon.PNG" width="200">
 </p>
 
 

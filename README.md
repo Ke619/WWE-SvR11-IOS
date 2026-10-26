@@ -142,9 +142,9 @@ Settings are saved in `svr2011.toml` in the game folder (the app's **Documents**
 | Texture packs | ❌ Not available on iOS yet |
 | Achievements | ❌ Not available on iOS yet |
 | Entrance music from your own songs | ❌ Not available on iOS yet |
-| iOS launcher (Play, Settings, Online tabs) | ✅ Working |
+| iOS launcher | ✅ Working |
 | Launcher tabs from the PC port (Paint Tool, Saves, Movies, DLC) | ❌ Not available on iOS yet |
-| Online (Community Creations account and friends in the launcher) | ⚠️ Coming Soon |
+| Online (Community Creations account and friends in the launcher) | ⚠️ Experimental |
 | Discord status, Steam Deck, Android | ➖ Not part of this port. See the original README. |
 
 ---

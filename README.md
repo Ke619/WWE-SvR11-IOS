@@ -23,7 +23,7 @@ This is an unofficial iOS port of the 2010 Xbox 360 game *WWE SmackDown vs. Raw 
 
 ## Status
 
-Tested on an **iPhone 15 Pro (A17 Pro)**, running inside LiveContainer:
+Tested on an **iPhone 15 Pro (Apple A17 Pro chip)**, running inside LiveContainer:
 
 - Menus, character select, entrances and matches all work, at 60 fps in testing.
 - On-screen touch controls, which you can rearrange.
@@ -165,8 +165,6 @@ The recompiled game code is **generated on your machine from your own game files
 1. **Make a private repository** and add `ios-port.yml` from this repo to `.github/workflows/`.
 2. **Generate the game code** from your `default.xex`, on your own machine, and commit the result to the private repo as `generated/` (it contains `rexglue.cmake`, `default/sources.cmake`, `svr2011_pch.h` and the recompiled sources).
 
-   > **TODO (author):** write the exact codegen command and say which codegen tool you used. The PC port provides a Windows build of the ReXGlue codegen tool, so say how you ran it for this build.
-
    Never commit `default.xex`. The workflow stops if it finds one.
 3. **Add the shader pack** as `shaders/`, and optionally a home-screen icon as `icon/icon.png`.
 4. **Run the workflow:** Actions → **ios-port** → **Run workflow**. It:
@@ -194,7 +192,7 @@ The recompiled game code is **generated on your machine from your own game files
 
 | Path | What's there |
 |---|---|
-| `port/` | The PC port, as it is in the original repo, except where noted. |
+| `port/` | The OG port, as it is in the original repo, except where noted. |
 | `port/patches/ios/` | The iOS fixes to the ReXGlue SDK's runtime, as patch files.|
 | `ios/` | iOS-only sources and packaging (launcher, stubs, `Info.plist`). There's no Xcode project: the app is built with CMake. <!-- TODO(author): adjust to what's really in this folder. --> |
 | `.github/workflows/` | The iOS build workflow. |

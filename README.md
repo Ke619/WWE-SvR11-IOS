@@ -15,8 +15,6 @@ This is an unofficial iOS port of the 2010 Xbox 360 game *WWE SmackDown vs. Raw 
   <img src="Art.jpeg" width="700">
 </p>
 
-# WWE SmackDown vs. Raw 2011 — iOS Port
-
 > [!IMPORTANT]
 > **This repository has no game in it.** It holds no disc image, XEX, game data, movies, music or recompiled game code. You need your **own copy of the Xbox 360 game**.
 

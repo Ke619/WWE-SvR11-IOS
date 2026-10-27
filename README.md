@@ -23,7 +23,7 @@ This is an unofficial iOS port of the 2010 Xbox 360 game *WWE SmackDown vs. Raw 
 
 ## Status
 
-Tested on an **iPhone 15 Pro (Apple A17 Pro chip)**, running inside LiveContainer:
+Tested on an **iPhone 15 Pro (Apple A17 Pro chip)**, running inside LiveContainer / sideloaded via SideStore:
 
 - Menus, character select, entrances and matches all work, at 60 fps in testing.
 - On-screen touch controls, which you can rearrange.

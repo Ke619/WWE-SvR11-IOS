@@ -425,14 +425,25 @@ jobs:
           // iOS launcher: a tabbed screen shown before the game starts (Play, Settings, Online, ...), the
           // phone launcher's tabs as on Android. (A file named skip_launcher in Documents turns it off.)
           #import <UIKit/UIKit.h>
+          #include <algorithm>
+          #include <atomic>
+          #include <chrono>
           #include <cmath>
           #include <cstdio>
           #include <cstdlib>
+          #include <cstring>
+          #include <filesystem>
           #include <fstream>
+          #include <functional>
           #include <string>
           #include <vector>
+          #include <dirent.h>
+          #include <fcntl.h>
+          #include <strings.h>
+          #include <sys/mount.h>
           #include <sys/stat.h>
           #include <unistd.h>
+          #include <zlib.h>
 
           #define SVR_BG [UIColor colorWithRed:0.04 green:0.04 blue:0.06 alpha:1.0]
           #define SVR_RED [UIColor colorWithRed:0.75 green:0.05 blue:0.08 alpha:1.0]
@@ -1153,6 +1164,926 @@ jobs:
 
           @end
 
+          // ---- the Install page: the game from an Xbox 360 disc image (XDVDFS), as the Android launcher does ----
+
+          static const uint64_t kSvrSector = 2048;
+          static const uint64_t kSvrBases[] = {0, 0x18300000ULL, 0xFD90000ULL, 0x2080000ULL};  // XISO, XGD2, XGD1, XGD3
+          static const uint32_t kSvrTitleId = 0x5451085D;
+          static const uint64_t kSvrXexSize = 15020032;
+          static const uint32_t kSvrXexCrc = 0xD2719517;
+          static std::atomic<bool> gSvrCancel{false};
+
+          struct SvrEntry {
+            std::string path;
+            uint64_t sector = 0;
+            uint64_t size = 0;
+            bool dir = false;
+          };
+
+          struct SvrDisc {
+            int fd = -1;
+            uint64_t base = 0;
+            std::vector<SvrEntry> entries;
+          };
+
+          static bool SvrPread(int fd, uint64_t at, void* buf, size_t n) {
+            uint8_t* p = static_cast<uint8_t*>(buf);
+            while (n > 0) {
+              const ssize_t r = pread(fd, p, n, static_cast<off_t>(at));
+              if (r <= 0) return false;
+              p += r;
+              at += static_cast<uint64_t>(r);
+              n -= static_cast<size_t>(r);
+            }
+            return true;
+          }
+
+          static uint32_t SvrLe16(const uint8_t* b) { return static_cast<uint32_t>(b[0]) | static_cast<uint32_t>(b[1]) << 8; }
+          static uint32_t SvrLe32(const uint8_t* b) {
+            return static_cast<uint32_t>(b[0]) | static_cast<uint32_t>(b[1]) << 8 | static_cast<uint32_t>(b[2]) << 16 |
+                   static_cast<uint32_t>(b[3]) << 24;
+          }
+          static uint32_t SvrBe32(const uint8_t* b) {
+            return static_cast<uint32_t>(b[3]) | static_cast<uint32_t>(b[2]) << 8 | static_cast<uint32_t>(b[1]) << 16 |
+                   static_cast<uint32_t>(b[0]) << 24;
+          }
+
+          static uint32_t SvrCrc32(uint32_t crc, const uint8_t* p, size_t n) {
+            static uint32_t table[256];
+            static bool ready = false;
+            if (!ready) {
+              for (uint32_t i = 0; i < 256; ++i) {
+                uint32_t c = i;
+                for (int k = 0; k < 8; ++k) c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
+                table[i] = c;
+              }
+              ready = true;
+            }
+            crc = ~crc;
+            while (n--) crc = table[(crc ^ *p++) & 0xFF] ^ (crc >> 8);
+            return ~crc;
+          }
+
+          static NSString* SvrHuman(uint64_t bytes) {
+            if (bytes >= (1ULL << 30)) return [NSString stringWithFormat:@"%.1f GB", static_cast<double>(bytes) / 1073741824.0];
+            if (bytes >= (1ULL << 20)) return [NSString stringWithFormat:@"%.0f MB", static_cast<double>(bytes) / 1048576.0];
+            return [NSString stringWithFormat:@"%.0f KB", static_cast<double>(bytes) / 1024.0];
+          }
+
+          static uint64_t SvrFreeBytes(const std::string& dir) {
+            struct statfs s;
+            if (statfs(dir.c_str(), &s) != 0) return 0;
+            return static_cast<uint64_t>(s.f_bavail) * static_cast<uint64_t>(s.f_bsize);
+          }
+
+          // A directory table, in stored order (as the PC launcher walks it).
+          static void SvrReadDir(SvrDisc& d, uint64_t sector, uint64_t size, const std::string& prefix, int depth) {
+            if (depth > 32 || size == 0 || size > (64u << 20)) return;
+            std::vector<uint8_t> t(static_cast<size_t>(size));
+            if (!SvrPread(d.fd, d.base + sector * kSvrSector, t.data(), t.size())) return;
+            size_t at = 0;
+            while (at + 14 <= t.size()) {
+              const uint32_t left = SvrLe16(&t[at]);
+              const size_t nameLen = t[at + 13];
+              if (left == 0xFFFF || nameLen == 0) {
+                at = (at / kSvrSector + 1) * kSvrSector;
+                continue;
+              }
+              if (at + 14 + nameLen > t.size()) break;
+              const std::string name(reinterpret_cast<const char*>(&t[at + 14]), nameLen);
+              SvrEntry e;
+              e.sector = SvrLe32(&t[at + 4]);
+              e.size = SvrLe32(&t[at + 8]);
+              e.dir = (t[at + 12] & 0x10) != 0;
+              if (name.find('\\') == std::string::npos && name.find('/') == std::string::npos &&
+                  name.find(':') == std::string::npos && name != "." && name != "..") {
+                e.path = prefix + name;
+                d.entries.push_back(e);
+                if (e.dir) SvrReadDir(d, e.sector, e.size, e.path + "/", depth + 1);
+              }
+              at = (at + 14 + nameLen + 3) & ~static_cast<size_t>(3);
+            }
+          }
+
+          // Finds the partition (the magic at sector 32) and lists the tree. Returns an error text or "".
+          static std::string SvrOpenDisc(SvrDisc& d) {
+            struct stat st;
+            if (fstat(d.fd, &st) != 0) return "the image can't be read";
+            const uint64_t size = static_cast<uint64_t>(st.st_size);
+            for (uint64_t b : kSvrBases) {
+              const uint64_t at = b + 32 * kSvrSector;
+              if (at + 32 > size) continue;
+              uint8_t vd[28];
+              if (!SvrPread(d.fd, at, vd, sizeof(vd))) continue;
+              if (std::memcmp(vd, "MICROSOFT*XBOX*MEDIA", 20) == 0) {
+                d.base = b;
+                SvrReadDir(d, SvrLe32(vd + 20), SvrLe32(vd + 24), "", 0);
+                return "";
+              }
+            }
+            return "this isn't an Xbox 360 disc image (no XDVDFS file system found)";
+          }
+
+          static const SvrEntry* SvrFind(const SvrDisc& d, const char* path) {
+            for (const SvrEntry& e : d.entries) {
+              if (strcasecmp(e.path.c_str(), path) == 0) return &e;
+            }
+            return nullptr;
+          }
+
+          // default.xex: "XEX2" and the execution info's title ID (header 0x00040006), then its size and CRC.
+          static std::string SvrCheckDisc(const SvrDisc& d) {
+            const SvrEntry* xex = SvrFind(d, "default.xex");
+            if (!xex || xex->dir) return "the image has no default.xex";
+            const uint64_t xexAt = d.base + xex->sector * kSvrSector;
+            std::vector<uint8_t> h(4096);
+            if (!SvrPread(d.fd, xexAt, h.data(), h.size()) || std::memcmp(h.data(), "XEX2", 4) != 0) {
+              return "default.xex can't be read";
+            }
+            const uint32_t count = SvrBe32(&h[20]);
+            bool found = false;
+            for (uint32_t i = 0; i < count && 24 + static_cast<size_t>(i) * 8 + 8 <= h.size(); ++i) {
+              if (SvrBe32(&h[24 + i * 8]) != 0x00040006) continue;
+              uint8_t info[24];
+              if (!SvrPread(d.fd, xexAt + SvrBe32(&h[24 + i * 8 + 4]), info, sizeof(info))) return "default.xex can't be read";
+              const uint32_t id = SvrBe32(info + 12);
+              if (id != kSvrTitleId) {
+                char buf[96];
+                std::snprintf(buf, sizeof(buf), "this is another game (its title ID is %08X)", id);
+                return buf;
+              }
+              found = true;
+              break;
+            }
+            if (!found) return "default.xex has no title ID";
+            // The port's addresses fit one exact executable.
+            if (xex->size != kSvrXexSize) return "this is another version of the game (only the original release works)";
+            uint32_t crc = 0;
+            std::vector<uint8_t> chunk(4u << 20);
+            for (uint64_t off = 0; off < xex->size;) {
+              const size_t n = static_cast<size_t>(std::min<uint64_t>(chunk.size(), xex->size - off));
+              if (!SvrPread(d.fd, xexAt + off, chunk.data(), n)) return "default.xex can't be read";
+              crc = SvrCrc32(crc, chunk.data(), n);
+              off += n;
+            }
+            if (crc != kSvrXexCrc) {
+              char buf[112];
+              std::snprintf(buf, sizeof(buf), "this is another version of the game (its default.xex has CRC %08X)", crc);
+              return buf;
+            }
+            return "";
+          }
+
+          // Copies the disc tree 1:1 into `dest`, resumably (files already there at the same size are kept),
+          // each file through <name>.part, default.xex last. Returns the text to show.
+          static std::string SvrInstallImage(int fd, const std::string& dest, void (^report)(double, NSString*)) {
+            SvrDisc disc;
+            disc.fd = fd;
+            std::string err = SvrOpenDisc(disc);
+            if (err.empty()) err = SvrCheckDisc(disc);
+            if (!err.empty()) return "Can't install: " + err + ".";
+
+            NSFileManager* fm = [NSFileManager defaultManager];
+            uint64_t total = 0, need = 0;
+            std::vector<SvrEntry> files;
+            for (const SvrEntry& e : disc.entries) {
+              const std::string full = dest + "/" + e.path;
+              if (e.dir) {
+                [fm createDirectoryAtPath:SvrNS(full) withIntermediateDirectories:YES attributes:nil error:nil];
+                continue;
+              }
+              files.push_back(e);
+              total += e.size;
+              struct stat st;
+              if (!(stat(full.c_str(), &st) == 0 && S_ISREG(st.st_mode) && static_cast<uint64_t>(st.st_size) == e.size)) {
+                need += e.size;
+              }
+            }
+            const uint64_t margin = 64ULL << 20;
+            const uint64_t free = SvrFreeBytes(dest);
+            if (need + margin > free) {
+              return SvrStd([NSString stringWithFormat:@"Not enough free space: %@ needed, %@ free.", SvrHuman(need + margin),
+                                                       SvrHuman(free)]);
+            }
+            std::sort(files.begin(), files.end(), [](const SvrEntry& a, const SvrEntry& b) { return a.sector < b.sector; });
+            std::stable_partition(files.begin(), files.end(),
+                                  [](const SvrEntry& e) { return strcasecmp(e.path.c_str(), "default.xex") != 0; });
+
+            std::vector<uint8_t> buffer(8u << 20);
+            uint64_t done = 0;
+            const auto started = std::chrono::steady_clock::now();
+            for (const SvrEntry& e : files) {
+              if (gSvrCancel) return "Stopped. Install again to carry on where it stopped.";
+              const std::string full = dest + "/" + e.path;
+              struct stat st;
+              if (stat(full.c_str(), &st) == 0 && S_ISREG(st.st_mode) && static_cast<uint64_t>(st.st_size) == e.size) {
+                done += e.size;
+                continue;
+              }
+              [fm createDirectoryAtPath:[SvrNS(full) stringByDeletingLastPathComponent] withIntermediateDirectories:YES
+                             attributes:nil error:nil];
+              const std::string part = full + ".part";
+              const int out = open(part.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+              if (out < 0) return "Installing failed: can't write " + e.path;
+              uint64_t at = disc.base + e.sector * kSvrSector;
+              uint64_t left = e.size;
+              bool ok = true;
+              while (left > 0) {
+                if (gSvrCancel) break;
+                const size_t n = static_cast<size_t>(std::min<uint64_t>(buffer.size(), left));
+                if (!SvrPread(fd, at, buffer.data(), n)) {
+                  ok = false;
+                  break;
+                }
+                size_t off = 0;
+                while (off < n) {
+                  const ssize_t w = write(out, buffer.data() + off, n - off);
+                  if (w <= 0) {
+                    ok = false;
+                    break;
+                  }
+                  off += static_cast<size_t>(w);
+                }
+                if (!ok) break;
+                at += n;
+                left -= n;
+                done += n;
+                const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+                const double rate = secs > 0.5 ? static_cast<double>(done) / secs : 0.0;
+                NSString* eta = rate > 0 ? [NSString stringWithFormat:@" · %ld s left", static_cast<long>((total - done) / rate)] : @"";
+                report(total > 0 ? static_cast<double>(done) / static_cast<double>(total) : 0.0,
+                       [NSString stringWithFormat:@"Installing… %d%% · %@ of %@%@",
+                                                  static_cast<int>(total > 0 ? done * 100 / total : 0), SvrHuman(done),
+                                                  SvrHuman(total), eta]);
+              }
+              close(out);
+              if (!ok) {
+                unlink(part.c_str());
+                return "Installing failed while writing " + e.path + " (is the phone full, or the image unreadable?)";
+              }
+              if (gSvrCancel) {
+                unlink(part.c_str());
+                return "Stopped. Install again to carry on where it stopped.";
+              }
+              unlink(full.c_str());
+              if (rename(part.c_str(), full.c_str()) != 0) return "Installing failed: can't write " + e.path;
+            }
+            return SvrStd([NSString stringWithFormat:@"Installed (%lu files, %@). Press Play.", static_cast<unsigned long>(files.size()),
+                                                     SvrHuman(total)]);
+          }
+
+          @interface SvrInstallPage : NSObject <UIDocumentPickerDelegate>
+          @property(nonatomic, strong) UIScrollView* view;
+          @property(nonatomic, weak) UIViewController* presenter;
+          @property(nonatomic) BOOL busy;
+          - (void)refresh;
+          @end
+
+          @implementation SvrInstallPage {
+            UILabel* _state;
+            UILabel* _progressText;
+            UIProgressView* _progress;
+            UIButton* _installBtn;
+            UIButton* _cancelBtn;
+          }
+
+          - (instancetype)init {
+            self = [super init];
+            if (!self) return nil;
+            UIStackView* stack = nil;
+            _view = SvrScrollPage(&stack);
+            __weak SvrInstallPage* weakSelf = self;
+
+            [stack addArrangedSubview:SvrLabel(@"Game", 18.0, SVR_TEXT, YES)];
+            _state = SvrLabel(@"", 15.0, SVR_TEXT, NO);
+            [stack addArrangedSubview:_state];
+            [stack addArrangedSubview:SvrLabel(@"Install from your own copy of the game: its Xbox 360 disc image (ISO). Installing again keeps the files already there. It needs several GB of free space; keep this screen open while it runs.",
+                                               14.0, SVR_DIM, NO)];
+            _installBtn = SvrButton(@"Install from disc image…", YES, ^{
+              [weakSelf pickImage];
+            });
+            [stack addArrangedSubview:_installBtn];
+            _progress = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
+            _progress.progressTintColor = SVR_RED;
+            _progress.hidden = YES;
+            [stack addArrangedSubview:_progress];
+            _progressText = SvrLabel(@"", 13.0, SVR_DIM, NO);
+            [stack addArrangedSubview:_progressText];
+            _cancelBtn = SvrButton(@"Cancel", NO, ^{
+              gSvrCancel = true;
+            });
+            _cancelBtn.hidden = YES;
+            [stack addArrangedSubview:_cancelBtn];
+            [self refresh];
+            return self;
+          }
+
+          - (void)refresh {
+            const char* home = getenv("HOME");
+            const std::string dest = std::string(home ? home : "") + "/Documents";
+            const BOOL installed = SvrFileExists(dest + "/default.xex");
+            _state.text = [NSString stringWithFormat:@"%@ (%@ free).", installed ? @"Installed in the game folder" : @"Not installed yet",
+                                                     SvrHuman(SvrFreeBytes(dest))];
+          }
+
+          - (void)pickImage {
+            if (self.busy) return;
+            UIViewController* host = self.presenter;
+            if (!host) return;
+            UIDocumentPickerViewController* picker =
+                [[UIDocumentPickerViewController alloc] initWithDocumentTypes:@[ @"public.data" ] inMode:UIDocumentPickerModeOpen];
+            picker.delegate = self;
+            picker.allowsMultipleSelection = NO;
+            [host presentViewController:picker animated:YES completion:nil];
+          }
+
+          - (void)documentPicker:(UIDocumentPickerViewController*)controller didPickDocumentsAtURLs:(NSArray<NSURL*>*)urls {
+            NSURL* url = urls.firstObject;
+            if (url) [self installFrom:url];
+          }
+
+          - (void)installFrom:(NSURL*)url {
+            const BOOL scoped = [url startAccessingSecurityScopedResource];
+            const int fd = open([url.path fileSystemRepresentation], O_RDONLY);
+            if (fd < 0) {
+              if (scoped) [url stopAccessingSecurityScopedResource];
+              _progressText.text = @"The disc image can't be opened.";
+              return;
+            }
+            self.busy = YES;
+            gSvrCancel = false;
+            [UIApplication sharedApplication].idleTimerDisabled = YES;  // (a locked screen would stop the copy)
+            _installBtn.enabled = NO;
+            _cancelBtn.hidden = NO;
+            _progress.hidden = NO;
+            _progress.progress = 0.0f;
+            _progressText.text = @"Reading the disc image…";
+            const char* home = getenv("HOME");
+            const std::string dest = std::string(home ? home : "") + "/Documents";
+            __weak SvrInstallPage* weakSelf = self;
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+              const std::string message = SvrInstallImage(fd, dest, ^(double fraction, NSString* text) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                  [weakSelf showProgress:fraction text:text];
+                });
+              });
+              close(fd);
+              if (scoped) [url stopAccessingSecurityScopedResource];
+              dispatch_async(dispatch_get_main_queue(), ^{
+                [weakSelf finish:SvrNS(message)];
+              });
+            });
+          }
+
+          - (void)showProgress:(double)fraction text:(NSString*)text {
+            _progress.progress = static_cast<float>(fraction);
+            _progressText.text = text;
+          }
+
+          - (void)finish:(NSString*)message {
+            self.busy = NO;
+            [UIApplication sharedApplication].idleTimerDisabled = NO;
+            _installBtn.enabled = YES;
+            _cancelBtn.hidden = YES;
+            _progress.hidden = YES;
+            _progressText.text = message;
+            [self refresh];
+          }
+
+          @end
+
+          // ---- the DLC tab: the game's downloadable content (Xbox 360 STFS packages), as on Android ----
+          // ---- DLC core begin ----
+
+          static const uint32_t kSvrDlcHeader = 0x491;
+
+          struct SvrDlcResult {
+            std::vector<std::string> added;
+            int already = 0;
+            int updates = 0;
+            std::string error;
+          };
+
+          typedef std::function<ssize_t(uint8_t*, size_t)> SvrReadFn;
+
+          static std::string SvrDocs() {
+            const char* home = getenv("HOME");
+            return std::string(home ? home : "") + "/Documents";
+          }
+
+          static std::string SvrDlcDir() { return SvrDocs() + "/DLC"; }
+
+          // The package kind from its first bytes: 2 DLC, 1 title update, 0 not this game's.
+          static int SvrDlcKind(const uint8_t* h, size_t n) {
+            if (n < kSvrDlcHeader) return 0;
+            const bool magic = !std::memcmp(h, "LIVE", 4) || !std::memcmp(h, "PIRS", 4) || !std::memcmp(h, "CON ", 4);
+            if (!magic || SvrBe32(h + 0x360) != kSvrTitleId) return 0;
+            const uint32_t type = SvrBe32(h + 0x344);
+            return type == 0x00000002 ? 2 : type == 0x000B0000 ? 1 : 0;
+          }
+
+          // The package's display name (UTF-16BE at 0x411, up to 0x80 bytes) as UTF-8.
+          static std::string SvrDlcTitle(const uint8_t* h) {
+            std::string out;
+            for (size_t i = 0; i + 1 < 0x80; i += 2) {
+              const uint32_t c = static_cast<uint32_t>(h[0x411 + i]) << 8 | h[0x412 + i];
+              if (c == 0) break;
+              if (c < 0x80) {
+                out += static_cast<char>(c);
+              } else if (c < 0x800) {
+                out += static_cast<char>(0xC0 | (c >> 6));
+                out += static_cast<char>(0x80 | (c & 0x3F));
+              } else if (c >= 0xD800 && c <= 0xDFFF) {
+                out += '?';
+              } else {
+                out += static_cast<char>(0xE0 | (c >> 12));
+                out += static_cast<char>(0x80 | ((c >> 6) & 0x3F));
+                out += static_cast<char>(0x80 | (c & 0x3F));
+              }
+            }
+            return SvrTrim(out);
+          }
+
+          // Reads until `n` bytes or the end; returns how many.
+          static size_t SvrFill(const SvrReadFn& rd, uint8_t* buf, size_t n) {
+            size_t got = 0;
+            while (got < n) {
+              const ssize_t r = rd(buf + got, n - got);
+              if (r <= 0) break;
+              got += static_cast<size_t>(r);
+            }
+            return got;
+          }
+
+          // One file's bytes: copied to DLC if it is this game's downloadable content.
+          static void SvrDlcAddStream(const SvrReadFn& rd, const std::string& name, int64_t size, SvrDlcResult& r) {
+            uint8_t h[kSvrDlcHeader];
+            const size_t n = SvrFill(rd, h, sizeof(h));
+            const int kind = SvrDlcKind(h, n);
+            if (kind == 1) r.updates++;
+            if (kind != 2) return;
+            const std::string dir = SvrDlcDir();
+            mkdir(dir.c_str(), 0755);
+            const std::string dest = dir + "/" + name;
+            struct stat st;
+            if (size >= 0 && stat(dest.c_str(), &st) == 0 && S_ISREG(st.st_mode) && static_cast<int64_t>(st.st_size) == size) {
+              r.already++;
+              return;
+            }
+            const std::string part = dest + ".part";
+            const int out = open(part.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (out < 0) {
+              r.error = "can't write " + name;
+              return;
+            }
+            bool ok = write(out, h, n) == static_cast<ssize_t>(n);
+            std::vector<uint8_t> buf(1u << 20);
+            while (ok) {
+              const ssize_t got = rd(buf.data(), buf.size());
+              if (got < 0) {
+                ok = false;
+                break;
+              }
+              if (got == 0) break;
+              size_t off = 0;
+              while (off < static_cast<size_t>(got)) {
+                const ssize_t w = write(out, buf.data() + off, static_cast<size_t>(got) - off);
+                if (w <= 0) {
+                  ok = false;
+                  break;
+                }
+                off += static_cast<size_t>(w);
+              }
+            }
+            close(out);
+            if (!ok) {
+              unlink(part.c_str());
+              r.error = "can't copy " + name + " (is the phone full, or the file unreadable?)";
+              return;
+            }
+            unlink(dest.c_str());
+            if (rename(part.c_str(), dest.c_str()) != 0) {
+              r.error = "can't write " + name;
+              return;
+            }
+            const std::string title = SvrDlcTitle(h);
+            r.added.push_back(title.empty() ? name : title);
+          }
+
+          // ---- zip archives (stored and deflated entries; no ZIP64) ----
+
+          struct SvrZipEntry {
+            std::string name;
+            uint32_t method = 0;
+            uint32_t comp = 0;
+            uint32_t uncomp = 0;
+            uint64_t local = 0;
+          };
+
+          static bool SvrZipList(int fd, std::vector<SvrZipEntry>* out, std::string* error) {
+            struct stat st;
+            if (fstat(fd, &st) != 0 || st.st_size < 22) {
+              *error = "not a zip file";
+              return false;
+            }
+            const uint64_t size = static_cast<uint64_t>(st.st_size);
+            const size_t tailLen = static_cast<size_t>(std::min<uint64_t>(size, 66000));
+            std::vector<uint8_t> tail(tailLen);
+            if (!SvrPread(fd, size - tailLen, tail.data(), tailLen)) {
+              *error = "can't read the zip file";
+              return false;
+            }
+            int64_t at = -1;
+            for (int64_t i = static_cast<int64_t>(tailLen) - 22; i >= 0; --i) {
+              if (SvrLe32(&tail[static_cast<size_t>(i)]) == 0x06054b50) {
+                at = i;
+                break;
+              }
+            }
+            if (at < 0) {
+              *error = "not a zip file";
+              return false;
+            }
+            const uint8_t* e = &tail[static_cast<size_t>(at)];
+            const uint32_t cdSize = SvrLe32(e + 12);
+            const uint32_t cdOff = SvrLe32(e + 16);
+            if (SvrLe16(e + 10) == 0xFFFF || cdSize == 0xFFFFFFFFu || cdOff == 0xFFFFFFFFu) {
+              *error = "ZIP64 archives aren't supported";
+              return false;
+            }
+            if (cdSize > (64u << 20)) {
+              *error = "the zip file's index is too big";
+              return false;
+            }
+            std::vector<uint8_t> cd(cdSize);
+            if (!SvrPread(fd, cdOff, cd.data(), cd.size())) {
+              *error = "can't read the zip file";
+              return false;
+            }
+            size_t p = 0;
+            while (p + 46 <= cd.size() && SvrLe32(&cd[p]) == 0x02014b50) {
+              const uint32_t flags = SvrLe16(&cd[p + 8]);
+              const size_t nameLen = SvrLe16(&cd[p + 28]);
+              const size_t extraLen = SvrLe16(&cd[p + 30]);
+              const size_t commentLen = SvrLe16(&cd[p + 32]);
+              if (p + 46 + nameLen > cd.size()) break;
+              SvrZipEntry z;
+              z.method = (flags & 1) ? 0xFFFF : SvrLe16(&cd[p + 10]);  // (encrypted entries are skipped)
+              z.comp = SvrLe32(&cd[p + 20]);
+              z.uncomp = SvrLe32(&cd[p + 24]);
+              z.local = SvrLe32(&cd[p + 42]);
+              z.name.assign(reinterpret_cast<const char*>(&cd[p + 46]), nameLen);
+              out->push_back(z);
+              p += 46 + nameLen + extraLen + commentLen;
+            }
+            return true;
+          }
+
+          class SvrZipReader {
+           public:
+            SvrZipReader(int fd, const SvrZipEntry& e) : fd_(fd), e_(e) {}
+            ~SvrZipReader() {
+              if (inflating_) inflateEnd(&zs_);
+            }
+            bool open() {
+              uint8_t lh[30];
+              if (!SvrPread(fd_, e_.local, lh, sizeof(lh)) || SvrLe32(lh) != 0x04034b50) return false;
+              start_ = e_.local + 30 + SvrLe16(lh + 26) + SvrLe16(lh + 28);
+              left_ = e_.comp;
+              if (e_.method == 8) {
+                std::memset(&zs_, 0, sizeof(zs_));
+                if (inflateInit2(&zs_, -MAX_WBITS) != Z_OK) return false;
+                inflating_ = true;
+                in_.resize(1u << 16);
+                return true;
+              }
+              return e_.method == 0;
+            }
+            // Bytes read (0 at the end), or -1.
+            ssize_t read(uint8_t* out, size_t n) {
+              if (e_.method == 0) {
+                const size_t want = static_cast<size_t>(std::min<uint64_t>(n, left_));
+                if (want == 0) return 0;
+                if (!SvrPread(fd_, start_ + pos_, out, want)) return -1;
+                pos_ += want;
+                left_ -= want;
+                return static_cast<ssize_t>(want);
+              }
+              if (done_) return 0;
+              zs_.next_out = out;
+              zs_.avail_out = static_cast<uInt>(n);
+              while (true) {
+                if (zs_.avail_in == 0 && left_ > 0) {
+                  const size_t take = static_cast<size_t>(std::min<uint64_t>(in_.size(), left_));
+                  if (!SvrPread(fd_, start_ + pos_, in_.data(), take)) return -1;
+                  pos_ += take;
+                  left_ -= take;
+                  zs_.next_in = in_.data();
+                  zs_.avail_in = static_cast<uInt>(take);
+                }
+                const int r = inflate(&zs_, Z_NO_FLUSH);
+                const size_t produced = n - zs_.avail_out;
+                if (r == Z_STREAM_END) done_ = true;
+                else if (r != Z_OK && r != Z_BUF_ERROR) return -1;
+                if (produced > 0) return static_cast<ssize_t>(produced);
+                if (done_) return 0;
+                if (zs_.avail_in == 0 && left_ == 0) return -1;  // (cut short)
+              }
+            }
+
+           private:
+            int fd_;
+            SvrZipEntry e_;
+            uint64_t start_ = 0, pos_ = 0, left_ = 0;
+            z_stream zs_;
+            bool inflating_ = false;
+            bool done_ = false;
+            std::vector<uint8_t> in_;
+          };
+
+          static bool SvrEndsWith(const std::string& s, const char* suffix) {
+            const size_t n = std::strlen(suffix);
+            return s.size() >= n && strcasecmp(s.c_str() + s.size() - n, suffix) == 0;
+          }
+
+          static void SvrDlcAddZip(const std::string& path, SvrDlcResult& r) {
+            const int fd = open(path.c_str(), O_RDONLY);
+            if (fd < 0) return;
+            std::vector<SvrZipEntry> entries;
+            std::string error;
+            if (!SvrZipList(fd, &entries, &error)) {
+              close(fd);
+              r.error = error;
+              return;
+            }
+            for (const SvrZipEntry& e : entries) {
+              if (e.name.empty() || e.name.back() == '/') continue;
+              const size_t slash = e.name.find_last_of("/\\");
+              const std::string base = slash == std::string::npos ? e.name : e.name.substr(slash + 1);
+              if (base.empty() || base[0] == '.' || e.name.find("__MACOSX") != std::string::npos) continue;
+              SvrZipReader zr(fd, e);
+              if (!zr.open()) continue;
+              SvrDlcAddStream([&zr](uint8_t* b, size_t n) { return zr.read(b, n); }, base, e.uncomp, r);
+              if (!r.error.empty()) break;
+            }
+            close(fd);
+          }
+
+          // One picked file (a package, or a zip with packages in it).
+          static void SvrDlcAddPath(const std::string& path, const std::string& name, SvrDlcResult& r) {
+            if (SvrEndsWith(name, ".rar") || SvrEndsWith(name, ".7z")) {
+              r.error = name + ": RAR and 7z archives can't be opened on the phone - extract them (or zip them) first";
+              return;
+            }
+            if (SvrEndsWith(name, ".zip")) {
+              SvrDlcAddZip(path, r);
+              return;
+            }
+            const int fd = open(path.c_str(), O_RDONLY);
+            if (fd < 0) return;
+            struct stat st;
+            const int64_t size = fstat(fd, &st) == 0 ? static_cast<int64_t>(st.st_size) : -1;
+            SvrDlcAddStream([fd](uint8_t* b, size_t n) { return read(fd, b, n); }, name, size, r);
+            close(fd);
+          }
+
+          // A picked folder: everything inside it (up to 8 levels down).
+          static void SvrDlcAddTree(const std::string& dir, int depth, SvrDlcResult& r) {
+            if (depth > 8) return;
+            DIR* d = opendir(dir.c_str());
+            if (!d) return;
+            std::vector<std::string> names;
+            while (const struct dirent* e = readdir(d)) {
+              const std::string n = e->d_name;
+              if (n != "." && n != "..") names.push_back(n);
+            }
+            closedir(d);
+            std::sort(names.begin(), names.end());
+            for (const std::string& n : names) {
+              const std::string full = dir + "/" + n;
+              struct stat st;
+              if (stat(full.c_str(), &st) != 0) continue;
+              if (S_ISDIR(st.st_mode)) {
+                SvrDlcAddTree(full, depth + 1, r);
+              } else if (S_ISREG(st.st_mode)) {
+                SvrDlcAddPath(full, n, r);
+              }
+              if (!r.error.empty()) return;
+            }
+          }
+
+          // The files in the DLC folder, by name.
+          static std::vector<std::string> SvrDlcList() {
+            std::vector<std::string> names;
+            const std::string dir = SvrDlcDir();
+            DIR* d = opendir(dir.c_str());
+            if (!d) return names;
+            while (const struct dirent* e = readdir(d)) {
+              const std::string n = e->d_name;
+              if (n == "." || n == ".." || SvrEndsWith(n, ".part")) continue;
+              struct stat st;
+              if (stat((dir + "/" + n).c_str(), &st) == 0 && S_ISREG(st.st_mode)) names.push_back(n);
+            }
+            closedir(d);
+            std::sort(names.begin(), names.end(),
+                      [](const std::string& a, const std::string& b) { return strcasecmp(a.c_str(), b.c_str()) < 0; });
+            return names;
+          }
+
+          // Removes a package and what the game set up from it (UserData/.../00000002/<name> and its header).
+          static bool SvrDlcRemove(const std::string& name) {
+            if (name.empty() || name.find('/') != std::string::npos || name == "." || name == "..") return false;
+            namespace fs = std::filesystem;
+            std::error_code ec;
+            char title[16];
+            std::snprintf(title, sizeof(title), "%08X", kSvrTitleId);
+            const fs::path root = fs::path(SvrDocs()) / "UserData" / "0000000000000000" / title;
+            fs::remove(fs::path(SvrDlcDir()) / name, ec);
+            fs::remove_all(root / "00000002" / name, ec);
+            fs::remove(root / "Headers" / "00000002" / (name + ".header"), ec);
+            return true;
+          }
+
+          // ---- DLC core end ----
+
+          @interface SvrDlcPage : NSObject <UIDocumentPickerDelegate>
+          @property(nonatomic, strong) UIScrollView* view;
+          @property(nonatomic, weak) UIViewController* presenter;
+          @property(nonatomic) BOOL busy;
+          - (void)refresh;
+          @end
+
+          @implementation SvrDlcPage {
+            UILabel* _status;
+            UIStackView* _list;
+            UIButton* _filesBtn;
+            UIButton* _folderBtn;
+            BOOL _pickingFolder;
+          }
+
+          - (instancetype)init {
+            self = [super init];
+            if (!self) return nil;
+            UIStackView* stack = nil;
+            _view = SvrScrollPage(&stack);
+            __weak SvrDlcPage* weakSelf = self;
+
+            [stack addArrangedSubview:SvrLabel(@"DLC", 18.0, SVR_TEXT, YES)];
+            [stack addArrangedSubview:SvrLabel(@"Add the game's downloadable content: Xbox 360 packages (as downloaded), or zip files with them inside, or a folder. Packages for other games and title updates are skipped. They are set up the next time the game starts.",
+                                               14.0, SVR_DIM, NO)];
+            _filesBtn = SvrButton(@"Add files…", YES, ^{
+              [weakSelf pick:NO];
+            });
+            _folderBtn = SvrButton(@"Add a folder…", NO, ^{
+              [weakSelf pick:YES];
+            });
+            UIStackView* buttons = [[UIStackView alloc] initWithArrangedSubviews:@[ _filesBtn, _folderBtn ]];
+            buttons.axis = UILayoutConstraintAxisHorizontal;
+            buttons.spacing = 12.0;
+            buttons.distribution = UIStackViewDistributionFillEqually;
+            [stack addArrangedSubview:buttons];
+            _status = SvrLabel(@"", 13.0, SVR_DIM, NO);
+            [stack addArrangedSubview:_status];
+            [stack addArrangedSubview:SvrLabel(@"Installed", 18.0, SVR_TEXT, YES)];
+            _list = [[UIStackView alloc] init];
+            _list.axis = UILayoutConstraintAxisVertical;
+            _list.spacing = 10.0;
+            [stack addArrangedSubview:_list];
+            [self refresh];
+            return self;
+          }
+
+          - (void)refresh {
+            for (UIView* v in [_list.arrangedSubviews copy]) [v removeFromSuperview];
+            const std::vector<std::string> names = SvrDlcList();
+            if (names.empty()) {
+              [_list addArrangedSubview:SvrLabel(@"None yet.", 15.0, SVR_DIM, NO)];
+              return;
+            }
+            __weak SvrDlcPage* weakSelf = self;
+            for (const std::string& name : names) {
+              uint8_t h[kSvrDlcHeader];
+              size_t n = 0;
+              struct stat st;
+              const std::string path = SvrDlcDir() + "/" + name;
+              const int fd = open(path.c_str(), O_RDONLY);
+              if (fd >= 0) {
+                const ssize_t got = read(fd, h, sizeof(h));
+                n = got > 0 ? static_cast<size_t>(got) : 0;
+                close(fd);
+              }
+              const uint64_t size = stat(path.c_str(), &st) == 0 ? static_cast<uint64_t>(st.st_size) : 0;
+              const std::string title = SvrDlcKind(h, n) == 2 ? SvrDlcTitle(h) : std::string();
+              NSString* shown = SvrNS(title.empty() ? name : title);
+              NSString* fileName = SvrNS(name);
+              UILabel* label = SvrLabel([NSString stringWithFormat:@"%@\n%@  ·  %@", shown, fileName, SvrHuman(size)], 14.0,
+                                        SVR_TEXT, NO);
+              UIButton* remove = SvrButton(@"Remove", NO, ^{
+                [weakSelf confirmRemove:fileName title:shown];
+              });
+              [remove.widthAnchor constraintEqualToConstant:110.0].active = YES;
+              UIStackView* row = [[UIStackView alloc] initWithArrangedSubviews:@[ label, remove ]];
+              row.axis = UILayoutConstraintAxisHorizontal;
+              row.alignment = UIStackViewAlignmentCenter;
+              row.spacing = 12.0;
+              [_list addArrangedSubview:row];
+            }
+          }
+
+          - (void)pick:(BOOL)folder {
+            if (self.busy) return;
+            if (!SvrFileExists(SvrDocs() + "/default.xex")) {
+              _status.text = @"Install the game first (Install tab).";
+              return;
+            }
+            UIViewController* host = self.presenter;
+            if (!host) return;
+            _pickingFolder = folder;
+            UIDocumentPickerViewController* picker = [[UIDocumentPickerViewController alloc]
+                initWithDocumentTypes:@[ folder ? @"public.folder" : @"public.data" ]
+                               inMode:UIDocumentPickerModeOpen];
+            picker.delegate = self;
+            picker.allowsMultipleSelection = !folder;
+            [host presentViewController:picker animated:YES completion:nil];
+          }
+
+          - (void)documentPicker:(UIDocumentPickerViewController*)controller didPickDocumentsAtURLs:(NSArray<NSURL*>*)urls {
+            if (urls.count == 0) return;
+            self.busy = YES;
+            _filesBtn.enabled = NO;
+            _folderBtn.enabled = NO;
+            _status.text = @"Looking for DLC…";
+            const BOOL folder = _pickingFolder;
+            NSArray<NSURL*>* picked = [urls copy];
+            __weak SvrDlcPage* weakSelf = self;
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+              SvrDlcResult result;
+              for (NSURL* url in picked) {
+                const BOOL scoped = [url startAccessingSecurityScopedResource];
+                const std::string path = SvrStd(url.path);
+                if (folder) {
+                  SvrDlcAddTree(path, 0, result);
+                } else {
+                  SvrDlcAddPath(path, SvrStd(url.lastPathComponent), result);
+                }
+                if (scoped) [url stopAccessingSecurityScopedResource];
+                if (!result.error.empty()) break;
+              }
+              dispatch_async(dispatch_get_main_queue(), ^{
+                [weakSelf finishAdding:result];
+              });
+            });
+          }
+
+          - (void)finishAdding:(SvrDlcResult)r {
+            self.busy = NO;
+            _filesBtn.enabled = YES;
+            _folderBtn.enabled = YES;
+            NSMutableString* text = [NSMutableString string];
+            if (!r.error.empty()) {
+              [text appendFormat:@"Adding DLC failed: %@", SvrNS(r.error)];
+            } else if (r.added.empty() && r.already == 0) {
+              [text appendString:@"No DLC for this game was found"];
+              [text appendString:r.updates > 0 ? @" (only title updates, not needed)." : @"."];
+            } else {
+              [text appendFormat:@"%lu DLC package%@ installed%@%@. They are set up the next time the game starts",
+                                 static_cast<unsigned long>(r.added.size()), r.added.size() == 1 ? @"" : @"s",
+                                 r.already > 0 ? @", others already there" : @"",
+                                 r.updates > 0 ? @" (title update skipped: not needed)" : @""];
+              if (!r.added.empty()) {
+                NSMutableArray<NSString*>* names = [NSMutableArray array];
+                for (const std::string& a : r.added) [names addObject:SvrNS(a)];
+                [text appendFormat:@": %@.", [names componentsJoinedByString:@", "]];
+              } else {
+                [text appendString:@"."];
+              }
+            }
+            _status.text = text;
+            [self refresh];
+          }
+
+          - (void)confirmRemove:(NSString*)fileName title:(NSString*)title {
+            UIViewController* host = self.presenter;
+            if (!host || self.busy) return;
+            UIAlertController* alert = [UIAlertController
+                alertControllerWithTitle:@"Remove this DLC?"
+                                 message:[NSString stringWithFormat:@"%@ will be deleted, with what the game set up from it.", title]
+                          preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+            __weak SvrDlcPage* weakSelf = self;
+            [alert addAction:[UIAlertAction actionWithTitle:@"Remove" style:UIAlertActionStyleDestructive
+                                                    handler:^(UIAlertAction* action) {
+                                                      SvrDlcPage* s = weakSelf;
+                                                      if (!s) return;
+                                                      SvrDlcRemove(SvrStd(fileName));
+                                                      s->_status.text = [NSString stringWithFormat:@"%@ removed.", title];
+                                                      [s refresh];
+                                                    }]];
+            [host presentViewController:alert animated:YES completion:nil];
+          }
+
+          @end
+
           // ---- the launcher screen ----
 
           @interface SvrLauncherViewController : UIViewController
@@ -1163,6 +2094,8 @@ jobs:
             UIView* _content;
             UIView* _playPage;
             SvrOnlinePage* _online;
+            SvrInstallPage* _install;
+            SvrDlcPage* _dlc;
           }
 
           - (UIView*)buildPlayPage {
@@ -1224,7 +2157,14 @@ jobs:
             } else if (index == 2) {
               [_online refresh];
               page = _online.view;
+            } else if (index == 3) {
+              [_install refresh];
+              page = _install.view;
+            } else if (index == 4) {
+              [_dlc refresh];
+              page = _dlc.view;
             } else {
+              _playPage = [self buildPlayPage];  // rebuilt each time: it shows whether the game is installed
               page = _playPage;
             }
             page.translatesAutoresizingMaskIntoConstraints = NO;
@@ -1241,7 +2181,7 @@ jobs:
             [super viewDidLoad];
             self.view.backgroundColor = SVR_BG;
 
-            UISegmentedControl* tabs = [[UISegmentedControl alloc] initWithItems:@[ @"Play", @"Settings", @"Online" ]];
+            UISegmentedControl* tabs = [[UISegmentedControl alloc] initWithItems:@[ @"Play", @"Settings", @"Online", @"Install", @"DLC" ]];
             tabs.selectedSegmentIndex = 0;
             tabs.translatesAutoresizingMaskIntoConstraints = NO;
             [self.view addSubview:tabs];
@@ -1260,8 +2200,11 @@ jobs:
               [_content.bottomAnchor constraintEqualToAnchor:self.view.keyboardLayoutGuide.topAnchor constant:-4.0],
             ]];
 
-            _playPage = [self buildPlayPage];
             _online = [[SvrOnlinePage alloc] init];
+            _install = [[SvrInstallPage alloc] init];
+            _install.presenter = self;
+            _dlc = [[SvrDlcPage alloc] init];
+            _dlc.presenter = self;
             __weak SvrLauncherViewController* weakSelf = self;
             [tabs addAction:[UIAction actionWithHandler:^(__kindof UIAction* action) {
               UISegmentedControl* t = (UISegmentedControl*)action.sender;
@@ -1312,7 +2255,70 @@ jobs:
               }
               std::fprintf(stderr, "[boot] launcher: Play pressed\n");
               window.hidden = YES;
+              // let UIKit finish hiding it before the game makes its own window (else the log fills with
+              // "Unbalanced calls to begin/end appearance transitions")
+              for (int i = 0; i < 6; ++i) {
+                [loop runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+              }
               window.rootViewController = nil;
+            }
+          }
+
+          // An https request for the game's online client (the game has no TLS of its own on iPhone).
+          // `raw` gets a whole HTTP answer ("HTTP/1.1 200 OK", headers, blank line, body); false = no answer.
+          bool SvrIosHttpsRequest(const std::string& method, const std::string& url, const std::string& headerLines,
+                                  const std::string& body, std::string* raw) {
+            @autoreleasepool {
+              NSURL* u = [NSURL URLWithString:SvrNS(url)];
+              if (!u) return false;
+              NSMutableURLRequest* req = [NSMutableURLRequest requestWithURL:u
+                                                                 cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
+                                                             timeoutInterval:60.0];
+              req.HTTPMethod = SvrNS(method);
+              size_t at = 0;
+              while (at < headerLines.size()) {
+                size_t end = headerLines.find("\r\n", at);
+                if (end == std::string::npos) end = headerLines.size();
+                const std::string line = headerLines.substr(at, end - at);
+                at = end + 2;
+                const size_t colon = line.find(':');
+                if (colon == std::string::npos) continue;
+                const std::string name = SvrTrim(line.substr(0, colon));
+                if (strcasecmp(name.c_str(), "content-length") == 0 || strcasecmp(name.c_str(), "host") == 0) continue;
+                [req setValue:SvrNS(SvrTrim(line.substr(colon + 1))) forHTTPHeaderField:SvrNS(name)];
+              }
+              if (!body.empty()) req.HTTPBody = [NSData dataWithBytes:body.data() length:body.size()];
+
+              __block NSData* resultData = nil;
+              __block NSHTTPURLResponse* resultResponse = nil;
+              dispatch_semaphore_t done = dispatch_semaphore_create(0);
+              [[[NSURLSession sharedSession]
+                  dataTaskWithRequest:req
+                    completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
+                      if (!error && [response isKindOfClass:[NSHTTPURLResponse class]]) {
+                        resultData = data;
+                        resultResponse = (NSHTTPURLResponse*)response;
+                      }
+                      dispatch_semaphore_signal(done);
+                    }] resume];
+              dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+              if (!resultResponse) return false;
+
+              std::string out = "HTTP/1.1 " + std::to_string(static_cast<long>(resultResponse.statusCode)) + " OK\r\n";
+              for (id key in resultResponse.allHeaderFields) {
+                const std::string name = SvrStr(key);
+                // (the body arrives whole and already decoded, so these three would be wrong)
+                if (name.empty() || strcasecmp(name.c_str(), "content-length") == 0 ||
+                    strcasecmp(name.c_str(), "transfer-encoding") == 0 || strcasecmp(name.c_str(), "content-encoding") == 0) {
+                  continue;
+                }
+                out += name + ": " + SvrStd([NSString stringWithFormat:@"%@", resultResponse.allHeaderFields[key]]) + "\r\n";
+              }
+              const size_t length = resultData ? static_cast<size_t>(resultData.length) : 0;
+              out += "Content-Length: " + std::to_string(length) + "\r\n\r\n";
+              if (length > 0) out.append(static_cast<const char*>(resultData.bytes), length);
+              *raw = out;
+              return true;
             }
           }
           EOF
@@ -1348,6 +2354,38 @@ jobs:
           test -f port-src/port/src/ios_launcher.mm
           grep -q "SvrIosLauncherShow();" sdk/src/ui/windowed_app_main_sdl.cpp
 
+      - name: iOS online (the game's https requests go through the system)
+        run: |
+          set -euo pipefail
+          python3 - <<'PYEOF'
+          p = "port-src/port/src/online_net.cpp"
+          s = open(p).read()
+
+          a = '#include <rex/logging.h>\n\nREXCVAR_DEFINE_STRING(online_token,'
+          assert s.count(a) == 1, "include anchor %d" % s.count(a)
+          s = s.replace(a, '#include <rex/logging.h>\n\n'
+                           '#if defined(__ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__)\n'
+                           '// ios_launcher.mm: an https request through the system; false when there was no answer.\n'
+                           'bool SvrIosHttpsRequest(const std::string& method, const std::string& url,\n'
+                           '                        const std::string& header_lines, const std::string& body, std::string* raw);\n'
+                           '#endif\n\nREXCVAR_DEFINE_STRING(online_token,')
+
+          b = '#if defined(__ANDROID__)\n    return BridgeRequest(method, full_url, headers, body);\n#else\n'
+          assert s.count(b) == 1, "request anchor %d" % s.count(b)
+          s = s.replace(b, '#if defined(__ANDROID__)\n    return BridgeRequest(method, full_url, headers, body);\n'
+                           '#elif defined(__ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__)\n'
+                           '    std::string header_lines;\n'
+                           '    for (const auto& h : headers) header_lines += h.first + ": " + h.second + "\\r\\n";\n'
+                           '    std::string raw;\n'
+                           '    if (!SvrIosHttpsRequest(method, full_url, header_lines, body, &raw)) return std::nullopt;\n'
+                           '    return ParseRaw(raw);\n'
+                           '#else\n')
+          open(p, "w").write(s)
+          PYEOF
+          echo "---- online_net.cpp edits ----"
+          grep -n -B1 -A7 "SvrIosHttpsRequest" port-src/port/src/online_net.cpp
+          grep -q "return ParseRaw(raw);" port-src/port/src/online_net.cpp
+
       - name: Put the generated code in place, and stop codegen re-running
         run: |
           cp -R generated port-src/port/generated
@@ -1371,7 +2409,7 @@ jobs:
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DCMAKE_SHARED_LINKER_FLAGS="-framework UIKit -framework CoreGraphics" \
-            -DCMAKE_EXE_LINKER_FLAGS="-framework UIKit -framework CoreGraphics" \
+            -DCMAKE_EXE_LINKER_FLAGS="-framework UIKit -framework CoreGraphics -lz" \
             -DREXSDK_DIR="$PWD/sdk" \
             -DREXGLUE_ROOT="$PWD/sdk" \
             -DPLUME_DIR="$PWD/plume" \

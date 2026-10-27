@@ -27,7 +27,7 @@ Tested on an **iPhone 15 Pro (Apple A17 Pro chip)**, running inside LiveContaine
 
 - Menus, character select, entrances and matches all work, at 60 fps in testing.
 - On-screen touch controls, which you can rearrange.
-- A launcher screen (**Play**, **Settings**, **Online**) shows before the game starts.
+- A launcher screen shows before the game starts.
 - Saves are plain files in the game folder.
 - On the iPhone's wide screen, matches and entrances fill the whole screen.
 

@@ -40,7 +40,6 @@ Other iPhones and iPads haven't been tested. It's an early port, so expect rough
 - [Status](#status)
 - [What you need](#what-you-need)
 - [Install and play](#install-and-play)
-- [Launcher](#launcher)
 - [Controls](#controls)
 - [Settings](#settings)
 - [What carries over from the OG port](#what-carries-over-from-the-og-port)
@@ -81,18 +80,6 @@ Other iPhones and iPads haven't been tested. It's an early port, so expect rough
 4. **Start the app and play.** The launcher's **Play** tab should say the game files and shaders were found. Press **PLAY**. The first launch creates the settings file.
 
 **Updating:** install the new IPA over the old one. Your saves are in the game folder inside the app.
-
----
-
-## Launcher
-
-Before the game starts, a launcher screen has three tabs:
-
-- **Play** shows whether the game files and shaders were found, and the game folder. **PLAY** stays greyed out until `default.xex` is in the folder.
-- **Settings** has the main graphics options: resolution (360p to 1080p), textures, anti-aliasing, frame rate (30 or 60), soft filter, motion blur, depth of field, crowd, and touch controls. It edits the same `svr2011.toml` as the in-game options, and it works once you've pressed **PLAY** at least once so the file exists.
-- **Online** is for a Community Creations account, server and friends list. It contacts a server over the internet: the default is `https://sho-ti.me/svr`, and you can enter your own address.
-
-To skip the launcher, create an empty file named `skip_launcher` in the game folder.
 
 ---
 
@@ -138,7 +125,7 @@ Settings are saved in `svr2011.toml` in the game folder (the app's **Documents**
 | Wide-screen matches and entrances | ✅ Working |
 | Up to 10 HD logos per superstar | ❌ Not available on iOS yet |
 | Entrance movies | ❌ Not available on iOS yet |
-| DLC | ❌ Not available on iOS yet |
+| DLC | ✅ Working |
 | Mods (`.svrmod`) | ❌ Not available on iOS yet |
 | Texture packs | ❌ Not available on iOS yet |
 | Achievements | ❌ Not available on iOS yet |

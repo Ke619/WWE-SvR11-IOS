@@ -1432,6 +1432,41 @@ jobs:
                                                      SvrHuman(total)]);
           }
 
+          // The Import folder (Documents/Import): copy a disc image or DLC there with the Files app and pick it
+          // in the launcher - no system file picker needed.
+          static std::string SvrImportDir() {
+            const char* home = getenv("HOME");
+            return std::string(home ? home : "") + "/Documents/Import";
+          }
+
+          struct SvrImportFile {
+            std::string name;
+            uint64_t size = 0;
+          };
+
+          static std::vector<SvrImportFile> SvrImportFiles() {
+            std::vector<SvrImportFile> out;
+            const std::string dir = SvrImportDir();
+            mkdir(dir.c_str(), 0755);
+            DIR* d = opendir(dir.c_str());
+            if (!d) return out;
+            while (const struct dirent* e = readdir(d)) {
+              const std::string n = e->d_name;
+              if (n.empty() || n[0] == '.' || (n.size() > 5 && n.compare(n.size() - 5, 5, ".part") == 0)) continue;
+              struct stat st;
+              if (stat((dir + "/" + n).c_str(), &st) != 0 || !S_ISREG(st.st_mode)) continue;
+              SvrImportFile f;
+              f.name = n;
+              f.size = static_cast<uint64_t>(st.st_size);
+              out.push_back(f);
+            }
+            closedir(d);
+            std::sort(out.begin(), out.end(), [](const SvrImportFile& a, const SvrImportFile& b) {
+              return strcasecmp(a.name.c_str(), b.name.c_str()) < 0;
+            });
+            return out;
+          }
+
           @interface SvrInstallPage : NSObject <UIDocumentPickerDelegate>
           @property(nonatomic, strong) UIScrollView* view;
           @property(nonatomic, weak) UIViewController* presenter;
@@ -1445,6 +1480,7 @@ jobs:
             UIProgressView* _progress;
             UIButton* _installBtn;
             UIButton* _cancelBtn;
+            UIStackView* _files;
           }
 
           - (instancetype)init {
@@ -1459,7 +1495,17 @@ jobs:
             [stack addArrangedSubview:_state];
             [stack addArrangedSubview:SvrLabel(@"Install from your own copy of the game: its Xbox 360 disc image (ISO). Installing again keeps the files already there. It needs several GB of free space; keep this screen open while it runs.",
                                                14.0, SVR_DIM, NO)];
-            _installBtn = SvrButton(@"Install from disc image…", YES, ^{
+            [stack addArrangedSubview:SvrLabel(@"Easiest: copy the disc image into this folder with the Files app, then tap Install next to it:",
+                                               14.0, SVR_TEXT, NO)];
+            UILabel* importPath = SvrLabel(SvrNS(SvrImportDir()), 11.0, SVR_DIM, NO);
+            importPath.lineBreakMode = NSLineBreakByCharWrapping;
+            importPath.font = [UIFont monospacedSystemFontOfSize:11.0 weight:UIFontWeightRegular];
+            [stack addArrangedSubview:importPath];
+            _files = [[UIStackView alloc] init];
+            _files.axis = UILayoutConstraintAxisVertical;
+            _files.spacing = 10.0;
+            [stack addArrangedSubview:_files];
+            _installBtn = SvrButton(@"Or pick the disc image with the Files app…", NO, ^{
               [weakSelf pickImage];
             });
             [stack addArrangedSubview:_installBtn];
@@ -1484,6 +1530,51 @@ jobs:
             const BOOL installed = SvrFileExists(dest + "/default.xex");
             _state.text = [NSString stringWithFormat:@"%@ (%@ free).", installed ? @"Installed in the game folder" : @"Not installed yet",
                                                      SvrHuman(SvrFreeBytes(dest))];
+            for (UIView* v in [_files.arrangedSubviews copy]) [v removeFromSuperview];
+            const std::vector<SvrImportFile> found = SvrImportFiles();
+            if (found.empty()) {
+              [_files addArrangedSubview:SvrLabel(@"Nothing in the Import folder yet.", 14.0, SVR_DIM, NO)];
+            }
+            __weak SvrInstallPage* weakSelf = self;
+            for (const SvrImportFile& f : found) {
+              NSString* name = SvrNS(f.name);
+              UILabel* label = SvrLabel([NSString stringWithFormat:@"%@\n%@", name, SvrHuman(f.size)], 14.0, SVR_TEXT, NO);
+              UIButton* install = SvrButton(@"Install", YES, ^{
+                [weakSelf installImported:name];
+              });
+              UIButton* del = SvrButton(@"Delete", NO, ^{
+                [weakSelf confirmDelete:name];
+              });
+              [install.widthAnchor constraintEqualToConstant:100.0].active = YES;
+              [del.widthAnchor constraintEqualToConstant:100.0].active = YES;
+              UIStackView* row = [[UIStackView alloc] initWithArrangedSubviews:@[ label, install, del ]];
+              row.axis = UILayoutConstraintAxisHorizontal;
+              row.alignment = UIStackViewAlignmentCenter;
+              row.spacing = 10.0;
+              [_files addArrangedSubview:row];
+            }
+          }
+
+          - (void)installImported:(NSString*)name {
+            if (self.busy) return;
+            [self installPath:[SvrNS(SvrImportDir()) stringByAppendingPathComponent:name] url:nil];
+          }
+
+          - (void)confirmDelete:(NSString*)name {
+            UIViewController* host = self.presenter;
+            if (!host || self.busy) return;
+            UIAlertController* alert = [UIAlertController alertControllerWithTitle:@"Delete this file?"
+                                                                           message:[NSString stringWithFormat:@"%@ will be deleted from the Import folder (the installed game is not touched).", name]
+                                                                    preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+            __weak SvrInstallPage* weakSelf = self;
+            [alert addAction:[UIAlertAction actionWithTitle:@"Delete" style:UIAlertActionStyleDestructive
+                                                    handler:^(UIAlertAction* action) {
+                                                      const std::string path = SvrImportDir() + "/" + SvrStd(name);
+                                                      if (name.length > 0 && ![name containsString:@"/"]) unlink(path.c_str());
+                                                      [weakSelf refresh];
+                                                    }]];
+            [host presentViewController:alert animated:YES completion:nil];
           }
 
           - (void)pickImage {
@@ -1499,12 +1590,13 @@ jobs:
 
           - (void)documentPicker:(UIDocumentPickerViewController*)controller didPickDocumentsAtURLs:(NSArray<NSURL*>*)urls {
             NSURL* url = urls.firstObject;
-            if (url) [self installFrom:url];
+            if (url) [self installPath:url.path url:url];
           }
 
-          - (void)installFrom:(NSURL*)url {
-            const BOOL scoped = [url startAccessingSecurityScopedResource];
-            const int fd = open([url.path fileSystemRepresentation], O_RDONLY);
+          // `url` is the picked file's security-scoped URL, or nil for a file in the Import folder.
+          - (void)installPath:(NSString*)path url:(NSURL*)url {
+            const BOOL scoped = url ? [url startAccessingSecurityScopedResource] : NO;
+            const int fd = open([path fileSystemRepresentation], O_RDONLY);
             if (fd < 0) {
               if (scoped) [url stopAccessingSecurityScopedResource];
               _progressText.text = @"The disc image can't be opened.";
@@ -1916,6 +2008,7 @@ jobs:
           @implementation SvrDlcPage {
             UILabel* _status;
             UIStackView* _list;
+            UIButton* _importBtn;
             UIButton* _filesBtn;
             UIButton* _folderBtn;
             BOOL _pickingFolder;
@@ -1931,10 +2024,20 @@ jobs:
             [stack addArrangedSubview:SvrLabel(@"DLC", 18.0, SVR_TEXT, YES)];
             [stack addArrangedSubview:SvrLabel(@"Add the game's downloadable content: Xbox 360 packages (as downloaded), or zip files with them inside, or a folder. Packages for other games and title updates are skipped. They are set up the next time the game starts.",
                                                14.0, SVR_DIM, NO)];
-            _filesBtn = SvrButton(@"Add files…", YES, ^{
+            [stack addArrangedSubview:SvrLabel(@"Easiest: copy your DLC files (or zips, or folders) into this folder with the Files app, then tap the button:",
+                                               14.0, SVR_TEXT, NO)];
+            UILabel* importPath = SvrLabel(SvrNS(SvrImportDir()), 11.0, SVR_DIM, NO);
+            importPath.lineBreakMode = NSLineBreakByCharWrapping;
+            importPath.font = [UIFont monospacedSystemFontOfSize:11.0 weight:UIFontWeightRegular];
+            [stack addArrangedSubview:importPath];
+            _importBtn = SvrButton(@"Add everything from the Import folder", YES, ^{
+              [weakSelf addImport];
+            });
+            [stack addArrangedSubview:_importBtn];
+            _filesBtn = SvrButton(@"Or pick files with the Files app…", NO, ^{
               [weakSelf pick:NO];
             });
-            _folderBtn = SvrButton(@"Add a folder…", NO, ^{
+            _folderBtn = SvrButton(@"Or pick a folder…", NO, ^{
               [weakSelf pick:YES];
             });
             UIStackView* buttons = [[UIStackView alloc] initWithArrangedSubviews:@[ _filesBtn, _folderBtn ]];
@@ -1990,6 +2093,29 @@ jobs:
             }
           }
 
+          // Everything in Documents/Import: packages, zips with packages, folders.
+          - (void)addImport {
+            if (self.busy) return;
+            if (!SvrFileExists(SvrDocs() + "/default.xex")) {
+              _status.text = @"Install the game first (Install tab).";
+              return;
+            }
+            self.busy = YES;
+            _importBtn.enabled = NO;
+            _filesBtn.enabled = NO;
+            _folderBtn.enabled = NO;
+            _status.text = @"Looking for DLC…";
+            __weak SvrDlcPage* weakSelf = self;
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+              SvrDlcResult result;
+              mkdir(SvrImportDir().c_str(), 0755);
+              SvrDlcAddTree(SvrImportDir(), 0, result);
+              dispatch_async(dispatch_get_main_queue(), ^{
+                [weakSelf finishAdding:result];
+              });
+            });
+          }
+
           - (void)pick:(BOOL)folder {
             if (self.busy) return;
             if (!SvrFileExists(SvrDocs() + "/default.xex")) {
@@ -2010,6 +2136,7 @@ jobs:
           - (void)documentPicker:(UIDocumentPickerViewController*)controller didPickDocumentsAtURLs:(NSArray<NSURL*>*)urls {
             if (urls.count == 0) return;
             self.busy = YES;
+            _importBtn.enabled = NO;
             _filesBtn.enabled = NO;
             _folderBtn.enabled = NO;
             _status.text = @"Looking for DLC…";
@@ -2037,6 +2164,7 @@ jobs:
 
           - (void)finishAdding:(SvrDlcResult)r {
             self.busy = NO;
+            _importBtn.enabled = YES;
             _filesBtn.enabled = YES;
             _folderBtn.enabled = YES;
             NSMutableString* text = [NSMutableString string];

@@ -211,6 +211,5 @@ The original PC port was developed with Claude Code, and has its own AI disclosu
 - This is an unofficial fan project, made for preservation and research. It isn't affiliated with or endorsed by WWE, 2K, Yuke's, THQ or Microsoft. *WWE SmackDown vs. Raw 2011* and all related names, characters and trademarks belong to their respective owners.
 - **No game material is included:** no disc image, XEX, game data, audio, video or recompiled game code. You must own the game and supply your own copy.
 - **The IPA contains code generated from the game's executable.** Download it only if you own the game. Building it yourself keeps that code on your own machine.
-- The screenshots in `docs/screenshots/` were taken of the port running. They're used only to show the port, and they belong to the game's owners.
 - **Recompiler and runtime:** the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk), which is derived from [Xenia](https://github.com/xenia-project/xenia). See their licenses, and the licenses of MoltenVK, SDL and plume.
 - If you're a rights holder and want something removed, please [open an issue](https://github.com/Ke619/wwe-svr2011-ios/issues) or contact me, and I will take it down.

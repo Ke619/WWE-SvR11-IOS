@@ -90,13 +90,9 @@ Other iPhones and iPads haven't been tested. It's an early port, so expect rough
 
 ## Controls
 
-**On-screen controls.** The menus get a simple pad: D-pad, A/B/X/Y, bumpers (LB/RB), triggers (LT/RT), and Back and Start. **MENU** (top left) and **EDIT** (top right) are always there. **EDIT** lets you move and resize the controls. Your layout is saved in `UserData/touch_layout.txt` in the game folder.
+**On-screen controls:** The menus get a simple pad: D-pad, A/B/X/Y, bumpers (LB/RB), triggers (LT/RT), and Back and Start. **MENU** (top left) and **EDIT** (top right) are always there. **EDIT** lets you move and resize the controls. Your layout is saved in `UserData/touch_layout.txt` in the game folder.
 
 iOS uses the same touch-control system as the PC port's Android build, so the match controls and the layout editor work the same way. The original README describes them in its [Android section](https://github.com/KaikoClanworth1/wwe-svr2011-pc#android).
-
-**Physical controller.**
-
-The game's main menu has an **EXIT** entry at the bottom.
 
 ---
 

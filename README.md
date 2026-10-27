@@ -72,12 +72,12 @@ Other iPhones and iPads haven't been tested. It's an early port, so expect rough
 
 3. **Put the game on the phone.** The app plays from an extracted game folder that it looks for in its own **Documents** folder.
    
-   **Method 2:**
+   **=> Method 1:**
    1. On a PC, extract your disc image so you have a folder containing `default.xex` and the rest of the game files.
    2. Copy the contents of that folder into the app's **Documents** folder with the Files app (file sharing is turned on for the app). `default.xex` must sit **directly** in `Documents`, not in a subfolder. 
    3. It's about 5.3 GB, so the copy takes a while.
    
-   **Method 2:**
+   **=>Method 2:**
    - use the built-in install feature in the game launcher to add the game files directly from your ISO dump.
 
    You don't need to supply shaders. They ship inside the app and are copied into `Documents/native_shaders/` on start-up.

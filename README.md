@@ -174,7 +174,8 @@ The recompiled game code is **generated on your machine from your own game files
 | Port | A start-up log, shader installer and no-op music functions (`ios_stubs.cpp`) | Diagnostics, and features not ported yet |
 | Port | The UIKit launcher (`ios_launcher.mm`) | iOS has no Windows or Java launcher |
 
-The Windows build steps (LLVM, PowerShell, the launcher) are in the [original README](https://github.com/KaikoClanworth1/wwe-svr2011-pc#building-from-source).
+> [!NOTE]
+> The Windows build steps (LLVM, PowerShell, the launcher) are in the [original README](https://github.com/KaikoClanworth1/wwe-svr2011-pc#building-from-source).
 
 ---
 

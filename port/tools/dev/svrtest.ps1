@@ -155,7 +155,7 @@ foreach ($f in $exeName, "rexruntime.dll", "rexgpu-xenos.dll") {
     }
 }
 # its Mods: only --mods (a mod folder is placed by its manifest's type)
-$kinds = @{ superstar = "Superstars"; attire = "Attires"; arena = "Arenas"; moves = "Moves"; backstage = "Backstage"; signs = "Signs"; media = "Media"; backgrounds = "Backgrounds"; matchtype = "MatchTypes" }
+$kinds = @{ superstar = "Superstars"; attire = "Attires"; arena = "Arenas"; moves = "Moves"; backstage = "Backstage"; signs = "Signs"; media = "Media"; backgrounds = "Backgrounds"; matchtype = "MatchTypes"; cawpart = "CawParts" }
 Get-ChildItem (Join-Path $game "Mods") -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne ".convert" } | Remove-Item -Recurse -Force
 if ($o.mods -and $o.mods -ne "none") {
     foreach ($m in $o.mods -split ',') {
@@ -198,6 +198,7 @@ Set-Content $inputFile "" -NoNewline
 $env:SVR2011_INPUT_FILE = $inputFile
 $env:SVR2011_USER_DATA = $userdata
 $env:SVR2011_MUSIC = Join-Path $root "music"
+$env:SVR2011_AUDIO_MUTE = "1"  # (the game mutes even if its command line is lost: svr2011_app.cpp OnPreSetup)
 $env:SVR2011_MOVIES = Join-Path $root "movies"
 $env:SDL_WINDOW_ACTIVATE_WHEN_SHOWN = "0"; $env:SDL_WINDOW_ACTIVATE_WHEN_RAISED = "0"
 $env:SVR2011_NATIVE_WINDOW_POS = "-2600,0"
@@ -226,6 +227,13 @@ if ($Command -in "match", "entrance") {
 } else {
     if (-not $o.target -or -not (Test-Path $o.target)) { throw "svrtest script <file>" }
     $steps = @(Get-Content $o.target)
+}
+# the test folder's settings file: muted, no keyboard / mouse - so even a game whose --options were all dropped
+# (a flag named twice) stays silent and leaves the player's mouse alone
+$toml = Join-Path $game "svr2011.toml"
+if (Test-Path $toml) {
+    $lines = @(Get-Content $toml | Where-Object { $_ -notmatch '^\s*(audio_mute|mnk_mode)\s*=' })
+    [IO.File]::WriteAllLines($toml, [string[]]($lines + @("audio_mute = true", "mnk_mode = false")))
 }
 $gameArgs = @("--log_file=`"$log`"", "--log_level=$($o.loglevel)", "--audio_mute=true", "--fullscreen=false", "--monitor=2",
               "--mnk_mode=false", "--p2p_port_mapping=false", "--p2p_port=$p2p")
@@ -261,7 +269,14 @@ if ($gameCues) {
     if ($o.quit) { $gameArgs += "--dbg_quit=$((Seconds $o.quit).ToString($inv))" }
 }
 if ($Command -eq "open") { $gameArgs += "--dbg_boot=`"$($o.target)`"" }
-$gameArgs += $o.args
+# (--arg: an option svrtest sets already is replaced - the game's parser drops every --option of a command line that
+# names one twice, --audio_mute=true with them: 27 Oct a test game was heard; --audio_mute stays true)
+foreach ($x in $o.args) {
+    $nm = ($x -replace '^(--[^=]+).*$', '$1')
+    if ($nm -eq "--audio_mute" -or $nm -eq "--no-audio_mute") { Write-Host "svrtest: --arg $x ignored - test games stay muted"; continue }
+    $gameArgs = @($gameArgs | Where-Object { ($_ -replace '^(--[^=]+).*$', '$1') -ne $nm })
+    $gameArgs += $x
+}
 
 # ---- run
 $t0 = Get-Date

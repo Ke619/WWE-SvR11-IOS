@@ -68,6 +68,7 @@
 #include "jukebox.h"
 #include "media_mods.h"
 #include "vs_styles.h"
+#include "caw_parts.h"
 #include "music.h"
 #include "hd_movies.h"
 #include "user_movies.h"
@@ -1824,6 +1825,8 @@ REX_HOOK_RAW(sub_826B87B0) {
   if (const uint32_t alias = svr2011::ThreadsAlias(reinterpret_cast<const char*>(base + ctx.r4.u32))) ctx.r4.u64 = alias;
   // the chosen VS screen style's theme (vs_styles.h): asked for by another name, as below
   if (const uint32_t alias = svr2011::VsStyleAlias(reinterpret_cast<const char*>(base + ctx.r4.u32))) ctx.r4.u64 = alias;
+  // CAW parts from mods (caw_parts.h): the part lists and thumbnails with their records, by the overlay's names
+  if (const uint32_t alias = svr2011::CawPartsAlias(reinterpret_cast<const char*>(base + ctx.r4.u32))) ctx.r4.u64 = alias;
   // a media mod's replacement (renders: media_mods.h) - the first match in
   // the archive list wins, so the game's own would: asked for by another name
   if (const uint32_t alias = svr2011::MediaAlias(reinterpret_cast<const char*>(base + ctx.r4.u32))) {
@@ -1842,6 +1845,12 @@ REX_HOOK_RAW(sub_826B87B0) {
                          strnlen(reinterpret_cast<const char*>(base + ctx.r4.u32), 64));
     if (nm.find(trace) != std::string::npos) {
       const uint32_t out = ctx.r5.u32, caller = uint32_t(ctx.lr);
+      std::string chain;  // (the callers above: the guest stack's back chain, the saved LR at frame - 8)
+      for (uint32_t fr = ctx.r1.u32, k = 0; k < 6 && fr > 0x70000000u && fr < 0x80000000u; ++k) {
+        fr = Rd32(base + fr);
+        if (fr <= 0x70000000u || fr >= 0x80000000u) break;
+        chain += fmt::format(" {:08X}", Rd32(base + fr - 8));
+      }
       __imp__sub_826B87B0(ctx, base);
       std::string o;
       for (int i = 0; out && i < 16; ++i) o += fmt::format("{:02X}", base[out + i]);
@@ -1851,7 +1860,7 @@ REX_HOOK_RAW(sub_826B87B0) {
       std::lock_guard lock(tm);
       if (std::find(told.begin(), told.end(), k) == told.end()) {
         told.push_back(k);
-        REXLOG_INFO("[svr2011] vfs trace: {} -> {:08X} out {} (from {:08X})", nm, ctx.r3.u32, o, caller);
+        REXLOG_INFO("[svr2011] vfs trace: {} -> {:08X} out {} (from {:08X}{})", nm, ctx.r3.u32, o, caller, chain);
       }
       return;
     }

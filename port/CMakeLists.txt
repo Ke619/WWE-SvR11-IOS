@@ -94,6 +94,7 @@ set(SVR2011_SOURCES
     src/crowd_signs.cpp
     src/media_mods.cpp
     src/vs_styles.cpp
+    src/caw_parts.cpp
     src/move_packs.cpp
     modmaker/svrfmt/pac.cpp
     modmaker/svrfmt/texture.cpp

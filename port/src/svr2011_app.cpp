@@ -55,6 +55,7 @@
 #include "hd_movies.h"
 #include "media_mods.h"
 #include "vs_styles.h"
+#include "caw_parts.h"
 #include "frame_rate.h"
 #include "guest_faults.h"
 #include "perf_hooks.h"
@@ -394,6 +395,13 @@ void Svr2011App::OnConfigurePaths(rex::PathConfig& paths) {
 }
 
 void Svr2011App::OnPreSetup(rex::RuntimeConfig& config) {
+  // Test games (tools/dev/svrtest.ps1 and the other test scripts): SVR2011_AUDIO_MUTE=1 mutes every sound path
+  // (they all read audio_mute) even when the command line was dropped - a flag given twice is a parse error that
+  // loses every --option, --audio_mute=true with them (27 Oct: a test game was heard).
+  if (const char* m = std::getenv("SVR2011_AUDIO_MUTE"); m && *m == '1') {
+    rex::cvar::SetFlagByName("audio_mute", "true");
+    REXLOG_INFO("settings: audio muted (SVR2011_AUDIO_MUTE)");
+  }
   // A settings file that couldn't be read (every setting ignored) still draws.
   if (config.gpu_plugin.empty()) {
     rex::cvar::SetFlagByName("gpu_plugin", "xenos");
@@ -748,6 +756,7 @@ void Svr2011App::OnPostLoadXexImage() {
   // Superstar mods: new characters in the free DLC slots (superstar_mods.h).
   svr2011::InstallMediaMods(runtime()->memory());  // (arenas branch: before the superstar mods mount its pac)
   svr2011::InstallVsStyles(runtime()->memory());   // (the same: its overlay pac)
+  svr2011::InstallCawParts(runtime()->memory());   // (the same: CAW parts from mods, caw_parts.h)
   svr2011::KeepWindowAlive();
 #ifndef SVR2011_D3D_TRACE
   svr2011::InstallModelMem(runtime()->memory());  // (model_mem.cpp)

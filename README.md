@@ -124,7 +124,6 @@ Settings are saved in `svr2011.toml` in the game folder (the app's **Documents**
 | Touch controls | ✅ Working |
 | Saves as plain files | ✅ Working |
 | Wide-screen matches and entrances | ✅ Working |
-| Up to 10 HD logos per superstar | ❌ Not available on iOS yet |
 | Entrance movies | ❌ Not available on iOS yet |
 | DLC | ✅ Working |
 | Mods (`.svrmod`) | ❌ Not available on iOS yet |
@@ -132,7 +131,6 @@ Settings are saved in `svr2011.toml` in the game folder (the app's **Documents**
 | Achievements | ❌ Not available on iOS yet |
 | Entrance music from your own songs | ❌ Not available on iOS yet |
 | iOS launcher | ✅ Working |
-| Launcher tabs from the PC port (Paint Tool, Saves, Movies, DLC) | ❌ Not available on iOS yet |
 | Online (Community Creations account and friends in the launcher) | ⚠️ Experimental |
 | Discord status, Steam Deck, Android | ➖ Not part of this port. See the original README. |
 
@@ -175,16 +173,6 @@ The recompiled game code is **generated on your machine from your own game files
 | Port | Objective-C(++) enabled, Apple `malloc` and `gettid` fixes, touch controls and phone defaults on | Build compatibility, and the same behaviour as Android |
 | Port | A start-up log, shader installer and no-op music functions (`ios_stubs.cpp`) | Diagnostics, and features not ported yet |
 | Port | The UIKit launcher (`ios_launcher.mm`) | iOS has no Windows or Java launcher |
-
-**Repository layout:**
-
-| Path | What's there |
-|---|---|
-| `port/` | The OG port, as it is in the original repo, except where noted. |
-| `port/patches/ios/` | The iOS fixes to the ReXGlue SDK's runtime, as patch files.|
-| `ios/` | iOS-only sources and packaging (launcher, stubs, `Info.plist`). There's no Xcode project: the app is built with CMake. <!-- TODO(author): adjust to what's really in this folder. --> |
-| `.github/workflows/` | The iOS build workflow. |
-| `docs/` | Install guides and screenshots. |
 
 The Windows build steps (LLVM, PowerShell, the launcher) are in the [original README](https://github.com/KaikoClanworth1/wwe-svr2011-pc#building-from-source).
 

@@ -428,13 +428,16 @@ jobs:
           #include <algorithm>
           #include <atomic>
           #include <chrono>
+          #include <cctype>
           #include <cmath>
           #include <cstdio>
           #include <cstdlib>
           #include <cstring>
           #include <filesystem>
           #include <fstream>
+          #include <ctime>
           #include <functional>
+          #include <map>
           #include <string>
           #include <vector>
           #include <dirent.h>
@@ -1481,6 +1484,8 @@ jobs:
             UIButton* _installBtn;
             UIButton* _cancelBtn;
             UIStackView* _files;
+            NSString* _signature;
+            NSTimer* _timer;
           }
 
           - (instancetype)init {
@@ -1505,6 +1510,18 @@ jobs:
             _files.axis = UILayoutConstraintAxisVertical;
             _files.spacing = 10.0;
             [stack addArrangedSubview:_files];
+            [stack addArrangedSubview:SvrButton(@"Refresh the list", NO, ^{
+              [weakSelf refreshFiles:YES];
+            })];
+            // (the list follows the folder by itself while this page is on screen)
+            _timer = [NSTimer scheduledTimerWithTimeInterval:2.0 repeats:YES block:^(NSTimer* timer) {
+              SvrInstallPage* s = weakSelf;
+              if (!s) {
+                [timer invalidate];
+                return;
+              }
+              if (s.view.window && !s.busy) [s refreshFiles:NO];
+            }];
             _installBtn = SvrButton(@"Or pick the disc image with the Files app…", NO, ^{
               [weakSelf pickImage];
             });
@@ -1530,10 +1547,22 @@ jobs:
             const BOOL installed = SvrFileExists(dest + "/default.xex");
             _state.text = [NSString stringWithFormat:@"%@ (%@ free).", installed ? @"Installed in the game folder" : @"Not installed yet",
                                                      SvrHuman(SvrFreeBytes(dest))];
-            for (UIView* v in [_files.arrangedSubviews copy]) [v removeFromSuperview];
+            [self refreshFiles:YES];
+          }
+
+          // The Import folder's files, each with Install and Delete (rebuilt only when the folder changed).
+          - (void)refreshFiles:(BOOL)force {
             const std::vector<SvrImportFile> found = SvrImportFiles();
+            NSMutableString* signature = [NSMutableString string];
+            for (const SvrImportFile& f : found) {
+              [signature appendFormat:@"%s:%llu;", f.name.c_str(), static_cast<unsigned long long>(f.size)];
+            }
+            if (!force && _signature && [_signature isEqualToString:signature]) return;
+            _signature = signature;
+            for (UIView* v in [_files.arrangedSubviews copy]) [v removeFromSuperview];
             if (found.empty()) {
-              [_files addArrangedSubview:SvrLabel(@"Nothing in the Import folder yet.", 14.0, SVR_DIM, NO)];
+              [_files addArrangedSubview:SvrLabel(@"Nothing in the Import folder yet. Copy your disc image there with the Files app: it shows up here by itself, with an Install button next to it.",
+                                                  14.0, SVR_DIM, NO)];
             }
             __weak SvrInstallPage* weakSelf = self;
             for (const SvrImportFile& f : found) {
@@ -2008,6 +2037,8 @@ jobs:
           @implementation SvrDlcPage {
             UILabel* _status;
             UIStackView* _list;
+            UILabel* _importInfo;
+            NSTimer* _timer;
             UIButton* _importBtn;
             UIButton* _filesBtn;
             UIButton* _folderBtn;
@@ -2030,10 +2061,20 @@ jobs:
             importPath.lineBreakMode = NSLineBreakByCharWrapping;
             importPath.font = [UIFont monospacedSystemFontOfSize:11.0 weight:UIFontWeightRegular];
             [stack addArrangedSubview:importPath];
+            _importInfo = SvrLabel(@"", 13.0, SVR_DIM, NO);
+            [stack addArrangedSubview:_importInfo];
             _importBtn = SvrButton(@"Add everything from the Import folder", YES, ^{
               [weakSelf addImport];
             });
             [stack addArrangedSubview:_importBtn];
+            _timer = [NSTimer scheduledTimerWithTimeInterval:2.0 repeats:YES block:^(NSTimer* timer) {
+              SvrDlcPage* s = weakSelf;
+              if (!s) {
+                [timer invalidate];
+                return;
+              }
+              if (s.view.window && !s.busy) [s updateImportInfo];
+            }];
             _filesBtn = SvrButton(@"Or pick files with the Files app…", NO, ^{
               [weakSelf pick:NO];
             });
@@ -2056,7 +2097,18 @@ jobs:
             return self;
           }
 
+          - (void)updateImportInfo {
+            const std::vector<SvrImportFile> found = SvrImportFiles();
+            uint64_t total = 0;
+            for (const SvrImportFile& f : found) total += f.size;
+            _importInfo.text = found.empty()
+                ? @"The Import folder is empty."
+                : [NSString stringWithFormat:@"Import folder: %lu file%@ (%@).", static_cast<unsigned long>(found.size()),
+                                             found.size() == 1 ? @"" : @"s", SvrHuman(total)];
+          }
+
           - (void)refresh {
+            [self updateImportInfo];
             for (UIView* v in [_list.arrangedSubviews copy]) [v removeFromSuperview];
             const std::vector<std::string> names = SvrDlcList();
             if (names.empty()) {
@@ -2212,6 +2264,459 @@ jobs:
 
           @end
 
+          // ---- the Mods tab: arenas, superstars, signs, media, backstage, match types, attires, menu backgrounds ----
+          // ---- Mods core begin ----
+
+          struct SvrModKind {
+            const char* type;    // manifest.txt "type="
+            const char* folder;  // Mods/<folder>
+            const char* marker;  // the file a mod of this kind must have ("" = any .dds picture)
+            const char* label;
+          };
+          static const SvrModKind kSvrModKinds[] = {
+              {"arena", "Arenas", "arena.pac", "Arena"},
+              {"superstar", "Superstars", "ch.pac", "Superstar"},
+              {"signs", "Signs", "manifest.txt", "Signs"},
+              {"media", "Media", "manifest.txt", "Media"},
+              {"backstage", "Backstage", "arena.pac", "Backstage"},
+              {"matchtype", "MatchTypes", "manifest.txt", "Match type"},
+              {"attire", "Attires", "attire.pac", "Attire"},
+              {"background", "Backgrounds", "", "Menu background"},
+          };
+
+          static std::string SvrModsDir() { return SvrDocs() + "/Mods"; }
+
+          static const SvrModKind* SvrModKindFor(const std::string& type) {
+            for (const SvrModKind& k : kSvrModKinds) {
+              if (type == k.type) return &k;
+            }
+            return nullptr;
+          }
+
+          static std::map<std::string, std::string> SvrModManifest(const std::string& dir) {
+            std::map<std::string, std::string> m;
+            std::ifstream in(dir + "/manifest.txt");
+            if (!in.is_open()) in.open(dir + "/info.txt");
+            for (std::string line; std::getline(in, line);) {
+              const size_t eq = line.find('=');
+              if (eq != std::string::npos && eq > 0) m[SvrTrim(line.substr(0, eq))] = SvrTrim(line.substr(eq + 1));
+            }
+            return m;
+          }
+
+          static bool SvrHasDds(const std::string& dir) {
+            DIR* d = opendir(dir.c_str());
+            if (!d) return false;
+            bool found = false;
+            while (const struct dirent* e = readdir(d)) {
+              const std::string n = e->d_name;
+              struct stat st;
+              if (SvrEndsWith(n, ".dds") && stat((dir + "/" + n).c_str(), &st) == 0 && S_ISREG(st.st_mode)) {
+                found = true;
+                break;
+              }
+            }
+            closedir(d);
+            return found;
+          }
+
+          static bool SvrModHasMarker(const SvrModKind& k, const std::string& dir) {
+            if (k.marker[0] == '\0') return SvrHasDds(dir);
+            struct stat st;
+            return stat((dir + "/" + k.marker).c_str(), &st) == 0 && S_ISREG(st.st_mode);
+          }
+
+          static bool SvrCopyEntryToFile(int fd, const SvrZipEntry& e, const std::string& out) {
+            SvrZipReader zr(fd, e);
+            if (!zr.open()) return false;
+            const int o = open(out.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (o < 0) return false;
+            std::vector<uint8_t> buf(1u << 20);
+            bool ok = true;
+            while (ok) {
+              const ssize_t n = zr.read(buf.data(), buf.size());
+              if (n < 0) {
+                ok = false;
+                break;
+              }
+              if (n == 0) break;
+              size_t off = 0;
+              while (off < static_cast<size_t>(n)) {
+                const ssize_t w = write(o, buf.data() + off, static_cast<size_t>(n) - off);
+                if (w <= 0) {
+                  ok = false;
+                  break;
+                }
+                off += static_cast<size_t>(w);
+              }
+            }
+            close(o);
+            return ok;
+          }
+
+          // Installs a .svrmod (a zip with manifest.txt and the mod's files) into Mods/<kind>/<id>.
+          // Returns "" (and the mod's name in *name) or the reason it was refused.
+          static std::string SvrModInstall(const std::string& zipPath, std::string* name) {
+            namespace fs = std::filesystem;
+            const int fd = open(zipPath.c_str(), O_RDONLY);
+            if (fd < 0) return "can't read it";
+            std::vector<SvrZipEntry> entries;
+            std::string error;
+            if (!SvrZipList(fd, &entries, &error)) {
+              close(fd);
+              return error;
+            }
+            const std::string mods = SvrModsDir();
+            const std::string stage = mods + "/.stage";
+            std::error_code ec;
+            fs::remove_all(stage, ec);
+            fs::create_directories(stage, ec);
+            for (const SvrZipEntry& e : entries) {
+              if (e.name.empty() || e.name.back() == '/' || e.name.back() == '\\') continue;
+              std::string n = e.name;
+              std::replace(n.begin(), n.end(), '\\', '/');
+              const size_t slash = n.find_last_of('/');
+              const std::string leaf = slash == std::string::npos ? n : n.substr(slash + 1);
+              // (subfolders are kept - a superstar mod's moves/motions/ - but nothing outside the mod's folder)
+              if (leaf.empty() || leaf[0] == '.' || n[0] == '/' || n.find(':') != std::string::npos ||
+                  ("/" + n + "/").find("/../") != std::string::npos) {
+                continue;
+              }
+              const std::string out = stage + "/" + n;
+              fs::create_directories(fs::path(out).parent_path(), ec);
+              if (!SvrCopyEntryToFile(fd, e, out)) {
+                close(fd);
+                fs::remove_all(stage, ec);
+                return "can't unpack " + n;
+              }
+            }
+            close(fd);
+
+            std::map<std::string, std::string> m = SvrModManifest(stage);
+            std::string type = m.count("type") ? m["type"] : "arena";
+            for (char& c : type) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+            const SvrModKind* kind = SvrModKindFor(type);
+            if (!kind) {
+              fs::remove_all(stage, ec);
+              return "its type \"" + type + "\" isn't known";
+            }
+            const bool pic = type == "background";
+            if (type == "attire" && !SvrModHasMarker(*kind, stage)) {
+              fs::remove_all(stage, ec);
+              return "that attire mod has no attire.pac";
+            }
+            if (pic && !SvrModHasMarker(*kind, stage)) {
+              fs::remove_all(stage, ec);
+              return "it has no pictures (.dds)";
+            }
+            if (!pic && type != "attire" && type != "signs" && type != "media" && type != "matchtype" &&
+                !SvrModHasMarker(*kind, stage)) {
+              fs::remove_all(stage, ec);
+              return type == "superstar" ? "it has no ch.pac" : "it has no arena (not a SvR2011 mod?)";
+            }
+            std::string id;
+            if (m.count("id")) {
+              for (char c : m["id"]) id += (isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-') ? c : '_';
+            }
+            if (id.empty()) id = type;
+            const std::string need = (pic || type == "signs" || type == "media" || type == "matchtype") ? "manifest.txt"
+                                                                                                         : kind->marker;
+            const std::string kindDir = mods + "/" + kind->folder;
+            const std::string dest = kindDir + "/" + id;
+            const std::string fresh = mods + "/.new-" + kind->folder + "-" + id;
+            const std::string old = mods + "/.old-" + kind->folder + "-" + id;
+            fs::remove_all(fresh, ec);
+            fs::remove_all(old, ec);
+            fs::create_directories(kindDir, ec);
+            // The new copy beside the old one first, then the old one aside, the new one in (the old one back if
+            // that fails) and only then the old one deleted: a failure leaves the installed copy as it was.
+            if (rename(stage.c_str(), fresh.c_str()) != 0) {
+              fs::remove_all(stage, ec);
+              return "can't write to the game folder; the installed copy is unchanged";
+            }
+            struct stat st;
+            if (stat((fresh + "/" + need).c_str(), &st) != 0) {
+              fs::remove_all(fresh, ec);
+              return "it has no " + need;
+            }
+            const bool existed = stat(dest.c_str(), &st) == 0;
+            if (existed && rename(dest.c_str(), old.c_str()) != 0) {
+              fs::remove_all(fresh, ec);
+              return "can't replace the installed copy (it is unchanged)";
+            }
+            if (rename(fresh.c_str(), dest.c_str()) != 0) {
+              if (existed) rename(old.c_str(), dest.c_str());
+              fs::remove_all(fresh, ec);
+              return "can't move the new copy in (the installed copy is unchanged)";
+            }
+            fs::remove_all(old, ec);
+            if (type == "attire") {  // (the install order: the newer moves)
+              std::ofstream(dest + "/.installed") << static_cast<long long>(time(nullptr)) * 1000;
+            }
+            *name = m.count("name") && !m["name"].empty() ? m["name"] : id;
+            return "";
+          }
+
+          struct SvrModInfo {
+            const SvrModKind* kind = nullptr;
+            std::string id;
+            std::string name;
+            std::string hint;
+            bool enabled = true;
+          };
+
+          static std::vector<SvrModInfo> SvrModsList() {
+            std::vector<SvrModInfo> out;
+            for (const SvrModKind& k : kSvrModKinds) {
+              const std::string dir = SvrModsDir() + "/" + k.folder;
+              DIR* d = opendir(dir.c_str());
+              if (!d) continue;
+              std::vector<std::string> names;
+              while (const struct dirent* e = readdir(d)) {
+                const std::string n = e->d_name;
+                struct stat st;
+                if (n[0] != '.' && stat((dir + "/" + n).c_str(), &st) == 0 && S_ISDIR(st.st_mode)) names.push_back(n);
+              }
+              closedir(d);
+              std::sort(names.begin(), names.end(),
+                        [](const std::string& a, const std::string& b) { return strcasecmp(a.c_str(), b.c_str()) < 0; });
+              for (const std::string& n : names) {
+                const std::string path = dir + "/" + n;
+                if (!SvrModHasMarker(k, path)) continue;
+                std::map<std::string, std::string> m = SvrModManifest(path);
+                SvrModInfo info;
+                info.kind = &k;
+                info.id = n;
+                info.name = m.count("name") && !m["name"].empty() ? m["name"] : n;
+                info.hint = k.label;
+                if (std::string(k.type) == "attire" && m.count("attire")) info.hint += " " + m["attire"];
+                if (m.count("author") && !m["author"].empty()) info.hint += " by " + m["author"];
+                if (m.count("version")) info.hint += ", v" + m["version"];
+                struct stat st;
+                if (k.marker[0] != '\0' && std::string(k.marker) != "manifest.txt" && stat((path + "/" + k.marker).c_str(), &st) == 0) {
+                  info.hint += ", " + std::to_string(static_cast<unsigned long long>(st.st_size) / 1048576) + " MB";
+                }
+                info.enabled = stat((path + "/disabled").c_str(), &st) != 0;
+                out.push_back(info);
+              }
+            }
+            return out;
+          }
+
+          static void SvrModSetEnabled(const SvrModKind& k, const std::string& id, bool on) {
+            const std::string flag = SvrModsDir() + "/" + k.folder + "/" + id + "/disabled";
+            if (on) {
+              unlink(flag.c_str());
+            } else {
+              std::ofstream(flag).put('\n');
+            }
+          }
+
+          // A removed superstar mod gives its id back: its line ("<folder>\t<id>") leaves Mods/Superstars/slots.txt.
+          static void SvrFreeSuperstarSlot(const std::string& folderName) {
+            const std::string slots = SvrModsDir() + "/Superstars/slots.txt";
+            std::ifstream in(slots);
+            if (!in) return;
+            std::string keep;
+            bool dropped = false;
+            for (std::string line; std::getline(in, line);) {
+              const size_t tab = line.rfind('\t');
+              if (tab != std::string::npos && line.substr(0, tab) == folderName) {
+                dropped = true;
+                continue;
+              }
+              keep += line + "\n";
+            }
+            in.close();
+            if (dropped) std::ofstream(slots, std::ios::trunc) << keep;
+          }
+
+          // Remove: a match type can't be taken out (the game has no folder for it), so it is switched off.
+          static std::string SvrModRemove(const SvrModKind& k, const std::string& id) {
+            if (id.empty() || id.find('/') != std::string::npos || id == "." || id == "..") return "bad name";
+            if (std::string(k.type) == "matchtype") {
+              SvrModSetEnabled(k, id, false);
+              return "Match types can't be removed - it is switched off instead.";
+            }
+            std::error_code ec;
+            std::filesystem::remove_all(SvrModsDir() + "/" + k.folder + "/" + id, ec);
+            if (std::string(k.type) == "superstar") SvrFreeSuperstarSlot(id);
+            return "";
+          }
+
+          // ---- Mods core end ----
+
+          @interface SvrModsPage : NSObject
+          @property(nonatomic, strong) UIScrollView* view;
+          @property(nonatomic, weak) UIViewController* presenter;
+          @property(nonatomic) BOOL busy;
+          - (void)refresh;
+          @end
+
+          @implementation SvrModsPage {
+            UILabel* _status;
+            UILabel* _importInfo;
+            UIStackView* _list;
+            UIButton* _installBtn;
+            NSTimer* _timer;
+          }
+
+          - (instancetype)init {
+            self = [super init];
+            if (!self) return nil;
+            UIStackView* stack = nil;
+            _view = SvrScrollPage(&stack);
+            __weak SvrModsPage* weakSelf = self;
+
+            [stack addArrangedSubview:SvrLabel(@"Mods", 18.0, SVR_TEXT, YES)];
+            [stack addArrangedSubview:SvrLabel(@"Arenas, superstars, signs, media, backstage areas, match types, attires and menu backgrounds, as .svrmod files. Copy them into the Import folder (the same one as for the game and DLC) with the Files app, then tap the button. Mods start working the next time the game starts.",
+                                               14.0, SVR_DIM, NO)];
+            UILabel* importPath = SvrLabel(SvrNS(SvrImportDir()), 11.0, SVR_DIM, NO);
+            importPath.lineBreakMode = NSLineBreakByCharWrapping;
+            importPath.font = [UIFont monospacedSystemFontOfSize:11.0 weight:UIFontWeightRegular];
+            [stack addArrangedSubview:importPath];
+            _importInfo = SvrLabel(@"", 13.0, SVR_DIM, NO);
+            [stack addArrangedSubview:_importInfo];
+            _installBtn = SvrButton(@"Install every .svrmod from the Import folder", YES, ^{
+              [weakSelf installImport];
+            });
+            [stack addArrangedSubview:_installBtn];
+            _status = SvrLabel(@"", 13.0, SVR_DIM, NO);
+            [stack addArrangedSubview:_status];
+            [stack addArrangedSubview:SvrLabel(@"Installed", 18.0, SVR_TEXT, YES)];
+            _list = [[UIStackView alloc] init];
+            _list.axis = UILayoutConstraintAxisVertical;
+            _list.spacing = 12.0;
+            [stack addArrangedSubview:_list];
+            _timer = [NSTimer scheduledTimerWithTimeInterval:2.0 repeats:YES block:^(NSTimer* timer) {
+              SvrModsPage* s = weakSelf;
+              if (!s) {
+                [timer invalidate];
+                return;
+              }
+              if (s.view.window && !s.busy) [s updateImportInfo];
+            }];
+            [self refresh];
+            return self;
+          }
+
+          - (std::vector<std::string>)importedMods {
+            std::vector<std::string> names;
+            for (const SvrImportFile& f : SvrImportFiles()) {
+              if (SvrEndsWith(f.name, ".svrmod")) names.push_back(f.name);
+            }
+            return names;
+          }
+
+          - (void)updateImportInfo {
+            const size_t count = [self importedMods].size();
+            _importInfo.text = count == 0 ? @"No .svrmod files in the Import folder."
+                                          : [NSString stringWithFormat:@"%lu .svrmod file%@ in the Import folder.",
+                                                                       static_cast<unsigned long>(count), count == 1 ? @"" : @"s"];
+          }
+
+          - (void)refresh {
+            [self updateImportInfo];
+            for (UIView* v in [_list.arrangedSubviews copy]) [v removeFromSuperview];
+            const std::vector<SvrModInfo> mods = SvrModsList();
+            if (mods.empty()) {
+              [_list addArrangedSubview:SvrLabel(@"None yet.", 15.0, SVR_DIM, NO)];
+              return;
+            }
+            __weak SvrModsPage* weakSelf = self;
+            for (const SvrModInfo& m : mods) {
+              NSString* name = SvrNS(m.name);
+              NSString* modId = SvrNS(m.id);
+              const SvrModKind* kind = m.kind;
+              UILabel* label = SvrLabel([NSString stringWithFormat:@"%@\n%@", name, SvrNS(m.hint)], 14.0, SVR_TEXT, NO);
+              UISwitch* sw = SvrToggle(m.enabled, ^(BOOL on) {
+                SvrModSetEnabled(*kind, SvrStd(modId), on);
+                SvrModsPage* s = weakSelf;
+                if (s) s->_status.text = [NSString stringWithFormat:@"%@ is %@. (from the next game start)", name, on ? @"on" : @"off"];
+              });
+              UIButton* remove = SvrButton(@"Remove", NO, ^{
+                [weakSelf confirmRemove:kind modId:modId name:name];
+              });
+              [remove.widthAnchor constraintEqualToConstant:100.0].active = YES;
+              UIStackView* row = [[UIStackView alloc] initWithArrangedSubviews:@[ label, sw, remove ]];
+              row.axis = UILayoutConstraintAxisHorizontal;
+              row.alignment = UIStackViewAlignmentCenter;
+              row.spacing = 12.0;
+              [_list addArrangedSubview:row];
+            }
+          }
+
+          - (void)installImport {
+            if (self.busy) return;
+            if (!SvrFileExists(SvrDocs() + "/default.xex")) {
+              _status.text = @"Install the game first (Install tab).";
+              return;
+            }
+            const std::vector<std::string> files = [self importedMods];
+            if (files.empty()) {
+              _status.text = @"Copy .svrmod files into the Import folder first.";
+              return;
+            }
+            self.busy = YES;
+            _installBtn.enabled = NO;
+            _status.text = @"Installing…";
+            __weak SvrModsPage* weakSelf = self;
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+              std::vector<std::string> ok, failed;
+              for (const std::string& f : files) {
+                std::string name;
+                const std::string error = SvrModInstall(SvrImportDir() + "/" + f, &name);
+                if (error.empty()) {
+                  ok.push_back(name);
+                } else {
+                  failed.push_back(f + " - " + error);
+                }
+              }
+              dispatch_async(dispatch_get_main_queue(), ^{
+                [weakSelf finishInstall:ok failed:failed];
+              });
+            });
+          }
+
+          - (void)finishInstall:(std::vector<std::string>)ok failed:(std::vector<std::string>)failed {
+            self.busy = NO;
+            _installBtn.enabled = YES;
+            NSMutableString* text = [NSMutableString string];
+            if (!ok.empty()) {
+              NSMutableArray<NSString*>* names = [NSMutableArray array];
+              for (const std::string& n : ok) [names addObject:SvrNS(n)];
+              [text appendFormat:@"Installed: %@. They work from the next game start.", [names componentsJoinedByString:@", "]];
+            }
+            for (const std::string& f : failed) [text appendFormat:@"%@Not installed: %@", text.length ? @"\n" : @"", SvrNS(f)];
+            _status.text = text;
+            [self refresh];
+          }
+
+          - (void)confirmRemove:(const SvrModKind*)kind modId:(NSString*)modId name:(NSString*)name {
+            UIViewController* host = self.presenter;
+            if (!host || self.busy) return;
+            const BOOL matchType = std::string(kind->type) == "matchtype";
+            UIAlertController* alert = [UIAlertController
+                alertControllerWithTitle:matchType ? @"Switch this match type off?" : @"Remove this mod?"
+                                 message:matchType ? [NSString stringWithFormat:@"%@ can't be removed (the game keeps match types); it will be switched off.", name]
+                                                   : [NSString stringWithFormat:@"%@ will be deleted.", name]
+                          preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+            __weak SvrModsPage* weakSelf = self;
+            [alert addAction:[UIAlertAction actionWithTitle:matchType ? @"Switch off" : @"Remove" style:UIAlertActionStyleDestructive
+                                                    handler:^(UIAlertAction* action) {
+                                                      SvrModsPage* s = weakSelf;
+                                                      if (!s) return;
+                                                      const std::string note = SvrModRemove(*kind, SvrStd(modId));
+                                                      s->_status.text = note.empty() ? [NSString stringWithFormat:@"Removed %@.", name]
+                                                                                     : [NSString stringWithFormat:@"%@ - %@", name, SvrNS(note)];
+                                                      [s refresh];
+                                                    }]];
+            [host presentViewController:alert animated:YES completion:nil];
+          }
+
+          @end
+
           // ---- the launcher screen ----
 
           @interface SvrLauncherViewController : UIViewController
@@ -2224,6 +2729,7 @@ jobs:
             SvrOnlinePage* _online;
             SvrInstallPage* _install;
             SvrDlcPage* _dlc;
+            SvrModsPage* _mods;
           }
 
           - (UIView*)buildPlayPage {
@@ -2291,6 +2797,9 @@ jobs:
             } else if (index == 4) {
               [_dlc refresh];
               page = _dlc.view;
+            } else if (index == 5) {
+              [_mods refresh];
+              page = _mods.view;
             } else {
               _playPage = [self buildPlayPage];  // rebuilt each time: it shows whether the game is installed
               page = _playPage;
@@ -2309,7 +2818,7 @@ jobs:
             [super viewDidLoad];
             self.view.backgroundColor = SVR_BG;
 
-            UISegmentedControl* tabs = [[UISegmentedControl alloc] initWithItems:@[ @"Play", @"Settings", @"Online", @"Install", @"DLC" ]];
+            UISegmentedControl* tabs = [[UISegmentedControl alloc] initWithItems:@[ @"Play", @"Settings", @"Online", @"Install", @"DLC", @"Mods" ]];
             tabs.selectedSegmentIndex = 0;
             tabs.translatesAutoresizingMaskIntoConstraints = NO;
             [self.view addSubview:tabs];
@@ -2333,6 +2842,8 @@ jobs:
             _install.presenter = self;
             _dlc = [[SvrDlcPage alloc] init];
             _dlc.presenter = self;
+            _mods = [[SvrModsPage alloc] init];
+            _mods.presenter = self;
             __weak SvrLauncherViewController* weakSelf = self;
             [tabs addAction:[UIAction actionWithHandler:^(__kindof UIAction* action) {
               UISegmentedControl* t = (UISegmentedControl*)action.sender;

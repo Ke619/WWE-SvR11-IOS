@@ -126,7 +126,7 @@ Settings are saved in `svr2011.toml` in the game folder (the app's **Documents**
 | Wide-screen matches and entrances | ✅ Working |
 | Entrance movies | ❌ Not available on iOS yet |
 | DLC | ✅ Working |
-| Mods (`.svrmod`) | ❌ Not available on iOS yet |
+| Mods (`.svrmod`) | ⚠️ Experimental |
 | Texture packs | ❌ Not available on iOS yet |
 | Achievements | ❌ Not available on iOS yet |
 | Entrance music from your own songs | ❌ Not available on iOS yet |

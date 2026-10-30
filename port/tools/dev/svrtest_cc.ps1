@@ -57,9 +57,8 @@ for ($i = 0; $i -lt $Rest.Count; $i++) {
 }
 if (-not (Test-Path $o.script)) { throw "svrtest_cc: no steps file $($o.script)" }
 
-# ---- guards: the player's game, the 4 test games cap (all chats)
+# ---- guards: the player's game, a test-game slot (test_guard's limit, all chats)
 Assert-NoPlayerGame
-if (@(Get-SvrGames).Count -ge 4) { throw "svrtest_cc: 4 test games already run" }
 
 # ---- the game folder, the run folder, private copies
 $prep = @(& (Join-Path $PSScriptRoot "svrtest.ps1") prepare --exe dbg --mods $o.mods)

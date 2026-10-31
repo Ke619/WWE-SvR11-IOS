@@ -281,7 +281,16 @@ void MatchBoxUpdate(PPCContext& ctx, uint8_t* base) {
         }
       }
     }
-    // Weapons, every 10 updates: made, picked up, dropped, gone (broken / removed)
+    // Weapons, every 10 updates: made, picked up, dropped, gone (broken / removed). The holder is the person whose
+    // held object (+1828) is the weapon's id (+1152); the weapon's +44 is only its state (8 taken up, 12 in hand, 2 ...),
+    // which the box once printed as the person (a 1v1 online box: "picked up by person 8 / 12").
+    const auto Holder = [&](uint32_t o) -> uint32_t {
+      const uint32_t id = Rd32(base + o + 1152);
+      if (id == ~0u) return 0xFF;  // (-1: a person's "nothing held")
+      for (uint32_t p = 0; p < 9; ++p)
+        if (const uint32_t c = Rd32(base + kChars + p * 4); c && Rd32(base + c + 1828) == id) return p;
+      return 0xFF;
+    };
     if (clock % 10 == 0)
       for (uint32_t i = 0; i < kObjectSlots; ++i) {
         const uint32_t o = Rd32(base + kObjects + i * 4);
@@ -290,11 +299,11 @@ void MatchBoxUpdate(PPCContext& ctx, uint8_t* base) {
         if (o != g_object[i]) {
           if (g_object[i] && !o) AddEvent(clock, fmt::format("weapon slot {} gone", i));
           if (o && clock > 60) AddEvent(clock, fmt::format("weapon slot {} made (model {})", i, model));
-          g_object[i] = o, g_holder[i] = o ? Rd32(base + o + 44) & 0xFF : 0xFF;
+          g_object[i] = o, g_holder[i] = o ? Holder(o) : 0xFF;
           continue;
         }
         if (!o) continue;
-        const uint32_t h = Rd32(base + o + 44) & 0xFF;
+        const uint32_t h = Holder(o);
         if (h != g_holder[i])
           AddEvent(clock, h == 0xFF ? fmt::format("weapon slot {} (model {}) dropped by person {}", i, model, g_holder[i])
                                     : fmt::format("weapon slot {} (model {}) picked up by person {}", i, model, h));

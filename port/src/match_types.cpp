@@ -2702,8 +2702,8 @@ void MatchTypesUpdate(PPCContext& ctx, uint8_t* base) {
         std::fclose(f);
       }
   }
-  // Test aid: SVR2011_TEST_ITEM_LOG=1 - each weapon picked up (its holder,
-  // +44, from none to a person): its slot, model, where it lay, and whether it
+  // Test aid: SVR2011_TEST_ITEM_LOG=1 - each weapon picked up (its state,
+  // +44, from none to taken): its slot, model, where it lay, and whether it
   // came from under the ring (hidden at 0,-12,0 until then).
   if (static const bool item_log = std::getenv("SVR2011_TEST_ITEM_LOG") != nullptr; item_log) {
     // (kind per slot: 0 unknown, 1 lying at the bell (placed), 2 hidden (under the ring), 3 out from under it)
@@ -2733,7 +2733,10 @@ void MatchTypesUpdate(PPCContext& ctx, uint8_t* base) {
       }
       if (h != 0xFF && holder[i] == 0xFF && kind[i] != 0) {
         static const char* kKinds[] = {"?", "placed", "from under the ring", "again"};
-        REXLOG_INFO("item: person {} picks up slot {} (model {}) {} at ({:.0f},{:.0f},{:.0f}), frame {}", h, i, model,
+        uint32_t who = 0xFF;  // (the holder: the person whose held object +1828 is this one's id +1152; +44 is its state)
+        for (uint32_t c = 0; c < 9 && who == 0xFF; ++c)
+          if (const uint32_t p = Rd32(base + kChars + c * 4); p && Rd32(base + p + 1828) == Rd32(base + o + 1152)) who = c;
+        REXLOG_INFO("item: person {} picks up slot {} (model {}) {} at ({:.0f},{:.0f},{:.0f}), frame {}", who, i, model,
                     kKinds[kind[i]], last_pos[i][0], last_pos[i][1], last_pos[i][2], frames);
         if (kind[i] == 2) kind[i] = 3;
       }

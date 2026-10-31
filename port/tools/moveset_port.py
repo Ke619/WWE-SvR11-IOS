@@ -299,7 +299,8 @@ def other_pack_ids(pac11, source=None):
 
 def own_pack_slots(pac11, source):
     """{moveset offset: move id} of the slots the superstar's installed version (manifest source=<source>, in the
-    Bundled Mods or the Mods) filled with its own ported moves (ids its pack copies: wazecopy) - {} if none"""
+    Bundled Mods or the Mods) filled with its own ported moves (ids its pack copies - wazecopy - or sets the
+    category bits of - waze: an SvR 2007-2009 move on its own 2011 record) - {} if none"""
     import re
     import zipfile
     game = os.path.dirname(os.path.abspath(pac11))
@@ -325,7 +326,8 @@ def own_pack_slots(pac11, source):
     for rd in texts:
         if not any(n.endswith('manifest.txt') and mine.search(t) for n, t in rd.items()):
             continue
-        copied = {int(x) for n, t in rd.items() if n.endswith('pack.txt') for x in re.findall(r'^wazecopy\s+(\d+)\s', t, re.M)}
+        copied = {int(x) for n, t in rd.items() if n.endswith('pack.txt')
+                  for x in re.findall(r'^(?:wazecopy|waze)\s+(\d+)\s', t, re.M)}
         out = {}
         for n, t in rd.items():
             if n.endswith('moves.txt') and not n.endswith('pack.txt'):

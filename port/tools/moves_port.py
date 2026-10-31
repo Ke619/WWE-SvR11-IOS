@@ -441,10 +441,13 @@ class Game0789:
         g = read_pac(open(src.need('pac/misc.pac'), 'rb').read())
         raw = unz(dict(((t, n), b) for t, es in g for n, b in es)[(b'MOVS', b'WAZE')])
         self.waze = {}
+        self.situation = {}   # (where the move starts: +0x73, as 2011's WAZE - the same values for the same moves)
         for q in range(0, len(raw) - 143, 144):
             nm = raw[q + 0x10:q + 0x50].split(b'\0')[0]
             if len(nm) > 2 and all(32 <= c < 127 for c in nm):
-                self.waze.setdefault(struct.unpack_from('<H', raw, q + 0x88)[0], nm.decode('latin1').strip())
+                mid = struct.unpack_from('<H', raw, q + 0x88)[0]
+                self.waze.setdefault(mid, nm.decode('latin1').strip())
+                self.situation.setdefault(mid, raw[q + 0x73])
         self.groups = SM.read_epac(src.need('pac/m.pac'))[1]
         cache = os.path.join(work, 'index0789.pkl') if work else None
         if cache and os.path.exists(cache):
@@ -506,12 +509,37 @@ class Game0789:
                         self._index.setdefault(mid, {})[x] = (path.split('/')[1], path)
         return self._index
 
+    def packed_bank(self, mid):
+        """SvR 2009's own match copy of the move (MOTP/GAME/<child>, the packed codec 2011's MOTP uses: the people
+        packed, cameras / ropes / props as in the keyframe bank) - None for 2007 / 2008 (their MOT/GAME is keyframes)"""
+        for path, ents in self.banks.items():
+            if path.startswith('MOTP/') and any(m == mid for m, x, y, fr in ents):
+                return path
+        return None
 
-def clean_events08(evs, old, new):
-    """2008-only event ops 192 / 193 dropped; jumps (ops 49 / 50) to the move -> its new id"""
+    def menu_categories(self, mid):
+        """the 2011 MVMT categories of the source's own menu banks for the move (2009: STND / DIVI / ROPE ...;
+        2007 / 2008 file them all under MOTN / REMT - nothing)"""
+        out = []
+        for path, ents in self.banks.items():
+            if path.startswith('MVMT/') and any(m == mid for m, x, y, fr in ents):
+                c = path.split('/')[1].strip()
+                for c11 in {'STND': ('STN1', 'STN2'), 'DIVI': ('CORN',)}.get(c, (c,)):
+                    if c11 in SINGLES and c11 not in out:
+                        out.append(c11)
+        return out
+
+
+def clean_events08(evs, old, new, keep=(192, 193), cues=None):
+    """event ops 192 / 193 dropped unless in `keep` (2007-2009 and 2011 banks all size them 2 / 3; dropped only where
+    the 2011 bank sizes them otherwise). 2011 ignores 192 (sub_8239D750 skips it) and plays 193 as a sound / voice
+    cue (u16 id): a 193 is kept only for a cue id in `cues`, the ones 2011's own match copies play (Game11.cue_ids)
+    - another id is the source's own sound. Jumps (ops 49 / 50) to the move -> its new id"""
     out = []
     for e in evs:
-        if e and e[0] in (192, 193):
+        if e and e[0] in (192, 193) and e[0] not in keep:
+            continue
+        if e and e[0] == 193 and cues is not None and (len(e) < 3 or struct.unpack_from('<H', e, 1)[0] not in cues):
             continue
         e = bytearray(e)
         if e and e[0] in (49, 50) and len(e) >= 3 and struct.unpack_from('<H', e, 1)[0] == old:
@@ -547,32 +575,62 @@ def convert0789(a, rep, outdir, g):
         rep['warnings'].append("template %d is a move the game can't play (no move record): picked another" % tid)
         tid = None
     paired = e01 is not None
-    # (template categories: the slot's own (moveset_port passes its pro_slots bank), else every category of a
-    # one-on-one match - a tag team, Royal Rumble, ladder or cell move as the template made a singles move a
-    # team move: Sabu's Arabian Facebuster 6861 got 2647, MVMT/TEAM)
+    holds = sorted({e['x'] for e in tracks if 100 <= e['x'] < 110})
+    # Where the move starts (WAZE +0x73: 0 standing, 2 ..., 9 a dive, 10 the corner, 16 running): 2011's record for the
+    # id when it keeps one (cut moves keep theirs), else the source's - the same field, the same values. A template
+    # from another situation started the move in the wrong place (Frog Splash Pin on a running move's record).
+    sit = g11.situation.get(mid) if mid in g11.waze else g.situation.get(mid)
+    # The templates a match can play the move from: a keyframe (YMKs) match copy in MOTP/GAME - Ankle Lock 1 on
+    # Powerful Knee Strike 5090 (no YMKs match copy) got a menu bank only and never played in a match
+    motp = {k[0] for p, (kind, keys, size) in g11.idx.items() if p.startswith('MOTP') and kind == 'YMKs' for k in keys}
+    held = {k[0] for p, (kind, keys, size) in g11.idx.items() if kind == 'YMKs' for k in keys if k[1] in (101, 102, 103)}
+    # (template categories: the slot's own (moveset_port passes its pro_slots bank), else the source's own menu
+    # category (2009's STND / DIVI / ROPE ...), else every category of a one-on-one match - a tag team, Royal Rumble,
+    # ladder or cell move as the template made a singles move a team move: Sabu's Arabian Facebuster 6861 got 2647,
+    # MVMT/TEAM)
     cats = slot_categories(a.get('cat'))
-    if not tid and mid in g11.waze and any(g11.waze[mid][0]):   # (2011 keeps the move's record - cut
-        bits = g11.waze[mid][0]                                           # ones have no category bits)
-        same = {i for i, (b, n) in g11.waze.items() if b == bits and i in g11.moved}
-        if same:
-            tid = choose_template(g11, cats, nf, gap, same, paired) or choose_template(g11, SINGLES, nf, gap, same, paired)
-            how = 'the same move category bits, the closest start gap and length'
+    src_cats = [] if a.get('cat') else g.menu_categories(mid)
+    if tid and tid not in motp:
+        raise BadInput('template %d has no keyframe match copy (MOTP/GAME): the move would never play in a match' % tid)
     if not tid:
-        for cs, where in ((cats, 'the slot\'s categories %s' % '/'.join(cats)), (SINGLES, 'one-on-one categories'),
-                          ('', 'any category')):
-            tid = choose_template(g11, cs, nf, gap, None, paired)
+        # by situation and category first, the start gap and length second; for a hold (the source's x 101-103: hold
+        # loop / release) a keyframe hold of 2011's (Ankle Lock 2 6181, Cloverleaf Pain 6212 ...) - a strike or a
+        # roll-up gave the hold no loop
+        def pool(same_sit, hold):
+            return {i for i in motp if (not same_sit or sit is None or g11.situation.get(i) == sit)
+                    and (not hold or i in held)}
+        tries = []
+        for same_sit, hold in ((True, bool(holds)), (True, False), (False, bool(holds)), (False, False)):
+            for cs, where in ((src_cats, 'the source\'s categories %s' % '/'.join(src_cats)),
+                              (cats, 'the slot\'s categories %s' % '/'.join(cats)), (SINGLES, 'one-on-one categories')):
+                if cs:
+                    tries.append((cs, where, same_sit, hold))
+        for cs, where, same_sit, hold in tries:
+            tid = choose_template(g11, cs, nf, gap, pool(same_sit, hold), paired)
             if tid:
+                how = '%s%s%s, the closest start gap and length (%s)' % (
+                    'two-person moves' if paired else 'one-person moves (a strike, a dive)',
+                    ', situation %s' % sit if same_sit and sit is not None else '',
+                    ', keyframe holds (x 101-103)' if hold else '', where)
                 break
-        how = ('two-person moves: ' if paired else 'one-person moves (a strike): ') + \
-            'the closest start gap and length (%s)' % where
     if not tid or tid not in g11.waze:
-        raise BadInput('no 2011 template move; give --template')
+        raise BadInput('no 2011 template move with a keyframe match copy; give --template')
+    # A hold with no keyframe hold of its own situation (2011's three - 6019, 6181, 6212 - are ground holds; SvR 2009's
+    # Ankle Lock 1 starts standing): banks and records from the hold (in-game its x 101 loop then holds the ankle -
+    # on a standing grapple's banks the pair let go after the takedown), the category bits from the template of the
+    # move's situation (offered standing, as the source)
+    btid = tid
+    if holds and tid not in held and not a.get('template'):
+        btid = choose_template(g11, SINGLES, nf, gap, pool(False, True), paired) or tid
+        if btid != tid:
+            rep['notes'].append('banks and records from the keyframe hold %d %s (x 101-103); category bits from %d %s'
+                                % (btid, g11.waze[btid][1], tid, g11.waze[tid][1]))
     if a.get('id'):
         new_id, why = int(a['id']), 'option'
     elif mid in g11.waze and mid not in g11.moved and mid > 1000:
         new_id, why = mid, 'the same id: a record 2011 keeps without a motion'
     else:
-        new_id, why = g11.free_record(name, limit=g11.id_limit(tid))
+        new_id, why = g11.free_record(name, limit=g11.id_limit(btid))
     if not new_id:
         raise RuntimeError('no free 2011 move record')
     rep['notes'].append('template %d %s (%s)' % (tid, g11.waze[tid][1], how))
@@ -580,45 +638,73 @@ def convert0789(a, rep, outdir, g):
     pack = re.sub(r'[^a-z0-9]+', '_', name.lower()).strip('_')[:40] or 'move_%d' % mid
     pd = os.path.join(outdir, pack)
     os.makedirs(os.path.join(pd, 'motions'), exist_ok=True)
-    lines = ['wazecopy %d %d' % (new_id, tid), 'wazename %d %s' % (new_id, name)]
+    # The record: on the id's own 2011 record (a cut move keeps its situation, damage and ratings - only its category
+    # bits are empty) the template's category bits alone; elsewhere the template's whole record
+    if new_id == mid and mid in g11.waze and not any(g11.waze[mid][0][:15]):
+        lines = ['waze %d %s' % (new_id, bytes(g11.waze[tid][0]).hex())]
+        rep['notes'].append('record: 2011\'s own for %d (situation %s), the template\'s category bits' % (new_id, sit))
+    else:
+        lines = ['wazecopy %d %d' % (new_id, btid)]
+        if btid != tid:
+            lines.append('waze %d %s' % (new_id, bytes(g11.waze[tid][0]).hex()))
+        if sit is not None and g11.situation.get(btid) != sit:
+            rep['warnings'].append('the template starts in situation %s, the move in %s' % (g11.situation.get(btid), sit))
+    lines.append('wazename %d %s' % (new_id, name))
     progress(50, 'tracks')
+    # Every track of the move goes into every bank (cameras y 50-57, ropes / turnbuckles 10-21, parts 30-32, props 60,
+    # 70), the match copy too - as stock 2011 keeps them (867 of its 988 moves with a camera have it in MOTP/GAME). Only
+    # the people went into MOTP before: Chokeslam 5 played without its rope and turnbuckle tracks in a match.
+    pk_path = g.packed_bank(mid)
+    pk = g.bank(pk_path) if pk_path else None
+    pk_tracks = {(e['x'], e['y']): e for e in pk.entries if e['id'] == mid} if pk else {}
     dlen = None
     nmot = 0
-    for path, kind, ks in g11.banks_of(tid):
+    motp_out = 0
+    for path, kind, ks in g11.banks_of(btid):
         if kind != 'YMKs':
             rep['dropped'].append('bank %s (%s)' % (path, kind))
             continue
         pac, bank = g11.bank(path)
         if dlen is None:
-            d0 = bank.find(tid, 0, 0)
+            d0 = bank.find(btid, 0, 0)
             dlen = d0['frames'] if d0 else None
         packed = path.startswith('MOTP')
+        keep = {op for op in (192, 193) if b8.T[op] == bank.T[op] and bank.T[op]}
+        cues = g11.cue_ids()
         for e in tracks:
             x, y = e['x'], e['y']
             if path.startswith('MVMT') and (x, y) not in ((0, 0), (0, 1)) and not any(xx == x for xx, yy in ks):
                 continue   # (menu banks: the body tracks only)
-            keys = None
-            if y in (0, 1, 2):
-                try:
-                    keys = ymks.body_keys(e['data'], b8.T, False)
-                except Exception:   # noqa: BLE001
-                    keys = None
-            if keys is not None:
-                for k in keys:
-                    k['events'] = clean_events08(k['events'], mid, new_id)
-                    if not k.get('has_pose', True):
-                        k['root'] = k['bones'] = None
-                data = ymks.build_motion(keys, max(1, e['frames']), packed=packed and y in (0, 1))
+            p = pk_tracks.get((x, y)) if packed else None
+            if p is not None:   # (SvR 2009's own match copy, as it is: the same packed codec)
+                data = fix_track(p['data'], pk.T, y in (0, 1) and ymks.is_packed_motion(p['data'], pk.T), mid, new_id,
+                                 keep, cues)
+                frames = p['frames']
             else:
-                if packed:
-                    continue   # (MOTP: the characters only)
-                data = e['data']
+                keys = None
+                if y in (0, 1, 2):
+                    try:
+                        keys = ymks.body_keys(e['data'], b8.T, False)
+                    except Exception:   # noqa: BLE001
+                        keys = None
+                if keys is not None:
+                    for k in keys:
+                        k['events'] = clean_events08(k['events'], mid, new_id, keep, cues)
+                        if not k.get('has_pose', True):
+                            k['root'] = k['bones'] = None
+                    data = ymks.build_motion(keys, max(1, e['frames']), packed=packed and y in (0, 1))
+                else:   # (cameras, ropes, props: the unpacked conventions in MOTP too - ymks.is_packed_motion)
+                    data = fix_track(e['data'], b8.T, False, mid, new_id, keep, cues)
+                frames = e['frames']
             fn = 'motions/%d_%d_%d_%s.ymk' % (new_id, x, y, path.replace('/', '').lower())
             open(os.path.join(pd, fn), 'wb').write(data)
-            lines.append('motion %s %s %d %d %d %d %s' % (pac, path, new_id, x, y, e['frames'], fn))
+            lines.append('motion %s %s %d %d %d %d %s' % (pac, path, new_id, x, y, frames, fn))
             nmot += 1
+            motp_out += packed
+    if not motp_out:   # (never a pack without the match copy: a move with menu banks only never plays in a match)
+        raise RuntimeError('no match copy (MOTP/GAME) written for template %d' % btid)
     scale = nf / float(dlen or nf)
-    for kind, grp, r, ev in g11.records(tid):
+    for kind, grp, r, ev in g11.records(btid):
         r = bytearray(r)
         struct.pack_into('<H', r, 0, new_id)
         if kind == 'evt':   # (sound frames to the new length)
@@ -630,11 +716,32 @@ def convert0789(a, rep, outdir, g):
         else:
             lines.append('%s %d %s' % (kind, grp, bytes(r).hex()))
     open(os.path.join(pd, 'pack.txt'), 'w', newline='\n').write('\n'.join(lines) + '\n')
-    rep['notes'].append('%d motions, the source\'s tracks copied (%d frames; template %s)' % (nmot, nf, dlen))
-    rep['dropped'].append('2008-only event ops 192 / 193; the source\'s own sounds (the template\'s, retimed)')
-    rep.update(ok=True, out=pd, folder=pd, id=new_id, name=name, template=tid)
+    rep['notes'].append('%d motions (%d in the match copy%s), the source\'s tracks copied (%d frames; template %s)' % (
+        nmot, motp_out, ', SvR 2009\'s own packed copy %s' % pk_path if pk else '', nf, dlen))
+    rep['dropped'].append('the source\'s own sounds and damage (the template\'s records, sounds retimed)')
+    rep['match_copy'] = True
+    rep.update(ok=True, out=pd, folder=pd, id=new_id, name=name, template=btid)
     progress(100, 'done')
     return rep
+
+
+def fix_track(data, T, packed, old, new, keep, cues=None):
+    """a track copied as it is (cameras, ropes, props; SvR 2009's packed people): its events as clean_events08"""
+    import ymks
+    st = ymks.parse_stream(data)
+    items, changed = [], False
+    for it in st.items:
+        if it[0] == 'rec':
+            ev, pose = ymks.split_record(it[1], packed)
+            if ev:
+                lst, ok = ymks.parse_events(ev, T)
+                if ok:
+                    ev2 = b''.join(clean_events08([b for op, b in lst], old, new, keep, cues))
+                    if ev2 != ev:
+                        r = ymks.join_record(ev2, pose, packed)
+                        it, changed = ('rec', r, len(r) > 0x9f), True
+        items.append(it)
+    return ymks.build_stream(ymks.Stream(items)) if changed else data
 
 
 def waze_records(raw):
@@ -745,6 +852,43 @@ class Game11:
             self._gaps[k] = r[-1][1] if r else None
             self._gaps_dirty = True
         return self._gaps[k]
+
+    def cue_ids(self):
+        """the sound / voice cue ids (event op 193) 2011's own match copies (MOTP/GAME) play - kept in a file per
+        2011 pac folder, as the start gaps"""
+        import pickle
+        import ymks
+        if getattr(self, '_cues', None) is not None:
+            return self._cues
+        m = os.path.join(self.pac11, 'mpsp.pac')
+        stamp = (os.path.getsize(m), int(os.path.getmtime(m)))
+        f = self._gaps_file.replace('template_gaps11_', 'cue_ids11_')
+        try:
+            st, self._cues = pickle.load(open(f, 'rb'))
+            if st == stamp:
+                return self._cues
+        except Exception:   # noqa: BLE001
+            pass
+        self._cues = set()
+        for path, (kind, keys, size) in self.idx.items():
+            if kind != 'YMKs' or not path.startswith('MOTP'):
+                continue
+            pac, bank = self.bank(path)
+            for e in bank.entries:
+                packed = e['y'] in (0, 1) and ymks.is_packed_motion(e['data'], bank.T)
+                try:
+                    for fr, r in ymks.parse_stream(e['data']).records():
+                        ev, pose = ymks.split_record(r, bool(packed))
+                        for op, b in (ymks.parse_events(ev, bank.T)[0] if ev else []):
+                            if op == 193 and len(b) >= 3:
+                                self._cues.add(struct.unpack_from('<H', b, 1)[0])
+                except ValueError:
+                    pass
+        try:
+            save_atomic(f, obj=(stamp, self._cues))
+        except OSError:
+            pass
+        return self._cues
 
     def save_gaps(self):
         import pickle

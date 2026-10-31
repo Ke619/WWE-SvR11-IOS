@@ -157,6 +157,11 @@ int g_heap_watch = -1;  // (SVR2011_TEST_HEAP_LOG=<heap 2-53>: every allocation 
 // test aid) - a player's crash report then names it (27 Oct: an Extreme Rules weapon load wrote to such a 0 at
 // lr 8215A008, now and then). The file cache's heap (16) fails on purpose while it frees old files: only with the aid.
 namespace {
+// Heap 12 (4.5 MB): what a match load allocates - the crowd sign bank twice (2 x 1,476,096 bytes for the game's 437
+// signs, lr 821EA528; superstar mods' and packs' signs make it bigger), the people's tables (sub_82173708) and more.
+// 54 superstar mods' signs (487 in all, a 1,660 KB bank) filled it at every match load (2.1.7 report ce0353): when
+// it's full, a block comes from the fallback memory as the stage's and weapons' heaps do (ring_rules hooks below).
+constexpr uint32_t kMatchLoadHeap = 12;
 // The game's heaps (table at *0x82EC5F48, 36 bytes each: start, end).
 void LogHeapTable(const uint8_t* base) {
   const uint32_t table = Rd32(base + 0x82EC5F48);
@@ -173,7 +178,7 @@ void LogHeapTable(const uint8_t* base) {
 // the heaps and the failure in the log, the "out of game memory" notice, then a crash report (abort). Other
 // threads that fail meanwhile wait for the end. (Any size: a forced failure of a 1.4 MB block there, lr 821EA528,
 // was written to as well.)
-constexpr uint32_t kExhaustedHeaps[] = {12};
+constexpr uint32_t kExhaustedHeaps[] = {kMatchLoadHeap};
 void HeapExhausted(const uint8_t* base, uint32_t heap, uint32_t size, uint32_t lr) {
   static std::atomic<bool> ending{false};
   if (ending.exchange(true))
@@ -219,7 +224,7 @@ bool ForcedFail(uint32_t heap) {
 
 REX_EXTERN(__imp__sub_8269A8D8);
 REX_HOOK_RAW(sub_8269A8D8) {
-  const uint32_t size = ctx.r3.u32;
+  const uint32_t size = ctx.r3.u32, caller = uint32_t(ctx.lr);  // (the caller: ctx.lr after the call can be the allocator's own)
   __imp__sub_8269A8D8(ctx, base);
   if (static const bool aid = std::getenv("SVR2011_TEST_HEAP_FAIL") != nullptr; aid && ctx.r3.u32) {
     const auto saved = ctx;
@@ -239,14 +244,16 @@ REX_HOOK_RAW(sub_8269A8D8) {
         return;
       }
     // (the stage's heap full - an arena with more 3D detail than the game's own: caw_limits.h kStageHeap; the
-    // match's weapons' heap - OPTIONS -> WEAPONS picks: kWeaponHeap)
-    if ((heap == svr2011::kStageHeap || heap == svr2011::kWeaponHeap) && svr2011::BigModelMemory())
-      if (const uint32_t p = svr2011::FallbackBlock(size, true)) {
+    // match's weapons' heap - OPTIONS -> WEAPONS picks: kWeaponHeap; heap 12, kMatchLoadHeap - physical: the sign
+    // bank's textures are copied into it)
+    if ((heap == svr2011::kStageHeap || heap == svr2011::kWeaponHeap || heap == kMatchLoadHeap) && svr2011::BigModelMemory())
+      if (const uint32_t p = svr2011::FallbackBlock(size, heap != kMatchLoadHeap)) {
         ctx.r3.u64 = p;
         static int told = 0;
         if (told++ < 5 || told % 200 == 0)
           REXLOG_INFO("[svr2011] model memory: the {} heap ({}) full - {} bytes from the fallback memory ({} so)",
-                      heap == svr2011::kStageHeap ? "stage's" : "weapons'", heap, size, told);
+                      heap == svr2011::kStageHeap ? "stage's" : heap == kMatchLoadHeap ? "match load" : "weapons'", heap,
+                      size, told);
         return;
       }
   }
@@ -255,9 +262,17 @@ REX_HOOK_RAW(sub_8269A8D8) {
     sub_8269A478(ctx, base);
     const uint32_t heap = ctx.r3.u32;
     ctx = saved;
-    NoteFailed(base, heap, size, uint32_t(ctx.lr));
+    NoteFailed(base, heap, size, caller);
   }
   if (!g_heap_log) return;
+  if (g_heap_watch >= 0 && ctx.r3.u32) {
+    const auto saved = ctx;
+    sub_8269A478(ctx, base);
+    const uint32_t heap = ctx.r3.u32;
+    ctx = saved;
+    if (int(heap) == g_heap_watch)
+      REXLOG_INFO("[svr2011] heap {}: {} bytes at {:08X} (lr {:08X})", heap, size, ctx.r3.u32, caller);
+  }
   static bool listed = false;
   if (!listed && Rd32(base + 0x82EC5F48)) {
     listed = true;
@@ -267,7 +282,7 @@ REX_HOOK_RAW(sub_8269A8D8) {
 
 REX_EXTERN(__imp__sub_8269BA30);
 REX_HOOK_RAW(sub_8269BA30) {
-  const uint32_t units = ctx.r3.u32;  // 16-byte units
+  const uint32_t units = ctx.r3.u32, caller = uint32_t(ctx.lr);  // 16-byte units; the caller (as sub_8269A8D8's)
   __imp__sub_8269BA30(ctx, base);
   if (static const bool aid = std::getenv("SVR2011_TEST_HEAP_FAIL") != nullptr; aid && ctx.r3.u32) {
     const auto saved = ctx;
@@ -293,13 +308,15 @@ REX_HOOK_RAW(sub_8269BA30) {
     // (and the wrestlers' model heaps 17-20: the 547k-vertex superstar's model asked one for 28.7 MB this way - GPU
     // data, so the physical fallback, as model_mem.cpp's model-heap one)
     const bool model_heap = heap >= 17 && heap <= 20;
-    if ((heap == svr2011::kWeaponHeap || heap == svr2011::kStageHeap || heap == 53 || model_heap) && svr2011::BigModelMemory())
-      if (const uint32_t p = svr2011::FallbackBlock(units * 16, !model_heap)) {
+    if ((heap == svr2011::kWeaponHeap || heap == svr2011::kStageHeap || heap == 53 || model_heap || heap == kMatchLoadHeap) &&
+        svr2011::BigModelMemory())
+      if (const uint32_t p = svr2011::FallbackBlock(units * 16, !model_heap && heap != kMatchLoadHeap)) {
         ctx.r3.u64 = p;
         static int told = 0;
         if (told++ < 5 || told % 200 == 0)
           REXLOG_INFO("[svr2011] model memory: the {} heap ({}) full - {} bytes from the fallback memory ({} so)",
-                      heap == svr2011::kStageHeap ? "stage's" : heap == 53 ? "file" : model_heap ? "model" : "weapons'", heap,
+                      heap == svr2011::kStageHeap ? "stage's" : heap == 53 ? "file" : model_heap ? "model"
+                      : heap == kMatchLoadHeap ? "match load" : "weapons'", heap,
                       units * 16, told);
         return;
       }
@@ -310,14 +327,14 @@ REX_HOOK_RAW(sub_8269BA30) {
     const uint32_t heap = ctx.r3.u32;
     ctx = saved;
     if (units * 16 >= 256 * 1024 || int(heap) == g_heap_watch)
-      REXLOG_INFO("[svr2011] heap {}: {} bytes at {:08X} (lr {:08X})", heap, units * 16, ctx.r3.u32, uint32_t(ctx.lr));
+      REXLOG_INFO("[svr2011] heap {}: {} bytes at {:08X} (lr {:08X})", heap, units * 16, ctx.r3.u32, caller);
   }
   if (ctx.r3.u32 == 0 && units) {
     const auto saved = ctx;
     sub_8269A478(ctx, base);
     const uint32_t heap = ctx.r3.u32;
     ctx = saved;
-    NoteFailed(base, heap, units * 16, uint32_t(ctx.lr));
+    NoteFailed(base, heap, units * 16, caller);
   }
 }
 

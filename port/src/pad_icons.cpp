@@ -373,6 +373,7 @@ uint64_t Print(uint32_t physical, const Sprite& sp) {
 struct Copy {
   uint32_t object = 0, fetch1 = 0, data = 0;
   uint32_t keys_version = ~0u;  // (a keyboard version: the bindings it shows)
+  const Sprite* sprite = nullptr;  // (the picture it is a version of)
 };
 std::mutex g_copies_mutex;
 std::map<std::pair<uint32_t, Kind>, Copy> g_copies;
@@ -807,9 +808,17 @@ uint32_t VersionOf(uint32_t object, Kind kind) {
   if (kind == kKeyboard && !sp->boxes.empty()) BuildKeyboardVersion(const_cast<Sprite&>(*sp));
   if (sp->data[kind].empty()) return 0;
   Copy& c = g_copies[{object, kind}];
-  if (c.object && c.fetch1 != fetch1) c = Copy{};  // (the object now holds another picture)
+  // (the object now holds another picture: at another address, or another one of the same size at the same
+  // address - the copy made for the first one would draw it in the second one's place)
+  if (c.object && (c.fetch1 != fetch1 || c.sprite != sp)) {
+    static const bool debug = std::getenv("SVR2011_PAD_ICONS_LOG") != nullptr;
+    static int logged = 0;
+    if (debug && c.fetch1 == fetch1 && logged++ < 40)
+      REXLOG_INFO("[svr2011] pad icons: {:08X} holds another {}x{} picture now - its copy made again", object, w, h);
+    c = Copy{};
+  }
   if (c.object && kind == kKeyboard && !sp->boxes.empty() && c.keys_version != sp->keys_version) c = Copy{};
-  if (!c.object) c = Copy{MakeCopy(object, *sp, sp->data[kind]), fetch1, 0, sp->keys_version};
+  if (!c.object) c = Copy{MakeCopy(object, *sp, sp->data[kind]), fetch1, 0, sp->keys_version, sp};
   return c.object;
 }
 
@@ -838,6 +847,7 @@ thread_local bool t_keep_own = false;
 std::unordered_map<uint32_t, std::deque<QueuedWant>> g_record_queue;
 constexpr size_t kMaxQueued = 64;  // (commands recorded and never played back: dropped)
 std::atomic<uint64_t> g_queued{0}, g_bound{0};  // (debug: SVR2011_PAD_ICONS_LOG - the two keep step)
+std::atomic<uint64_t> g_drawn_xbox{0}, g_drawn_version{0}, g_drawn_kb{0};  // (debug: at SetTexture, below)
 
 void QueueRecordObject(uint32_t record, Kind kind, bool owned) {
   constexpr uint32_t kTextureRecord = 0x8205CF48;  // (vtable)
@@ -1120,8 +1130,9 @@ REX_HOOK_RAW(sub_826E6060) {
       last = std::chrono::steady_clock::now();
       size_t waiting = 0;
       for (const auto& [r, q] : g_record_queue) waiting += q.size();
-      REXLOG_INFO("[svr2011] pad icons: set-texture commands queued {}, bound {}, waiting {}", g_queued.load(),
-                  g_bound.load(), waiting);
+      REXLOG_INFO("[svr2011] pad icons: set-texture commands queued {}, bound {}, waiting {}; drawn: Xbox pictures "
+                  "that have a version {}, PlayStation versions {}, keyboard versions {}", g_queued.load(),
+                  g_bound.load(), waiting, g_drawn_xbox.load(), g_drawn_version.load(), g_drawn_kb.load());
     }
   }
   if (copy) Wr32(base + record + 80, copy);
@@ -1166,11 +1177,15 @@ REX_HOOK_RAW(sub_82917EC8) {
   }
   static const bool debug = std::getenv("SVR2011_PAD_ICONS_LOG") != nullptr;
   if (debug && g_enabled && ctx.r5.u32) {
-    bool ours = false;
+    bool ours = false, kb = false;
     {
       std::lock_guard lock(g_copies_mutex);
-      for (const auto& [key, c] : g_copies) ours |= c.object == ctx.r5.u32;
+      for (const auto& [key, c] : g_copies)
+        if (c.object == ctx.r5.u32) ours = true, kb = key.second == kKeyboard;
     }
+    // (an Xbox picture that has a PlayStation version drawn as it is / a version drawn)
+    if (ours) ++(kb ? g_drawn_kb : g_drawn_version);
+    else if (VersionOf(ctx.r5.u32, kPlayStation)) ++g_drawn_xbox;
     static std::set<uint32_t> logged;
     if (ours && logged.insert(ctx.r5.u32).second && logged.size() < 64)
       REXLOG_INFO("[svr2011] pad icons: SetTexture sampler {} gets copy {:08X} fetch {:08X} {:08X} kind {}", ctx.r4.u32,

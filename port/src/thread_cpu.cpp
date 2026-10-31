@@ -385,7 +385,7 @@ void StartThreadCpuLog() {
 // thread asleep for ever, the loader thread waiting on the item's lock (RtlEnterCriticalSection at 826A5450) and the
 // mode's load never ending - the load watch's dump showed exactly that. Now a failed read is logged (file, offset,
 // size, error) and completed with 0 bytes, and that thread's next alertable endless sleep returns at once.
-// Test aids SVR2011_TEST_READ_FAIL=<text in a file's path>: its reads fail as if past the end; SVR2011_TEST_READ_LOG,
+// Test aids SVR2011_TEST_READ_FAIL=<text in a file's path>: its reads start past its end (through NtReadFile); SVR2011_TEST_READ_LOG,
 // SVR2011_TEST_READ_GUARD_OFF (the endless wait as before).
 namespace {
 
@@ -408,11 +408,23 @@ REX_HOOK_RAW(sub_8290CCF8) {
       path = file->entry()->absolute_path(), file_size = file->entry()->size();
   static const bool log_reads = std::getenv("SVR2011_TEST_READ_LOG") != nullptr;  // (test aid: each such read)
   if (log_reads) REXLOG_INFO("load: test - read {} ({} bytes)", path, size);
+  // (test: the read starts 1 MB past the file's end - the runtime's NtReadFile fails it as a host read would)
   static const char* test = std::getenv("SVR2011_TEST_READ_FAIL");
-  if (test && *test && path.find(test) != std::string::npos)
-    ctx.r3.u64 = 0;  // (as if failed: no read, no completion)
-  else
-    __imp__sub_8290CCF8(ctx, base);
+  const bool fail = test && *test && overlapped && path.find(test) != std::string::npos;
+  uint8_t was[8];
+  if (fail) {
+    std::memcpy(was, base + overlapped + 8, 8);
+    const uint64_t past = file_size + (1u << 20);
+    const uint32_t lo = uint32_t(past), hi = uint32_t(past >> 32);
+    const uint8_t w[8] = {uint8_t(lo >> 24), uint8_t(lo >> 16), uint8_t(lo >> 8), uint8_t(lo),
+                          uint8_t(hi >> 24), uint8_t(hi >> 16), uint8_t(hi >> 8), uint8_t(hi)};
+    std::memcpy(base + overlapped + 8, w, 8);  // (Offset, OffsetHigh)
+  }
+  __imp__sub_8290CCF8(ctx, base);
+  if (fail) {
+    REXLOG_INFO("load: test - {} read past its end: {}", path, ctx.r3.u32 ? "the read call returned pending/done" : "the read call failed");
+    std::memcpy(base + overlapped + 8, was, 8);
+  }
   if (ctx.r3.u32) return;
   const uint64_t offset = overlapped ? uint64_t(GuestU32(base, overlapped + 12)) << 32 | GuestU32(base, overlapped + 8) : 0;
   static std::atomic<int> told{0};

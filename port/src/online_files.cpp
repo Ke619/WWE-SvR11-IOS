@@ -386,6 +386,22 @@ uint32_t Crc32(uint32_t crc, const void* data, size_t n) {
 
 bool FileCrc32(const fs::path& file, uint32_t* out) { return FileCrc(file, false, out); }
 
+std::vector<MissingGameFile> MissingGameFiles() {
+  std::vector<MissingGameFile> out;
+  const char* test = std::getenv("SVR2011_TEST_MISSING_GAME_FILE");
+  std::error_code ec;
+  for (const GameFile& g : kFiles) {
+    const std::wstring p = g.path;
+    if (Optional(p)) continue;
+    std::string u;
+    for (wchar_t c : p) u += char(c);  // (the list's names are ASCII)
+    if (fs::exists(g_game_root / fs::path(p), ec) && !(test && u == test)) continue;
+    const bool essential = p == L"default.xex" || p.rfind(L"plist360", 0) == 0 || p.rfind(L"pac\\", 0) == 0;
+    out.push_back({u, essential});
+  }
+  return out;
+}
+
 void StartGameFilesCheck() {
   static std::once_flag once;
   std::call_once(once, [game_root = g_game_root, user_data = g_user_data] {

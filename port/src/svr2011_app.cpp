@@ -310,6 +310,47 @@ std::vector<std::string> g_settings_notes;
 std::filesystem::path g_user_data;
 std::filesystem::path g_saves;
 
+// The disc's files the game folder lacks (online_files.h MissingGameFiles), at start: logged; one the game can't
+// start without stops it here with a message (Windows) - it crashed 0.3 s in otherwise, a read of guest 0x28 with
+// pac\_startup.pac and plist360.h missing (2.1.7 report ea8202). Not for another game's data (--game_data_root:
+// the Anthology's). (Test aid SVR2011_TEST_NO_DIALOGS=1: no box.)
+bool g_disc_data_beside = false;  // (the game data is the folder beside the program)
+void CheckGameFilesThere() {
+  if (!g_disc_data_beside) return;
+  const auto missing = svr2011::MissingGameFiles();
+  if (missing.empty()) return;
+  std::string list;
+  int essential = 0;
+  for (const auto& m : missing) {
+    essential += m.essential;
+    if (list.size() < 600) list += (list.empty() ? "" : ", ") + m.path;
+  }
+  if (!essential) {
+    REXLOG_WARN("game files: {} of the disc's files missing from the game folder: {}", missing.size(), list);
+    return;
+  }
+  REXLOG_ERROR("game files: {} of the disc's files missing from the game folder ({} the game can't start without): {}"
+               " - not started (reinstall from the Xbox 360 disc image: launcher Install, then Verify game files)",
+               missing.size(), essential, list);
+  rex::FlushLogging();
+#if defined(_WIN32)
+  if (!std::getenv("SVR2011_TEST_NO_DIALOGS")) {
+    std::wstring text =
+        L"The game files in this folder don't match the Xbox 360 disc - some are missing, so the game can't start:\n\n";
+    int shown = 0;
+    for (const auto& m : missing) {
+      if (!m.essential || ++shown > 8) continue;
+      text += L"    " + std::wstring(m.path.begin(), m.path.end()) + L"\n";
+    }
+    if (essential > 8) text += L"    ... and " + std::to_wstring(essential - 8) + L" more\n";
+    text += L"\nInstall the game again from your Xbox 360 disc image (ISO) with the launcher's Install tab, "
+            L"then use Verify game files.";
+    MessageBoxW(nullptr, text.c_str(), L"SvR 2011 - game files missing", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+  }
+  std::_Exit(3);
+#endif
+}
+
 }  // namespace
 
 void Svr2011App::OnConfigurePaths(rex::PathConfig& paths) {
@@ -333,6 +374,7 @@ void Svr2011App::OnConfigurePaths(rex::PathConfig& paths) {
   // otherwise.
   if (paths.game_data_root.empty()) {
     paths.game_data_root = exe_dir;
+    g_disc_data_beside = true;
   }
   paths.user_data_root = exe_dir / "UserData";
   // Tests: SVR2011_USER_DATA=<folder> keeps their saves away from the player's.
@@ -459,6 +501,7 @@ void Svr2011App::OnPreSetup(rex::RuntimeConfig& config) {
   }
   for (const auto& note : g_settings_notes) REXLOG_WARN("{}", note);  // (OnConfigurePaths' repairs)
   g_settings_notes.clear();
+  CheckGameFilesThere();  // (a game folder without the disc's essential files: a message, not a crash)
   // A settings file that couldn't be read (every setting ignored) still draws.
   if (config.gpu_plugin.empty()) {
     rex::cvar::SetFlagByName("gpu_plugin", "xenos");

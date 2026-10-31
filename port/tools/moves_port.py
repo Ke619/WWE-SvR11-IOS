@@ -660,6 +660,14 @@ def convert0789(a, rep, outdir, g):
     dlen = None
     nmot = 0
     motp_out = 0
+    # (an in-ring dive drops the source's floor-dive flights x 110 / 111: 2011 keeps those for a dive to the floor only
+    # (Leap of Faith 3591; its in-ring dives 3555 / 3568 have x 50 and 112) and plays x 110 as the miss - SvR 2009's
+    # Frog Splash Pin flew out of the ring onto the floor on a miss)
+    tx = {x for p, kd, ks in g11.banks_of(btid) for x, y in ks}
+    floor = {e['x'] for e in tracks if e['x'] in (110, 111)} - tx if not tx & {110, 111} else set()
+    if floor:
+        tracks = [e for e in tracks if e['x'] not in floor]
+        rep['dropped'].append('the floor-dive flights x %s (the template is an in-ring dive)' % ' / '.join(map(str, sorted(floor))))
     for path, kind, ks in g11.banks_of(btid):
         if kind != 'YMKs':
             rep['dropped'].append('bank %s (%s)' % (path, kind))
@@ -701,6 +709,20 @@ def convert0789(a, rep, outdir, g):
             lines.append('motion %s %s %d %d %d %d %s' % (pac, path, new_id, x, y, frames, fn))
             nmot += 1
             motp_out += packed
+        # (with its floor flights left out the dive needs the template's miss, x 50: without one it hung in the air
+        # at the corner after the flight)
+        for x, y in ks:
+            te = bank.find(btid, x, y) if floor and x == 50 and not any(e['x'] == 50 for e in tracks) else None
+            if te is None:
+                continue
+            data = fix_track(te['data'], bank.T, packed and y in (0, 1) and ymks.is_packed_motion(te['data'], bank.T),
+                             btid, new_id, (192, 193))
+            fn = 'motions/%d_%d_%d_%s.ymk' % (new_id, x, y, path.replace('/', '').lower())
+            open(os.path.join(pd, fn), 'wb').write(data)
+            lines.append('motion %s %s %d %d %d %d %s' % (pac, path, new_id, x, y, te['frames'], fn))
+            nmot += 1
+            if not any('template\'s miss' in n for n in rep['notes']):
+                rep['notes'].append('the template\'s miss (x 50) for the dropped floor flights')
     if not motp_out:   # (never a pack without the match copy: a move with menu banks only never plays in a match)
         raise RuntimeError('no match copy (MOTP/GAME) written for template %d' % btid)
     scale = nf / float(dlen or nf)

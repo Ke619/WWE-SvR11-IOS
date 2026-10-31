@@ -29,6 +29,26 @@ REXCVAR_DEFINE_INT32(native_d3d11_flush_draws, 1000, "GPU",
                      "Direct3D 11: submissions with fewer draws than this start on the GPU at once (0: none)");
 REXCVAR_DEFINE_BOOL(native_d3d11_replay_thread, true, "GPU",
                     "Direct3D 11: the frame's GPU commands are issued on a thread of their own");
+REXCVAR_DEFINE_STRING(native_d3d11_constants, "auto", "GPU",
+                      "Direct3D 11: how the game's constants reach the GPU - auto, offsets (D3D11.1 windows into one "
+                      "buffer, rings written in place), offsets_discard (windows, rings renamed at each upload), copy "
+                      "(a copy a draw: slowest, works on every driver; auto picks it on GeForce/Quadro 400-500 (Fermi))");
+
+namespace {
+
+// NVIDIA Fermi (GeForce / Quadro 400-500 series, GF1xx): the last drivers (391/390) give feature level 11_0 and the
+// D3D11.1 constant buffer offsets through the 11.1 runtime; wrestlers' textures flickered and went white on a Quadro 600
+// (report 20261031-024628) - constants copied per draw there (native_d3d11_constants auto).
+bool IsNvidiaFermi(uint32_t vendor, uint32_t device) {
+  if (vendor != 0x10DE) return false;
+  return (device >= 0x06C0 && device <= 0x06DF) ||  // GF100
+         (device >= 0x0DC0 && device <= 0x0DFF) ||  // GF106 / GF108
+         (device >= 0x0E20 && device <= 0x0E3F) ||  // GF104
+         (device >= 0x1040 && device <= 0x109F) ||  // GF119 / GF110
+         (device >= 0x1200 && device <= 0x125F);    // GF114 / GF116
+}
+
+}  // namespace
 
 namespace svr2011::native::backend {
 
@@ -88,12 +108,54 @@ class D3D11Backend final : public Backend {
                 (d->feature_level >> 12) & 0xF, (d->feature_level >> 8) & 0xF,
                 d->constant_buffer_offsetting ? "yes" : "no (constants copied per draw)",
                 d->warp ? ", WARP (software)" : "");
+    // The constants' path: the driver's D3D11.1 caps, or the native_d3d11_constants setting.
+    bool offsets = d->constant_buffer_offsetting, no_overwrite = false;
+    D3D11_FEATURE_DATA_D3D11_OPTIONS options = {};
+    if (SUCCEEDED(static_cast<ID3D11Device*>(d->device)->CheckFeatureSupport(D3D11_FEATURE_D3D11_OPTIONS, &options,
+                                                                             sizeof(options)))) {
+      no_overwrite = options.MapNoOverwriteOnDynamicConstantBuffer;
+    }
+    // (the adapter: its ids for the Fermi check, its driver version for the log)
+    uint32_t vendor = 0, device = 0;
+    std::string driver = "?";
+    {
+      ComPtr<IDXGIDevice> dxgi;
+      ComPtr<IDXGIAdapter> adapter;
+      DXGI_ADAPTER_DESC desc = {};
+      LARGE_INTEGER umd = {};
+      if (SUCCEEDED(static_cast<ID3D11Device*>(d->device)->QueryInterface(IID_PPV_ARGS(&dxgi))) &&
+          SUCCEEDED(dxgi->GetAdapter(&adapter)) && SUCCEEDED(adapter->GetDesc(&desc))) {
+        vendor = desc.VendorId, device = desc.DeviceId;
+        if (SUCCEEDED(adapter->CheckInterfaceSupport(__uuidof(IDXGIDevice), &umd))) {
+          driver = fmt::format("{}.{}.{}.{}", HIWORD(umd.HighPart), LOWORD(umd.HighPart), HIWORD(umd.LowPart),
+                               LOWORD(umd.LowPart));
+        }
+      }
+    }
+    // (test aid SVR2011_TEST_D3D11_DEVICE_ID=<hex>: another GPU's id, e.g. 0DF8 - a Quadro 600)
+    if (const char* id = std::getenv("SVR2011_TEST_D3D11_DEVICE_ID")) device = uint32_t(std::strtoul(id, nullptr, 16));
+    std::string mode = REXCVAR_GET(native_d3d11_constants);
+    const bool fermi = IsNvidiaFermi(vendor, device);
+    if (mode == "auto" && fermi) mode = "copy";
+    if (mode == "copy") {
+      offsets = false;
+    } else if (mode == "offsets_discard") {
+      no_overwrite = false;
+    }
+    REXLOG_INFO("native renderer: D3D11 GPU {:04X}:{:04X}, driver {}; constants: driver offsets {}, no-overwrite "
+                "constant maps {}; using {}{}",
+                vendor, device, driver, d->constant_buffer_offsetting ? "yes" : "no",
+                options.MapNoOverwriteOnDynamicConstantBuffer ? "yes" : "no",
+                !offsets ? "a copy a draw" : no_overwrite ? "offsets, rings written in place" : "offsets, rings renamed",
+                fermi && REXCVAR_GET(native_d3d11_constants) == "auto" ? " (NVIDIA Fermi)"
+                : mode == "auto"                                        ? ""
+                                                                         : fmt::format(" (native_d3d11_constants {})", mode));
+    plume::D3D11NoOverwriteConstantsOff = !no_overwrite;
     plume::D3D11LogFunction = [](const char* message) { REXLOG_WARN("native renderer: {}", message); };
     plume::D3D11FlushDrawLimit = uint32_t(std::max(0, REXCVAR_GET(native_d3d11_flush_draws)));
     plume::D3D11AsyncReplay = REXCVAR_GET(native_d3d11_replay_thread);
     return plume::CreateD3D11Interface(static_cast<ID3D11Device*>(d->device),
-                                       static_cast<ID3D11DeviceContext*>(d->context), d->context_mutex,
-                                       d->constant_buffer_offsetting);
+                                       static_cast<ID3D11DeviceContext*>(d->context), d->context_mutex, offsets);
   }
 
   plume::RenderShaderFormat ShaderFormat() const override { return plume::RenderShaderFormat::DXBC; }

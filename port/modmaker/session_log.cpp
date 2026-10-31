@@ -4,6 +4,9 @@
 
 #include <share.h>
 #include <shlobj.h>
+#include <dbghelp.h>
+#include <csignal>
+#include <exception>
 #include <commdlg.h>
 #include <wincodec.h>
 #include <wrl/client.h>
@@ -131,7 +134,13 @@ std::string SystemText() {
   return t;
 }
 
+// the last lines, for a crash file (kept apart from the file: a crash can't wait for g_mutex)
+constexpr size_t kTail = 40;
+std::string g_tail[kTail];
+std::atomic<size_t> g_tail_n{0};
+
 void WriteLine(const std::string& line) {  // (g_mutex held)
+  g_tail[g_tail_n.fetch_add(1) % kTail] = line;
   if (!g_file) {
     if (g_pending.size() < 20000) g_pending.push_back(line);
     return;
@@ -140,6 +149,119 @@ void WriteLine(const std::string& line) {  // (g_mutex held)
   std::fputc('\n', g_file);
   std::fflush(g_file);
 }
+
+// ---------------------------------------------------------------- crashes
+
+std::atomic<bool> g_crashed{false};
+
+std::string ModuleAt(DWORD64 addr) {  // "<module>+0x<offset>"
+  HMODULE m = nullptr;
+  char name[MAX_PATH] = "?";
+  if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                         reinterpret_cast<LPCSTR>(addr), &m) && m) {
+    GetModuleFileNameA(m, name, MAX_PATH);
+    const char* base = std::strrchr(name, '\\');
+    char b[MAX_PATH + 32];
+    std::snprintf(b, sizeof b, "%s+0x%llx", base ? base + 1 : name, static_cast<unsigned long long>(addr - DWORD64(m)));
+    return b;
+  }
+  char b[32];
+  std::snprintf(b, sizeof b, "0x%llx", static_cast<unsigned long long>(addr));
+  return b;
+}
+
+std::string StackText(CONTEXT* from) {  // up to 40 frames, module+offset each
+  CONTEXT c;
+  if (from) c = *from;
+  else RtlCaptureContext(&c);
+  STACKFRAME64 f = {};
+  f.AddrPC.Offset = c.Rip, f.AddrPC.Mode = AddrModeFlat;
+  f.AddrFrame.Offset = c.Rbp, f.AddrFrame.Mode = AddrModeFlat;
+  f.AddrStack.Offset = c.Rsp, f.AddrStack.Mode = AddrModeFlat;
+  const HANDLE proc = GetCurrentProcess();
+  static bool sym = SymInitialize(proc, nullptr, TRUE) != FALSE;
+  (void)sym;
+  std::string out;
+  for (int i = 0; i < 40 && StackWalk64(IMAGE_FILE_MACHINE_AMD64, proc, GetCurrentThread(), &f, &c, nullptr,
+                                         SymFunctionTableAccess64, SymGetModuleBase64, nullptr); ++i) {
+    if (!f.AddrPC.Offset) break;
+    out += "  " + ModuleAt(f.AddrPC.Offset) + "\n";
+  }
+  return out;
+}
+
+void WriteCrash(const std::string& what, CONTEXT* ctx) {
+  if (g_crashed.exchange(true)) return;  // (one report: a crash while writing this one stays quiet)
+  std::string t = "==== SvR2011 Mod Maker crash ====\nMod Maker " PORT_VERSION "\nwhen " + Stamp("%Y-%m-%d %H:%M:%S") +
+                  "\nwhat " + what + "\npage " + PageName(g_page) + "\nthread " +
+                  std::to_string(GetCurrentThreadId()) + "\nstack:\n" + StackText(ctx) + "last log lines:\n";
+  const size_t n = g_tail_n.load();
+  for (size_t i = n > kTail ? n - kTail : 0; i < n; ++i) t += "  " + g_tail[i % kTail] + "\n";
+  std::error_code ec;
+  const fs::path dir = g_path.empty() ? LogDir() : g_path.parent_path();
+  fs::create_directories(dir, ec);
+  if (FILE* f = _wfopen((dir / Wide("modmaker_crash_" + Stamp("%Y%m%d-%H%M%S") + ".txt")).c_str(), L"wb")) {
+    std::fputs(t.c_str(), f);
+    std::fclose(f);
+  }
+  if (g_mutex.try_lock()) {  // (the session log: its CRASH line - not when the crash came while the log was held)
+    if (g_file) std::fprintf(g_file, "%sCRASH: %s (modmaker_crash_*.txt in the logs folder)\n", TimePrefix().c_str(), what.c_str()), std::fflush(g_file);
+    g_mutex.unlock();
+  }
+}
+
+LONG WINAPI OnException(EXCEPTION_POINTERS* e) {
+  const EXCEPTION_RECORD* r = e->ExceptionRecord;
+  char b[256];
+  std::snprintf(b, sizeof b, "exception 0x%08lx at %s", r->ExceptionCode, ModuleAt(DWORD64(r->ExceptionAddress)).c_str());
+  std::string what = b;
+  if (r->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && r->NumberParameters >= 2) {
+    std::snprintf(b, sizeof b, " (%s 0x%llx)", r->ExceptionInformation[0] == 1 ? "writing" : r->ExceptionInformation[0] == 8 ? "running" : "reading",
+                  static_cast<unsigned long long>(r->ExceptionInformation[1]));
+    what += b;
+  }
+  if (r->ExceptionCode == EXCEPTION_STACK_OVERFLOW) what += " (stack overflow)";
+  WriteCrash(what, e->ContextRecord);
+  return EXCEPTION_CONTINUE_SEARCH;
+}
+
+}  // namespace
+
+void InstallCrashHandler() {
+  ULONG guarantee = 64 * 1024;  // (room for the handler on the UI thread when its stack overflows)
+  SetThreadStackGuarantee(&guarantee);
+  SetUnhandledExceptionFilter(OnException);
+  std::set_terminate([] {
+    std::string what = "std::terminate";
+    try {
+      if (auto p = std::current_exception()) std::rethrow_exception(p);
+    } catch (const std::exception& x) {
+      what += std::string(" (") + x.what() + ")";
+    } catch (...) {
+    }
+    WriteCrash(what, nullptr);
+    std::abort();
+  });
+  std::signal(SIGABRT, [](int) { WriteCrash("abort", nullptr); });
+  _set_purecall_handler([] { WriteCrash("pure virtual call", nullptr); std::abort(); });
+  _set_invalid_parameter_handler([](const wchar_t*, const wchar_t*, const wchar_t*, unsigned, uintptr_t) {
+    WriteCrash("bad CRT parameter", nullptr);
+    std::abort();
+  });
+}
+
+void PresentResult(long hr) {
+  static bool told = false;
+  if (SUCCEEDED(hr) || told) return;
+  told = true;
+  char b[160];
+  const long why = g_dev ? long(g_dev->GetDeviceRemovedReason()) : 0;
+  std::snprintf(b, sizeof b, "GPU: Present failed 0x%08lx, device removed reason 0x%08lx (a driver reset or crash: the 3D views stop)",
+                static_cast<unsigned long>(hr), static_cast<unsigned long>(why));
+  Line(b);
+}
+
+namespace {
 
 void Open() {
   std::lock_guard lock(g_mutex);
@@ -394,6 +516,14 @@ std::wstring BuildReport(const Snapshot& s) {
     for (const auto& p : Logs(SettingsDir() / L"logs")) logs.push_back(p);
   for (size_t i = 0; i < logs.size() && i < kReportLogs; ++i)
     add("logs/" + PathStr(logs[i].filename()), ReadTail(logs[i], kTextCap));
+  {  // the newest two crash files (InstallCrashHandler)
+    std::vector<fs::path> crashes;
+    std::error_code ec;
+    for (const auto& e : fs::directory_iterator(log_dir, ec))
+      if (e.path().filename().wstring().rfind(L"modmaker_crash_", 0) == 0) crashes.push_back(e.path());
+    std::sort(crashes.begin(), crashes.end(), [](const fs::path& a, const fs::path& b) { return a.filename() > b.filename(); });
+    for (size_t i = 0; i < crashes.size() && i < 2; ++i) add("logs/" + PathStr(crashes[i].filename()), ReadTail(crashes[i], kSmallCap));
+  }
   // the open project: its state, and the text files in its .svrproj / mod folder
   add("project/state.txt", s.project);
   if (!s.project_file.empty()) {
@@ -759,6 +889,11 @@ void Raw(const std::string& label, const std::string& text) {
 void Tick() {
   // (the file opens on the first frame: the game folder is settled by then; a game folder chosen later keeps it)
   if (!g_file && !g_tried) Open();
+  if (static int frames = 0; ++frames == 30) {  // test aid SVR2011_MM_TEST_CRASH=av|throw: a crash, for the crash file
+    const char* t = std::getenv("SVR2011_MM_TEST_CRASH");
+    if (t && !std::strcmp(t, "av")) Line("test crash: av"), *static_cast<volatile int*>(nullptr) = 1;
+    if (t && !std::strcmp(t, "throw")) Line("test crash: throw"), std::thread([] { throw std::runtime_error("test throw"); }).join();
+  }
   if (g_page != g_last_page) {
     g_last_page = g_page;
     Line(std::string("page: ") + PageName(g_page));

@@ -97,13 +97,37 @@ bool CreateDevice(HWND w) {
   sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
   const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_0};
   D3D_FEATURE_LEVEL got;
-  if (FAILED(D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, levels, 2,
+  // (test aid SVR2011_MM_D3D_DEBUG=1: the D3D11 debug layer, its messages logged - DrainD3DMessages)
+  const UINT flags = _wgetenv(L"SVR2011_MM_D3D_DEBUG") ? D3D11_CREATE_DEVICE_DEBUG : 0;
+  if (FAILED(D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags, levels, 2,
                                            D3D11_SDK_VERSION, &sd, &g_swap, &g_dev, &got, &g_ctx)) &&
       FAILED(D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, levels, 2, D3D11_SDK_VERSION,
                                            &sd, &g_swap, &g_dev, &got, &g_ctx)))
     return false;
   CreateTarget();
   return true;
+}
+
+// The debug layer's messages (SVR2011_MM_D3D_DEBUG), each kind logged once, 200 at most.
+void DrainD3DMessages() {
+  static ID3D11InfoQueue* q = nullptr;
+  static bool tried = false;
+  static std::set<int> seen;
+  if (!tried && _wgetenv(L"SVR2011_MM_D3D_DEBUG")) {
+    tried = true;
+    if (g_dev) g_dev->QueryInterface(__uuidof(ID3D11InfoQueue), reinterpret_cast<void**>(&q));
+    Log(q ? "d3d11: debug layer on" : "d3d11: no debug layer (Graphics Tools not installed?)");
+  }
+  if (!q) return;
+  for (UINT64 i = 0, n = q->GetNumStoredMessages(); i < n && seen.size() < 200; ++i) {
+    SIZE_T len = 0;
+    q->GetMessage(i, nullptr, &len);
+    std::vector<char> b(len);
+    auto* m = reinterpret_cast<D3D11_MESSAGE*>(b.data());
+    if (FAILED(q->GetMessage(i, m, &len)) || !seen.insert(int(m->ID)).second) continue;
+    Log("d3d11 debug " + std::to_string(int(m->Severity)) + ": " + std::string(m->pDescription, m->DescriptionByteLength ? m->DescriptionByteLength - 1 : 0));
+  }
+  q->ClearStoredMessages();
 }
 
 // ---------------------------------------------------------------- log / work
@@ -3060,6 +3084,7 @@ LRESULT CALLBACK WndProc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
 using namespace mm;
 
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
+  session::InstallCrashHandler();  // (a crash leaves a file and a log line: session_log.h)
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   LoadSettings();
@@ -3860,7 +3885,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
       shot.clear();
       PostMessageW(g_wnd, WM_CLOSE, 0, 0);
     }
-    g_swap->Present(1, 0);
+    DrainD3DMessages();
+    session::PresentResult(g_swap->Present(1, 0));
   }
   if (g_worker.joinable()) g_worker.join();
   editor::Shutdown();

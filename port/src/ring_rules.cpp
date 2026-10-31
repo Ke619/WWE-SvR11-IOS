@@ -9,7 +9,10 @@
 // k * 4.2. Units: 1 = 10 cm, y points down.
 #include "ring_rules.h"
 #include "caw_limits.h"
+#include "fps_overlay.h"
 
+#include <algorithm>
+#include <thread>
 #include <cstdint>
 #include <set>
 #include <cstdlib>
@@ -154,15 +157,63 @@ int g_heap_watch = -1;  // (SVR2011_TEST_HEAP_LOG=<heap 2-53>: every allocation 
 // test aid) - a player's crash report then names it (27 Oct: an Extreme Rules weapon load wrote to such a 0 at
 // lr 8215A008, now and then). The file cache's heap (16) fails on purpose while it frees old files: only with the aid.
 namespace {
-void NoteFailed(uint32_t heap, uint32_t size, uint32_t lr) {
+// The game's heaps (table at *0x82EC5F48, 36 bytes each: start, end).
+void LogHeapTable(const uint8_t* base) {
+  const uint32_t table = Rd32(base + 0x82EC5F48);
+  if (!table) return;
+  for (int i = 0; i < 54; ++i) {
+    const uint32_t a = Rd32(base + table + i * 36), b = Rd32(base + table + i * 36 + 4);
+    if (a || b) REXLOG_INFO("[svr2011] heap {}: {:08X}-{:08X} ({:.1f} MB)", i, a, b, (b - a) / 1048576.0);
+  }
+}
+
+// A heap the game can't do without when it's full: heap 12 (4.5 MB) failed three 4-byte allocations
+// in sub_82173708 at a match load and the game wrote to the 0 it got (2.1.7 report c9e6c5: a raw access violation
+// at lr 821738C4, after many arena previews). Such a failure now ends the game here, before the caller uses the 0:
+// the heaps and the failure in the log, the "out of game memory" notice, then a crash report (abort). Other
+// threads that fail meanwhile wait for the end. (Any size: a forced failure of a 1.4 MB block there, lr 821EA528,
+// was written to as well.)
+constexpr uint32_t kExhaustedHeaps[] = {12};
+void HeapExhausted(const uint8_t* base, uint32_t heap, uint32_t size, uint32_t lr) {
+  static std::atomic<bool> ending{false};
+  if (ending.exchange(true))
+    for (;;) std::this_thread::sleep_for(std::chrono::seconds(1));
+  LogHeapTable(base);
+  REXLOG_ERROR("[svr2011] out of game memory: heap {} has no room for {} bytes (lr {:08X}) - the game can't "
+               "go on; ending it (crash report)", heap, size, lr);
+  rex::FlushLogging();
+  svr2011::ShowNotice("Out of game memory: the game ran out of room for its menus and match data. "
+                      "The game will close - use fewer mods / custom arenas in one session.", 10.0f);
+  std::this_thread::sleep_for(std::chrono::seconds(10));
+  std::abort();  // (the crash reporter writes the report, the log carries the line above)
+}
+
+void NoteFailed(const uint8_t* base, uint32_t heap, uint32_t size, uint32_t lr) {
   static std::mutex m;
   static std::set<uint64_t> seen;
   if (heap == 16 && !g_heap_log) return;
+  bool told = true;
   {
     std::lock_guard lock(m);
-    if (!g_heap_log && !seen.insert(uint64_t(heap) << 32 | lr).second) return;
+    if (!g_heap_log && !seen.insert(uint64_t(heap) << 32 | lr).second) told = false;
   }
-  REXLOG_WARN("[svr2011] heap {}: allocation of {} bytes FAILED (lr {:08X})", heap, size, lr);
+  if (told) REXLOG_WARN("[svr2011] heap {}: allocation of {} bytes FAILED (lr {:08X})", heap, size, lr);
+  if (std::find(std::begin(kExhaustedHeaps), std::end(kExhaustedHeaps), heap) != std::end(kExhaustedHeaps))
+    HeapExhausted(base, heap, size, lr);
+}
+
+// Test aid SVR2011_TEST_HEAP_FAIL=<heap>@<seconds>: that heap's allocations fail from that many seconds after start.
+bool ForcedFail(uint32_t heap) {
+  static const auto cfg = [] {
+    std::pair<int, int> c{-1, 0};
+    if (const char* v = std::getenv("SVR2011_TEST_HEAP_FAIL"); v && *v) {
+      c.first = std::atoi(v);
+      if (const char* at = std::strchr(v, '@')) c.second = std::atoi(at + 1);
+    }
+    return c;
+  }();
+  static const auto t0 = std::chrono::steady_clock::now();
+  return cfg.first >= 0 && int(heap) == cfg.first && std::chrono::steady_clock::now() - t0 >= std::chrono::seconds(cfg.second);
 }
 }  // namespace
 
@@ -170,6 +221,13 @@ REX_EXTERN(__imp__sub_8269A8D8);
 REX_HOOK_RAW(sub_8269A8D8) {
   const uint32_t size = ctx.r3.u32;
   __imp__sub_8269A8D8(ctx, base);
+  if (static const bool aid = std::getenv("SVR2011_TEST_HEAP_FAIL") != nullptr; aid && ctx.r3.u32) {
+    const auto saved = ctx;
+    sub_8269A478(ctx, base);
+    const uint32_t heap = ctx.r3.u32;
+    ctx = saved;
+    if (ForcedFail(heap)) ctx.r3.u64 = 0;
+  }
   if (ctx.r3.u32 == 0 && size) {  // (the CAW editor's part heap full: caw_limits.h)
     const auto saved = ctx;
     sub_8269A478(ctx, base);
@@ -197,17 +255,13 @@ REX_HOOK_RAW(sub_8269A8D8) {
     sub_8269A478(ctx, base);
     const uint32_t heap = ctx.r3.u32;
     ctx = saved;
-    NoteFailed(heap, size, uint32_t(ctx.lr));
+    NoteFailed(base, heap, size, uint32_t(ctx.lr));
   }
   if (!g_heap_log) return;
   static bool listed = false;
-  const uint32_t table = Rd32(base + 0x82EC5F48);
-  if (!listed && table) {
+  if (!listed && Rd32(base + 0x82EC5F48)) {
     listed = true;
-    for (int i = 0; i < 54; ++i) {
-      const uint32_t a = Rd32(base + table + i * 36), b = Rd32(base + table + i * 36 + 4);
-      if (a || b) REXLOG_INFO("[svr2011] heap {}: {:08X}-{:08X} ({:.1f} MB)", i, a, b, (b - a) / 1048576.0);
-    }
+    LogHeapTable(base);
   }
 }
 
@@ -215,6 +269,13 @@ REX_EXTERN(__imp__sub_8269BA30);
 REX_HOOK_RAW(sub_8269BA30) {
   const uint32_t units = ctx.r3.u32;  // 16-byte units
   __imp__sub_8269BA30(ctx, base);
+  if (static const bool aid = std::getenv("SVR2011_TEST_HEAP_FAIL") != nullptr; aid && ctx.r3.u32) {
+    const auto saved = ctx;
+    sub_8269A478(ctx, base);
+    const uint32_t heap = ctx.r3.u32;
+    ctx = saved;
+    if (ForcedFail(heap)) ctx.r3.u64 = 0;
+  }
   if (ctx.r3.u32 == 0 && units) {  // (the CAW editor's part heap full: caw_limits.h)
     const auto saved = ctx;
     sub_8269A478(ctx, base);
@@ -256,7 +317,7 @@ REX_HOOK_RAW(sub_8269BA30) {
     sub_8269A478(ctx, base);
     const uint32_t heap = ctx.r3.u32;
     ctx = saved;
-    NoteFailed(heap, units * 16, uint32_t(ctx.lr));
+    NoteFailed(base, heap, units * 16, uint32_t(ctx.lr));
   }
 }
 

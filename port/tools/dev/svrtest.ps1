@@ -13,6 +13,7 @@
 #   svrtest.ps1 script <file> [--shot ..] [--quit ..]                        (script_input.h steps, one a line)
 # common: --exe release|dbg|<path>  --backend d3d12|vulkan|d3d11  --mods none|<folder>[,<folder>...]
 #         --userdata <dir>  --perf 0|1|2  --log-level info|debug  --name <run name>  --keep (leave it running)
+#         --slot <n> (its own game folder runs\svrtest\game<n>: runs side by side; give each its own --userdata)
 #         --fresh (the user data may have no save: a first-start test - else svrtest refuses one without
 #         Saves\SaveData.dat, the game would sit in its first-time screens)
 #         --arg "<game option>" (more of the game's --options, repeatable)
@@ -55,7 +56,7 @@ public static class SvrTestWin {
 
 # ---- options
 $o = @{ p = @{}; exe = "release"; backend = ""; mods = "none"; perf = ""; loglevel = "info"; name = ""; keep = $false; args = @()
-        attire = ""; arena = ""; rule = ""; entrances = $false; shot = @(); every = ""; until = ""; quit = ""; userdata = ""; target = ""; state = @(); fast = ""; boot = $false; cpu = ""; fresh = $false }
+        attire = ""; arena = ""; rule = ""; entrances = $false; shot = @(); every = ""; until = ""; quit = ""; userdata = ""; target = ""; state = @(); fast = ""; boot = $false; cpu = ""; fresh = $false; slot = "" }
 for ($i = 0; $i -lt $Rest.Count; $i++) {
     $a = $Rest[$i]; $v = if ($i + 1 -lt $Rest.Count) { $Rest[$i + 1] } else { "" }
     switch -regex ($a) {
@@ -77,6 +78,7 @@ for ($i = 0; $i -lt $Rest.Count; $i++) {
         '^--backend$' { $o.backend = $v; $i++; continue }
         '^--mods$' { $o.mods = $v; $i++; continue }
         '^--userdata$' { $o.userdata = $v; $i++; continue }
+        '^--slot$' { $o.slot = $v; $i++; continue }  # (a game folder of its own: runs\svrtest\game<n> - runs side by side)
         '^--perf$' { $o.perf = $v; $i++; continue }
         '^--log-level$' { $o.loglevel = $v; $i++; continue }
         '^--name$' { $o.name = $v; $i++; continue }
@@ -98,16 +100,14 @@ function Seconds([string]$t) {
 }
 
 # ---- guards: the player's game, the test-game cap (all chats), a free port
-Assert-NoPlayerGame
-$running = @(Get-SvrGames).Count
-if ($running -ge 4) { throw "svrtest: $running test games already run (4 at most, all chats together) - try again later" }
+Assert-NoPlayerGame  # (and waits for a test-game slot: test_guard's limit, all chats)
 $used = @(Get-NetUDPEndpoint -ErrorAction SilentlyContinue | ForEach-Object { $_.LocalPort })
 $p2p = 36500..36599 | Where-Object { $_ -notin $used } | Get-Random
 if (-not $p2p) { throw "svrtest: no free UDP port in 36500-36599" }
 
 # ---- the private game folder
 $root = Join-Path $port "runs\svrtest"
-$game = Join-Path $root "game"
+$game = Join-Path $root "game$($o.slot)"
 New-Item -ItemType Directory -Force $game, (Join-Path $game "Mods"), (Join-Path $root "music"), (Join-Path $root "movies") | Out-Null
 # pac: a real folder. The game patches pac\string.pac and pac\menu\menu.pac in place at start (game_files.cpp
 # PatchGameFiles: a .tmp renamed over the file) - through a junction that would rewrite the player's install. So
@@ -155,7 +155,7 @@ foreach ($f in $exeName, "rexruntime.dll", "rexgpu-xenos.dll") {
     }
 }
 # its Mods: only --mods (a mod folder is placed by its manifest's type)
-$kinds = @{ superstar = "Superstars"; attire = "Attires"; arena = "Arenas"; moves = "Moves"; backstage = "Backstage"; signs = "Signs"; media = "Media"; backgrounds = "Backgrounds"; matchtype = "MatchTypes" }
+$kinds = @{ superstar = "Superstars"; attire = "Attires"; arena = "Arenas"; moves = "Moves"; backstage = "Backstage"; signs = "Signs"; media = "Media"; backgrounds = "Backgrounds"; matchtype = "MatchTypes"; weapon = "Weapons" }
 Get-ChildItem (Join-Path $game "Mods") -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne ".convert" } | Remove-Item -Recurse -Force
 if ($o.mods -and $o.mods -ne "none") {
     foreach ($m in $o.mods -split ',') {

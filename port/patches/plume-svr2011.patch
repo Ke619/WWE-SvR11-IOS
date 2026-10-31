@@ -1029,10 +1029,10 @@ index 0789c20..3f803fe 100644
  endif()
 diff --git a/plume_d3d11.h b/plume_d3d11.h
 new file mode 100644
-index 0000000..7e6778c
+index 0000000..97d63af
 --- /dev/null
 +++ b/plume_d3d11.h
-@@ -0,0 +1,302 @@
+@@ -0,0 +1,304 @@
 +//
 +// plume
 +//
@@ -1334,13 +1334,15 @@ index 0000000..7e6778c
 +    extern uint32_t D3D11FlushDrawLimit;
 +    // Submissions replayed on the queue's thread (false: in executeCommandLists).
 +    extern bool D3D11AsyncReplay;
++    // Constant buffers never mapped NO_OVERWRITE, even where the driver says it can (each upload a renamed copy).
++    extern bool D3D11NoOverwriteConstantsOff;
 +};
 diff --git a/plume_d3d11.cpp b/plume_d3d11.cpp
 new file mode 100644
-index 0000000..2a30902
+index 0000000..3490577
 --- /dev/null
 +++ b/plume_d3d11.cpp
-@@ -0,0 +1,1840 @@
+@@ -0,0 +1,1856 @@
 +//
 +// plume
 +//
@@ -1726,6 +1728,7 @@ index 0000000..2a30902
 +    void (*D3D11LogFunction)(const char *message) = nullptr;
 +    uint32_t D3D11FlushDrawLimit = 1000;
 +    bool D3D11AsyncReplay = true;
++    bool D3D11NoOverwriteConstantsOff = false;
 +
 +    // D3D11Buffer
 +
@@ -1928,7 +1931,22 @@ index 0000000..2a30902
 +        d.BindFlags = bind;
 +        d.MiscFlags = cube ? D3D11_RESOURCE_MISC_TEXTURECUBE : 0;
 +        Microsoft::WRL::ComPtr<ID3D11Texture2D> t;
-+        if (SUCCEEDED(device->d3d->CreateTexture2D(&d, zeroed ? initial.data() : nullptr, &t))) d3d = t;
++        const HRESULT hr = device->d3d->CreateTexture2D(&d, zeroed ? initial.data() : nullptr, &t);
++        if (SUCCEEDED(hr)) {
++            d3d = t;
++        } else {
++            // (once a format: a texture the driver can't make samples as nothing)
++            static std::mutex mutex;
++            static std::vector<DXGI_FORMAT> logged;
++            std::lock_guard lock(mutex);
++            if (std::find(logged.begin(), logged.end(), format) == logged.end()) {
++                logged.push_back(format);
++                char message[192];
++                std::snprintf(message, sizeof(message), "plume D3D11: a %ux%u texture of DXGI format %d (%u mip levels, bind %X) could not be made (%08X)",
++                              d.Width, d.Height, int(format), d.MipLevels, d.BindFlags, uint32_t(hr));
++                if (D3D11LogFunction) D3D11LogFunction(message);
++            }
++        }
 +    }
 +
 +    std::unique_ptr<RenderTextureView> D3D11Texture::createTextureView(const RenderTextureViewDesc &desc) const {
@@ -2900,7 +2918,7 @@ index 0000000..2a30902
 +        ctx.As(&context1);
 +        D3D11_FEATURE_DATA_D3D11_OPTIONS options = {};
 +        if (SUCCEEDED(device->CheckFeatureSupport(D3D11_FEATURE_D3D11_OPTIONS, &options, sizeof(options)))) {
-+            mapNoOverwriteConstants = options.MapNoOverwriteOnDynamicConstantBuffer;
++            mapNoOverwriteConstants = options.MapNoOverwriteOnDynamicConstantBuffer && !D3D11NoOverwriteConstantsOff;
 +        }
 +        capabilities.maxTextureSize = featureLevel >= D3D_FEATURE_LEVEL_11_0 ? 16384 : 8192;
 +        Microsoft::WRL::ComPtr<IDXGIDevice> dxgiDevice;

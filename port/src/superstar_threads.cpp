@@ -155,8 +155,8 @@ bool ReadSstl(const fs::path& pac, svrfmt::Bytes& list) {
   return false;
 }
 
-// The installed DLCs' lists over the disc's (`list`): each package's pac\edit\*.pac SSTL, fewest records first -
-// its records in its order, then the ones before it that it lacks. Their files, for the log.
+// The installed DLCs' superstars added to the disc's list (`list`): each package's pac\edit\*.pac SSTL (fewest
+// records first), the records whose id the list lacks appended. Their files, for the log.
 std::string MergeDlcLists(svrfmt::Bytes& list) {
   std::vector<std::pair<fs::path, svrfmt::Bytes>> lists;
   std::error_code ec;
@@ -171,15 +171,16 @@ std::string MergeDlcLists(svrfmt::Bytes& list) {
     }
   std::stable_sort(lists.begin(), lists.end(), [](const auto& a, const auto& b) { return a.second.size() < b.second.size(); });
   std::string names;
+  // (the list keeps its records in their places - the game's own first, as the disc has them - and gets each DLC
+  // superstar it lacks after them: the DLCs' lists put theirs first, and with the disc's superstars moved down by
+  // them no Threads edit showed on anyone in the select screen, entrances or matches - 2.1.7 report a3e367)
+  std::set<uint32_t> has;
+  for (size_t o = 2; o < list.size(); o += kRecord) has.insert(RecordId(list, o));
   for (const auto& [file, l] : lists) {
-    std::set<uint32_t> has;
-    for (size_t o = 2; o < l.size(); o += kRecord) has.insert(RecordId(l, o));
-    svrfmt::Bytes merged = l;
-    for (size_t o = 2; o < list.size(); o += kRecord)
-      if (!has.count(RecordId(list, o))) merged.insert(merged.end(), list.begin() + long(o), list.begin() + long(o + kRecord));
-    const uint32_t n = uint32_t((merged.size() - 2) / kRecord);
-    merged[0] = uint8_t(n), merged[1] = uint8_t(n >> 8);
-    list = std::move(merged);
+    for (size_t o = 2; o < l.size(); o += kRecord)
+      if (has.insert(RecordId(l, o)).second) list.insert(list.end(), l.begin() + long(o), l.begin() + long(o + kRecord));
+    const uint32_t n = uint32_t((list.size() - 2) / kRecord);
+    list[0] = uint8_t(n), list[1] = uint8_t(n >> 8);
     names += (names.empty() ? "" : ", ") + file.filename().string() + " (" + std::to_string((l.size() - 2) / kRecord) + ")";
   }
   return names;

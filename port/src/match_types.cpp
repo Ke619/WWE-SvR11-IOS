@@ -3201,6 +3201,28 @@ REX_HOOK_RAW(sub_828578E8) {
   EventAnswer(cond, ctx);
 }
 
+// A dive's hit / miss branch (x 30 / 40) in sub_82191BA0: the target gets motion 1333, sub_821EF9A8(diver, target),
+// then the target's partner (+96, the pair's link: sub_8218F550 sets each one's to the other) has its +1372 counted
+// up - with no check. A target whose link was empty by then crashed the match (2.1.7 report 20261031-022513-dca504:
+// online Extreme Rules, 35 min in, Sheamus' diving fist drop 3571 - read of guest 0x55C, lr 8219287C). The target
+// gets the diver as its partner there, as the dive's start links them; logged. Match state only: alike online.
+REX_EXTERN(__imp__sub_821EF9A8);
+REX_HOOK_RAW(sub_821EF9A8) {
+  const uint32_t diver = ctx.r3.u32, target = ctx.r4.u32, lr = uint32_t(ctx.lr);
+  // (test aids: SVR2011_TEST_DIVE_UNLINK=1 - the target's link emptied here first, the report's state;
+  // SVR2011_TEST_DIVE_GUARD_OFF=1 - no link put back: the report's crash)
+  static const bool unlink = std::getenv("SVR2011_TEST_DIVE_UNLINK") != nullptr;
+  static const bool guard_off = std::getenv("SVR2011_TEST_DIVE_GUARD_OFF") != nullptr;
+  if (unlink && lr == 0x8219287C && target) Wr32(base + target + 96, 0);
+  __imp__sub_821EF9A8(ctx, base);
+  if (guard_off || lr != 0x8219287C || !diver || !target || Rd32(base + target + 96)) return;
+  Wr32(base + target + 96, diver);
+  static int logged = 0;
+  if (logged++ < 8)
+    REXLOG_WARN("match types: a dive's branch found its target (person {}) unlinked - linked to the diver (person {}), "
+                "match frame {}", Rd32(base + target + 1156), Rd32(base + diver + 1156), Rd32(base + 0x82E3CD0C));
+}
+
 // Research aid: SVR2011_TEST_AI_LOG=1 - each CPU action made (both factories): person, action id, match frame; the
 // same action again and again folded into one line with its count (a CPU that stands still: what it keeps trying).
 namespace {

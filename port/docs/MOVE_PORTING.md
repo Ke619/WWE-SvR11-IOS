@@ -252,6 +252,49 @@ page (`port/docs/MOVE_MODDING.md`).
   match and never reached the move. The porter's `MOVES_PORT_TRACE=1` logs both people's root paths and each
   phase's attacker heights.
 
+### SvR 2007 / 2008 / 2009 (31 Oct, from the Anthology study)
+
+Their banks are 2011's own format, their move ids and WAZE layout too (situation at +0x73, the same values), so
+the porter copies the source's tracks instead of retargeting (`convert0789`). What a match needs, learnt by
+comparing with Yumboy11's SVR Anthology (numbers only - `runs\anthology_moves_report.md`; nothing of it is in
+the repo):
+
+- **Every track goes into the match copy.** MOTP/GAME holds cameras (y 50-57), ropes / turnbuckles (10-21),
+  parts (30-32) and props (60) as well as the people - 867 of 2011's 988 moves with a camera keep it there. Only
+  the people went in before. Those other tracks keep the unpacked conventions in MOTP; only y 0 / 1 are packed.
+- **SvR 2009 ships its own packed match copy** (`MOTP/GAME/<child>`), which 2011's packed codec reads, keyed
+  every 1-4 frames (2011: 1-5): it goes into 2011's MOTP as it is. 2007 / 2008 have none (their `MOT/GAME` is
+  keyframes): their packed people are built as before.
+- **No pack without a match copy.** A template needs a keyframe (YMKs) bank in MOTP/GAME; the convert fails
+  otherwise. Ankle Lock 1 on Powerful Knee Strike 5090 got a menu bank only: forced, both people stood frozen.
+- **The move's own record.** All of the study's moves land on a record 2011 keeps without motions (a cut move):
+  its situation, damage and ratings are the move's, only its 16 category bytes are empty. The pack sets those
+  (`waze`, the template's bits) instead of copying the template's record (`wazecopy`), which started Frog Splash
+  Pin as a running move (16 instead of 9), Iron Claw running too, Running STO in situation 1.
+- **Template by situation and category first**, then start gap and length: the source's menu category (2009's
+  STND / DIVI / ROPE ... -> STN1+STN2 / CORN / ROPE), the move's situation. Running STO: Spear 3 (was Roll Up).
+- **Holds (x 101-103)** take banks and records from a keyframe hold - 2011 has three usable, all ground holds:
+  Sleeper & Body Scissors 6019, Ankle Lock 2 6181, Cloverleaf Pain 6212 - and the category bits from the
+  template of their own situation. Forced, Ankle Lock 1 on 6019 / 6181's banks takes Cena down and holds the
+  ankle; on a standing grapple's banks the pair let go after the takedown.
+- **Event ops 192 / 193 are kept**: 2007-2011 all size them 2 / 3 (the old "2008-only" drop was wrong). 2011
+  ignores 192 (sub_8239D750 skips it); 193 is a sound / voice cue (u16 id), kept only for an id 2011's own match
+  copies play (`Game11.cue_ids`; SvR 2009 has 6 of them in all its match copies, 3 of 4 ids shared).
+- **An in-ring dive leaves out the source's floor flights x 110 / 111** (2011 keeps them for Leap of Faith alone
+  and plays x 110 as the miss: SvR 2009's Frog Splash Pin flew out onto the floor) and takes the template's miss,
+  x 50, which the source doesn't have (without it the attacker hung at the corner after the flight).
+
+In-match (forced, hidden; `scratchpad anth\an_run1-5.ps1`, sheets `runs\an_*_sheet.png`, n = this porter, b = 2.1.8's):
+
+| Move | Before | Now |
+|---|---|---|
+| Chokeslam 5 (corner, placed) | plays | plays the same, all 7 tracks in the match copy |
+| Ankle Lock 1 (submission) | frozen, never animates | takedown + ankle hold, every start |
+| DDT 8 (7 cameras) | pair frozen outside the ring after one start | plays in the ring with its cameras, every start |
+| Atomic Leg Drop 1 (rope) | - | plays; its own low camera at the end |
+| Frog Splash Pin (dive) | miss flies onto the floor | flies off the corner, ends in the ring - the dive aid's victim is far away (stock 3555 misses there too): not proven |
+| Running STO (running) | - | forced from standing the attacker drops out after 16 frames (a running start is needed); the CPU didn't pick it in 180 s: not proven |
+
 ## 5. Parked: a reversal test aid
 
 Wanted: `SVR2011_TEST_REVERSE=<person>` - the next move on that person goes into its reversal branch (x 90-92),

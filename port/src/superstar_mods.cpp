@@ -3626,17 +3626,86 @@ uint32_t SortedPrefix(uint8_t* base, uint32_t bank, uint32_t count) {
   o = {count, last, n};
   return n;
 }
-uint32_t FindInUnsortedBanks(uint8_t* base, uint32_t banks, uint32_t key, uint32_t out) {
+// A bank in a list that can't be one (2.1.6 report 20261030-212436-89cfee: every match crashed at its start - a
+// slot's "bank" said 0xB7C4EFFF entries and the game's search read its last one 2 GB away, guest 0x21BAD310; a heavy
+// install, 53 packs, updated in place from 2.1.3): its count over 65535. -> the bank's +0 adjusted (as the game does)
+// or 0 when the slot is empty or fine; *bad true when it isn't a bank.
+uint32_t BankAt(uint8_t* base, uint32_t banks, uint32_t k, bool* bad) {
   constexpr uint32_t kYmks = 0x734B4D59, kYmbs = 0x73424D59;  // (as the game reads them)
+  *bad = false;
+  uint32_t b = Rd32(GuestAt(base, banks + 4 * k));
+  if (!b) return 0;
+  const uint32_t magic = Rd32(GuestAt(base, b));
+  if (magic != kYmks && magic != kYmbs) b -= 16;
+  const uint32_t count = Rd32(GuestAt(base, b + 272));
+  if (!count) return 0;
+  // (only the count: packs leave banks out of order - their YMBs motions after the stock ones - and a key's id can
+  // carry the 0x8000 flag, so key checks threw out good banks and their motions went missing)
+  if (count > 65535) *bad = true;
+  return b;
+}
+
+// Test aids: SVR2011_TEST_BAD_BANK=1 - each search goes over a copy of its list with a fake bank whose last entry
+// is the report's fault address in its first empty slot - the game's own list untouched;
+// SVR2011_TEST_BANK_GUARD_OFF=1 - the game's searches only (the crash).
+bool BankGuardOff() {
+  static const bool off = std::getenv("SVR2011_TEST_BANK_GUARD_OFF") != nullptr;
+  return off;
+}
+uint32_t TestListWithBadBank(uint8_t* base, uint32_t banks) {  // -> the copy to search instead, or banks
+  static const bool on = std::getenv("SVR2011_TEST_BAD_BANK") != nullptr;
+  if (!on || !banks || !g_memory) return banks;
+  static uint32_t fake = 0;
+  thread_local uint32_t copy = 0;  // (each thread its own: searches run on several at once)
+  {
+    static std::mutex mu;
+    std::lock_guard lock(mu);
+    if (!fake && (fake = g_memory->SystemHeapAlloc(512)) != 0) {
+      uint8_t* f = GuestAt(base, fake);
+      std::memset(f, 0, 512);
+      // (its count puts its last entry on the report's fault, guest 0x21BAD310 - unmapped, as there)
+      const uint32_t n = (0x21BAD314u - (fake + 276)) / 16 + 1;
+      const uint8_t magic[4] = {0x73, 0x4B, 0x4D, 0x59}, count[4] = {uint8_t(n >> 24), uint8_t(n >> 16), uint8_t(n >> 8), uint8_t(n)};
+      std::memcpy(f, magic, 4), std::memcpy(f + 272, count, 4);  // (magic read as 0x734B4D59)
+      REXLOG_INFO("[svr2011] motion banks: test - a fake bank at {:08X} (count {:08X})", fake, n);
+    }
+  }
+  if (!copy) copy = g_memory->SystemHeapAlloc(512);
+  if (!fake || !copy) return banks;
+  uint8_t* c = GuestAt(base, copy);
+  std::memcpy(c, GuestAt(base, banks), 272 + 68);  // (the 68 slots, then their bytes)
+  for (uint32_t k = 0; k < 68; ++k)
+    if (!Rd32(c + 4 * k)) {
+      c[4 * k] = uint8_t(fake >> 24), c[4 * k + 1] = uint8_t(fake >> 16), c[4 * k + 2] = uint8_t(fake >> 8), c[4 * k + 3] = uint8_t(fake);
+      return copy;
+    }
+  return banks;
+}
+
+// Any such bank in the list - the game's own search isn't safe with it. -> its slot (and what it held), or -1.
+int BadBankSlot(uint8_t* base, uint32_t banks, uint32_t* bank = nullptr, uint32_t* count = nullptr) {
   for (uint32_t k = 0; k < 68; ++k) {
-    uint32_t b = Rd32(GuestAt(base, banks + 4 * k));
-    if (!b) continue;
-    const uint32_t magic = Rd32(GuestAt(base, b));
-    if (magic != kYmks && magic != kYmbs) b -= 16;
+    bool bad;
+    const uint32_t b = BankAt(base, banks, k, &bad);
+    if (bad) {
+      if (bank) *bank = b;
+      if (count) *count = Rd32(GuestAt(base, b + 272));
+      return int(k);
+    }
+  }
+  return -1;
+}
+
+uint32_t FindInUnsortedBanks(uint8_t* base, uint32_t banks, uint32_t key, uint32_t out, bool all = false,
+                             uint32_t* slot = nullptr) {
+  for (uint32_t k = 0; k < 68; ++k) {
+    bool bad;
+    const uint32_t b = BankAt(base, banks, k, &bad);
+    if (!b || bad) continue;
     const uint32_t count = Rd32(GuestAt(base, b + 272));
-    if (!count || count > 20000) continue;
+    if (!all && count > 20000) continue;
     const uint32_t sorted = SortedPrefix(base, b, count);
-    if (sorted >= count) continue;  // (in order: the game's search was right)
+    if (sorted >= count && !all) continue;  // (in order: the game's search was right)
     const uint8_t* e = GuestAt(base, b + 276);
     int lo = 0, hi = int(sorted) - 1, at = -1;
     while (lo <= hi) {
@@ -3652,11 +3721,28 @@ uint32_t FindInUnsortedBanks(uint8_t* base, uint32_t banks, uint32_t key, uint32
       uint8_t* q = GuestAt(base, out);
       q[0] = uint8_t(uint32_t(at) >> 24), q[1] = uint8_t(uint32_t(at) >> 16), q[2] = uint8_t(uint32_t(at) >> 8), q[3] = uint8_t(at);
     }
+    if (slot) *slot = k;
     return b + 272;
   }
   return 0;
 }
 }  // namespace
+
+// The second bank search, at a motion's start: sub_82394740(banks, id, x, y) -> the per-slot byte at banks + 272 + k
+// of the bank k that has the key (0 if none) - it reads each bank as sub_823941F8 does, so a slot that isn't a bank
+// (BankAt) crashed it the same way: then the search here over the good banks.
+REX_EXTERN(__imp__sub_82394740);
+REX_HOOK_RAW(sub_82394740) {
+  const uint32_t banks = TestListWithBadBank(base, ctx.r3.u32);
+  ctx.r3.u64 = banks;
+  if (!banks || BankGuardOff() || BadBankSlot(base, banks) < 0) {
+    __imp__sub_82394740(ctx, base);
+    return;
+  }
+  const uint32_t key = (ctx.r4.u32 & 0xFFFF) << 16 | (ctx.r5.u32 & 0xFF) << 8 | (ctx.r6.u32 & 0xFF);
+  uint32_t slot = 0;
+  ctx.r3.u64 = FindInUnsortedBanks(base, banks, key, 0, true, &slot) ? *GuestAt(base, banks + 272 + slot) : 0u;
+}
 
 REX_EXTERN(__imp__sub_823941F8);
 REX_HOOK_RAW(sub_823941F8) {
@@ -3669,8 +3755,26 @@ REX_HOOK_RAW(sub_823941F8) {
       ctx.r4.u64 = to;
       ctx.r5.u64 = 0;
     }
-  const uint32_t banks = ctx.r3.u32, out = ctx.r7.u32;
-  __imp__sub_823941F8(ctx, base);
+  const uint32_t banks = TestListWithBadBank(base, ctx.r3.u32), out = ctx.r7.u32;
+  ctx.r3.u64 = banks;
+  // (a slot that can't be a bank - BankAt: the search over the good banks here instead of the game's, which read
+  // past it and crashed every match; the bank logged once)
+  uint32_t bad_bank = 0, bad_count = 0;
+  if (const int bad = banks && !BankGuardOff() ? BadBankSlot(base, banks, &bad_bank, &bad_count) : -1; bad >= 0) {
+    static std::mutex bmu;
+    static std::vector<uint32_t> told;
+    {
+      std::lock_guard lock(bmu);
+      if (told.size() < 16 && std::find(told.begin(), told.end(), bad_bank) == told.end()) {
+        told.push_back(bad_bank);
+        REXLOG_ERROR("[svr2011] motion banks: slot {} of list {:08X} isn't a motion bank (at {:08X}, count {}) - left out "
+                     "of the search (a damaged pac's bank?)", bad, banks, bad_bank, bad_count);
+      }
+    }
+    ctx.r3.u64 = FindInUnsortedBanks(base, banks, id << 16 | x << 8 | y, out, true);
+  } else {
+    __imp__sub_823941F8(ctx, base);
+  }
   if (!ctx.r3.u32 && banks) {
     static const bool off = std::getenv("SVR2011_TEST_YMBS_SEARCH_OFF") != nullptr;  // (test aid: the game's search only)
     if (!off) ctx.r3.u64 = FindInUnsortedBanks(base, banks, id << 16 | x << 8 | y, out);

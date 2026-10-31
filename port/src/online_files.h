@@ -44,6 +44,16 @@ uint32_t Crc32(uint32_t crc, const void* data, size_t n);
 bool FileCrc32(const std::filesystem::path& file, uint32_t* out);
 void StartGameFilesCheck();
 
+// At start, before the game runs: the disc's files (the launcher's list, the optional ones left out) that aren't in
+// the game folder - only whether each is there, no reading. `essential`: one the game can't start without
+// (default.xex, the .arc lists, pac\...): a folder without pac\_startup.pac / plist360.h crashed 0.3 s in, a read
+// of guest 0x28 (2.1.7 report ea8202). Test aid SVR2011_TEST_MISSING_GAME_FILE=<path in the list> - as if missing.
+struct MissingGameFile {
+  std::string path;  // in the game folder (UTF-8, backslashes)
+  bool essential = false;
+};
+std::vector<MissingGameFile> MissingGameFiles();
+
 enum class GameFiles { kChecking, kClean, kModified };
 // The check's result; `first_bad`: the first file that differs (when modified).
 GameFiles GameFilesState(std::string* first_bad = nullptr);

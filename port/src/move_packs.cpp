@@ -686,6 +686,26 @@ bool Commit(const fs::path& part, const fs::path& dst) {
   return true;
 }
 
+// `data` as `dst` through its .part, only when written whole (a full disk: the old file - or none - stays, never a
+// short one).
+bool WriteWhole(const fs::path& dst, const Bytes& data) {
+  const fs::path part = Part(dst);
+  bool ok;
+  {
+    std::ofstream out(part, std::ios::binary | std::ios::trunc);
+    out.write(reinterpret_cast<const char*>(data.data()), std::streamsize(data.size()));
+    out.close();
+    ok = bool(out);
+  }
+  if (!ok) {
+    std::error_code ec;
+    fs::remove(part, ec);
+    REXLOG_WARN("[svr2011] move packs: cannot write {}", dst.string());
+    return false;
+  }
+  return Commit(part, dst);
+}
+
 // Writes `src` to `dst` with the entries in `changed` ("TYPE/NAME") replaced,
 // laid out as svrfmt::EpacWrite does.
 bool WritePacTo(const fs::path& src, const fs::path& dst, const std::map<std::string, Bytes>& changed);
@@ -1313,6 +1333,85 @@ bool PatchCatalog(Bytes& arc, const fs::path& orig_pac, const fs::path& copy_pac
   return true;
 }
 
+// ---- The overlay's own files checked (2.1.7 report 4a90f4: CREATE A MOVE-SET loaded for ever - a read that
+// started past a served file's end never completed). The stamp names what the overlay was made from; these say
+// whether the files there are still what the game will read: an overlay pac or DLC copy whose table points past
+// its end (cut short: a copy, a full disk, a crash), or a DLC catalog copy that doesn't name a package file the game
+// reads with it at its place (a copy gone, a package file changed, an older build's leftovers).
+
+// "" when every entry of `pac` (an EPAC) lies within the file, else why not. Not an EPAC: "" (not checked).
+std::string TocFits(const fs::path& pac) {
+  std::ifstream f(pac, std::ios::binary);
+  Bytes head;
+  std::vector<TocEntry> toc;
+  if (!f || !ReadToc(f, head, toc)) return "";
+  std::error_code ec;
+  const uint64_t size = fs::file_size(pac, ec);
+  for (const auto& e : toc) {
+    const uint64_t end = 0x4000 + uint64_t(e.sector) * 0x800 + uint64_t(e.size256) * 0x100;
+    if (end > size)
+      return fmt::format("{} is {} bytes, its entry {}/{} ends at {}", pac.filename().string(), size, e.type, e.name, end);
+  }
+  return "";
+}
+
+// Whether `arc` (a DLC catalog) names every entry of `pac` at its place ({name, sector, size}, big-endian - as
+// PatchCatalog finds them).
+bool CatalogNames(const Bytes& arc, const fs::path& pac) {
+  std::ifstream f(pac, std::ios::binary);
+  Bytes head;
+  std::vector<TocEntry> toc;
+  if (!f || !ReadToc(f, head, toc) || toc.empty()) return false;
+  for (const auto& e : toc) {
+    if (e.name.size() != 4) return false;
+    uint8_t want[12];
+    std::memcpy(want, e.name.data(), 4);
+    for (int k = 0; k < 4; ++k) want[4 + k] = uint8_t(e.sector >> (24 - 8 * k)), want[8 + k] = uint8_t(e.size256 >> (24 - 8 * k));
+    if (std::search(arc.begin(), arc.end(), want, want + 12) == arc.end()) return false;
+  }
+  return true;
+}
+
+// "" when the served catalogs of `package` (copies in `list`) name, for every package pac its own catalog names, the
+// file the game will read in its place (the served copy, else the package's own) - else why not.
+std::string PackageMismatch(const fs::path& package, const std::vector<const DlcCopy*>& list) {
+  std::error_code ec;
+  std::map<fs::path, fs::path> read;  // package pac -> the file the game reads
+  for (const auto& f : fs::directory_iterator(package / "pac", ec))
+    if (f.is_regular_file(ec) && Lower(f.path().extension().string()) == ".pac") read[f.path()] = f.path();
+  for (const DlcCopy* c : list)
+    if (fs::exists(c->copy, ec)) read[c->file] = c->copy;
+  const fs::path info = list.front()->copy.parent_path() / "info";
+  for (const fs::path& cat : DlcCatalogs(package)) {
+    Bytes own, served;
+    if (!ReadAll(cat, own)) continue;
+    if (!ReadAll(info / cat.filename(), served)) return fmt::format("no {} beside its copies", cat.filename().string());
+    for (const auto& [file, used] : read) {
+      if (!CatalogNames(own, file)) continue;  // (not one this catalog places)
+      if (!CatalogNames(served, used))
+        return fmt::format("{} doesn't place {} as the game reads it", cat.filename().string(), used.filename().string());
+    }
+  }
+  return "";
+}
+
+// The first thing wrong with the overlay's files ("" when none): its pacs, the DLC copies, the served catalogs.
+std::string OverlayDamage(const fs::path& overlay, const std::set<std::string>& pacs, const std::vector<DlcCopy>& dlc) {
+  std::error_code ec;
+  for (const auto& p : pacs)
+    if (std::string why = TocFits(overlay / PacPath(p)); !why.empty()) return why;
+  std::map<fs::path, std::vector<const DlcCopy*>> by_package;
+  for (const auto& c : dlc) {
+    if (!fs::exists(c.copy, ec)) continue;
+    if (std::string why = TocFits(c.copy); !why.empty()) return "DLC " + why;
+    by_package[c.file.parent_path().parent_path()].push_back(&c);
+  }
+  for (const auto& [package, list] : by_package)
+    if (std::string why = PackageMismatch(package, list); !why.empty())
+      return "DLC " + package.filename().string() + ": " + why;
+  return "";
+}
+
 // The catalogs of the packages with copies, into the overlay beside them; copies that can't be named in
 // every catalog removed.
 void PatchDlcCatalogs(std::vector<DlcCopy>& copies) {
@@ -1337,9 +1436,8 @@ void PatchDlcCatalogs(std::vector<DlcCopy>& copies) {
         arc = std::move(test);
       }
       fs::create_directories(out_dir, ec);
-      const fs::path dst = out_dir / cat.filename(), part = Part(dst);
-      { std::ofstream(part, std::ios::binary | std::ios::trunc).write(reinterpret_cast<const char*>(arc.data()), std::streamsize(arc.size())); }
-      if (Commit(part, dst)) REXLOG_INFO("[svr2011] move packs: DLC {} with the copies' places", cat.filename().string());
+      const fs::path dst = out_dir / cat.filename();
+      if (WriteWhole(dst, arc)) REXLOG_INFO("[svr2011] move packs: DLC {} with the copies' places", cat.filename().string());
     }
   }
   // (a catalog written before a later one dropped a copy names that copy's places: written again without it)
@@ -1353,9 +1451,7 @@ void PatchDlcCatalogs(std::vector<DlcCopy>& copies) {
       if (!ReadAll(cat, arc)) continue;
       for (DlcCopy* c : list)
         if (fs::exists(c->copy, ec)) PatchCatalog(arc, c->file, c->copy);
-      const fs::path dst = out_dir / cat.filename(), part = Part(dst);
-      { std::ofstream(part, std::ios::binary | std::ios::trunc).write(reinterpret_cast<const char*>(arc.data()), std::streamsize(arc.size())); }
-      Commit(part, dst);
+      WriteWhole(out_dir / cat.filename(), arc);
     }
   }
 }
@@ -1798,6 +1894,12 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs, const fs::path& d
     for (size_t i = 0; i < gms.size(); ++i) have &= fs::exists(overlay / GimmickPacName(i), ec);
     have &= dlc_complete();
     if (have) {
+      if (const std::string why = OverlayDamage(overlay, pacs, dlc); !why.empty()) {
+        REXLOG_WARN("[svr2011] move packs: the overlay's files don't match ({}) - merging again", why);
+        have = false;
+      }
+    }
+    if (have) {
       LinkDlcCopies(vfs, overlay, dlc);
       Register(vfs, overlay);
       g_folder = "Mods\\PacOverlay";
@@ -1910,7 +2012,23 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs, const fs::path& d
           fs::remove(c.copy, ec);
           break;
         }
-  std::ofstream(overlay / "stamp.txt", std::ios::binary) << stamp + dlc_stamp();
+  {  // (a package whose served files still don't match its catalogs: its own files play)
+    std::map<fs::path, std::vector<const DlcCopy*>> by_package;
+    for (const auto& c : dlc)
+      if (fs::exists(c.copy, ec)) by_package[c.file.parent_path().parent_path()].push_back(&c);
+    for (const auto& [package, list] : by_package) {
+      std::string why = PackageMismatch(package, list);
+      for (const DlcCopy* c : list)
+        if (why.empty()) why = TocFits(c->copy);
+      if (why.empty()) continue;
+      REXLOG_WARN("[svr2011] move packs: DLC {}: {} - the package's own files play", package.filename().string(), why);
+      for (const DlcCopy* c : list) fs::remove(c->copy, ec);
+    }
+  }
+  {
+    const std::string all = stamp + dlc_stamp();
+    WriteWhole(overlay / "stamp.txt", Bytes(all.begin(), all.end()));
+  }
   LinkDlcCopies(vfs, overlay, dlc);
   Register(vfs, overlay);
   g_folder = "Mods\\PacOverlay";

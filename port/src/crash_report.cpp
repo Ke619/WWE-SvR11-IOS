@@ -112,8 +112,23 @@ void WriteGuestContext(FILE* f) {
     std::fprintf(f, "  r%-2d %08X%s", i, uint32_t(r[i]), i % 4 == 3 ? "\n" : "");
 }
 
+// The pads' rumble off - first thing: the dump below takes seconds, and an XInput pad keeps its last motor speeds
+// after the game is gone, until it is unplugged (2.1.7 report 20261031-022513-dca504: "controller vibrated non stop").
+// XInputSetState looked up at run time (no import of its own).
+void StopRumble() {
+  using SetState = DWORD(WINAPI*)(DWORD, void*);
+  for (const wchar_t* dll : {L"xinput1_4.dll", L"xinput1_3.dll", L"xinput9_1_0.dll"})
+    if (HMODULE m = GetModuleHandleW(dll) ? GetModuleHandleW(dll) : LoadLibraryW(dll))
+      if (auto set = reinterpret_cast<SetState>(GetProcAddress(m, "XInputSetState"))) {
+        WORD speeds[2] = {0, 0};  // (XINPUT_VIBRATION: left, right motor)
+        for (DWORD pad = 0; pad < 4; ++pad) set(pad, speeds);
+        return;
+      }
+}
+
 void Report(const char* reason, EXCEPTION_POINTERS* info) {
   if (g_reported.exchange(true) || g_dir.empty()) return;
+  StopRumble();
   if (g_hook) g_hook();
   rex::FlushLogging();  // the log's last lines usually say why
   std::error_code ec;

@@ -27,6 +27,7 @@
 #include "match_diag.h"
 #include "move_packs.h"
 #include "online_mods.h"
+#include "text_guard.h"
 
 #include "generated/default/svr2011_init.h"
 
@@ -102,7 +103,8 @@ REX_HOOK_RAW(sub_82BA1AC8) {
       if (auto it = g_labels.find(id); it != g_labels.end()) {
         label = it->second;
       } else {
-        const std::string text = "MOD: " + std::string(reinterpret_cast<const char*>(base + name), strnlen(reinterpret_cast<const char*>(base + name), 63));
+        const std::string text = svr2011::CleanUtf8(
+            "MOD: " + std::string(reinterpret_cast<const char*>(base + name), strnlen(reinterpret_cast<const char*>(base + name), 63)), 68);
         label = g_memory->SystemHeapAlloc(uint32_t(text.size() + 1));
         if (label) std::memcpy(g_memory->TranslateVirtual<char*>(label), text.c_str(), text.size() + 1);
         g_labels[id] = label;

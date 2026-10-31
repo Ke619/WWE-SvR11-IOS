@@ -51,6 +51,7 @@
 #include "no_mods.h"
 #include "superstar_mods.h"
 #include "startup_pump.h"
+#include "text_guard.h"
 
 #include <algorithm>
 #include <atomic>
@@ -87,7 +88,7 @@ namespace {
 namespace fs = std::filesystem;
 using svrfmt::Bytes;
 
-constexpr const char* kFormat = "movepacks 13";  // (13: pack motions going on to a motion nobody has get the game's own follow-up - every install merged again once; 12: new pacentry names keep the others' places, propfallback; 11: BATS / BATH INIT get the records themselves, not WAZA's tables - a DLC's differ; 2: banks whose sentinel points past the data; 3: WAZE category counts; 4: YMBs banks, record names; 6: WAZA records in id order; 7: of two packs' copies of a motion the first read is used; 8: pacentry lines; 9: YMBs motions appended after the stock ones; 10: pacentry into EPAC pacs (prtcls.pac pyro))
+constexpr const char* kFormat = "movepacks 14";  // (14: record names cut on a UTF-8 character, bad bytes as '?' - a broken name froze the text draw; 13: pack motions going on to a motion nobody has get the game's own follow-up - every install merged again once; 12: new pacentry names keep the others' places, propfallback; 11: BATS / BATH INIT get the records themselves, not WAZA's tables - a DLC's differ; 2: banks whose sentinel points past the data; 3: WAZE category counts; 4: YMBs banks, record names; 6: WAZA records in id order; 7: of two packs' copies of a motion the first read is used; 8: pacentry lines; 9: YMBs motions appended after the stock ones; 10: pacentry into EPAC pacs (prtcls.pac pyro))
 std::string g_folder;  // PacListFolder
 constexpr const char* kPropPac = "evt\\evtobj.pac";  // (entrance props: SOBJ <id>)
 
@@ -235,7 +236,8 @@ void ReadPack(const fs::path& dir, Packs& p, std::string& stamp, bool data = tru
       in >> id;
       std::getline(in, name);
       name.erase(0, name.find_first_not_of(' '));
-      if (id && !name.empty()) p.names[uint16_t(id)] = name.substr(0, 63);
+      while (!name.empty() && (name.back() == '\r' || name.back() == ' ')) name.pop_back();
+      if (id && !name.empty()) p.names[uint16_t(id)] = svr2011::CleanUtf8(name, 63);
     } else if (kind == "exh" || kind == "evt" || kind == "mbd") {
       Record r;
       std::string rec, ev;
@@ -1098,8 +1100,10 @@ int PatchWaze(uint8_t* w, size_t size, const std::map<uint16_t, Bytes>& waze, in
     const uint16_t id = Le16(r + 0x90);
     if (const auto nm = names.find(id); nm != names.end()) {  // (the name: 64 bytes at +0x10, "MOD: " first - below)
       uint8_t buf[64] = {};
-      const std::string want = nm->second.rfind("MOD: ", 0) == 0 ? nm->second : "MOD: " + nm->second;
-      std::memcpy(buf, want.data(), std::min<size_t>(want.size(), 63));
+      // (cut on a character boundary, bad bytes as '?': a broken UTF-8 name froze the game's text draw - text_guard.cpp)
+      const std::string want =
+          svr2011::CleanUtf8(nm->second.rfind("MOD: ", 0) == 0 ? nm->second : "MOD: " + nm->second, 63);
+      std::memcpy(buf, want.data(), want.size());
       if (std::memcmp(r + 0x10, buf, 64)) std::memcpy(r + 0x10, buf, 64), ++set;
     }
     const auto f = waze.find(id);
@@ -1111,7 +1115,8 @@ int PatchWaze(uint8_t* w, size_t size, const std::map<uint16_t, Bytes>& waze, in
       char* nm = reinterpret_cast<char*>(r + 0x10);
       if (nm[0] && std::strncmp(nm, kMod, 5)) {
         char buf[64] = {};
-        std::snprintf(buf, sizeof buf, "%s%.*s", kMod, 58, nm);
+        const std::string text = svr2011::CleanUtf8(kMod + std::string(nm, strnlen(nm, 64)), 63);
+        std::memcpy(buf, text.data(), text.size());
         std::memcpy(r + 0x10, buf, 64), ++set;
       }
     }

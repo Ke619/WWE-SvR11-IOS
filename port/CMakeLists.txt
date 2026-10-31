@@ -106,6 +106,7 @@ set(SVR2011_SOURCES
     src/roster.cpp
     src/story_designer.cpp
     src/title_belts.cpp
+    src/text_guard.cpp
     src/post_effects.cpp
     src/replays.cpp
     src/reel_save.cpp

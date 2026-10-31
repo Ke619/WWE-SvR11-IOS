@@ -420,7 +420,41 @@ REX_HOOK_RAW(sub_821CF178) {
     g_plan.erase(g_plan.begin());
     ++g_mapped;
   }
+  const uint32_t model_in = ctx.r4.u32;
   __imp__sub_821CF178(ctx, base);
+  // (test aid SVR2011_TEST_MAKER_LOG=1: every object made - model, caller, the object)
+  if (static const bool maker_log = std::getenv("SVR2011_TEST_MAKER_LOG") != nullptr; maker_log)
+    REXLOG_INFO("weapon maker: model {} by {:08X} -> {:08X}", int32_t(model_in), lr, ctx.r3.u32);
+  if (lr == 0x821986D8)  // (the ladder prize - below)
+    REXLOG_INFO("[svr2011] ladder prize: model {} made ({:08X})", int32_t(model_in), ctx.r3.u32);
+}
+
+// The ladder matches' prize, for reports (2.1.7 report 67f402: Money in the Bank with an invisible briefcase - no
+// briefcase object made at all; not reproduced here). The match's parts (sub_822B2DA8, each one named:
+// sub_822B2AC8(part, name)) include the prize rig by the live settings' +69 (2: /STG/LADM, the briefcase's - Money
+// in the Bank; 3: /STG/LADC; 1: /STG/LADU, in no pac), read from bgEtc.pac. The prize manager (sub_8223C7D8, at
+// 0x82E3BC30) then makes the prize, sub_8223B798: over the rig's node list (*0x82E3BF34: nodes at +76, count at
+// +164), node 1 gets the briefcase (model 23, sub_821986C0 -> the maker above, lr 821986D8) - fewer than 2 nodes: no
+// briefcase. Logged: the rig part, the node count, the prize made.
+REX_EXTERN(__imp__sub_822B2AC8);
+REX_HOOK_RAW(sub_822B2AC8) {
+  const uint32_t name = ctx.r4.u32;
+  __imp__sub_822B2AC8(ctx, base);
+  const char* n = name ? reinterpret_cast<const char*>(base + name) : "";
+  if (std::strncmp(n, "/STG/LAD", 8) == 0)
+    REXLOG_INFO("[svr2011] ladder prize: rig {} (live settings +50 {} +69 {})", n, base[kLiveSettings + 50],
+                base[kLiveSettings + 69]);
+}
+
+REX_EXTERN(__imp__sub_8223B798);
+REX_HOOK_RAW(sub_8223B798) {
+  const uint32_t list = Rd32(base + 0x82E3BF34);
+  const int32_t nodes = list ? int32_t(Rd32(base + list + 164)) : -1;
+  if (nodes < 2)
+    REXLOG_WARN("[svr2011] ladder prize: the rig has {} nodes - no briefcase (list {:08X})", nodes, list);
+  else
+    REXLOG_INFO("[svr2011] ladder prize: the rig has {} nodes", nodes);
+  __imp__sub_8223B798(ctx, base);
 }
 
 namespace svr2011 {

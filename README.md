@@ -78,11 +78,14 @@ Other iPhones and iPads haven't been tested. It's an early port, so expect rough
    3. It's about 5.3 GB, so the copy takes a while.
    
    **=> Method 2:**
-   - use the built-in install feature in the game launcher to add the game files directly from your ISO dump. (For livecontainer users it's easier if you place your `.iso` dump inside the `/import` folder within the app's container directory and than simply click install in the `launcher` as the Files app is usually bugged.)
+   - use the built-in install feature in the game launcher to add the game files directly from your ISO dump.
+
+   > [!NOTE]
+   > For livecontainer users it's easier if you place your `.iso` dump inside the `/import` folder within the app's container directory and than simply click install in the `launcher` as the Files app is usually bugged.
 
    You don't need to supply shaders. They ship inside the app and are copied into `Documents/native_shaders/` on start-up.
 
-4. **Start the app and play.** The launcher's **Play** tab should say the game files and shaders were found. Press **PLAY**. The first launch creates the settings file.
+5. **Start the app and play.** The launcher's **Play** tab should say the game files and shaders were found. Press **PLAY**. The first launch creates the settings file.
 
 **Updating:** install the new IPA over the old one. Your saves are in the game folder inside the app.
 

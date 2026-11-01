@@ -162,6 +162,10 @@ namespace {
 // 54 superstar mods' signs (487 in all, a 1,660 KB bank) filled it at every match load (2.1.7 report ce0353): when
 // it's full, a block comes from the fallback memory as the stage's and weapons' heaps do (ring_rules hooks below).
 constexpr uint32_t kMatchLoadHeap = 12;
+// Only its big blocks (the sign bank's copies, 1.4 MB+) take fallback memory: the small ones are the match's own
+// objects, and with all of them in the fallback (SVR2011_TEST_HEAP_FAIL=12@0) the match crashed in its update pass
+// (2.1.8 release test N1) - a heap that's full for small blocks ends with the out-of-game-memory notice as before.
+constexpr uint32_t kMatchLoadFallbackMin = 64 * 1024;
 // The game's heaps (table at *0x82EC5F48, 36 bytes each: start, end).
 void LogHeapTable(const uint8_t* base) {
   const uint32_t table = Rd32(base + 0x82EC5F48);
@@ -246,7 +250,8 @@ REX_HOOK_RAW(sub_8269A8D8) {
     // (the stage's heap full - an arena with more 3D detail than the game's own: caw_limits.h kStageHeap; the
     // match's weapons' heap - OPTIONS -> WEAPONS picks: kWeaponHeap; heap 12, kMatchLoadHeap - physical: the sign
     // bank's textures are copied into it)
-    if ((heap == svr2011::kStageHeap || heap == svr2011::kWeaponHeap || heap == kMatchLoadHeap) && svr2011::BigModelMemory())
+    if ((heap == svr2011::kStageHeap || heap == svr2011::kWeaponHeap || (heap == kMatchLoadHeap && size >= kMatchLoadFallbackMin)) &&
+        svr2011::BigModelMemory())
       if (const uint32_t p = svr2011::FallbackBlock(size, heap != kMatchLoadHeap)) {
         ctx.r3.u64 = p;
         static int told = 0;
@@ -308,7 +313,8 @@ REX_HOOK_RAW(sub_8269BA30) {
     // (and the wrestlers' model heaps 17-20: the 547k-vertex superstar's model asked one for 28.7 MB this way - GPU
     // data, so the physical fallback, as model_mem.cpp's model-heap one)
     const bool model_heap = heap >= 17 && heap <= 20;
-    if ((heap == svr2011::kWeaponHeap || heap == svr2011::kStageHeap || heap == 53 || model_heap || heap == kMatchLoadHeap) &&
+    if ((heap == svr2011::kWeaponHeap || heap == svr2011::kStageHeap || heap == 53 || model_heap ||
+         (heap == kMatchLoadHeap && units * 16 >= kMatchLoadFallbackMin)) &&
         svr2011::BigModelMemory())
       if (const uint32_t p = svr2011::FallbackBlock(units * 16, !model_heap && heap != kMatchLoadHeap)) {
         ctx.r3.u64 = p;

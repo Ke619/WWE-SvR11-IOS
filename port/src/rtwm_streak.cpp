@@ -186,6 +186,10 @@ void RtwmBeforeFrame(uint8_t* base) {
         s += fmt::format(" [{} {:08X} {:.1f} {:.1f} {:.1f}]", i, c, RdF(base + c + 288), RdF(base + c + 292), RdF(base + c + 296));
     REXLOG_INFO("[svr2011] rtwm: characters {}:{}", Rd32(base + kCharCount), s);
   }
+  // (SVR2011_TEST_RTWM_WARP_ANY=1: the warps start with any Road to WrestleMania scene's first frames, not only a
+  // mod-played one - a stock story's backstage walk)
+  static const bool any = std::getenv("SVR2011_TEST_RTWM_WARP_ANY") != nullptr;
+  if (warp && any && !g_solo_frames && Rd32(base + 0x82E3CD0C) < 10) g_solo_frames = 1;
   if (!warp || !g_solo_frames) return;
   ++g_solo_frames;
   // (5 s in, then each next place of "x,z[,y];x,z..." 6 s later; each held for 10 frames, as hctp_room's doors)

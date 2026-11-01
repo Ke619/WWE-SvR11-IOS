@@ -2363,6 +2363,52 @@ void CawCall(PPCContext& ctx, uint8_t* base, uint32_t out, uint32_t slot) {
   if (NameCallLog()) REXLOG_INFO("[svr2011] name call: Created Superstar {} (id {}) as {}", name, id, c->second);
 }
 
+// A stock or DLC Superstar the announcer's table has no name for: DLC John Cena (purple, id 57) and DLC Undertaker
+// (biker, id 58) are "dummy" in every by-id category, the DLC's own sound_dlc_02.pac copy too (report
+// 20261101-023939-02ef48: no ring-announcer name, generic commentary), and their commentary ids 10007 / 10008 make
+// no bank. They borrow the calls of the same person - the record's +228 (same person) when that one has a name,
+// else the roster record with the same name that has one (JOHN CENA 139, UNDERTAKER 103). 0: none (a name of its
+// own, a mod, or no donor). Category 8 is the name ("RA_JR_SSN_<NAME>_1").
+bool HasCallName(uint8_t* base, uint32_t T, uint32_t id) {
+  const uint32_t count = Rd32(base + T + 420 + 8 * 8), names = Rd32(base + T + 424 + 8 * 8);
+  return names && id < count && std::strcmp(reinterpret_cast<const char*>(base + names + id * 64), "dummy") != 0;
+}
+const uint8_t* RosterRecord(uint8_t* base, uint32_t id) {
+  if (!id || id >= 1000) return nullptr;
+  const uint32_t si = Rd16(base + kIdToIndex + id * 2);
+  if (si >= 512) return nullptr;
+  const uint8_t* r = base + kRecords + si * kRecordSize;
+  return Rd16(r + kOwnId) == id ? r : nullptr;
+}
+uint32_t CallDonor(PPCContext& ctx, uint8_t* base, uint32_t id) {
+  static std::mutex mu;
+  static std::map<uint32_t, uint32_t> found;  // (per id, once the table is up)
+  if (id < 50 || id >= 1000 || ModOf(id)) return 0;
+  {
+    std::lock_guard lock(mu);
+    if (const auto f = found.find(id); f != found.end()) return f->second;
+  }
+  const uint32_t T = CallTable(ctx, base);
+  const uint8_t* rec = RosterRecord(base, id);
+  if (!T || !rec) return 0;
+  uint32_t donor = 0;
+  if (!HasCallName(base, T, id)) {
+    const uint32_t same = Rd16(rec + kSamePerson);
+    if (same != id && RosterRecord(base, same) && !ModOf(same) && HasCallName(base, T, same)) donor = same;
+    const std::string name(reinterpret_cast<const char*>(rec + kFullName), strnlen(reinterpret_cast<const char*>(rec + kFullName), 32));
+    for (uint32_t other = 50; !donor && !name.empty() && other < 1000; ++other) {
+      const uint8_t* o = other != id && !ModOf(other) ? RosterRecord(base, other) : nullptr;
+      if (o && !std::strncmp(reinterpret_cast<const char*>(o + kFullName), name.c_str(), 32) && HasCallName(base, T, other))
+        donor = other;
+    }
+    REXLOG_INFO("[svr2011] name call: {} (id {}, same person {}) has no name call - {}", name, id, same,
+                donor ? fmt::format("uses id {}'s", donor) : std::string("none to borrow"));
+  }
+  std::lock_guard lock(mu);
+  found[id] = donor;
+  return donor;
+}
+
 REX_EXTERN(__imp__sub_825EA208);
 REX_HOOK_RAW(sub_825EA208) {
   const uint32_t out = ctx.r3.u32, slot = ctx.r4.u32;
@@ -2376,7 +2422,11 @@ REX_HOOK_RAW(sub_825EA208) {
     REXLOG_INFO("[svr2011] name call: announcer id {} call {} nickname {}", Rd32(base + out), Rd32(base + out + 4),
                 Rd16(base + out + 20));
   const Mod* m = ModOf(Rd32(base + out));
-  if (!m) return;
+  if (!m) {
+    if (const uint32_t donor = CallDonor(ctx, base, Rd32(base + out)))
+      Wr32(base + out + 4, donor);  // (his own id stays: the call index is the donor's, as a mod's base)
+    return;
+  }
   if (!m->hometown_city.empty() && Hometown(ctx, base, out, *m)) return;
   if (!m->announcer.empty()) {  // (the game's own clips of that name)
     WriteAnnouncerNames(ctx, base, *m);
@@ -2400,7 +2450,12 @@ const Mod* ModOfCommentary(uint32_t n) { return ModOf(n >= 10000 && n < 10070 ? 
 REX_EXTERN(__imp__sub_8261EAB0);
 REX_HOOK_RAW(sub_8261EAB0) {
   const uint32_t n = ctx.r4.u32, buf = ctx.r3.u32;
-  if (const Mod* m = ModOfCommentary(ctx.r4.u32)) ctx.r4.u64 = m->call < 0 ? m->base : uint32_t(m->call + 1);
+  if (const Mod* m = ModOfCommentary(ctx.r4.u32)) {
+    ctx.r4.u64 = m->call < 0 ? m->base : uint32_t(m->call + 1);
+  } else if (const uint32_t id = n >= 10000 && n < 10070 ? n - 9950 : n; id >= 50) {
+    if (const uint32_t donor = CallDonor(ctx, base, id))  // (DLC Cena / Undertaker: the same person's commentary)
+      ctx.r4.u64 = donor < 70 ? donor + 9950 : donor;
+  }
   const uint32_t used = ctx.r4.u32;
   __imp__sub_8261EAB0(ctx, base);
   if (NameCallLog() && buf)

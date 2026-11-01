@@ -857,8 +857,14 @@ bool g_dlss = false;
 // The intermediate's place in the 2D texture table: after the three placeholders, before the texture cache's.
 constexpr uint32_t kFsrSrv = 3;
 
-// Whether a target of this guest size is the main scene (1280 x 720).
-bool SceneTarget(uint32_t width, uint32_t height) { return width >= 1152 && height >= 640; }
+// Whether a target of this guest size is the main scene (1280 x 720). Not Superstar Threads' attire bake
+// (2080 x 1024, read back by the game's CPU: WriteBackResolve): sized as the scene - native_render_scale /
+// native_scene_height's fraction, the wide factor, the upscalers' jitter - its write-back took the wrong host pixels
+// and every Threads attire came out with another superstar's face and parts (2.1.8 report b43b9e: render scale 2x,
+// scene at 87%).
+bool SceneTarget(uint32_t width, uint32_t height) {
+  return width >= 1152 && height >= 640 && !(width == 2080 && height == 1024);
+}
 
 // Host pixels per guest pixel for a target of this guest size.
 uint32_t TargetScale(uint32_t width, uint32_t height) {

@@ -198,6 +198,13 @@ typedef struct { RECT r; int tab; } PlayLink;
 static PlayLink  s_play_links[8];
 static int       s_nplay_links;
 static void play_counts(void);
+/* default.xex of a game folder against the supported release (verify.h). */
+static int verify_xex_supported_in(const WCHAR *dir)
+{
+    WCHAR p[MAX_PATH];
+    swprintf_s(p, MAX_PATH, L"%s\\default.xex", dir);
+    return verify_xex_supported(p);
+}
 static void play_notice(void);
 /* The Play page's notice (play_notice): one line when something needs the player, its button's action. */
 enum { NOTICE_NONE, NOTICE_FOLDER, NOTICE_SETUP, NOTICE_FILES, NOTICE_UPDATE };
@@ -742,6 +749,32 @@ static int disc_check(Disc *d, const WCHAR *image, WCHAR *err, size_t errn)
         swprintf_s(err, errn, L"This disc is not " GAME_TITLE L" (its title ID is %08X; the game is %08X).",
                    tid, TITLE_ID);
         return 0;
+    }
+    /* the release the port was made from (verify.h): another one's default.xex can't run */
+    if (!verify_xex_size_supported(x->size)) {
+        swprintf_s(err, errn, L"%s", VERIFY_OTHER_RELEASE);
+        return 0;
+    }
+    {
+        uint8_t *buf = (uint8_t *)malloc(4u << 20);
+        uint64_t at = 0, base = (uint64_t)x->sector * 2048;
+        uint32_t c = 0;
+        if (!buf) return 1;   /* (no memory to check it: the install goes on) */
+        while (at < x->size) {
+            const DWORD n = (DWORD)(x->size - at > (4u << 20) ? (4u << 20) : x->size - at);
+            if (!disc_read(d, base + at, buf, n)) {
+                free(buf);
+                swprintf_s(err, errn, L"The disc image's default.xex could not be read; the image may be incomplete.");
+                return 0;
+            }
+            c = verify_crc32(c, buf, n);
+            at += n;
+        }
+        free(buf);
+        if (!verify_xex_crc_supported(c)) {
+            swprintf_s(err, errn, L"%s", VERIFY_OTHER_RELEASE);
+            return 0;
+        }
     }
     return 1;
 }
@@ -8488,6 +8521,9 @@ static void play_notice(void)
     if (!s_game_dir[0] || !is_game_folder(s_game_dir)) {
         wcscpy_s(s_notice, 220, L"No game in this folder: choose the game's folder, or install it (Setup).");
         s_notice_action = NOTICE_FOLDER; button = L"Choose folder\x2026";
+    } else if (verify_xex_supported_in(s_game_dir) == 0) {
+        wcscpy_s(s_notice, 220, L"Another release of the game (e.g. the Japanese disc): the port can't run it.");
+        s_notice_action = NOTICE_SETUP; button = L"Open Setup";
     } else if (!has_program(s_game_dir)) {
         wcscpy_s(s_notice, 220, GAME_EXE L" is missing from the game folder (antivirus, or an unfinished install).");
         s_notice_action = NOTICE_FILES; button = L"Open Setup";

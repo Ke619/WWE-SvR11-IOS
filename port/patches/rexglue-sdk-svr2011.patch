@@ -5832,7 +5832,7 @@ index 7360ed9..dd6a163 100644
      case PaintResult::kPresented:
        surface_paint_connection_was_optimal_at_successful_paint_ = true;
 diff --git a/src/ui/rex_app.cpp b/src/ui/rex_app.cpp
-index b94fe9e..d30b98c 100644
+index b94fe9e..bedc1e7 100644
 --- a/src/ui/rex_app.cpp
 +++ b/src/ui/rex_app.cpp
 @@ -46,6 +46,11 @@
@@ -5856,6 +5856,19 @@ index b94fe9e..d30b98c 100644
      if (!config_.graphics) {
        // Fatal by design: no silent headless fallback.
        auto msg =
+@@ -602,8 +607,11 @@ void ReXApp::OnDestroy() {
+     window_->RemoveInputListener(this);
+     window_->RemoveListener(this);
+   }
+-  window_.reset();
++  // The runtime first: its input drivers (MnkInputDriver) detach from the window as they go - with the window
++  // gone first, ~MnkInputDriver's RemoveInputListener touched a deleted window (the game's own early exit,
++  // "Execution complete" -> QuitFromUIThread: SvR 2011 2.1.8 report 6fd821's shutdown crash).
+   runtime_.reset();
++  window_.reset();
+ }
+ 
+ void ReXApp::SetGuestFrameStats(ui::DebugOverlayDialog::FrameStatsProvider provider) {
 diff --git a/src/ui/surface_android.cpp b/src/ui/surface_android.cpp
 new file mode 100644
 index 0000000..b1ba2a6

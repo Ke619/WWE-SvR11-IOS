@@ -286,6 +286,13 @@ REX_HOOK_RAW(sub_828BC5E8) {
       for (uint32_t i = 0; i < 6; ++i) base[0x82E3DE00u + 10394 + i] = uint8_t(d);
       REXLOG_INFO("test match: damage sliders {} (SVR2011_TEST_DAMAGE)", d);
     }
+    // Test aid: SVR2011_TEST_MOMENTUM=<0-255> - the two momentum sliders (+10406 / +10407): finishers come in
+    // seconds, so a CPU plays its own finisher (finisher tests without scripted input)
+    if (const char* v = std::getenv("SVR2011_TEST_MOMENTUM")) {
+      const int m = std::clamp(std::atoi(v), 0, 255);
+      base[0x82E3DE00u + 10406] = base[0x82E3DE00u + 10407] = uint8_t(m);
+      REXLOG_INFO("test match: momentum sliders {} (SVR2011_TEST_MOMENTUM)", m);
+    }
   }
   // (problem reports: the picks - who and which attire; a Created Superstar is its save slot, ids below 50)
   if (const uint32_t match = ctx.r3.u32) {

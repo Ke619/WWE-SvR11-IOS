@@ -108,39 +108,55 @@ uint64_t FolderBytes(const fs::path& f) {
   return n;
 }
 
-// Measure (and with keep, trim: oldest folders out until under kTrimTo; "clear": everything) on a thread.
-void CacheJob(bool trim, bool clear_all, fs::path keep = {}) {
+// Measure on a thread; trim: the oldest work data out until under kTrimTo - only the converters' own dot folders in
+// each result's folder (.src_<game>: the disc's files copied, .work_*: steps), never a converted mod (its .svrmod,
+// its folder, report.json): the whole result folders went, oldest first, and a player converting eight 2K14
+// superstars kept the last three (reports 20261101-110225, 20261101-122401). clear_all (Clear it, asked first): every
+// result too; work_only with it: the work data alone.
+void CacheJob(bool trim, bool clear_all, fs::path keep = {}, bool work_only = false) {
   if (g_cache_busy.exchange(true)) return;
-  std::thread([dir = WorkDir(), trim, clear_all, keep] {
+  std::thread([dir = WorkDir(), trim, clear_all, keep, work_only] {
     std::error_code ec;
     struct Item {
       fs::path path;
       fs::file_time_type when;
       uint64_t bytes;
     };
-    std::vector<Item> items;
+    std::vector<Item> results, work;  // (result folders; the work data inside them)
     uint64_t total = 0;
     for (const auto& e : fs::directory_iterator(dir, ec)) {
       if (!e.is_directory(ec)) continue;
       const uint64_t b = FolderBytes(e.path());
-      items.push_back({e.path(), e.last_write_time(ec), b});
+      results.push_back({e.path(), e.last_write_time(ec), b});
       total += b;
+      for (const auto& w : fs::directory_iterator(e.path(), ec))
+        if (w.is_directory(ec) && w.path().filename().wstring().rfind(L".", 0) == 0)
+          work.push_back({w.path(), w.last_write_time(ec), FolderBytes(w.path())});
     }
     std::string removed;
-    if (clear_all || (trim && total > kTrimAbove)) {
-      std::sort(items.begin(), items.end(), [](const Item& a, const Item& b) { return a.when < b.when; });
-      for (const auto& it : items) {
+    auto drop = [&](const Item& it) {
+      fs::remove_all(it.path, ec);
+      if (!ec) total -= std::min(total, it.bytes), removed += (removed.empty() ? "" : ", ") + Utf8(it.path.wstring().substr(dir.wstring().size() + 1));
+    };
+    const auto oldest = [](const Item& a, const Item& b) { return a.when < b.when; };
+    if (clear_all && !work_only) {
+      for (const auto& it : results) drop(it);
+    } else if (clear_all || (trim && total > kTrimAbove)) {
+      std::sort(work.begin(), work.end(), oldest);
+      for (const auto& it : work) {
         if (!clear_all && total <= kTrimTo) break;
-        if (!keep.empty() && fs::equivalent(it.path, keep, ec)) continue;
-        fs::remove_all(it.path, ec);
-        if (!ec) total -= it.bytes, removed += (removed.empty() ? "" : ", ") + Utf8(it.path.filename().wstring());
+        if (!clear_all && !keep.empty() && fs::equivalent(it.path.parent_path(), keep, ec)) continue;  // (the one just made)
+        drop(it);
       }
     }
+    const bool over = trim && total > kTrimAbove;  // (results alone over the limit: said, never removed)
     g_cache_bytes = total;
     g_cache_busy = false;
-    OnUiThread([removed] {
+    OnUiThread([removed, over, total] {
       g_cache_known = true;
-      if (!removed.empty()) Log("port: work folder trimmed: " + removed);
+      if (!removed.empty()) Log("port: work data removed: " + removed);
+      if (over) Log("port: the converted mods in Mods\\.convert\\port take " + Human(size_t(total)) +
+                    " - install or save the ones you want, then Clear it (nothing is removed by itself)");
     });
   }).detach();
 }
@@ -151,12 +167,19 @@ void CacheRow() {
   ImGui::TextDisabled("Port work folder: %s", g_cache_busy && !g_cache_known ? "measuring ..." : Human(size_t(b)).c_str());
   ImGui::SameLine();
   Hint("The converters' results and their copies of the disc's files (Mods\\.convert\\port in the game folder). "
-       "Converted mods open from here; once saved or installed they aren't needed. Above 3 GB the oldest are "
-       "removed after a conversion.");
+       "Converted mods open from here; once saved or installed they aren't needed. Above 3 GB the oldest copies "
+       "of disc files are removed after a conversion - never a converted mod.");
   ImGui::SameLine();
   ImGui::BeginDisabled(Busy() || g_cache_busy || !b);
-  if (ImGui::SmallButton("Clear it")) CacheJob(false, true);
+  if (ImGui::SmallButton("Clear it")) ImGui::OpenPopup("##clearwork");
   ImGui::EndDisabled();
+  if (ImGui::BeginPopup("##clearwork")) {  // (asked: a converted mod not yet installed or saved lives only here)
+    ImGui::TextUnformatted("Converted mods you haven't installed or saved are only in this folder.");
+    if (ImGui::Button("Remove the disc copies and work files only")) CacheJob(false, true, {}, true), ImGui::CloseCurrentPopup();
+    if (ImGui::Button("Remove everything, converted mods too")) CacheJob(false, true), ImGui::CloseCurrentPopup();
+    if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+  }
 }
 
 std::wstring Source() {
@@ -1114,6 +1137,7 @@ void DiscRow() {
 }  // namespace
 
 void TestClear() { CacheJob(false, true); }
+void TestTrim() { CacheJob(true, false); }  // (--port-trim: the after-conversion trim, nothing kept)
 void TestFullPreview() { g_test_fp = true; }
 void TestAsAttire(const std::string& spec) { g_test_as_attire = spec; }
 // The ported entrance (g_result: its move pack and number), played whole by `who` before it is installed.

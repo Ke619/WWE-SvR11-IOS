@@ -270,6 +270,22 @@ void DumpGuestThreads(uint8_t* base) {
     }
     REXLOG_WARN("frame rate: thread {:08X} '{}' at {}", t->thread_id(), t->name(), chain);
   }
+  // The game's heap locks held (a critical section per heap, 28 bytes each from 0x82EC55B0: +0x10 lock count,
+  // +0x14 recursion, +0x18 the owner's KTHREAD): a stuck update waiting on one (2.1.7 reports 228dce / 9ce92b: the
+  // world update freeing in sub_8269B2D0 -> sub_8269AAD8, RtlEnterCriticalSection, after a match) shows its owner.
+  std::string held;
+  for (uint32_t h = 0; h < 64; ++h) {
+    const uint32_t cs = 0x82EC55B0 + h * 28, owner = Rd32(base + cs + 0x18);
+    if (!owner || base[cs] != 1) continue;  // (not held; or not a critical section's event header)
+    uint32_t id = 0;
+    for (auto& t : kernel->object_table()->GetObjectsByType<rex::system::XThread>())
+      if (t && t->guest_object() == owner) id = t->thread_id();
+    int32_t waiting = 0;  // (the lock count is the host's own int, updated atomically - not big-endian)
+    std::memcpy(&waiting, base + cs + 0x10, 4);
+    held += fmt::format(" [heap {}: thread {:08X} (KTHREAD {:08X}), lock count {}, recursion {}]", h, id, owner,
+                        waiting, int32_t(Rd32(base + cs + 0x14)));
+  }
+  REXLOG_WARN("frame rate: heap locks held:{}", held.empty() ? std::string(" none") : held);
 }
 std::atomic<int64_t> g_dbg_since{0};
 
@@ -462,6 +478,25 @@ REX_HOOK_RAW(sub_8269D768) {
       REXLOG_WARN("frame rate: SVR2011_TEST_GUEST_FAULT - writing guest address 0 now");
       rex::FlushLogging();
       *reinterpret_cast<volatile uint32_t*>(base) = 0x0DEFACED;
+    }
+  }
+  // Test aid: SVR2011_TEST_HEAP_LOCK_SHOW=<heap> (with SVR2011_TEST_DUMP_AT=<s>): from 2 s before the dump to 2 s
+  // after it, that heap's lock names this thread (the world update's) as its owner - the lock itself left free, so a
+  // real taker just writes its own - and the dump's "heap locks held" line shows it.
+  if (static const char* v = std::getenv("SVR2011_TEST_HEAP_LOCK_SHOW"); v && *v) {
+    static const int dump_at = [] { const char* d = std::getenv("SVR2011_TEST_DUMP_AT"); return d ? std::atoi(d) : 0; }();
+    static const auto t0 = Clock::now();
+    static int state = 0;  // (0 before, 1 shown, 2 done)
+    const uint32_t cs = 0x82EC55B0 + uint32_t(std::atoi(v)) * 28;
+    const auto at = std::chrono::duration<double>(Clock::now() - t0).count();
+    if (state == 0 && dump_at > 2 && at > dump_at - 2) {
+      state = 1;
+      const uint32_t me = rex::system::XThread::GetCurrentThread()->guest_object();
+      for (int k = 0; k < 4; ++k) base[cs + 0x18 + k] = uint8_t(me >> (24 - 8 * k));
+      REXLOG_WARN("frame rate: test - heap {}'s lock shown as owned by this thread (KTHREAD {:08X})", std::atoi(v), me);
+    } else if (state == 1 && at > dump_at + 2) {
+      state = 2;
+      for (int k = 0; k < 4; ++k) base[cs + 0x18 + k] = 0;
     }
   }
   // Test aid: SVR2011_TEST_SLOW_MS=<ms> - a slow PC (each frame that much longer).

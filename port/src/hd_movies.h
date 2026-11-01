@@ -25,4 +25,7 @@ bool PrepareHdMovie(const std::filesystem::path& movies, const std::string& file
 // one, else `file`).
 std::string HdMovieFile(const std::string& file);
 
+// The .mp4 user movie `file` plays (empty: none registered).
+std::filesystem::path HdMovieMp4(const std::string& file);
+
 }  // namespace svr2011

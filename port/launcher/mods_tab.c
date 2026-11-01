@@ -1527,10 +1527,12 @@ static void shrink_mod(const WCHAR *dir, Shrink *s)
 }
 
 /* Custom Movies\<name>.bik (the movie maker's older ones, downloads): <name>.mp4; the game lists it under the
-   same name, so entrances keep it (src/user_movies.cpp) */
+   same name, so entrances keep it (src/user_movies.cpp). Not one with an HD stub (Custom Movies\.hd\<name>.bik):
+   that name is an .mp4's - a mod's own movie - and the .bik the game's copy of its fallback or of the stub (all
+   frames empty): made into "<name>.mp4" here it took the mod's tron over, black for a stub (2.1.8 reports) */
 static void shrink_user_movies(const WCHAR *game, Shrink *s)
 {
-    WCHAR pat[MAX_PATH], bik[MAX_PATH], mp4[MAX_PATH];
+    WCHAR pat[MAX_PATH], bik[MAX_PATH], mp4[MAX_PATH], stub[MAX_PATH];
     WIN32_FIND_DATAW fd;
     HANDLE h;
     swprintf_s(pat, MAX_PATH, L"%s\\Custom Movies\\*.bik", game);
@@ -1542,7 +1544,8 @@ static void shrink_user_movies(const WCHAR *game, Shrink *s)
         swprintf_s(bik, MAX_PATH, L"%s\\Custom Movies\\%s", game, fd.cFileName);
         wcscpy_s(mp4, MAX_PATH, bik);
         wcscpy_s(mp4 + wcslen(mp4) - 4, 5, L".mp4");
-        if (!ascii || exists(mp4)) continue;   /* (an .mp4's .bik: its stub or fallback) */
+        swprintf_s(stub, MAX_PATH, L"%s\\Custom Movies\\.hd\\%s", game, fd.cFileName);
+        if (!ascii || exists(mp4) || exists(stub)) continue;   /* (an .mp4's .bik: its stub or fallback) */
         s->what = fd.cFileName;
         shrink_movie(bik, s);
     } while (FindNextFileW(h, &fd));

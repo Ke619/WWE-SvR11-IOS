@@ -2064,6 +2064,8 @@ REX_HOOK_RAW(sub_826B87B0) {
     return e && *e == '1';
   }();
   // Superstar Threads' list with the mods' records (superstar_threads.h): asked for by another name
+  if (const char* n = reinterpret_cast<const char*>(base + ctx.r4.u32); !std::strcmp(n, "/EDIT/SSTL") || !std::strcmp(n, "EDIT/SSTL"))
+    svr2011::LogThreadsSlots(base);
   if (const uint32_t alias = svr2011::ThreadsAlias(reinterpret_cast<const char*>(base + ctx.r4.u32))) ctx.r4.u64 = alias;
   // the chosen VS screen style's theme (vs_styles.h): asked for by another name, as below
   if (const uint32_t alias = svr2011::VsStyleAlias(reinterpret_cast<const char*>(base + ctx.r4.u32))) ctx.r4.u64 = alias;

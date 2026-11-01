@@ -327,6 +327,25 @@ uint32_t ThreadsAlias(const char* name) {
   return slash ? g_alias_slash : g_alias_bare;
 }
 
+void LogThreadsSlots(const uint8_t* base) {
+  static const bool on = std::getenv("SVR2011_TEST_THREADS_SLOTS") != nullptr;
+  static auto last = std::chrono::steady_clock::time_point{};
+  if (!on || std::chrono::steady_clock::now() - last < std::chrono::seconds(10)) return;
+  last = std::chrono::steady_clock::now();
+  std::string s;
+  for (uint32_t id = 0; id < 512; ++id) {
+    const uint32_t si = uint32_t(base[kIdToIndex + id * 2] << 8 | base[kIdToIndex + id * 2 + 1]);
+    if (si >= 512) continue;
+    std::string names;
+    for (uint32_t k = 0; k < kSlots; ++k) {
+      const char* n = reinterpret_cast<const char*>(base + kProfiles + si * kProfileSize + kSlotsAt + k * kSlotSize + 0x28);
+      if (n[0] >= 32 && n[0] < 127) names += (names.empty() ? "" : "|") + std::string(n, strnlen(n, 16));
+    }
+    if (!names.empty()) s += " [id " + Dec(id) + " profile " + Dec(si) + ": " + names + "]";
+  }
+  REXLOG_INFO("[svr2011] superstar threads: test - named slots:{}", s);
+}
+
 void ThreadsSlots(uint8_t* profile, const std::string& folder) {
   if (!profile || g_dir.empty()) return;
   std::lock_guard lock(g_mutex);

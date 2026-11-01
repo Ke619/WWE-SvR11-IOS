@@ -268,22 +268,25 @@ void DumpGuestThreads(uint8_t* base) {
       chain += fmt::format(" {:08X}", Rd32(base + prev - 8));
       sp = prev;
     }
-    REXLOG_WARN("frame rate: thread {:08X} '{}' at {}", t->thread_id(), t->name(), chain);
+    // (r3: in a wait - RtlEnterCriticalSection, a wait for an object - what it waits on)
+    REXLOG_WARN("frame rate: thread {:08X} '{}' at {} (r3 {:08X})", t->thread_id(), t->name(), chain, c->r3.u32);
   }
   // The game's heap locks held (a critical section per heap, 28 bytes each from 0x82EC55B0: +0x10 lock count,
   // +0x14 recursion, +0x18 the owner's KTHREAD): a stuck update waiting on one (2.1.7 reports 228dce / 9ce92b: the
   // world update freeing in sub_8269B2D0 -> sub_8269AAD8, RtlEnterCriticalSection, after a match) shows its owner.
+  // A busy one with no owner too (lock count not -1: 2.1.8 report 73e349 - the world update held heap 1 and waited
+  // on a lock no thread was listed as holding).
   std::string held;
   for (uint32_t h = 0; h < 64; ++h) {
     const uint32_t cs = 0x82EC55B0 + h * 28, owner = Rd32(base + cs + 0x18);
-    if (!owner || base[cs] != 1) continue;  // (not held; or not a critical section's event header)
-    uint32_t id = 0;
-    for (auto& t : kernel->object_table()->GetObjectsByType<rex::system::XThread>())
-      if (t && t->guest_object() == owner) id = t->thread_id();
     int32_t waiting = 0;  // (the lock count is the host's own int, updated atomically - not big-endian)
     std::memcpy(&waiting, base + cs + 0x10, 4);
-    held += fmt::format(" [heap {}: thread {:08X} (KTHREAD {:08X}), lock count {}, recursion {}]", h, id, owner,
-                        waiting, int32_t(Rd32(base + cs + 0x14)));
+    if ((!owner && waiting == -1) || base[cs] != 1) continue;  // (free; or not a critical section's event header)
+    uint32_t id = 0;
+    for (auto& t : kernel->object_table()->GetObjectsByType<rex::system::XThread>())
+      if (t && owner && t->guest_object() == owner) id = t->thread_id();
+    held += fmt::format(" [heap {} at {:08X}: thread {:08X} (KTHREAD {:08X}), lock count {}, recursion {}]", h, cs, id,
+                        owner, waiting, int32_t(Rd32(base + cs + 0x14)));
   }
   REXLOG_WARN("frame rate: heap locks held:{}", held.empty() ? std::string(" none") : held);
 }

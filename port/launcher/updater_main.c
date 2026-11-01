@@ -883,6 +883,27 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
             if (!wcscmp(argv[i], L"--version")) wcscpy_s(s_want, 32, argv[++i]);
         return run_window(inst);
     }
+    if (!wcscmp(argv[1], L"--check")) {   /* [<version>]: the newest release (or that one) - nothing downloaded */
+        WCHAR err[700] = L"";
+        UpdateInfo info;
+        console_setup();
+        if (!(argc >= 3 ? update_check_version(argv[2], &info, err, 700) : update_check(&info, err, 700))) {
+            cprint(L"check failed: %s\n", err);
+            return 1;
+        }
+        cprint(L"release %s, %llu bytes: %s\n", info.version, (unsigned long long)info.size, info.url);
+        return 0;
+    }
+    if (!wcscmp(argv[1], L"--fetch") && argc >= 4) {   /* <url> <file>: a download as an update's (tests) */
+        WCHAR err[700] = L"";
+        console_setup();
+        if (!update_download_cb(argv[2], argv[3], NULL, NULL, NULL, err, 700)) {
+            cprint(L"download failed: %s\n", err);
+            return 1;
+        }
+        cprint(L"downloaded %s\n", argv[3]);
+        return 0;
+    }
     if (!wcscmp(argv[1], L"--update")) {   /* [<game folder>] [--from <version>] */
         WCHAR err[700] = L"";
         const WCHAR *from = PORT_VERSION;

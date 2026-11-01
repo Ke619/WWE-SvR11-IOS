@@ -4,7 +4,14 @@
  * (api.github.com/repos/<UPDATE_REPO>/releases, newest first, pre-releases
  * included). Its SvR2011-PC-v*.zip is downloaded only from this repository's
  * own release downloads; the launcher unpacks it and copies the program files
- * over the install (svr2011_launcher.c, update_apply). */
+ * over the install (svr2011_launcher.c, update_apply).
+ *
+ * GitHub's API answers 60 requests an hour per internet address without an account - a shared address (a
+ * carrier's, a dorm's) can have it used up (2.1.8 report 7edf25: "an infinite download limit from GitHub"). The
+ * check then goes without the API: github.com/<repo>/releases/latest names the newest release (a redirect to its
+ * tag), and its zip is at releases/download/v<version>/SvR2011-PC-v<version>.zip (tools/package.ps1's name),
+ * neither counted. The download (522 MB for 2.1.8) resumes where it stopped (Range) on an interruption or a
+ * stall, a few times, instead of starting over. */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <winhttp.h>
@@ -30,12 +37,41 @@ static void http_close(Http *h)
     memset(h, 0, sizeof *h);
 }
 
+/* The status of the last http_get (0: no answer). */
+static DWORD s_last_status;
+
+/* GitHub's "your limit is used up" (403 / 429 with X-RateLimit-Remaining: 0): when it resets, local time. */
+static int rate_limited(HINTERNET request, WCHAR *when, size_t n)
+{
+    WCHAR v[32] = L"X-RateLimit-Remaining";
+    DWORD vn = sizeof v;
+    when[0] = 0;
+    if (!WinHttpQueryHeaders(request, WINHTTP_QUERY_CUSTOM, v, v, &vn, WINHTTP_NO_HEADER_INDEX) || _wtoi(v) != 0)
+        return 0;
+    {
+        WCHAR r[32] = L"X-RateLimit-Reset";
+        DWORD rn = sizeof r;
+        if (WinHttpQueryHeaders(request, WINHTTP_QUERY_CUSTOM, r, r, &rn, WINHTTP_NO_HEADER_INDEX)) {
+            ULARGE_INTEGER u;
+            FILETIME ft, lt;
+            SYSTEMTIME st;
+            u.QuadPart = ((unsigned long long)_wtoi64(r) + 11644473600ull) * 10000000ull;
+            ft.dwLowDateTime = u.LowPart;
+            ft.dwHighDateTime = u.HighPart;
+            if (FileTimeToLocalFileTime(&ft, &lt) && FileTimeToSystemTime(&lt, &st))
+                swprintf_s(when, n, L" (it resets at %02u:%02u)", st.wHour, st.wMinute);
+        }
+    }
+    return 1;
+}
+
 /* GET https://<host><path>; follows redirects. 1 when the answer is 200. */
 static int http_get(Http *h, const WCHAR *url, const WCHAR *accept, WCHAR *err, size_t errn)
 {
     URL_COMPONENTS uc;
     WCHAR host[256], path[2048];
     DWORD status = 0, len = sizeof status;
+    s_last_status = 0;
     memset(h, 0, sizeof *h);
     memset(&uc, 0, sizeof uc);
     uc.dwStructSize = sizeof uc;
@@ -69,9 +105,14 @@ static int http_get(Http *h, const WCHAR *url, const WCHAR *accept, WCHAR *err, 
         http_close(h);
         return 0;
     }
+    s_last_status = status;
     if (status != 200 && status != 206) {   /* (206: a Range request's part) */
-        if (status == 403)
-            swprintf_s(err, errn, L"%s is limiting requests right now (HTTP 403); try again later.", host);
+        WCHAR when[48];
+        if ((status == 403 || status == 429) && rate_limited(h->request, when, 48))
+            swprintf_s(err, errn, L"GitHub's limit for update checks from your internet address is used up (60 an "
+                                  L"hour without a GitHub account)%s.", when);
+        else if (status == 403 || status == 429)
+            swprintf_s(err, errn, L"%s is limiting requests right now (HTTP %lu); try again later.", host, status);
         else
             swprintf_s(err, errn, L"%s answered HTTP %lu.", host, status);
         http_close(h);
@@ -199,16 +240,99 @@ done:
     return ok;
 }
 
+/* A release without the API: its zip's address made from the version (tools/package.ps1's name), checked to be
+   there (its first byte, which also gives its size). */
+static int update_direct(const WCHAR *version, UpdateInfo *out, WCHAR *err, size_t errn)
+{
+    char one;
+    uint64_t total = 0;
+    memset(out, 0, sizeof *out);
+    swprintf_s(out->url, 1024, L"https://github.com/" UPDATE_REPO L"/releases/download/v%s/SvR2011-PC-v%s.zip",
+               version, version);
+    swprintf_s(out->page, 512, L"https://github.com/" UPDATE_REPO L"/releases/tag/v%s", version);
+    wcsncpy_s(out->version, 32, version, _TRUNCATE);
+    if (!update_read_range(out->url, 0, 1, &one, &total, err, errn)) {
+        out->url[0] = 0;
+        return 0;
+    }
+    out->size = total;
+    return 1;
+}
+
+/* The newest release without the API: github.com/<repo>/releases/latest redirects to .../releases/tag/v<version>
+   (not a pre-release - the API's list has those too). */
+static int update_latest_web(UpdateInfo *out, WCHAR *err, size_t errn)
+{
+    HINTERNET ses, con = NULL, req = NULL;
+    WCHAR loc[1024], *tag;
+    DWORD ln = sizeof loc, policy = WINHTTP_OPTION_REDIRECT_POLICY_NEVER, status = 0, sn = sizeof status;
+    int ok = 0;
+    loc[0] = 0;
+    ses = WinHttpOpen(AGENT, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!ses)
+        ses = WinHttpOpen(AGENT, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (ses && (con = WinHttpConnect(ses, L"github.com", INTERNET_DEFAULT_HTTPS_PORT, 0)) != NULL &&
+        (req = WinHttpOpenRequest(con, L"GET", L"/" UPDATE_REPO L"/releases/latest", NULL, WINHTTP_NO_REFERER,
+                                  WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE)) != NULL) {
+        WinHttpSetTimeouts(req, 10000, 10000, 15000, 30000);
+        WinHttpSetOption(req, WINHTTP_OPTION_REDIRECT_POLICY, &policy, sizeof policy);
+        if (WinHttpSendRequest(req, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
+            WinHttpReceiveResponse(req, NULL) &&
+            WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX,
+                                &status, &sn, WINHTTP_NO_HEADER_INDEX) &&
+            status >= 300 && status < 400 &&
+            WinHttpQueryHeaders(req, WINHTTP_QUERY_LOCATION, WINHTTP_HEADER_NAME_BY_INDEX, loc, &ln,
+                                WINHTTP_NO_HEADER_INDEX))
+            ok = 1;
+    }
+    if (req) WinHttpCloseHandle(req);
+    if (con) WinHttpCloseHandle(con);
+    if (ses) WinHttpCloseHandle(ses);
+    tag = ok ? wcsstr(loc, L"/releases/tag/") : NULL;
+    if (!tag) {
+        swprintf_s(err, errn, L"Could not find the newest release on github.com (HTTP %lu).", status);
+        return 0;
+    }
+    tag += 14;
+    if (*tag == L'v' || *tag == L'V')
+        tag++;
+    return update_direct(tag, out, err, errn);
+}
+
+/* (test aid: SVR2011_TEST_UPDATE_API_FAIL=1 - the API as if its limit were used up) */
+static int api_fails(WCHAR *err, size_t errn)
+{
+    WCHAR v[8];
+    if (!GetEnvironmentVariableW(L"SVR2011_TEST_UPDATE_API_FAIL", v, 8) || v[0] != L'1')
+        return 0;
+    swprintf_s(err, errn, L"GitHub's limit for update checks from your internet address is used up (test).");
+    return 1;
+}
+
 int update_check(UpdateInfo *out, WCHAR *err, size_t errn)
 {
-    return update_read(L"https://api.github.com/repos/" UPDATE_REPO L"/releases?per_page=10", out, err, errn);
+    WCHAR api_err[400] = L"";
+    if (!api_fails(api_err, 400) &&
+        update_read(L"https://api.github.com/repos/" UPDATE_REPO L"/releases?per_page=10", out, api_err, 400))
+        return 1;
+    /* the API refused (its limit, or it's down): the newest release by github.com's own page */
+    if (update_latest_web(out, err, errn))
+        return 1;
+    swprintf_s(err + wcslen(err), errn - wcslen(err), L" (the API: %s) You can also download the newest "
+               L"release yourself: github.com/" UPDATE_REPO L"/releases", api_err);
+    return 0;
 }
 
 int update_check_version(const WCHAR *version, UpdateInfo *out, WCHAR *err, size_t errn)
 {
-    WCHAR api[256];
+    WCHAR api[256], api_err[400] = L"";
     swprintf_s(api, 256, L"https://api.github.com/repos/" UPDATE_REPO L"/releases/tags/v%s", version);
-    return update_read(api, out, err, errn);
+    if (!api_fails(api_err, 400) && update_read(api, out, api_err, 400))
+        return 1;
+    if (update_direct(version, out, err, errn))   /* (without the API: its zip's own address) */
+        return 1;
+    swprintf_s(err + wcslen(err), errn - wcslen(err), L" (the API: %s)", api_err);
+    return 0;
 }
 
 typedef struct { HWND notify; UINT msg; int last; } NotifyCtx;
@@ -232,46 +356,94 @@ int update_download(const WCHAR *url, const WCHAR *path, HWND notify, UINT msg, 
 int update_download_cb(const WCHAR *url, const WCHAR *path, update_progress_fn progress, void *ctx,
                        volatile LONG *cancel, WCHAR *err, size_t errn)
 {
+    /* Up to 6 tries; after the first, from where it stopped (Range: bytes=<done>-) - a server that answers the
+       whole file again (200) starts it over. (Test aid SVR2011_TEST_DOWNLOAD_CUT=<bytes>: the first try stops
+       there, as an interruption.) */
+    enum { kTries = 6 };
     Http h;
     HANDLE f;
-    WCHAR len_text[32];
-    DWORD len_size = sizeof len_text, got, wrote;
-    uint64_t total = 0, done = 0;
+    WCHAR len_text[32], hdr[160], cut_v[32];
+    DWORD got, wrote;
+    uint64_t total = 0, done = 0, cut = 0;
     char *buf;
-    int ok = 0;
-    if (!http_get(&h, url, L"Accept: application/octet-stream", err, errn))
-        return 0;
-    if (WinHttpQueryHeaders(h.request, WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_HEADER_NAME_BY_INDEX, len_text,
-                            &len_size, WINHTTP_NO_HEADER_INDEX))
-        total = _wcstoui64(len_text, NULL, 10);
+    int ok = 0, attempt;
+    memset(&h, 0, sizeof h);
+    if (GetEnvironmentVariableW(L"SVR2011_TEST_DOWNLOAD_CUT", cut_v, 32))
+        cut = _wcstoui64(cut_v, NULL, 10);
     f = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     buf = (char *)malloc(1 << 20);
     if (f == INVALID_HANDLE_VALUE || !buf) {
         swprintf_s(err, errn, L"Could not create %s.", path);
         goto out;
     }
-    for (;;) {
+    for (attempt = 0; attempt < kTries && !ok; attempt++) {
+        int failed = 0;
+        if (attempt) {   /* (a short wait, longer each time) */
+            DWORD k;
+            for (k = 0; k < (DWORD)attempt * 20 && !(cancel && *cancel); k++)
+                Sleep(100);
+        }
         if (cancel && *cancel) { swprintf_s(err, errn, L"Stopped."); goto out; }
-        got = 0;
-        if (!WinHttpReadData(h.request, buf, 1 << 20, &got)) {
-            DWORD e = GetLastError();
-            if (e == ERROR_WINHTTP_TIMEOUT)   /* (no data for the receive timeout, 30 s) */
-                swprintf_s(err, errn, L"The download stalled (nothing came for 30 seconds). Check your internet "
-                                      L"connection and try again.");
-            else
-                swprintf_s(err, errn, L"The download was interrupted (error %lu).", e);
-            goto out;
+        if (done)
+            swprintf_s(hdr, 160, L"Accept: application/octet-stream\r\nRange: bytes=%llu-", (unsigned long long)done);
+        else
+            wcscpy_s(hdr, 160, L"Accept: application/octet-stream");
+        if (!http_get(&h, url, hdr, err, errn)) {
+            if (s_last_status == 404 || s_last_status == 403 || s_last_status == 429)
+                goto out;   /* (no such file / refused: trying again won't help) */
+            continue;
         }
-        if (!got) break;
-        if (!WriteFile(f, buf, got, &wrote, NULL) || wrote != got) {
-            swprintf_s(err, errn, L"Could not write the download (disk full?).");
-            goto out;
+        if (done && s_last_status != 206) {   /* (the whole file again: start over) */
+            done = 0;
+            SetFilePointer(f, 0, NULL, FILE_BEGIN);
+            SetEndOfFile(f);
         }
-        done += got;
-        if (progress) progress(done, total, ctx);
+        {
+            DWORD len_size = sizeof len_text;
+            if (WinHttpQueryHeaders(h.request, WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_HEADER_NAME_BY_INDEX, len_text,
+                                    &len_size, WINHTTP_NO_HEADER_INDEX))
+                total = done + _wcstoui64(len_text, NULL, 10);
+        }
+        for (;;) {
+            if (cancel && *cancel) { swprintf_s(err, errn, L"Stopped."); http_close(&h); goto out; }
+            got = 0;
+            if (cut && done >= cut) {   /* (the test aid's interruption, once) */
+                cut = 0;
+                swprintf_s(err, errn, L"The download was interrupted (test).");
+                failed = 1;
+                break;
+            }
+            if (!WinHttpReadData(h.request, buf, 1 << 20, &got)) {
+                DWORD e = GetLastError();
+                if (e == ERROR_WINHTTP_TIMEOUT)   /* (no data for the receive timeout, 30 s) */
+                    swprintf_s(err, errn, L"The download stalled (nothing came for 30 seconds). Check your internet "
+                                          L"connection and try again.");
+                else
+                    swprintf_s(err, errn, L"The download was interrupted (error %lu).", e);
+                failed = 1;
+                break;
+            }
+            if (!got) break;
+            if (!WriteFile(f, buf, got, &wrote, NULL) || wrote != got) {
+                swprintf_s(err, errn, L"Could not write the download (disk full?).");
+                http_close(&h);
+                goto out;
+            }
+            done += got;
+            if (progress) progress(done, total, ctx);
+        }
+        http_close(&h);
+        if (!failed && total && done != total) {
+            swprintf_s(err, errn, L"The download was incomplete (%llu of %llu bytes).", (unsigned long long)done,
+                       (unsigned long long)total);
+            failed = 1;
+        }
+        if (!failed)
+            ok = 1;
     }
-    if (total && done != total) { swprintf_s(err, errn, L"The download was incomplete."); goto out; }
-    ok = 1;
+    if (!ok && !(cancel && *cancel))
+        swprintf_s(err + wcslen(err), errn - wcslen(err), L" It stopped %d times; try again later, or download the "
+                   L"release yourself: github.com/" UPDATE_REPO L"/releases", kTries);
 out:
     free(buf);
     if (f != INVALID_HANDLE_VALUE) CloseHandle(f);

@@ -2058,6 +2058,11 @@ std::vector<bool> g_record, g_bits;  // a record with the id at all / with categ
 std::vector<bool> g_past_pack;       // ids a pack has given (Mods\PacOverlay\pack_moves.txt, kept across starts)
 std::vector<bool> g_stock_ok;        // the stock game plays the id without packs (a record with bits, or EXH data)
 
+// A pack's move copied (wazecopy) onto a record of 16000 and up outside its template's thousand: the game never
+// starts a move there (docs/MOVE_PORTING.md 2.4) - the pair stood frozen in its first frame. Bundled Mankind 2.0.3's
+// Double Axe Handle 8 on 17093 (template 11003) froze matches (report 20261101-073525-b564c9; 2.0.4 moved it).
+bool NeverStarts(uint16_t id, uint16_t from) { return id >= 16000 && id / 1000 != from / 1000; }
+
 // MoveUsable's list and CategoryDefaultMove's table from MOVS/WAZE records as in the file (the packs' patch
 // applied): at start-up from misc.pac (a match never loads MOVS/WAZE itself - CREATE A MOVE-SET does) and
 // again at each load (sub_8237E708).
@@ -2075,6 +2080,10 @@ void SetMoveTables(const uint8_t* w) {
   for (const auto& [id, b] : g_waze) usable[id] = true;
   for (const auto& [id, from] : g_copies) usable[id] = true;
   for (const auto& [id, n] : g_names) usable[id] = true;
+  // (but not a copy on a record the game never starts - NeverStarts: movesets keep the base's move, a saved edit
+  // the mod's own)
+  for (const auto& [id, from] : g_copies)
+    if (NeverStarts(id, from)) usable[id] = false;
   // per category, the move a slot falls back to in a match when its own has no record (cam_mod_moves.cpp):
   // the first game move (not a pack's) of that category the game always shows (unlock 512 or 1-3), else
   // its first game move
@@ -2161,6 +2170,14 @@ void LoadMoveTables(const fs::path& game) {
     std::lock_guard lock(g_usable_mutex);
     g_past_pack = std::move(past);
     g_stock_ok = std::move(stock_ok);
+  }
+  {
+    std::string never;
+    for (const auto& [id, from] : g_copies)
+      if (NeverStarts(id, from)) never += fmt::format(" {} (from {})", id, from);
+    if (!never.empty())
+      REXLOG_WARN("[svr2011] move packs: moves on records the game never starts (16000 and up outside the template's "
+                  "thousand - not usable, movesets keep other moves; port them again):{}", never);
   }
   {
     std::string gone;

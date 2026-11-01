@@ -18,6 +18,7 @@
  * Windows-only rows say so).
  */
 #include "setup_tab.h"
+#include "verify.h"
 
 #include <bcrypt.h>
 #include <commctrl.h>
@@ -171,7 +172,12 @@ void setup_check(const WCHAR *game, const WCHAR *launcher, SetupRow *rows)
 
     rows[SETUP_GAME].name = L"Game files";
     join(p, game, L"default.xex");
-    if (exists(p)) {
+    if (exists(p) && verify_xex_supported(p) == 0) {   /* (another release: the Japanese disc - it can't run) */
+        rows[SETUP_GAME].state = SETUP_MISSING;
+        swprintf_s(rows[SETUP_GAME].detail, 400, L"another release of the game in %s (for example the Japanese "
+                   L"disc): the port only runs the US / Europe release (title 5451085D) - install from that disc",
+                   game);
+    } else if (exists(p)) {
         rows[SETUP_GAME].state = SETUP_FOUND;
         swprintf_s(rows[SETUP_GAME].detail, 400, L"in %s", game);
     } else {

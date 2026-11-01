@@ -402,6 +402,28 @@ std::vector<MissingGameFile> MissingGameFiles() {
   return out;
 }
 
+void SupportedXex(uint64_t* size, uint32_t* crc) {
+  *size = 0, *crc = 0;
+  for (const GameFile& g : kFiles)
+    if (std::wstring(g.path) == L"default.xex") *size = g.size, *crc = g.crc;
+}
+
+int DefaultXexSupported(uint64_t* size, uint32_t* crc) {
+  uint64_t want_size;
+  uint32_t want_crc;
+  std::error_code ec;
+  const fs::path xex = g_game_root / "default.xex";
+  *size = 0, *crc = 0;
+  SupportedXex(&want_size, &want_crc);
+  if (!want_size || !fs::exists(xex, ec)) return 1;
+  *size = uint64_t(fs::file_size(xex, ec));
+  if (ec) return -1;
+  if (const char* t = std::getenv("SVR2011_TEST_OTHER_XEX"); t && *t == '1') return 0;
+  if (*size != want_size) return 0;   // (a different size: no need to read it)
+  if (!FileCrc32(xex, crc)) return -1;
+  return *crc == want_crc ? 1 : 0;
+}
+
 void StartGameFilesCheck() {
   static std::once_flag once;
   std::call_once(once, [game_root = g_game_root, user_data = g_user_data] {

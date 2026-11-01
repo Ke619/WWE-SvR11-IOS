@@ -1159,7 +1159,7 @@ class Sake:
         self.store = store
 
     # (set by the service: the NEWS panel's first line starts with it, e.g.
-    # "12 players online now. ")
+    # "12 players looking for a match online now. ")
     news_prefix = None
     # (set by the service: the dashboard's news as the record's Text1-5, or None
     # for the stored record's own)

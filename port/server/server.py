@@ -722,10 +722,11 @@ class Service:
                                  secret=relay.rl.read_secret(args.relay_secret) if edge else None,
                                  network=lambda: SETTINGS["match_network"])
         self.leaderboards = leaderboards.Leaderboards(self.store)
-        # the ONLINE menu's NEWS: how many play now, first; then the dashboard's
-        # text (online_news) when it has one, else the stored record's
-        self.sake.news_prefix = lambda: "%d player%s online now. " % (
-            self.stats.playing_now(), "" if self.stats.playing_now() == 1 else "s")
+        # the ONLINE menu's NEWS: how many look for a match now, first; then the dashboard's
+        # text (online_news) when it has one, else the stored record's. (" online now. " stays in the line: the
+        # game rewrites its news panel only over a text that has it - online.cpp SetOnlineNews)
+        self.sake.news_prefix = lambda: (lambda n: "%d player%s looking for a match online now. " % (
+            n, "" if n == 1 else "s"))(self.looking_for_match())
         self.sake.news_text = lambda: news_fields(SETTINGS["online_news"])
         self.sake.refuse_unmarked = lambda: SETTINGS["cc_unmarked"] == "refuse" and release_at_least(
             SETTINGS["latest_release"], MODFREE_SINCE)
@@ -956,6 +957,18 @@ class Service:
                 names |= {p["name"] for p in v["players"] if p.get("name")}
         return len(names)
 
+    def looking_for_match(self):
+        """Players looking for a match now (the in-game NEWS line): searching or on the ONLINE MATCH screens (the
+        presence poll's place "matchmaking", 2.1.7 on), or hosting a lobby others can find (place "lobby_host"; any
+        game's: the live reports of sessions still in the lobby). Not players in a match - a started session isn't
+        offered to searches - nor ones who joined a lobby."""
+        t = now()
+        ids = {a for a, (place, _) in list(self.stats.places.items())
+               if place in ("matchmaking", "lobby_host") and t - self.stats.recent.get(a, 0) < SETTINGS["presence_window"]}
+        ids |= {v["host_id"] for v in list(self.live.values())
+                if v.get("host_id") and v.get("state") == "lobby" and t - v["seen"] <= LIVE_LIFE}
+        return len(ids)
+
     def presence(self, account_id):
         """playing: in an online match or its lobby (its game has the relay open);
         online: its game in online mode - the ONLINE menus or an online match (it
@@ -1066,7 +1079,7 @@ class Service:
         old = self.live.get(sid, {})
         state = str(body.get("state") or "lobby")[:12]
         self.live[sid] = {
-            "session": sid, "host": account["name"], "kind": str(body.get("kind") or "")[:40],
+            "session": sid, "host": account["name"], "host_id": account["id"], "kind": str(body.get("kind") or "")[:40],
             "rule": str(body.get("rule") or "")[:40],
             "rule_name": match_names.rule_name(str(body.get("rule") or "")) or "", "arena": str(body.get("arena") or "")[:40],
             "arena_name": match_names.arena_name(body.get("arena"), str(body.get("arena_mod") or "")[:60]),

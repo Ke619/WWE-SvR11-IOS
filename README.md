@@ -80,7 +80,6 @@ Other iPhones and iPads haven't been tested. It's an early port, so expect rough
    **=> Method 2:**
    - use the built-in install feature in the game launcher to add the game files directly from your ISO dump.
 
-   > [!NOTE]
    > For livecontainer users it's easier if you place your `.iso` dump inside the `/import` folder within the app's container directory and than simply click install in the `launcher` as the Files app is usually bugged.
 
    You don't need to supply shaders. They ship inside the app and are copied into `Documents/native_shaders/` on start-up.

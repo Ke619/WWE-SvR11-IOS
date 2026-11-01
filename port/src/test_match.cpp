@@ -182,6 +182,8 @@ void SetScreenArena(uint8_t* base, uint32_t screen) {
   static const bool as_tile = std::getenv("SVR2011_TEST_ARENA_AS_TILE") != nullptr;
   const int arena = as_tile ? Config().arena : svr2011::ArenaNumberFor(Config().arena);
   if (arena < 0 || !screen || !Applies() || Rd32(base + screen + kScreenArena) == uint32_t(arena)) return;
+  // (as the tile: once made the arena it plays as, left so - as after a real pick)
+  if (as_tile && Rd32(base + screen + kScreenArena) == uint32_t(svr2011::ArenaNumberFor(arena))) return;
   static uint32_t logged = 0;
   if (logged++ < 2)
     REXLOG_INFO("test match: arena {} (the match screen had {})", arena, Rd32(base + screen + kScreenArena));

@@ -78,7 +78,7 @@ Other iPhones and iPads haven't been tested. It's an early port, so expect rough
    3. It's about 5.3 GB, so the copy takes a while.
    
    **=> Method 2:**
-   - use the built-in install feature in the game launcher to add the game files directly from your ISO dump.
+   - use the built-in install feature in the game launcher to add the game files directly from your ISO dump. (For livecontainer users it's easier if you place your `.iso` dump inside the `/import` folder within the app's container directory and than simply click install in the `launcher` as the Files app is usually bugged.)
 
    You don't need to supply shaders. They ship inside the app and are copied into `Documents/native_shaders/` on start-up.
 
@@ -128,10 +128,10 @@ Settings are saved in `svr2011.toml` in the game folder (the app's **Documents**
 | DLC | ✅ Working |
 | Mods (`.svrmod`) | ⚠️ Experimental |
 | Texture packs | ❌ Not available on iOS yet |
-| Achievements | ❌ Not available on iOS yet |
+| Achievements | ✅ Working |
 | Entrance music from your own songs | ❌ Not available on iOS yet |
 | iOS launcher | ✅ Working |
-| Online (Community Creations account and friends in the launcher) | ✅ Working |
+| Online | ✅ Working |
 | Discord status | ➖ Not part of this port. See the original README. |
 
 ---

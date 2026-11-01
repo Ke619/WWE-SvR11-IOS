@@ -63,6 +63,9 @@ int ArenaNumberFor(int arena);
 // The match screen's arena read (sub_8247B6C8(screen), test_match.cpp's hook - the match loads by it): a custom
 // arena's tile set to the arena it plays as.
 void ScreenArenaRead(uint8_t* base, uint32_t screen);
+// A match loads (menu_hooks.cpp sub_823EEB98): the live settings' and the match screen's arena become the arena a
+// custom arena's tile plays as, before the load reads them.
+void ArenaPlaysAsAtLoad(uint8_t* base);
 // A player's pad buttons as the game read them (XInput bits, with LT / RT
 // pressed as 0x400 / 0x800): LB / RB and LT / RT turn the arena select page.
 void ArenaSelectPad(uint32_t user, uint16_t buttons);

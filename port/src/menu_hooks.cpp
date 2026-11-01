@@ -591,6 +591,7 @@ REX_HOOK_RAW(sub_823EEB98) {
   });
   svr2011::MatchRecordMatchLoads();  // (the match's rand() seed: match_record.h)
   svr2011::NoteMatchLoading(true);    // (model_mem.cpp's load watch)
+  svr2011::ArenaPlaysAsAtLoad(base);  // (a custom arena on another arena's tile: its arena now - arena_mods.h)
   __imp__sub_823EEB98(ctx, base);
 }
 

@@ -1855,10 +1855,9 @@ int ArenaNumberFor(int arena) {
 
 // (The match record copies the screen's arena when the match screen opens - sub_82773F00 - and again from this read
 // once one is picked: a WWE Universe match picked on page 2 played the tile's stock arena without it.)
-void ScreenArenaRead(uint8_t* base, uint32_t screen) {
+namespace {
+void ScreenPlaysAs(uint8_t* base, uint32_t screen) {
   constexpr uint32_t kScreenArena = 244;
-  LiveArenaPlaysAs(base);
-  g_loads_since_pick = 0;
   if (!screen) return;
   uint8_t* q = base + screen + kScreenArena;
   const uint32_t arena = uint32_t(q[0]) << 24 | uint32_t(q[1]) << 16 | uint32_t(q[2]) << 8 | q[3];
@@ -1866,6 +1865,23 @@ void ScreenArenaRead(uint8_t* base, uint32_t screen) {
   const uint32_t as = uint32_t(g_plays_as[arena] - 1);
   q[0] = uint8_t(as >> 24), q[1] = uint8_t(as >> 16), q[2] = uint8_t(as >> 8), q[3] = uint8_t(as);
   REXLOG_INFO("[svr2011] arena mods: the match screen's arena {} plays as arena {}", arena, as);
+}
+}  // namespace
+
+void ScreenArenaRead(uint8_t* base, uint32_t screen) {
+  LiveArenaPlaysAs(base);
+  g_loads_since_pick = 0;
+  ScreenPlaysAs(base, screen);
+}
+
+// (A match's load, sub_823EEB98 - before anything of it reads the arena: the INFERNO's fire set up at the load's
+// start with the tile's own number still in the live settings - a mod on another arena's tile had no ringside fire
+// and the temperature never rose, report 7a6b96; the screen read that turns it into the plays-as arena came ~2 s
+// later.)
+void ArenaPlaysAsAtLoad(uint8_t* base) {
+  LiveArenaPlaysAs(base);
+  const uint8_t* m = base + 0x82EDEB48;  // (the match screen)
+  ScreenPlaysAs(base, uint32_t(m[0]) << 24 | uint32_t(m[1]) << 16 | uint32_t(m[2]) << 8 | m[3]);
 }
 
 void ArenaSelectPad(uint32_t user, uint16_t buttons) {

@@ -352,6 +352,36 @@ void CheckGameFilesThere() {
 #endif
 }
 
+// default.xex from another release of the game (online_files.h DefaultXexSupported): the port's code is the
+// supported xex's, recompiled, so another's ran a moment and quit without a word ("No function registered at
+// 8216B140": the Japanese disc, 2.1.8 report 6fd821). Stopped here with a message (Windows) instead.
+void CheckSupportedXex() {
+  if (!g_disc_data_beside) return;
+  uint64_t size, want_size;
+  uint32_t crc, want_crc;
+  const int ok = svr2011::DefaultXexSupported(&size, &crc);
+  if (ok != 0) {
+    if (ok < 0) REXLOG_WARN("game files: default.xex couldn't be read to check its release");
+    return;
+  }
+  svr2011::SupportedXex(&want_size, &want_crc);
+  REXLOG_ERROR("game files: default.xex is from another release of the game ({} bytes{}; the port's is {} bytes, CRC "
+               "{:08X} - the US / Europe disc) - not started",
+               size, crc ? fmt::format(", CRC {:08X}", crc) : std::string(), want_size, want_crc);
+  rex::FlushLogging();
+#if defined(_WIN32)
+  if (!std::getenv("SVR2011_TEST_NO_DIALOGS")) {
+    const std::wstring text =
+        L"This game folder's default.xex is from a different release of WWE SmackDown vs. Raw 2011 than the one "
+        L"this port was made from - for example the Japanese disc.\n\n"
+        L"The port only runs the US / Europe Xbox 360 release (title 5451085D). Install the game from that disc "
+        L"image (ISO) with the launcher's Setup -> The game, then use Verify game files.";
+    MessageBoxW(nullptr, text.c_str(), L"SvR 2011 - unsupported game release", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+  }
+  std::_Exit(3);
+#endif
+}
+
 }  // namespace
 
 void Svr2011App::OnConfigurePaths(rex::PathConfig& paths) {
@@ -503,6 +533,7 @@ void Svr2011App::OnPreSetup(rex::RuntimeConfig& config) {
   for (const auto& note : g_settings_notes) REXLOG_WARN("{}", note);  // (OnConfigurePaths' repairs)
   g_settings_notes.clear();
   CheckGameFilesThere();  // (a game folder without the disc's essential files: a message, not a crash)
+  CheckSupportedXex();     // (another release's default.xex: a message, not a silent exit)
   // A settings file that couldn't be read (every setting ignored) still draws.
   if (config.gpu_plugin.empty()) {
     rex::cvar::SetFlagByName("gpu_plugin", "xenos");

@@ -54,6 +54,14 @@ struct MissingGameFile {
 };
 std::vector<MissingGameFile> MissingGameFiles();
 
+// default.xex against the disc's (the launcher's list: its size and CRC-32). The port's code is that xex recompiled,
+// so another release's (the Japanese disc: 2.1.8 report 6fd821 - "No function registered at 8216B140", then out)
+// can't run. 1: the supported one (or no xex / no list entry: MissingGameFiles' business), 0: another release's,
+// -1: unreadable. *size / *crc: what the folder's is. Test aid SVR2011_TEST_OTHER_XEX=1: as if another release's.
+int DefaultXexSupported(uint64_t* size, uint32_t* crc);
+// The supported one's size and CRC-32 (the list's).
+void SupportedXex(uint64_t* size, uint32_t* crc);
+
 enum class GameFiles { kChecking, kClean, kModified };
 // The check's result; `first_bad`: the first file that differs (when modified).
 GameFiles GameFilesState(std::string* first_bad = nullptr);

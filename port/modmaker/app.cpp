@@ -3243,6 +3243,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--port-fullpreview")) port_page::TestFullPreview();  // with --port-test on an entrance: its result in the Full preview
     else if (!wcscmp(argv[i], L"--port-test") && more) port_page::TestStart(Utf8(argv[++i])), g_page = PageId::kPort;
     else if (!wcscmp(argv[i], L"--port-clear")) port_page::TestClear(), g_page = PageId::kPort;
+    else if (!wcscmp(argv[i], L"--port-trim")) port_page::TestTrim(), g_page = PageId::kPort;
     else if (!wcscmp(argv[i], L"--port-as-attire") && more) port_page::TestAsAttire(Utf8(argv[++i]));  // with --port-test on a superstar
     else if (!wcscmp(argv[i], L"--icons") && more) icons_page::TestTab(_wtoi(argv[++i])), g_page = PageId::kIcons;
     else if (!wcscmp(argv[i], L"--fbx-map") && more) {  // <fbx>,<out file>: its skeleton, the rig found and the mapping

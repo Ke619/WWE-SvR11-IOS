@@ -497,7 +497,7 @@ namespace port_page { void Draw();
                                         kWeapons = 64, kBackstageKind = 128, kVsScreens = 256 };
                       void DrawKinds(unsigned mask); int Kind();
                       void TestAsAttire(const std::string& spec);  // (--port-as-attire)
-                      void TestStart(const std::string& spec); void TestClear(); void TestFullPreview();
+                      void TestStart(const std::string& spec); void TestClear(); void TestTrim(); void TestFullPreview();
                       // the superstar steps alone (Simple mode): a converted .svrmod comes back in EmbeddedResult()
                       void SuperstarFlow(); std::wstring EmbeddedResult(); void ClearEmbeddedResult();
                       // with an arena EmbeddedResult(): the disc's picture of it (a PNG from the scan), "" none

@@ -191,8 +191,41 @@ uint32_t Mend(uint8_t* base, uint32_t b, uint32_t lo, uint32_t size) {
   return 0;
 }
 
-// Test aid: SVR2011_TEST_BLOCK_SMASH=<n> - the n-th allocation in a match first writes AA bytes over region 0's
-// third block's header (as the block before it running past its end would).
+// Test aid: SVR2011_TEST_BLOCK_CHECK=1 - every allocation first checks each block's header (next in the region, its
+// previous link back, past the block's room); the first bad one logged with the block before it - who asked for it,
+// how much, and the room it had: the writer of an overrun, found soon after it ran over.
+void CheckAll(uint8_t* base) {
+  static const bool on = std::getenv("SVR2011_TEST_BLOCK_CHECK") != nullptr;
+  static std::atomic<int> logged{0};
+  if (!on || logged.load() >= 10) return;
+  const uint32_t desc0 = Rd32(At(base, kRegions));
+  if (!desc0) return;
+  for (int i = 0; i < 8; ++i) {
+    uint32_t lo, size;
+    if (!RegionOf(base, desc0 + 16 * i, lo, size)) continue;
+    uint32_t b = Rd32(At(base, desc0 + 16 * i));
+    for (int n = 0; b && n < 200000; ++n) {
+      const uint32_t next = Rd32(At(base, b)), room = Rd32(At(base, b + 8)) & 0x7FFFFFFF;
+      const char* bad = !next ? nullptr
+                        : !InRegion(next, lo, size)       ? "next outside the region"
+                        : Rd32(At(base, next + 4)) != b   ? "its previous link not back"
+                        : next < b + 20 + room            ? "inside the block before"
+                                                          : nullptr;
+      if (bad) {
+        if (logged++ < 10)
+          REXLOG_ERROR("[svr2011] block heap check: block {:08X} after {:08X}: {} (header {:08X} {:08X} {:08X} {:08X} {:08X});"
+                       " the block before: {}, room {} bytes{}", next, b, bad, Rd32(At(base, next)), Rd32(At(base, next + 4)),
+                       Rd32(At(base, next + 8)), Rd32(At(base, next + 12)), Rd32(At(base, next + 16)), Owner(b, base), room,
+                       Rd32(At(base, b + 8)) & 0x80000000 ? ", in use" : ", free");
+        break;
+      }
+      b = next;
+    }
+  }
+}
+
+// Test aid: SVR2011_TEST_BLOCK_SMASH=<n> - the n-th allocation in a match first writes 95D515D5 (a 30 Oct crash's
+// link) over region 0's third block's header (as the block before it running past its end would).
 void Smash(uint8_t* base) {
   static const int at = [] { const char* v = std::getenv("SVR2011_TEST_BLOCK_SMASH"); return v ? std::atoi(v) : 0; }();
   static std::atomic<int> n{0};
@@ -202,7 +235,7 @@ void Smash(uint8_t* base) {
   uint32_t b = Rd32(At(base, desc0));
   for (int k = 0; k < 2 && b; ++k) b = Rd32(At(base, b));
   if (!b) return;
-  std::memset(At(base, b), 0xAA, 20);
+  for (uint32_t k = 0; k < 20; k += 4) Wr32(At(base, b + k), 0x95D515D5);
   REXLOG_WARN("[svr2011] block heap: test - block {:08X}'s header overwritten (allocation {})", b, at);
 }
 }  // namespace
@@ -235,6 +268,7 @@ REX_HOOK_RAW(sub_821DC338) {
   const uint32_t caller = ctx.lr;
   const uint32_t size = ctx.r3.u32, align = ctx.r4.u32;
   Smash(base);
+  CheckAll(base);
   GuardHeads(base);
   t_walked = 0;
   if (caller == kReelCall && size == kStreamSize) {

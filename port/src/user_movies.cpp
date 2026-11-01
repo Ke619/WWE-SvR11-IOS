@@ -108,6 +108,16 @@ void Refresh() {
     const std::string bik = e.path().stem().string() + ".bik";
     static std::set<std::string> no_decoder;  // (probed once per run)
     if (no_decoder.count(bik)) continue;
+    // (a mod's own .mp4 under that name - prepared first, superstar / media mods - plays, not this one: the
+    // launcher's Shrink movies made "<name>.mp4" here from the game's copy of the mod's .bik - its fallback, or its
+    // HD stub: a black movie - and this scan took the mod's tron over for good)
+    if (const auto mp4 = svr2011::HdMovieMp4(bik); !mp4.empty() && !std::filesystem::equivalent(mp4.parent_path(), g_folder, ec)) {
+      static std::set<std::string> told;
+      if (told.insert(bik).second)
+        REXLOG_INFO("user movies: {} left out - a mod's own movie plays under that name ({})", e.path().filename().string(),
+                    mp4.string());
+      continue;
+    }
     if (!svr2011::PrepareHdMovie(g_folder, bik, e.path())) no_decoder.insert(bik);
   }
   for (const auto& e : std::filesystem::directory_iterator(g_folder, ec)) {

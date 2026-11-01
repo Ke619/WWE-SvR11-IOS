@@ -193,7 +193,9 @@ class DecoderBase {
     // Bink planes have them so - its own decodes measured: 12 rows at 320, 6 at
     // 1024 - and the screens draw them back up; level, the colour sat that far
     // above the picture: pink and green edges)
-    const uint32_t down = w_ == 320 ? 12 : 6;
+    // (test aid SVR2011_TEST_CHROMA_DOWN=<rows>: that many instead - an A/B of the colour's place)
+    static const int test_down = [] { const char* v = std::getenv("SVR2011_TEST_CHROMA_DOWN"); return v ? std::atoi(v) : -1; }();
+    const uint32_t down = test_down >= 0 ? uint32_t(test_down) : w_ == 320 ? 12 : 6;
     const uint8_t* uv = best->nv12.data() + size_t(w_) * h_;
     for (uint32_t r = 0; r < h_ / 2 && r + down < w_ / 2; ++r) {
       uint8_t* u = cb + size_t(r + down) * cpitch;
@@ -754,6 +756,12 @@ bool RegisterHdMovie(const std::string& file, const fs::path& mp4) {
 std::string HdMovieFile(const std::string& file) {
   std::lock_guard lock(g_mutex);
   return g_movies.count(Lower(file)) ? std::string(kHdFolder) + "\\" + file : file;
+}
+
+fs::path HdMovieMp4(const std::string& file) {
+  std::lock_guard lock(g_mutex);
+  const auto it = g_movies.find(Lower(file));
+  return it != g_movies.end() ? it->second.mp4 : fs::path();
 }
 
 }  // namespace svr2011

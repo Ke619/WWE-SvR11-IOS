@@ -2214,6 +2214,29 @@ REX_HOOK_RAW(sub_82216C58) {
       ctx = saved;
       a.wrestler = 0;
     }
+  // Test aid: SVR2011_TEST_COND_LIST_PROBE=<person>,<id> - once, 5 s into a match: the event list condition <id>
+  // (sub_82852950) asked about that person's character, as a Road to WrestleMania script asks it (the object's +0 =
+  // the character: here the match's character table cell). A standing wrestler handles no one (+20 empty), as MVP
+  // just in at John Cena's week 2 brawl: id 38 read through it and crashed (reports 960221 / f08745); with the
+  // guard it answers false. SVR2011_TEST_COND_LIST_GUARD_OFF=1 runs it unguarded (the crash, for a before / after).
+  if (static const char* probe = std::getenv("SVR2011_TEST_COND_LIST_PROBE"); probe) {
+    static bool done = false;
+    uint32_t who = 0, cid = 0;
+    if (!done && std::sscanf(probe, "%u,%u", &who, &cid) == 2 && who < 6 && Rd32(base + 0x82E3CD0C) > 300) {
+      const uint32_t cell = 0x82E3CC50 + who * 4, ch = Rd32(base + cell);
+      if (ch && ch == fighter) {
+        done = true;
+        const auto saved = ctx;
+        ctx.r3.u64 = cell;
+        ctx.r4.u64 = cid;
+        REXLOG_INFO("[svr2011] test: event list condition {} for person {} (character {:08X}, its +20 {:08X})", cid, who, ch,
+                    Rd32(base + ch + 20));
+        sub_82852950(ctx, base);
+        REXLOG_INFO("[svr2011] test: event list condition {} for person {} answered {}", cid, who, ctx.r3.u32);
+        ctx = saved;
+      }
+    }
+  }
   // Test aid: SVR2011_TEST_FORCE_MOVE=<attacker person>,<target person>,<every s>,<motion>[,<motion>...]
   // - in a match, every <s> seconds the attacker starts the next motion (a
   // paired move, sub_82191AA8) on the target, wherever they are: for seeing
@@ -3936,6 +3959,57 @@ REX_HOOK_RAW(sub_82853E38) {
   }
   __imp__sub_82853E38(ctx, base);
   EventAnswer(id, ctx);
+}
+
+// ...and the other condition table, sub_82852950(object, id 1-225), that sub_82853718 runs over a byte list of ids.
+// Road to WrestleMania, John Cena's week 2 again (2.1.8, PC, every time - reports 20261101-123956-960221 and
+// 20261101-130325-f08745: crash lr 82853780 / ctr 82852FBC): MVP joins the backstage brawl and id 38 reads the
+// object's character's +20 (the one he handles) and that one's +212 - MVP, just in, handles no one. The ids below
+// load the object's character with no check (scratchpad tool cond_scan.py); 33 reads its +4, 35-38 and 64 its +20,
+// 68 / 70 / 71 its +0. With nothing there they answer false, as the console's read near address 0 did. (Its own ids:
+// not EventAnswer's, which are the other tables'.)
+REX_EXTERN(__imp__sub_82852950);
+REX_HOOK_RAW(sub_82852950) {
+  static constexpr uint8_t kReads[] = {3,   5,   9,   20,  21,  22,  23,  24,  25,  26,  31,  32,  33,  34,  35,  36,  37,
+                                       38,  39,  41,  42,  43,  44,  45,  50,  51,  52,  53,  54,  55,  56,  57,  61,  62,
+                                       63,  64,  66,  67,  68,  70,  71,  80,  81,  82,  83,  90,  91,  100, 101, 102, 103,
+                                       104, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125,
+                                       126, 127, 128, 129, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210};
+  const uint32_t object = ctx.r3.u32, id = ctx.r4.u32;
+  static const bool guard_off = std::getenv("SVR2011_TEST_COND_LIST_GUARD_OFF") != nullptr;  // (test: the crash)
+  if (object && !guard_off && std::find(std::begin(kReads), std::end(kReads), id) != std::end(kReads)) {
+    const uint32_t ch = Rd32(base + object);
+    const uint32_t at = id == 33 ? 4 : (id >= 35 && id <= 38) || id == 64 ? 20 : id == 68 || id == 70 || id == 71 ? 0 : 1;
+    if (!ch || (at != 1 && !Rd32(base + ch + at))) {
+      static int logged = 0;
+      if (logged++ < 3)
+        REXLOG_INFO("[svr2011] event list condition {} with no character to check - false (as on the console)", id);
+      ctx.r3.u64 = 0;
+      return;
+    }
+  }
+  __imp__sub_82852950(ctx, base);
+  // (test aids, as EventAnswer's for this table's ids: SVR2011_TEST_EVENT_LOG=1 logs each id's first answer of each
+  // value; SVR2011_TEST_EVENT_LIST_TRUE=<id>[,<id>...] answers 1 - a backstage walk's objective without walking)
+  static const bool log = std::getenv("SVR2011_TEST_EVENT_LOG") != nullptr;
+  static const std::set<uint32_t> forced = [] {
+    std::set<uint32_t> s;
+    if (const char* v = std::getenv("SVR2011_TEST_EVENT_LIST_TRUE"))
+      for (const char* q = v; *q;) {
+        s.insert(uint32_t(std::strtoul(q, nullptr, 10)));
+        while (*q && *q != ',') ++q;
+        if (*q == ',') ++q;
+      }
+    return s;
+  }();
+  if (forced.count(id)) ctx.r3.u64 = 1;
+  if (log) {
+    static std::mutex mu;
+    static std::set<uint64_t> seen;
+    std::lock_guard lock(mu);
+    if (seen.insert(uint64_t(id) << 32 | ctx.r3.u32).second)
+      REXLOG_INFO("[svr2011] event list condition {} = {}{}", id, ctx.r3.u32, forced.count(id) ? " (test: forced)" : "");
+  }
 }
 
 namespace svr2011 {

@@ -176,8 +176,11 @@ namespace {
 constexpr uint32_t kMatchScreen = 0x82EDEB48, kScreenArena = 244;
 
 void SetScreenArena(uint8_t* base, uint32_t screen) {
-  // (a slot that plays as another arena - arena_mods.h ArenaNumberFor - as the match would)
-  const int arena = svr2011::ArenaNumberFor(Config().arena);
+  // (a slot that plays as another arena - arena_mods.h ArenaNumberFor - as the match would; with
+  // SVR2011_TEST_ARENA_AS_TILE=1 the tile's own number, as SELECT ARENA leaves it - the game's own
+  // path then makes it the arena it plays as)
+  static const bool as_tile = std::getenv("SVR2011_TEST_ARENA_AS_TILE") != nullptr;
+  const int arena = as_tile ? Config().arena : svr2011::ArenaNumberFor(Config().arena);
   if (arena < 0 || !screen || !Applies() || Rd32(base + screen + kScreenArena) == uint32_t(arena)) return;
   static uint32_t logged = 0;
   if (logged++ < 2)

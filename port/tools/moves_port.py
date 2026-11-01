@@ -605,8 +605,14 @@ def convert0789(a, rep, outdir, g):
                               (cats, 'the slot\'s categories %s' % '/'.join(cats)), (SINGLES, 'one-on-one categories')):
                 if cs:
                     tries.append((cs, where, same_sit, hold))
+        # (a dive (situation 9) in the ring: not 2011's dive to the floor, Leap of Faith 3591 (flights x 110 / 111) -
+        # 2007-2009 give every top-rope dive floor flights for an opponent outside, 2011 has that one move for it; as
+        # a template its EXH made 2008's Swanton Bomb 1 a finisher triggered running, not from the top rope - report
+        # 20261101-060824. The floor flights are then dropped below. A dive with no in-ring template still gets one.)
+        dive = sit == 9
         for cs, where, same_sit, hold in tries:
-            tid = choose_template(g11, cs, nf, gap, pool(same_sit, hold), paired)
+            tid = (dive and choose_template(g11, cs, nf, gap, pool(same_sit, hold), paired, ringside=False)) or \
+                choose_template(g11, cs, nf, gap, pool(same_sit, hold), paired)
             if tid:
                 how = '%s%s%s, the closest start gap and length (%s)' % (
                     'two-person moves' if paired else 'one-person moves (a strike, a dive)',
@@ -666,8 +672,12 @@ def convert0789(a, rep, outdir, g):
     tx = {x for p, kd, ks in g11.banks_of(btid) for x, y in ks}
     floor = {e['x'] for e in tracks if e['x'] in (110, 111)} - tx if not tx & {110, 111} else set()
     if floor:
-        tracks = [e for e in tracks if e['x'] not in floor]
-        rep['dropped'].append('the floor-dive flights x %s (the template is an in-ring dive)' % ' / '.join(map(str, sorted(floor))))
+        # (and the source's take-off, x 0: 2007-2009's short one (Swanton Bomb 1: 9 frames) ends on a branch to
+        # its floor flight - without it the dive stayed crouched on the turnbuckle; the template's take-off (3550:
+        # 32 frames) goes on to its hit x 30 / 40 or miss x 50 - added below)
+        tracks = [e for e in tracks if e['x'] not in floor and e['x'] != 0]
+        rep['dropped'].append('the floor-dive flights x %s and the take-off x 0 (the template is an in-ring dive: its own)'
+                              % ' / '.join(map(str, sorted(floor))))
     for path, kind, ks in g11.banks_of(btid):
         if kind != 'YMKs':
             rep['dropped'].append('bank %s (%s)' % (path, kind))
@@ -712,7 +722,7 @@ def convert0789(a, rep, outdir, g):
         # (with its floor flights left out the dive needs the template's miss, x 50: without one it hung in the air
         # at the corner after the flight)
         for x, y in ks:
-            te = bank.find(btid, x, y) if floor and x == 50 and not any(e['x'] == 50 for e in tracks) else None
+            te = bank.find(btid, x, y) if floor and x in (0, 50) and not any(e['x'] == x for e in tracks) else None
             if te is None:
                 continue
             data = fix_track(te['data'], bank.T, packed and y in (0, 1) and ymks.is_packed_motion(te['data'], bank.T),

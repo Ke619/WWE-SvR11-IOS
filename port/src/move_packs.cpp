@@ -1401,14 +1401,34 @@ std::string PackageMismatch(const fs::path& package, const std::vector<const Dlc
 }
 
 // The first thing wrong with the overlay's files ("" when none): its pacs, the DLC copies, the served catalogs.
-std::string OverlayDamage(const fs::path& overlay, const std::set<std::string>& pacs, const std::vector<DlcCopy>& dlc) {
+// "" when the overlay's copy of a game pac (an EPAC) still holds every entry of the game's own - a merge only adds or
+// replaces entries - else the first it lacks. 2.1.8 report b67115: an overlay misc.pac without BATL/SAVE or MOVS/WAZE
+// passed as up to date (its table fit its size): the start-up read of /BATL/SAVE found it in no pac and crashed.
+std::string KeepsEntries(const fs::path& own, const fs::path& copy) {
+  std::ifstream a(own, std::ios::binary), b(copy, std::ios::binary);
+  Bytes ha, hb;
+  std::vector<TocEntry> ta, tb;
+  if (!a || !ReadToc(a, ha, ta)) return "";  // (the game's own isn't an EPAC: not checked)
+  if (!b || !ReadToc(b, hb, tb)) return fmt::format("{} isn't a pac", copy.filename().string());
+  std::set<std::pair<std::string, std::string>> has;
+  for (const auto& e : tb) has.insert({e.type, e.name});
+  for (const auto& e : ta)
+    if (!has.count({e.type, e.name})) return fmt::format("{} lacks the game's {}/{}", copy.filename().string(), e.type, e.name);
+  return "";
+}
+
+std::string OverlayDamage(const fs::path& game, const fs::path& overlay, const std::set<std::string>& pacs,
+                          const std::vector<DlcCopy>& dlc) {
   std::error_code ec;
-  for (const auto& p : pacs)
+  for (const auto& p : pacs) {
     if (std::string why = TocFits(overlay / PacPath(p)); !why.empty()) return why;
+    if (std::string why = KeepsEntries(game / "pac" / PacPath(p), overlay / PacPath(p)); !why.empty()) return why;
+  }
   std::map<fs::path, std::vector<const DlcCopy*>> by_package;
   for (const auto& c : dlc) {
     if (!fs::exists(c.copy, ec)) continue;
     if (std::string why = TocFits(c.copy); !why.empty()) return "DLC " + why;
+    if (std::string why = KeepsEntries(c.file, c.copy); !why.empty()) return "DLC " + why;
     by_package[c.file.parent_path().parent_path()].push_back(&c);
   }
   for (const auto& [package, list] : by_package)
@@ -1899,7 +1919,7 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs, const fs::path& d
     for (size_t i = 0; i < gms.size(); ++i) have &= fs::exists(overlay / GimmickPacName(i), ec);
     have &= dlc_complete();
     if (have) {
-      if (const std::string why = OverlayDamage(overlay, pacs, dlc); !why.empty()) {
+      if (const std::string why = OverlayDamage(game, overlay, pacs, dlc); !why.empty()) {
         REXLOG_WARN("[svr2011] move packs: the overlay's files don't match ({}) - merging again", why);
         have = false;
       }
@@ -2017,6 +2037,15 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs, const fs::path& d
           fs::remove(c.copy, ec);
           break;
         }
+  // (a merged pac that lost one of the game's entries - never wanted: a merge only adds or replaces - is served as the
+  // game's own instead: without its packs, but the game finds every file it reads)
+  for (const auto& p : pacs)
+    if (const std::string why = KeepsEntries(game / "pac" / PacPath(p), overlay / PacPath(p)); !why.empty()) {
+      REXLOG_ERROR("[svr2011] move packs: {} after the merge - the game's own {} is served instead (its packs left out)",
+                   why, p);
+      fs::remove(overlay / PacPath(p), ec);  // (a link to the game's file is only unlinked, never written through)
+      fs::copy_file(game / "pac" / PacPath(p), overlay / PacPath(p), ec);
+    }
   {  // (a package whose served files still don't match its catalogs: its own files play)
     std::map<fs::path, std::vector<const DlcCopy*>> by_package;
     for (const auto& c : dlc)

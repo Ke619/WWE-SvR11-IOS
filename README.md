@@ -54,7 +54,7 @@ Other iPhones and iPads haven't been tested. It's an early port, so expect rough
 
 | | |
 |---|---|
-| 💿 **The game** | Your own copy of the *WWE SmackDown vs. Raw 2011* **Xbox 360** game, extracted to a folder that contains `default.xex`. You'll usually start from a disc image (`.iso`) and extract it on a PC first. The app doesn't read an `.iso` directly. The PS3, Wii, PS2 and PSP versions won't work. <!-- TODO(author): name the tool or steps you use to extract the ISO. --> |
+| 💿 **The game** | Your own copy of the *WWE SmackDown vs. Raw 2011* **Xbox 360** game, . The PS3, Wii, PS2 and PSP versions won't work. |
 | 📱 **iPhone** | Tested on an iPhone 15 Pro. The app is built as an iPhone app for **iOS 17 or later** and runs in **landscape**. Other devices are untested, and older or lower-memory ones may not run it. |
 | 💾 **Storage** | About 6 GB: 5.3 GB for the game, plus room for saves and caches. |
 | 🔧 **A way to sideload** | This can't go on the App Store. Use AltStore, SideStore, LiveContainer, or any tool that installs an IPA. It has been tested through LiveContainer. The game doesn't generate code at run time, so **JIT isn't needed**. |

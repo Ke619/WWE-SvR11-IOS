@@ -126,7 +126,6 @@ bool HctpRoomActive() {
 // The HCTP room number (hctp=30 the Back Entrance) - its cage rules use room 30's places.
 int HctpRoom();
 
-void WrF(uint8_t* p, float f);
 
 void Climb(PPCContext& ctx, uint8_t* base, uint32_t f) {
   int slot = -1;

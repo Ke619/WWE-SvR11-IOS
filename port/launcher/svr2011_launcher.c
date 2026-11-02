@@ -16,7 +16,8 @@
  *   Paint Tool the Paint Tool's logos (10 pages of 20): see them, export as PNG, import images.
  *
  * Command line (tests):  --capture <play|settings|install|dlc|saves|paint|mods> <file.bmp> [--paint-page <1-10>]
- *                          [--report-window <1|2>]  (Report a problem's window instead: questions / where to post)
+ *                          [--report-window <1|2>]  (Report a problem's window instead: the questions / as after a
+ *                          failed send)
  *                          [--online-mods show | <share 0|1> <KB/s> <joiners> <mod MB> <session MB>]  (online: the
  *                          Mod sharing fold open - as loaded, or those rows filled and saved first)
  *                        --paint-export <file.pt> <slot> <out.png>  /  --paint-import <file.pt> <slot> <image>
@@ -77,6 +78,7 @@ static void setup_console_progress(int permille, const WCHAR *text);
 #include "unzip.h"
 #include "updater.h"
 #include "release_check.h"
+#include "update_log.h"
 #include "stfs.h"
 #include "caw_import.h"
 #include "verify.h"
@@ -170,6 +172,7 @@ enum {
 #define WM_APP_UPD_CHECKED (WM_APP + 7)  /* wParam 1 ok, lParam heap error text */
 #define WM_APP_UPD_PROGRESS (WM_APP + 8) /* wParam percent, lParam 1 = unpacking */
 #define WM_APP_UPD_REPAIR (WM_APP + 9)   /* the missing files fetched by themselves */
+#define UPLOG_DIR (s_game_dir[0] ? s_game_dir : s_launcher_dir)   /* (update_log.h: where the updater logs too) */
 #define UPDATER_EXE L"SvR2011 Updater.exe"   /* (launcher/updater_main.c: installs updates for the launcher) */
 #define WM_APP_APK      (WM_APP + 10)    /* wParam permille, or APK_OK / APK_FAILED; lParam heap WCHAR* or 0 */
 #define WM_APP_UPD_FINISHED (WM_APP + 13) /* wParam 1 ok, lParam heap error text */
@@ -2909,6 +2912,7 @@ static int shaders_ready(void)
                L"there (an antivirus may remove it), and start the launcher from that folder.\n\nStart the game "
                L"anyway?",
                dir, failed, where);
+    update_log(UPLOG_DIR, "launcher", L"Play: %s", m);
     return MessageBoxW(s_wnd, m, WINDOW_TITLE, MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES;
 }
 
@@ -3613,7 +3617,7 @@ static void on_place(int id, int x, int y, int w, int h)
    Discord's bug-svr11 forum (the description is copied, ready to paste). */
 #define DISCORD_INVITE L"https://discord.com/invite/QhGSuDKHwk"
 #define DISCORD_FORUM L"bug-svr11"
-enum { REP_KIND = 300, REP_AGAIN, REP_WHAT, REP_BEFORE, REP_STATUS, REP_CREATE, REP_DISCORD, REP_SHOW, REP_COPY,
+enum { REP_KIND = 300, REP_AGAIN, REP_WHAT, REP_BEFORE, REP_STATUS,
        REP_CONTACT, REP_ADDPIC, REP_SUMMARY, REP_SEND, REP_COPYID, REP_MATCH, REP_MODS, REP_INCMODS, REP_PROGRESS, REP_INCSAVE,
        REP_PIC0 = 340, REP_DEL0 = 350 };
 #define WM_APP_REP_SENT (WM_APP + 70)   /* the report window's own: the send finished (s_rep_result) */
@@ -3851,39 +3855,11 @@ static void rep_page1(HWND w)
     SendMessageW(c, PBM_SETRANGE, 0, MAKELPARAM(0, 100));
     ShowWindow(c, SW_HIDE);
     rep_add(w, L"Static", L"", SS_LEFT, 20, 640 + REP_DY, 180, 36, REP_STATUS, NULL);
-    rep_add(w, L"Button", L"Send report", BS_DEFPUSHBUTTON | WS_TABSTOP, 200, 636 + REP_DY, 110, 32, REP_SEND, NULL);
-    rep_add(w, L"Button", L"Save zip", WS_TABSTOP, 318, 636 + REP_DY, 92, 32, REP_CREATE, NULL);
+    rep_add(w, L"Button", L"Send report", BS_DEFPUSHBUTTON | WS_TABSTOP, 300, 636 + REP_DY, 110, 32, REP_SEND, NULL);
     rep_add(w, L"Button", L"Cancel", WS_TABSTOP, 420, 636 + REP_DY, 80, 32, IDCANCEL, NULL);
     rep_pics_show(w);
     rep_match_pick(w);
     SetFocus(GetDlgItem(w, REP_WHAT));
-}
-
-/* Page 2: the report is ready - where to post it. */
-static void rep_page2(HWND w)
-{
-    WCHAR t[MAX_PATH + 1024];
-    s_rep_page = 2;
-    rep_clear(w);
-    rep_add(w, L"Static", L"Your report is ready", 0, 20, 14, 480, 30, 0, s_big);
-    swprintf_s(t, MAX_PATH + 1024,
-               L"%s\n\n"
-               L"Now post it on our Discord so we can help:\n\n"
-               L"1.  Open the Discord (button below) and go to the  " DISCORD_FORUM L"  forum.\n\n"
-               L"2.  Start a NEW post (a thread of your own) with a short title, e.g. "
-               L"\"Crash when opening Create A Moveset\".\n\n"
-               L"3.  Paste your description (it is already copied) and attach the report file: "
-               L"\"Show the file\" opens its folder - drag the zip into Discord.\n\n"
-               L"One problem per thread, please, and not in the other channels: the forum is where we keep track of "
-               L"them.",
-               s_rep_zip);
-    rep_add(w, L"Static", t, SS_LEFT | SS_NOPREFIX, 20, 52, 480, 290, 0, NULL);
-    rep_add(w, L"Button", L"Open Discord", BS_DEFPUSHBUTTON | WS_TABSTOP, 20, 360, 120, 32, REP_DISCORD, NULL);
-    rep_add(w, L"Button", L"Show the file", WS_TABSTOP, 148, 360, 120, 32, REP_SHOW, NULL);
-    rep_add(w, L"Button", L"Copy description", WS_TABSTOP, 276, 360, 136, 32, REP_COPY, NULL);
-    rep_add(w, L"Button", L"Close", WS_TABSTOP, 420, 360, 80, 32, IDCANCEL, NULL);
-    rep_add(w, L"Static", L"", SS_LEFT, 20, 404, 480, 20, REP_STATUS, NULL);
-    SetFocus(GetDlgItem(w, REP_DISCORD));
 }
 
 /* The description from page 1 (s_rep_text, and UTF-8 for report.txt); 0 if "What happened?" is empty. */
@@ -3939,8 +3915,12 @@ static DWORD WINAPI rep_send_thread(LPVOID p)
     int i;
     WideCharToMultiByte(CP_UTF8, 0, PORT_VERSION, -1, ver, sizeof ver, NULL, NULL);
     report_signature(s_game_dir, sig, sizeof sig);
-    json = report_json("launcher", ver, s_rep_problem, s_rep_happens, s_rep_what, s_rep_before,
-                       s_rep_contact, sig);
+    {
+        char upd[600];
+        update_log_last(UPLOG_DIR, upd, sizeof upd);
+        json = report_json("launcher", ver, s_rep_problem, s_rep_happens, s_rep_what, s_rep_before,
+                           s_rep_contact, sig, upd);
+    }
     ZeroMemory(&u, sizeof u);
     u.json = json;
     u.zip = s_rep_zip;
@@ -3960,15 +3940,44 @@ static DWORD WINAPI rep_send_thread(LPVOID p)
     return 0;
 }
 
-/* Page 3: sent (the id, how often seen before), or not (why, and the zip kept for Discord). */
+/* The status line: its own small place left of the buttons, or (wide: a send failed - the server's reason can be
+   long) the summary's full-width place above them, the summary hidden. */
+static void rep_status_wide(HWND w, int wide)
+{
+    SetWindowPos(GetDlgItem(w, REP_STATUS), NULL, S(20), S(wide ? 594 + REP_DY : 640 + REP_DY), S(wide ? 480 : 180),
+                 S(wide ? 40 : 36), SWP_NOZORDER | SWP_NOACTIVATE);
+    ShowWindow(GetDlgItem(w, REP_SUMMARY), wide ? SW_HIDE : SW_SHOW);
+}
+
+/* The questions page after a send that failed: as it was, with the reason and Send as "Try again" (reports are
+   only sent - nothing is saved for posting elsewhere). */
+static void rep_not_sent(HWND w, const WCHAR *why)
+{
+    WCHAR t[600];
+    s_rep_page = 1;
+    EnableWindow(GetDlgItem(w, REP_SEND), TRUE);
+    EnableWindow(GetDlgItem(w, REP_MATCH), TRUE);
+    EnableWindow(GetDlgItem(w, REP_INCMODS), s_rep_rm.n_mods > 0);
+    ShowWindow(GetDlgItem(w, REP_PROGRESS), SW_HIDE);
+    rep_status_wide(w, 1);
+    SetDlgItemTextW(w, REP_SEND, L"Try again");
+    swprintf_s(t, 600, L"Not sent: %s Check you're online, then try again.", why);
+    SetDlgItemTextW(w, REP_STATUS, t);
+    SetFocus(GetDlgItem(w, REP_SEND));
+}
+
+/* Page 3: sent (the id, how often seen before), or not (rep_not_sent). */
 static void rep_page3(HWND w)
 {
-    WCHAR t[MAX_PATH + 1200], id[64];
-    const int ok = s_rep_result.id[0] != 0;
-    s_rep_page = ok ? 3 : 2;
+    WCHAR t[1200], id[64];
+    if (!s_rep_result.id[0]) {
+        rep_not_sent(w, s_rep_result.why[0] ? s_rep_result.why : L"no answer from the server.");
+        return;
+    }
+    s_rep_page = 3;
     rep_clear(w);
     MultiByteToWideChar(CP_UTF8, 0, s_rep_result.id, -1, id, 64);
-    if (ok) {
+    {
         WCHAR seen[600] = L"";
         if (s_rep_result.seen_before > 0)
             swprintf_s(seen, 600, L"\n\nThis problem was already reported %d time%s - yours adds to it, thank you.",
@@ -3978,46 +3987,30 @@ static void rep_page3(HWND w)
             rep_match_result_text(&s_rep_rm, &s_rep_result, mm, 400);
             if (mm[0]) swprintf_s(seen + wcslen(seen), 600 - wcslen(seen), L"\n\n%.150s", mm);
         }
-        swprintf_s(t, MAX_PATH + 1200,
+        swprintf_s(t, 1200,
                    L"Your report reached us.\n\nReport id:  %s%s\n\nIf you post about it on our Discord (" DISCORD_FORUM
-                   L" forum), give this id. A copy of the report is also kept here:\n%s",
-                   id, seen, s_rep_zip);
-        rep_add(w, L"Static", L"Report sent", 0, 20, 14, 480, 30, 0, s_big);
-        rep_add(w, L"Static", t, SS_LEFT | SS_NOPREFIX, 20, 52, 480, 290, 0, NULL);
-        rep_add(w, L"Button", L"Copy the id", BS_DEFPUSHBUTTON | WS_TABSTOP, 20, 360, 120, 32, REP_COPYID, NULL);
-        rep_add(w, L"Button", L"Show the file", WS_TABSTOP, 148, 360, 120, 32, REP_SHOW, NULL);
-        rep_add(w, L"Button", L"Close", WS_TABSTOP, 420, 360, 80, 32, IDCANCEL, NULL);
-        rep_add(w, L"Static", L"", SS_LEFT, 20, 404, 480, 20, REP_STATUS, NULL);
-        SetFocus(GetDlgItem(w, IDCANCEL));
-        return;
+                   L" forum), give this id.",
+                   id, seen);
     }
-    rep_page2(w);   /* (where to post it, the zip saved) */
-    swprintf_s(t, MAX_PATH + 1200, L"Not sent: %s Your report is saved - post it on Discord instead:", s_rep_result.why);
-    SetDlgItemTextW(w, REP_STATUS, t);
+    rep_add(w, L"Static", L"Report sent", 0, 20, 14, 480, 30, 0, s_big);
+    rep_add(w, L"Static", t, SS_LEFT | SS_NOPREFIX, 20, 52, 480, 290, 0, NULL);
+    rep_add(w, L"Button", L"Copy the id", BS_DEFPUSHBUTTON | WS_TABSTOP, 20, 360, 120, 32, REP_COPYID, NULL);
+    rep_add(w, L"Button", L"Close", WS_TABSTOP, 420, 360, 80, 32, IDCANCEL, NULL);
+    rep_add(w, L"Static", L"", SS_LEFT, 20, 404, 480, 20, REP_STATUS, NULL);
+    SetFocus(GetDlgItem(w, IDCANCEL));
+}
+
+/* The window closes: the report's zip goes (sent reports aren't kept for posting - the Discord gets no zips). */
+static void rep_drop_zip(void)
+{
+    if (s_rep_zip[0]) DeleteFileW(s_rep_zip);
+    s_rep_zip[0] = 0;
 }
 
 static LRESULT CALLBACK rep_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
 {
     if (m == WM_COMMAND) {
         switch (LOWORD(wp)) {
-        case REP_CREATE: {
-            static char utf8[8192];
-            int logs = 0, crashes = 0;
-            if (!rep_describe(w, utf8, sizeof utf8)) {
-                SetDlgItemTextW(w, REP_STATUS, L"Please say what happened first.");
-                SetFocus(GetDlgItem(w, REP_WHAT));
-                return 0;
-            }
-            if (!report_make_match(s_game_dir, PORT_VERSION, utf8, s_rep_rm.has_match ? s_rep_rm.match.dir : NULL,
-                                   IsDlgButtonChecked(w, REP_INCSAVE) == BST_CHECKED, s_rep_zip, MAX_PATH, &logs,
-                                   &crashes)) {
-                SetDlgItemTextW(w, REP_STATUS, L"The report could not be written (is the game folder read-only?).");
-                return 0;
-            }
-            rep_copy(w);
-            rep_page2(w);
-            return 0;
-        }
         case REP_SEND: {
             static char utf8[8192];
             int logs = 0, crashes = 0;
@@ -4031,17 +4024,17 @@ static LRESULT CALLBACK rep_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
                 SetFocus(GetDlgItem(w, REP_WHAT));
                 return 0;
             }
-            /* (the match goes as its own part: not in the zip) */
+            /* (the match goes as its own part: not in the zip; a try again makes it again) */
+            rep_drop_zip();
             if (!report_make_match(s_game_dir, PORT_VERSION, utf8, NULL, IsDlgButtonChecked(w, REP_INCSAVE) == BST_CHECKED,
                                    s_rep_zip, MAX_PATH, &logs, &crashes)) {
                 SetDlgItemTextW(w, REP_STATUS, L"The report could not be written (is the game folder read-only?).");
                 return 0;
             }
-            rep_copy(w);
             online_server_text(s_rep_server, 260);
+            rep_status_wide(w, 0);
             SetDlgItemTextW(w, REP_STATUS, L"Sending\x2026");
             EnableWindow(GetDlgItem(w, REP_SEND), FALSE);
-            EnableWindow(GetDlgItem(w, REP_CREATE), FALSE);
             EnableWindow(GetDlgItem(w, REP_MATCH), FALSE);
             EnableWindow(GetDlgItem(w, REP_INCMODS), FALSE);
             ShowWindow(GetDlgItem(w, REP_SUMMARY), SW_HIDE);
@@ -4071,20 +4064,8 @@ static LRESULT CALLBACK rep_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             SetDlgItemTextW(w, REP_STATUS, L"Report id copied.");
             return 0;
         }
-        case REP_DISCORD:
-            ShellExecuteW(w, L"open", DISCORD_INVITE, NULL, NULL, SW_SHOWNORMAL);
-            return 0;
-        case REP_SHOW: {
-            WCHAR args[MAX_PATH + 32];
-            swprintf_s(args, MAX_PATH + 32, L"/select,\"%s\"", s_rep_zip);
-            ShellExecuteW(w, L"open", L"explorer.exe", args, NULL, SW_SHOWNORMAL);
-            return 0;
-        }
-        case REP_COPY:
-            rep_copy(w);
-            SetDlgItemTextW(w, REP_STATUS, L"Description copied - paste it into your Discord post.");
-            return 0;
         case IDCANCEL:
+            rep_drop_zip();
             s_rep_done = -1;
             DestroyWindow(w);
             return 0;
@@ -4126,12 +4107,12 @@ static LRESULT CALLBACK rep_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         return 0;
     }
     if (m == WM_CTLCOLORSTATIC && GetDlgCtrlID((HWND)lp) == REP_STATUS) {
-        SetTextColor((HDC)wp, s_rep_page == 1 || (s_rep_page == 2 && s_rep_result.why[0]) ? RGB(190, 30, 45)
-                                                                                 : RGB(30, 120, 60));
+        SetTextColor((HDC)wp, s_rep_page == 1 ? RGB(190, 30, 45) : RGB(30, 120, 60));
         SetBkMode((HDC)wp, TRANSPARENT);
         return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
     }
     if (m == WM_CLOSE) {
+        rep_drop_zip();
         s_rep_done = -1;
         DestroyWindow(w);
         return 0;
@@ -4172,13 +4153,8 @@ static void report_window(int page, const WCHAR *capture_file)
     if (!w)
         return;
     s_rep_done = 0;
-    if (page == 2) {
-        if (!s_rep_zip[0])
-            swprintf_s(s_rep_zip, MAX_PATH, L"%s\\Reports\\SvR2011-report-20261006-120000.zip", s_game_dir);
-        rep_page2(w);
-    } else {
-        rep_page1(w);
-    }
+    rep_page1(w);
+    if (page == 2) rep_not_sent(w, L"the server didn't answer (a sample).");
     if (capture_file) {
         int k;
         ShowWindow(w, SW_SHOWNOACTIVATE);
@@ -4196,7 +4172,7 @@ static void report_window(int page, const WCHAR *capture_file)
     }
     EnableWindow(s_wnd, FALSE);
     ShowWindow(w, SW_SHOW);
-    SetFocus(GetDlgItem(w, page == 2 ? REP_DISCORD : REP_WHAT));
+    SetFocus(GetDlgItem(w, page == 2 ? REP_SEND : REP_WHAT));
     while (!s_rep_done) {
         if (GetMessageW(&msg, NULL, 0, 0) <= 0) {
             quit = 1;
@@ -7913,6 +7889,7 @@ static void up_status(const WCHAR *fmt, ...)
     vswprintf_s(buf, 600, fmt, ap);
     va_end(ap);
     set_text(ID_UP_STATUS, buf);
+    update_log(UPLOG_DIR, "launcher", L"%s", buf);   /* (the update row's messages: Report a problem has them) */
 }
 
 static DWORD WINAPI up_check_thread(LPVOID arg)
@@ -8089,6 +8066,8 @@ static int up_run_updater(const WCHAR *version, int repair)
         up_status(L"Could not start %s.", UPDATER_EXE);
         return 0;
     }
+    update_log(UPLOG_DIR, "launcher", L"started the updater: %s%s%s", repair ? L"repair" : L"update",
+               version ? L" to " : L"", version ? version : L"");
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
     save_launcher_ini();
@@ -9551,6 +9530,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         updated = 1;
     if (argv && argc >= 2 && !wcscmp(argv[1], L"--repair-failed"))   /* (restarted by a repair that failed) */
         s_repair_failed = 1;
+    if (updated || s_repair_failed)
+        update_log(UPLOG_DIR, "launcher", L"started again by the updater (%s), version %s",
+                   updated ? L"updated" : L"the repair failed", PORT_VERSION);
     {   /* the launcher an update replaced, and other program files it couldn't delete then (<name>.old) */
         WCHAR old[MAX_PATH + 8], pat[MAX_PATH], f[MAX_PATH];
         WIN32_FIND_DATAW fd;
@@ -9792,7 +9774,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         }
         WideCharToMultiByte(CP_UTF8, 0, PORT_VERSION, -1, ver, sizeof ver, NULL, NULL);
         report_signature(argv[2], sig, sizeof sig);
-        json = report_json("launcher", ver, problem, happens, what, before, contact, sig);
+        {
+            char upd[600];
+            update_log_last(argv[2], upd, sizeof upd);
+            json = report_json("launcher", ver, problem, happens, what, before, contact, sig, upd);
+        }
         ZeroMemory(&u, sizeof u);
         u.json = json;
         u.zip = zip;

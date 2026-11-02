@@ -1,6 +1,6 @@
 // WWE SmackDown vs. Raw 2011 - "Report a problem" on the phone (as the PC
-// launcher's, launcher/report.c): one zip in the Download folder with the
-// newest game logs, crash reports and svr2011.toml (the account's token and
+// launcher's, launcher/report.c): the zip ReportSend sends (made in the app's
+// cache, gone once sent - reports are sent, not saved) with the newest game logs, crash reports and svr2011.toml (the account's token and
 // password removed), plus report.txt (app version, phone, Android version),
 // saves_check.txt (the Created Superstar saves' checksums, not the saves) and
 // mods_text.txt (the superstar mods' text files) - port/docs/PROBLEM_REPORTS.md.
@@ -8,7 +8,6 @@
 package io.github.kaikoclanworth1.svr2011;
 
 import android.os.Build;
-import android.os.Environment;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -29,20 +28,12 @@ final class ProblemReport {
         int logs, crashes;
     }
 
-    // Makes the zip; throws if it can't be written.
-    static Result make(File gameFolder, String appVersion) throws IOException {
-        return make(gameFolder, appVersion, null);
-    }
-
-    // ... with the player's description (ReportForm) at the top of report.txt.
-    static Result make(File gameFolder, String appVersion, String description) throws IOException {
-        return make(gameFolder, appVersion, description, false);
-    }
-
-    // ... and (withSave: the form's "Include my main save" tick) the main save as save/ (addMainSave).
-    static Result make(File gameFolder, String appVersion, String description, boolean withSave) throws IOException {
+    // Makes the zip in `dir`, the player's description (ReportForm) at the top of
+    // report.txt and (withSave: the form's "Include my main save" tick) the main
+    // save as save/ (addMainSave); throws if it can't be written.
+    static Result make(File dir, File gameFolder, String appVersion, String description, boolean withSave)
+            throws IOException {
         String stamp = new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date());
-        File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
         dir.mkdirs();
         Result r = new Result();
         r.zip = new File(dir, "SvR2011-report-" + stamp + ".zip");

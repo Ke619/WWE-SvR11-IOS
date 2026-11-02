@@ -24,6 +24,7 @@
 #include "mod_check.h"
 #include "tool_run.h"
 #include "../launcher/report_send.h"
+#include "../launcher/update_log.h"
 
 #ifndef PORT_VERSION
 #define PORT_VERSION "dev"
@@ -660,8 +661,10 @@ void SendReport(const std::wstring& zip, bool test) {
       }
       break;
     }
+    char upd[600] = "";
+    if (!g_game.empty()) update_log_last(g_game.c_str(), upd, sizeof upd);  // (the game folder's updates: update_log.h)
     char* json = report_json("modmaker", PORT_VERSION, problem.c_str(), happens.c_str(), what.c_str(), before.c_str(),
-                             contact.c_str(), sig.c_str());
+                             contact.c_str(), sig.c_str(), upd);
     ReportUpload u{};
     u.json = json;
     u.zip = zip.c_str();
@@ -752,6 +755,15 @@ void PastePicture() {
   AddPicture(out.wstring());
 }
 
+// The window closed: the report's zip goes (reports are sent, not kept for posting - the Discord gets no zips).
+void DropReport() {
+  if (!g_made.empty()) {
+    std::error_code ec;
+    fs::remove(g_made, ec);
+  }
+  g_made.clear(), g_sent_done = false;
+}
+
 void Window() {
   if (g_open) ImGui::OpenPopup("Report a problem"), g_open = false;
   ImGui::SetNextWindowSize(ImVec2(620 * g_scale, 0), ImGuiCond_Always);  // (the height fits each page)
@@ -818,12 +830,6 @@ void Window() {
       g_sent_done = false;
       StartReport(g_description, false, true);
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Save zip")) {
-      g_description = Describe();
-      g_sent_done = false;
-      StartReport(g_description, false);
-    }
     ImGui::EndDisabled();
     if (!said && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Say what happened first.");
     ImGui::SameLine();
@@ -833,34 +839,29 @@ void Window() {
     if (g_sent.seen_before > 0)
       ImGui::TextWrapped("This problem was already reported %d time%s - yours adds to it, thank you.", g_sent.seen_before,
                          g_sent.seen_before == 1 ? "" : "s");
-    ImGui::TextWrapped("If you post about it on our Discord (bug-svr11 forum), give this id. A copy is kept here:");
-    ImGui::TextWrapped("%s", Utf8(g_made).c_str());
+    ImGui::TextWrapped("If you post about it on our Discord (bug-svr11 forum), give this id.");
     ImGui::Spacing();
     if (ImGui::Button("Copy the id")) ImGui::SetClipboardText(g_sent.id);
     ImGui::SameLine();
-    if (ImGui::Button("Open the folder")) ShellOpen(fs::path(g_made).parent_path().wstring());
-    ImGui::SameLine();
     if (ImGui::Button("Close")) {
-      g_made.clear(), g_what[0] = g_before[0] = 0, g_pics.clear(), g_sent_done = false;
+      DropReport(), g_what[0] = g_before[0] = 0, g_pics.clear();
       ImGui::CloseCurrentPopup();
     }
   } else {
-    if (g_sent_done)
-      ImGui::TextColored(ImVec4(0.9f, 0.4f, 0.3f, 1), "Not sent: %s", Utf8(std::wstring(g_sent.why)).c_str());
-    ImGui::TextWrapped("The report is ready:");
-    ImGui::TextWrapped("%s", Utf8(g_made).c_str());
+    // (not sent: only sending - the report isn't saved for posting elsewhere)
+    ImGui::PushTextWrapPos(0);  // (the server's reason can be long)
+    ImGui::TextColored(ImVec4(0.9f, 0.4f, 0.3f, 1), "Not sent: %s",
+                       g_sent_done ? Utf8(std::wstring(g_sent.why)).c_str() : "the report wasn't made.");
+    ImGui::PopTextWrapPos();
+    ImGui::TextWrapped("Check that you're online, then try again.");
     ImGui::Spacing();
-    ImGui::TextWrapped("Post it in a new thread in the Discord's bug-svr11 forum: attach the zip and paste the "
-                       "description (Copy the description).");
-    ImGui::Spacing();
-    if (ImGui::Button("Open the folder")) ShellOpen(fs::path(g_made).parent_path().wstring());
-    ImGui::SameLine();
-    if (ImGui::Button("Copy the description")) ImGui::SetClipboardText(g_description.c_str());
-    ImGui::SameLine();
-    if (ImGui::Button("Open Discord")) ShellOpen(L"https://discord.com/invite/QhGSuDKHwk");
+    if (ImGui::Button("Try again")) {
+      g_sent_done = false;
+      SendReport(g_made, false);
+    }
     ImGui::SameLine();
     if (ImGui::Button("Close")) {
-      g_made.clear(), g_what[0] = g_before[0] = 0, g_pics.clear(), g_sent_done = false;
+      DropReport(), g_what[0] = g_before[0] = 0, g_pics.clear();
       ImGui::CloseCurrentPopup();
     }
   }

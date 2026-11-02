@@ -772,7 +772,7 @@ int report_make_match(const WCHAR *game_dir, const WCHAR *version, const char *d
         sprintf_s(info, sizeof info,
                   "SvR 2011 PC port problem report\r\nlauncher version: %ls\r\nWindows: %lu.%lu.%lu\r\n"
                   "made: %04d-%02d-%02d %02d:%02d:%02d\r\n"
-                  "contents: the newest game logs (logs/), crash reports (crashes/), svr2011.toml "
+                  "contents: the newest game logs (logs/, with updater.log: the updates and repairs), crash reports (crashes/), svr2011.toml "
                   "(account token and password removed), saves_check.txt (the Created Superstar saves' "
                   "checksums, not the saves), mods_text.txt (the superstar mods' text files), with its tick save/ "
                   "(the main save SaveData.dat - no Created Superstars or Paint Tool); "
@@ -797,6 +797,7 @@ int report_make_match(const WCHAR *game_dir, const WCHAR *version, const char *d
     swprintf_s(sub, MAX_PATH, L"%s\\logs", game_dir);
     *logs = add_logs(&z, sub, 16u << 20);
     add_newest(&z, sub, L"matchbox_*.txt", 3, "logs", 1u << 20);  /* (the last matches' black boxes: match_box.h) */
+    add_newest(&z, sub, L"updater.log", 1, "logs", 1u << 20);  /* (updates, repairs, file checks: update_log.h) */
     swprintf_s(sub, MAX_PATH, L"%s\\UserData\\crashes", game_dir);
     *crashes = add_newest(&z, sub, L"crash_*.txt", 3, "crashes", 1u << 20);
     add_settings(&z, game_dir);

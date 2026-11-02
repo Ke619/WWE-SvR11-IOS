@@ -121,6 +121,12 @@ public class LauncherActivity extends Activity {
         addPage(tabRow, content, "Install", install.view(), install::refresh);
         String tab = getIntent().getStringExtra("tab");
         select(Math.max(0, tab == null ? 0 : names_.indexOf(tab)));
+        // Tests (adb: am start --es svr2011_test 1): reports go only to a test server (ReportSend.refuses);
+        // --es report_send <answers file> sends one with no window (ReportForm.testSend).
+        ReportSend.testRun = getIntent().getStringExtra("svr2011_test") != null;
+        ReportSend.allowLive = "1".equals(getIntent().getStringExtra("svr2011_allow_live"));
+        String reportSend = getIntent().getStringExtra("report_send");
+        if (reportSend != null) ReportForm.testSend(this, new java.io.File(reportSend));
         // The shaders from this APK into the game folder (when it's newer).
         if (InstallActivity.installed()) background(() -> Shaders.install(this), null);
         if (getPreferences(MODE_PRIVATE).getBoolean("check_updates", true)) checkUpdates(false);
@@ -390,8 +396,8 @@ public class LauncherActivity extends Activity {
         lp.topMargin = dp(18);
         c.addView(play, lp);
 
-        // Report a problem: what happened (ReportForm), then a zip of the logs,
-        // crash reports and settings in Download, posted on the Discord.
+        // Report a problem: what happened (ReportForm), sent to the online server
+        // with the logs, crash reports, settings, a recorded match and pictures.
         Button report = button("Report a problem…", kBackground);
         report.setOnClickListener(v -> ReportForm.show(this));
         LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,

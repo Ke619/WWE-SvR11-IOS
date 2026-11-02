@@ -11,6 +11,7 @@ the "Report a problem" zip (launcher `report.c`, `SvR2011 Launcher.exe --report
 | `report.txt` | the player's words, then the launcher version, Windows version, date |
 | `logs/` | the newest game's log parts (repeated fault lines condensed) and the two games before |
 | `crashes/` | the three newest crash reports (host stack, guest registers) |
+| `logs/updater.log` | the updater's runs (each step of an update / repair and how it ended) and the launcher's update and file-check messages (`update_log.h`; its last result also goes in report.json as `updater`) |
 | `svr2011.toml` | the settings, account token and password removed |
 | `saves_check.txt` | each `NNCreateSuperStar.cas`: size, save slot, the attires with a picture, its three checksums and SaveData.dat's copy for its slot, "agree" or "DON'T AGREE"; SaveData.dat's own checksum. Never the saves |
 | `mods_text.txt` | each superstar mod's `manifest.txt`, `moves.txt` and `threads.txt` (64 KB each, 512 KB in all). Never models or pictures |

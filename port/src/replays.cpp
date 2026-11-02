@@ -256,8 +256,9 @@ REX_HOOK_RAW(sub_821DC110) {
 REX_EXTERN(__imp__sub_8225DC88);
 REX_HOOK_RAW(sub_8225DC88) {
   const uint32_t obj = ctx.r3.u32;
-  // (guest 0xE0000000 and up - the block heap's physical pages - sit 4 KB further on the host)
-  auto at = [&](uint32_t a) { return Rd32(base + a + (a >= 0xE0000000u ? 0x1000u : 0u)); };
+  // (guest 0xE0000000 and up - the block heap's physical pages - sit 4 KB further on the host on Windows only, as the
+  // game's own loads)
+  auto at = [&](uint32_t a) { return Rd32(base + a + REX_PHYS_HOST_OFFSET(a)); };
   const uint32_t h1 = obj ? at(obj + 132) : 0, h2 = obj ? at(obj + 140) : 0;
   static const int test_gone = [] { const char* v = std::getenv("SVR2011_TEST_REPLAY_GONE"); return v ? std::atoi(v) : 0; }();
   static int lookups = 0;

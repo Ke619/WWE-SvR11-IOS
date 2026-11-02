@@ -48,8 +48,10 @@
 #include "generated/default/svr2011_init.h"
 
 namespace {
-// (guest 0xE0000000 and up - physical pages, where the heap's regions are - sit 4 KB further on the host)
-uint8_t* At(uint8_t* base, uint32_t a) { return base + a + (a >= 0xE0000000u ? 0x1000u : 0u); }
+// (guest 0xE0000000 and up - physical pages, where the heap's regions are - sit 4 KB further on the host on Windows,
+// not on Android / Linux: the game's own loads' offset, REX_PHYS_HOST_OFFSET. A fixed 0x1000 there read and wrote
+// 4 KB off - the guard's "overwritten" blocks were game data, and its mending wrote over it: 2 Nov Fold / A51 freeze)
+uint8_t* At(uint8_t* base, uint32_t a) { return base + a + REX_PHYS_HOST_OFFSET(a); }
 uint32_t Rd32(const uint8_t* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; }
 void Wr32(uint8_t* p, uint32_t v) {
   p[0] = uint8_t(v >> 24), p[1] = uint8_t(v >> 16), p[2] = uint8_t(v >> 8), p[3] = uint8_t(v);

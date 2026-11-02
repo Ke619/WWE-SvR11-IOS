@@ -16,6 +16,7 @@
 // count and longest, and which entries the waits were for. The ping indicator
 // (fps_overlay.cpp) reads NetStatsNow().
 #include "net_stats.h"
+#include "online.h"
 
 #include <algorithm>
 #include <array>
@@ -134,7 +135,10 @@ REX_HOOK_RAW(sub_82893BD0) {
     g_last_sample_ms = NowMs();
     if (now - g_window_start >= std::chrono::seconds(5)) Report(now);
   }
-  __imp__sub_82893BD0(ctx, base);
+  {
+    svr2011::OnlineCpuPadScope pads(base, obj);  // (online.h: a human in a slot past the CPUs')
+    __imp__sub_82893BD0(ctx, base);
+  }
   if (FILE* f = InputLog(); f && obj) {  // (the input just sent: the local entry's +48)
     const uint8_t* o = base + obj;
     for (uint32_t k = 0; k < std::min(Rd32(o + kCount), kMaxEntries); ++k)
@@ -149,7 +153,10 @@ REX_HOOK_RAW(sub_82893BD0) {
 // - for measuring how many frames a press takes to apply, locally and remotely.
 REX_EXTERN(__imp__sub_82893E18);
 REX_HOOK_RAW(sub_82893E18) {
-  __imp__sub_82893E18(ctx, base);
+  {
+    svr2011::OnlineCpuPadScope pads(base, ctx.r3.u32);  // (online.h)
+    __imp__sub_82893E18(ctx, base);
+  }
   FILE* f = InputLog();
   const uint32_t obj = Rd32(base + kNetObject);
   if (!f || !obj) return;

@@ -124,7 +124,7 @@ Settings are saved in `svr2011.toml` in the game folder (the app's **Documents**
 |---|---|
 | Native renderer, 60 fps | ✅ Working |
 | Touch controls | ✅ Working |
-| Saves as plain files | ✅ Working |
+| Save manager | ⚠️ Working, Not available in the Launcher yet |
 | Wide-screen matches and entrances | ✅ Working |
 | Entrance movies | ⚠️ Working only for `.svrmods` (Can't manually import yet from the Launcher) |
 | DLC | ✅ Working |

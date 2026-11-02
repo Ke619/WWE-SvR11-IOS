@@ -41,6 +41,7 @@
 #include "generated/default/svr2011_init.h"
 #include "match_hud.h"
 #include "match_types.h"
+#include "../modmaker/svrfmt/bytes.h"
 
 namespace {
 
@@ -49,11 +50,8 @@ constexpr uint32_t kState = 446, kLost = 447, kBeatenBy = 448, kTeam = 1800, kRo
 constexpr uint32_t kOpponents = 1;  // (their team; player 1's is 0)
 constexpr uint32_t kBusy = 476;  // (0 once a beaten character has left - the Royal Rumble's test before it unloads one)
 
-uint32_t Rd32(const uint8_t* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; }
+using svrfmt::Rd32, svrfmt::Wr32;
 uint32_t Rd16(const uint8_t* p) { return uint32_t(p[0]) << 8 | p[1]; }
-void Wr32(uint8_t* p, uint32_t v) {
-  p[0] = uint8_t(v >> 24), p[1] = uint8_t(v >> 16), p[2] = uint8_t(v >> 8), p[3] = uint8_t(v);
-}
 
 int64_t NowMs() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(

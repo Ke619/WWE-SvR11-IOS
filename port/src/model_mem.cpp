@@ -33,6 +33,7 @@
 #include "fps_overlay.h"
 #include "mem_trace.h"
 #include "generated/default/svr2011_init.h"
+#include "../modmaker/svrfmt/bytes.h"
 
 namespace {
 std::mutex g_mutex;
@@ -84,7 +85,7 @@ bool g_block_held[2] = {};      // (the reserves in place)
 uint32_t g_block_ptr[2] = {};   // (the block heap's blocks now, from XMemAlloc: given back to the reserves when freed)
 std::atomic<bool> g_blocks_all{false};  // (every window held or in the block heap's use: nothing to try)
 thread_local bool t_block_request = false;  // (inside the block heap's XMemAlloc)
-uint32_t Rd32(const uint8_t* base, uint32_t a);  // (below)
+using svrfmt::Rd32;
 
 bool BlockReserveOn() {
   static const bool on = std::getenv("SVR2011_TEST_BLOCKHEAP_RESERVE_OFF") == nullptr;
@@ -394,11 +395,6 @@ REX_HOOK_RAW(sub_8215A380) {
 // cache finds no room for a request of at least that size (the hang, on purpose).
 namespace {
 constexpr uint32_t kLoaderCache = 0x82ED5FE8;
-
-uint32_t Rd32(const uint8_t* base, uint32_t a) {
-  const uint8_t* p = base + a;
-  return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3];
-}
 
 std::string GuestName(const uint8_t* base, uint32_t a) {
   std::string s;

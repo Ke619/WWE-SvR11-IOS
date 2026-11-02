@@ -43,6 +43,7 @@
 #include "pad_types.h"
 
 #include "generated/default/svr2011_init.h"
+#include "../modmaker/svrfmt/bytes.h"
 
 namespace {
 
@@ -75,14 +76,7 @@ const bool g_no_grab = g_roof_env && std::strcmp(g_roof_env, "nograb") == 0;
 // (=cart: the button cycle starts 5 seconds in)
 const bool g_cart_now = g_roof_env && std::strcmp(g_roof_env, "cart") == 0;
 
-uint32_t Rd32(const uint8_t* p) { return uint32_t(p[0]) << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
-float RdF(const uint8_t* p) {
-  const uint32_t v = Rd32(p);
-  float f;
-  std::memcpy(&f, &v, 4);
-  return f;
-}
-
+using svrfmt::Rd32, svrfmt::RdF, svrfmt::Wr32, svrfmt::WrF;
 // (at most n lines a second per site)
 bool Allow(int& budget, std::chrono::steady_clock::time_point& t0, int n = 4) {
   const auto now = std::chrono::steady_clock::now();
@@ -132,7 +126,6 @@ bool HctpRoomActive() {
 // The HCTP room number (hctp=30 the Back Entrance) - its cage rules use room 30's places.
 int HctpRoom();
 
-void WrF(uint8_t* p, float f);
 
 void Climb(PPCContext& ctx, uint8_t* base, uint32_t f) {
   int slot = -1;
@@ -379,14 +372,6 @@ struct FighterState {
 };
 FighterState g_fs[8];
 
-void WrF(uint8_t* p, float f) {
-  uint32_t v;
-  std::memcpy(&v, &f, 4);
-  p[0] = uint8_t(v >> 24), p[1] = uint8_t(v >> 16), p[2] = uint8_t(v >> 8), p[3] = uint8_t(v);
-}
-void Wr32(uint8_t* p, uint32_t v) {
-  p[0] = uint8_t(v >> 24), p[1] = uint8_t(v >> 16), p[2] = uint8_t(v >> 8), p[3] = uint8_t(v);
-}
 
 std::vector<int> Ints(const std::string& s) {
   std::vector<int> out;

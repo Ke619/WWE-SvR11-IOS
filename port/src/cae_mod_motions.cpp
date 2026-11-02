@@ -31,6 +31,7 @@
 #include "superstar_mods.h"
 
 #include "generated/default/svr2011_init.h"
+#include "../modmaker/svrfmt/bytes.h"
 
 namespace {
 
@@ -47,16 +48,7 @@ uint32_t g_picked = 0;                   // the superstar last picked in a selec
 thread_local bool t_loading = false;     // the full editor loading a stored entrance (CaeLoadingEntrance)
 thread_local bool t_scene_default = false;  // (its last scene motion was the mod's own default: its lighting is too)
 
-uint32_t Rd32(uint8_t* base, uint32_t a) {
-  uint32_t v;
-  std::memcpy(&v, base + a, 4);
-  return __builtin_bswap32(v);
-}
-uint16_t Rd16(uint8_t* base, uint32_t a) { return uint16_t(base[a] << 8 | base[a + 1]); }
-void Wr32(uint8_t* base, uint32_t a, uint32_t v) {
-  v = __builtin_bswap32(v);
-  std::memcpy(base + a, &v, 4);
-}
+using svrfmt::Rd32, svrfmt::Rd16, svrfmt::Wr32;
 
 uint32_t Text(const std::string& label) {  // (g_mutex held)
   if (auto it = g_text.find(label); it != g_text.end()) return it->second;

@@ -30,6 +30,7 @@
 
 #include "generated/default/svr2011_init.h"
 #include "superstar_mods.h"
+#include "../modmaker/svrfmt/bytes.h"
 
 REXCVAR_DEFINE_BOOL(managers_tile, true, "Gameplay",
                     "Character select: the \"?\" tile opens the managers (Paul Bearer, The Hurricane, ...) "
@@ -47,14 +48,7 @@ constexpr uint32_t kListIndex = 5228, kListMode = 28916;
 constexpr uint32_t kLists = 8116, kListSize = 2580, kManagerList = 7, kMasterList = 6;
 constexpr uint32_t kTileKindRandom = 4;
 
-uint32_t Rd32(const uint8_t* base, uint32_t a) {
-  const uint8_t* p = base + a;
-  return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3];
-}
-void Wr32(uint8_t* base, uint32_t a, uint32_t v) {
-  uint8_t* p = base + a;
-  p[0] = uint8_t(v >> 24), p[1] = uint8_t(v >> 16), p[2] = uint8_t(v >> 8), p[3] = uint8_t(v);
-}
+using svrfmt::Rd32, svrfmt::Wr32;
 
 // Fills the list at `list` (count, ids, enable flags) with the managers.
 void FillManagers(uint8_t* base, uint32_t list) {

@@ -36,6 +36,7 @@
 #include "arena_mods.h"
 #include "debug_suite/debug_suite.h"
 #include "script_input.h"
+#include "../../modmaker/svrfmt/bytes.h"
 
 REXCVAR_DEFINE_STRING(dbg_boot, "", "Debug",
                       "SVRDBG: start straight in: match (dbg_match's), a page (caw, threads, cae, options, "
@@ -56,10 +57,7 @@ constexpr uint32_t kIdToIndex = 0x82DB3610, kRecords = 0x82E407C0, kRecordSize =
 constexpr uint32_t kSelectable = 221;
 
 uint32_t Rd16(const uint8_t* p) { return uint32_t(p[0]) << 8 | p[1]; }
-uint32_t Rd32(const uint8_t* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; }
-void Wr32(uint8_t* p, uint32_t v) {
-  p[0] = uint8_t(v >> 24), p[1] = uint8_t(v >> 16), p[2] = uint8_t(v >> 8), p[3] = uint8_t(v);
-}
+using svrfmt::Rd32, svrfmt::Wr32;
 
 struct Match {
   std::vector<std::string> people;

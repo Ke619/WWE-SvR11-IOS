@@ -23,6 +23,7 @@
 #include "frame_rate.h"
 #include "graphics_page.h"
 #include "keyboard_typing.h"
+#include "../modmaker/svrfmt/bytes.h"
 
 REXCVAR_DEFINE_INT32(match_camera, 0, "UI",
                      "The match camera: 0 NORMAL, 1 FAR, 2 CLOSE, 3 HIGH, 4 LOW, 5 RAMP (ring matches; BACK + R3 / F4 cycle it)");
@@ -32,18 +33,7 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
-uint32_t Rd32(const uint8_t* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; }
-float RdF(const uint8_t* p) {
-  const uint32_t v = Rd32(p);
-  float f;
-  std::memcpy(&f, &v, 4);
-  return f;
-}
-void WrF(uint8_t* p, float f) {
-  uint32_t v;
-  std::memcpy(&v, &f, 4);
-  p[0] = uint8_t(v >> 24), p[1] = uint8_t(v >> 16), p[2] = uint8_t(v >> 8), p[3] = uint8_t(v);
-}
+using svrfmt::Rd32, svrfmt::RdF, svrfmt::WrF;
 
 struct V3 {
   float x = 0, y = 0, z = 0;

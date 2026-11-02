@@ -54,25 +54,12 @@
 
 #include "generated/default/svr2011_init.h"
 #include "pad_types.h"
+#include "../modmaker/svrfmt/bytes.h"
 
 namespace svr2011 {
 namespace {
 
-uint32_t Rd32(const uint8_t* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; }
-uint16_t Rd16(const uint8_t* p) { return uint16_t(p[0] << 8 | p[1]); }
-void Wr32(uint8_t* p, uint32_t v) { p[0] = uint8_t(v >> 24), p[1] = uint8_t(v >> 16), p[2] = uint8_t(v >> 8), p[3] = uint8_t(v); }
-void Wr16(uint8_t* p, uint16_t v) { p[0] = uint8_t(v >> 8), p[1] = uint8_t(v); }
-float RdF(const uint8_t* p) {
-  const uint32_t u = Rd32(p);
-  float f;
-  std::memcpy(&f, &u, 4);
-  return f;
-}
-void WrF(uint8_t* p, float f) {
-  uint32_t u;
-  std::memcpy(&u, &f, 4);
-  Wr32(p, u);
-}
+using svrfmt::Rd32, svrfmt::Rd16, svrfmt::RdF, svrfmt::Wr32, svrfmt::Wr16, svrfmt::WrF;
 
 constexpr uint32_t kGlyph = 24;
 constexpr uint32_t kFirstCode = 0xE000;
@@ -1167,6 +1154,7 @@ REX_HOOK_RAW(sub_8244D158) {
 // D3DDevice_SetTexture(device, sampler, texture object), on the render
 // thread: pictures shared by everyone follow the players' controllers when
 // they all use the same kind.
+#ifndef SVR2011_D3D_TRACE  // (the census build hooks it to count calls)
 REX_EXTERN(__imp__sub_82917EC8);
 REX_HOOK_RAW(sub_82917EC8) {
   using namespace svr2011;
@@ -1193,5 +1181,6 @@ REX_HOOK_RAW(sub_82917EC8) {
   }
   __imp__sub_82917EC8(ctx, base);
 }
+#endif
 
 

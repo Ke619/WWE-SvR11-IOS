@@ -57,6 +57,7 @@
 #include <rex/ui/imgui_dialog.h>
 
 #include "generated/default/svr2011_init.h"
+#include "../modmaker/svrfmt/bytes.h"
 
 namespace {
 
@@ -182,13 +183,7 @@ int TakeKey() {
   return k && NowMs() - g_key_at.load() < 500 ? k : 0;
 }
 
-uint32_t Rd32(const uint8_t* base, uint32_t a) {
-  const uint8_t* p = base + a;
-  return uint32_t(p[0]) << 24 | p[1] << 16 | p[2] << 8 | p[3];
-}
-void Wr32(uint8_t* base, uint32_t a, uint32_t v) {
-  base[a] = uint8_t(v >> 24), base[a + 1] = uint8_t(v >> 16), base[a + 2] = uint8_t(v >> 8), base[a + 3] = uint8_t(v);
-}
+using svrfmt::Rd32, svrfmt::Wr32;
 void Wr16(uint8_t* base, uint32_t a, uint32_t v) { base[a] = uint8_t(v >> 8), base[a + 1] = uint8_t(v); }
 
 // A game function with these arguments (r3...), on a stack frame below the

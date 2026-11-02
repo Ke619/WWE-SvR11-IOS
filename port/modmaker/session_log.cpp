@@ -25,6 +25,7 @@
 #include "tool_run.h"
 #include "../launcher/report_send.h"
 #include "../launcher/update_log.h"
+#include "../launcher/report_receipts.h"
 
 #ifndef PORT_VERSION
 #define PORT_VERSION "dev"
@@ -671,7 +672,9 @@ void SendReport(const std::wstring& zip, bool test) {
     for (size_t i = 0; i < pics.size() && i < REPORT_MAX_IMAGES; ++i) u.images[i] = pics[i].c_str();
     u.n_images = int(std::min<size_t>(pics.size(), REPORT_MAX_IMAGES));
     ReportResult r{};
-    report_send(server.c_str(), &u, &r);
+    // (sent: its receipt kept for the launcher's Reports tab - the game folder's UserData\reports.json)
+    if (report_send(server.c_str(), &u, &r) && r.secret[0] && !g_game.empty())
+      receipt_add(g_game.c_str(), "modmaker", r.id, r.secret, problem.c_str(), what.c_str());
     std::free(json);
     OnUiThread([r, test] {
       g_sent = r;

@@ -42,6 +42,7 @@ typedef struct {
 typedef struct {
     int status;              /* the HTTP status (0: no answer - offline, no server) */
     char id[64];             /* the report's id on the server */
+    char secret[80];         /* its receipt (report_receipts.h keeps it: the Reports tab asks with it), "" if none */
     int seen_before;         /* earlier reports of the same problem (the server's signature) */
     WCHAR why[300];          /* when it failed: what to show */
     int match_stored;        /* the server kept the match */

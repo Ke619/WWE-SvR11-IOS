@@ -2029,7 +2029,8 @@ class Service:
     async def api_report(self, request):
         """multipart: report (JSON), zip (optional), image0-image4 (optional png / jpg / webp), match (the match
         folder's zip, optional), mod0..modN (a mod's zip each, named <content hash>.zip: only those the check
-        asked for) -> {ok, id, signature, seen_before, match, mods_stored, mods_refused}"""
+        asked for) -> {ok, id, secret (the sender's receipt: its Reports list asks with it), signature, seen_before,
+        match, mods_stored, mods_refused}"""
         def no(status, why):
             return web.json_response({"ok": False, "error": why}, status=status)
         length = request.content_length
@@ -2144,13 +2145,105 @@ class Service:
                    "seen %d before" % (got["id"], meta["app"], meta["version"], meta["problem"], len(zip_bytes) >> 10,
                                        len(images), len(match_bytes) >> 10, len(mod_files), len(stored),
                                        got["signature"], got["seen_before"]))
-            return web.json_response({"ok": True, "id": got["id"], "signature": got["signature"],
+            return web.json_response({"ok": True, "id": got["id"], "secret": got.get("secret", ""),
+                                      "signature": got["signature"],
                                       "seen_before": got["seen_before"], "match": bool(match_bytes),
                                       "mods_stored": stored, "mods_refused": refused})
         finally:
             for path in mod_files.values():
                 if os.path.exists(path):
                     os.remove(path)
+
+    STATUS_LIMIT = (600, 60)  # receipt lookups per IP: 60 in 10 minutes (a launcher asks when its tab opens)
+
+    async def api_report_status(self, request):
+        """{"reports": [{"id", "secret"}, ...]} (100 at most; signed in: the account's other reports too) ->
+        {ok, reports: [{id, state, received, app, problem, what, note, version, question, date, replies,
+        from_account}]} - state: received / looking / fixed / needs_info / replied / done / duplicate / unknown
+        (no such report, or not its secret). Never another report, never the logs, zip, pictures or contact."""
+        t, q = now(), self.check_times["status:" + self.client_ip(request)]
+        while q and q[0] < t - self.STATUS_LIMIT[0]:
+            q.popleft()
+        if len(q) >= self.STATUS_LIMIT[1]:
+            return web.json_response({"ok": False, "error": "Too many lookups from here - try again later."}, status=429)
+        q.append(t)
+        try:
+            receipts = (await request.json()).get("reports")
+        except (ValueError, AttributeError):
+            return web.json_response({"ok": False, "error": "Send {\"reports\": [{\"id\", \"secret\"}]} as JSON."},
+                                     status=400)
+        if not isinstance(receipts, list):
+            return web.json_response({"ok": False, "error": "reports: a list"}, status=400)
+        account = self.raw_account(request)  # (a blocked account still owns its reports)
+        try:
+            rows = await asyncio.get_running_loop().run_in_executor(
+                None, self.reports.status, receipts[:reports.MAX_STATUS_IDS], account["name"] if account else None)
+        except Exception:
+            return web.json_response({"ok": False, "error": "The report store didn't answer - try again later."},
+                                     status=503)
+        return web.json_response({"ok": True, "reports": rows})
+
+    async def api_report_reply(self, request):
+        """multipart: report (JSON {id, secret, text}), image0-image2 (optional) -> {ok} / {ok: false, error}: the
+        sender's answer to a question we asked (needs_info). Rate-limited as reports, through the name filter."""
+        def no(status, why):
+            return web.json_response({"ok": False, "error": why}, status=status)
+        if (request.content_length or 0) > reports.MAX_REPLY_IMAGES * reports.MAX_IMAGE + (1 << 20):
+            return no(413, "The answer is too large (pictures: %d MB each)." % (reports.MAX_IMAGE >> 20))
+        meta, images = None, {}
+        try:
+            reader = await request.multipart()
+            while True:
+                part = await reader.next()
+                if part is None:
+                    break
+                name = part.name or ""
+                cap = (64 << 10 if name in ("report", "report.json") else
+                       reports.MAX_IMAGE if re.fullmatch(r"image[0-%d]" % (reports.MAX_REPLY_IMAGES - 1), name) else 0)
+                if not cap:
+                    await part.release()
+                    continue
+                data = bytearray()
+                while True:
+                    chunk = await part.read_chunk(1 << 16)
+                    if not chunk:
+                        break
+                    data += chunk
+                    if len(data) > cap:
+                        return no(413, "%s is too large." % name)
+                if name in ("report", "report.json"):
+                    try:
+                        meta = json.loads(bytes(data).decode("utf-8-sig"))
+                    except ValueError:
+                        return no(400, "report: not valid JSON")
+                else:
+                    images[int(name[5:])] = bytes(data)
+        except (ValueError, AssertionError, KeyError):
+            return no(400, "Send it as multipart/form-data.")
+        if not isinstance(meta, dict):
+            return no(400, "No report part.")
+        text = str(meta.get("text") or "").replace("\r\n", "\n").strip()[:reports.MAX_REPLY]
+        if not text and not images:
+            return no(400, "Write an answer first.")
+        for n, img in sorted(images.items()):
+            if not reports.image_ext(img):
+                return no(400, "image%d: only PNG, JPEG or WebP pictures." % n)
+        if text and self.names.check(text):
+            return no(400, "Your answer has a word that isn't allowed - please write it without it.")
+        ip = self.client_ip(request)
+        account = self.raw_account(request)
+        if self.report_throttled(["reply:" + ip] + (["reply-acc:%d" % account["id"]] if account else [])):
+            return no(429, "Too many answers from here - try again later.")
+        try:
+            ok, why = await asyncio.get_running_loop().run_in_executor(
+                None, self.reports.reply, str(meta.get("id") or ""), meta.get("secret"), text,
+                [images[n] for n in sorted(images)], account["name"] if account else None)
+        except Exception:
+            return no(503, "The report store didn't answer - try again later.")
+        if not ok:
+            return no(404 if why == "No such report." else 409, why)
+        gs.log("reports: %s answered (%d chars, %d pictures)" % (meta.get("id"), len(text), len(images)))
+        return web.json_response({"ok": True})
 
     @admin_only
     async def admin_reports(self, request):
@@ -2992,6 +3085,8 @@ class Service:
         app.router.add_get(b + "/api/mods/{id}/img/{n}", self.api_mod_image)
         app.router.add_post(b + "/api/reports", self.api_report)
         app.router.add_post(b + "/api/reports/mods/check", self.api_report_mods_check)
+        app.router.add_post(b + "/api/reports/status", self.api_report_status)
+        app.router.add_post(b + "/api/reports/reply", self.api_report_reply)
         self.relay.routes(app, b)
         app.router.add_get("/__health", self.health)
         app.router.add_get(b + "/api/storage/wanted", self.api_storage_wanted)  # (the storage node's watchdog)

@@ -282,6 +282,20 @@ location = /svr/api/reports {
     client_max_body_size 400m;
 }
 
+# a player's answer to a report's question (POST /svr/api/reports/reply): text and up to three 8 MB pictures
+location = /svr/api/reports/reply {
+    proxy_pass http://127.0.0.1:8101;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Portal-Role "";
+    proxy_set_header X-Portal-Public "";
+    proxy_set_header X-Portal-User "";
+    proxy_request_buffering off;
+    client_max_body_size 30m;
+}
+
 # entrance songs and movies are larger (--max-music-mb 512, --max-movie-mb 1024)
 location = /svr/api/media {
     proxy_pass http://127.0.0.1:8101;

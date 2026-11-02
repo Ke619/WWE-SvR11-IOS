@@ -4,11 +4,18 @@ Each one is kept where the Community Creations bytes live (here, or the storage 
 there as plain files:
     <data>/reports/<yyyy-mm-dd>/<id>/report.json, report.zip, image0.png ...
     <data>/reports/index.jsonl     (one line per report: the dashboard's list, and the duplicates' counts)
-    <data>/reports/status.json     (id -> done / duplicate, or {status: fixed, note, commit, version, date}: the
-                                    dashboard's marks; `python reports.py mark ...` writes them too - see main())
+    <data>/reports/status.json     (id -> done / duplicate / looking, {status: fixed, note, commit, version, date},
+                                    {status: needs_info / replied, question, date}: the dashboard's marks;
+                                    `python reports.py mark ...` writes them too - see main())
+    <data>/reports/<yyyy-mm-dd>/<id>/replies.jsonl, reply<n>_<k>.png   (the player's answers to a question)
     <data>/reports/<yyyy-mm-dd>/<id>/match.zip   (the game's match folder: logs/matches/<date>_<people>/)
     <data>/reports/mods/<content hash>.svrmod    (the mods used in that match, each kept once for every report)
 The sender's address is never stored (the core keeps it in memory for its rate limit only).
+
+Receipts: each report gets a random secret, returned once to the client that sent it (it keeps id + secret in
+UserData\reports.json); only its SHA-256 is stored. With id + secret a client asks for its reports' public state
+(POST /api/reports/status: state, the fixed note and version, a question) and answers a question
+(POST /api/reports/reply) - never another report, never the private parts (logs, zip, pictures, contact).
 
 Mods: the client asks first which it needs to send (POST /api/reports/mods/check), then sends only those, each as
 a zip of its folder (an .svrmod) named by its CONTENT hash: SHA-256 over the folder's files sorted by their
@@ -41,8 +48,20 @@ MAX_NEW_MOD_BYTES = 300 << 20  # the mods sent with one report
 MAX_MODS = 64                # mods listed in one report
 MOD_QUOTA = 20 << 30         # every report's mods together (the node's --report-mod-quota-gb)
 FIELDS = ("format", "app", "version", "platform", "os", "problem", "happens", "what", "before", "contact", "updater")
-STATUSES = ("", "done", "duplicate", "fixed")
+STATUSES = ("", "done", "duplicate", "fixed", "looking", "needs_info", "replied")
 FIX_FIELDS = {"note": 1000, "commit": 40, "version": 20, "date": 10}
+INFO_FIELDS = {"question": 1000, "date": 10}
+MAX_STATUS_IDS = 100          # receipts asked about in one status call
+MAX_REPLY = 2000              # a player's answer's text
+MAX_REPLY_IMAGES = 3
+MAX_REPLIES = 5               # answers kept for one report
+# (the player's words for each state - the launcher / Mod Maker / Android lists show these)
+STATES = {"": "received", "looking": "looking", "fixed": "fixed", "needs_info": "needs_info", "replied": "replied",
+          "done": "done", "duplicate": "duplicate"}
+
+
+def secret_hash(secret):
+    return hashlib.sha256(str(secret or "").encode("utf-8")).hexdigest()
 
 
 def clean_fix(raw):
@@ -54,10 +73,22 @@ def clean_fix(raw):
     return fix
 
 
+def clean_info(raw):
+    """A needs-info mark's details -> {question, date} (date: today)."""
+    raw = raw if isinstance(raw, dict) else {}
+    info = {k: str(raw.get(k) or "").replace("\r\n", "\n").strip()[:cap] for k, cap in INFO_FIELDS.items()}
+    if not re.fullmatch(r"\d{4}-\d\d-\d\d", info["date"]):
+        info["date"] = time.strftime("%Y-%m-%d")
+    return info
+
+
 def _mark_of(value):
-    """A status.json value -> (status, fix details or None); old marks are plain strings."""
+    """A status.json value -> (status, details or None): fixed {note, commit, version, date}, needs_info / replied
+    {question, date}; old marks are plain strings."""
     if isinstance(value, dict):
-        return str(value.get("status", "")), {k: value.get(k, "") for k in FIX_FIELDS}
+        status = str(value.get("status", ""))
+        fields = INFO_FIELDS if status in ("needs_info", "replied") else FIX_FIELDS
+        return status, {k: value.get(k, "") for k in fields}
     return str(value or ""), None
 
 
@@ -390,6 +421,7 @@ class LocalReports:
         match_bytes: the match folder's zip -> {id, signature, seen_before}"""
         sig, line = signature(meta, zip_bytes, match_bytes)
         received = time.time()
+        secret = secrets.token_urlsafe(18)  # (the sender's receipt: only its hash is kept)
         with self.lock:
             rid = time.strftime("%Y%m%d-%H%M%S", time.localtime(received)) + "-" + secrets.token_hex(3)
             folder = os.path.join(self.dir, _day(rid), rid)
@@ -414,12 +446,12 @@ class LocalReports:
             rec = dict(meta, id=rid, received=time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(received)),
                        received_at=round(received), signature=sig, signature_line=line, seen_before=seen,
                        zip_size=len(zip_bytes or b""), images=names, match=summary,
-                       match_size=len(match_bytes or b""))
+                       match_size=len(match_bytes or b""), secret_hash=secret_hash(secret))
             with open(os.path.join(folder, "report.json"), "w", encoding="utf-8") as f:
                 json.dump(rec, f, indent=2, ensure_ascii=False)
             row = {k: rec.get(k) for k in ("id", "received", "received_at", "app", "version", "platform", "problem",
                                            "happens", "signature", "signature_line", "seen_before", "zip_size",
-                                           "images", "account", "match", "match_size")}
+                                           "images", "account", "match", "match_size", "secret_hash")}
             row["mods"] = [{k: m[k] for k in ("hash", "name", "type", "id", "size", "stored")} for m in mods]
             row["what"] = meta.get("what", "")[:200]
             if meta.get("updater"):
@@ -427,7 +459,7 @@ class LocalReports:
             with open(self.index_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")
             self.counts[sig] = seen + 1
-        return {"id": rid, "signature": sig, "seen_before": seen}
+        return {"id": rid, "signature": sig, "seen_before": seen, "secret": secret}
 
     def list(self, limit=500):
         """The newest reports first (index lines + their dashboard marks + their signature's count)."""
@@ -435,16 +467,97 @@ class LocalReports:
             rows, marks, counts = self._rows(), self._status(), dict(self.counts)
         rows = rows[-limit:][::-1]
         for r in rows:
-            r["status"], fix = _mark_of(marks.get(r["id"]))
-            if fix:
-                r["fix"] = fix
+            r.pop("secret_hash", None)
+            r["status"], detail = _mark_of(marks.get(r["id"]))
+            if detail and r["status"] == "fixed":
+                r["fix"] = detail
+            elif detail:
+                r["info"] = detail
             r["count"] = counts.get(r.get("signature", ""), 1)
+            r["replies"] = len(self._replies(r["id"])) if r["status"] in ("needs_info", "replied") else 0
         return rows
+
+    # (the players' side: receipts)
+    def _replies(self, rid):
+        try:
+            with open(os.path.join(self.dir, _day(rid), rid, "replies.jsonl"), encoding="utf-8") as f:
+                return [json.loads(l) for l in f if l.strip()]
+        except (OSError, ValueError):
+            return []
+
+    def _public(self, row, mark):
+        """A report's public state for its sender: never its logs, zip, pictures, contact or signature."""
+        status, detail = _mark_of(mark)
+        out = {"id": row["id"], "state": STATES.get(status, "received"), "received": row.get("received", ""),
+               "app": row.get("app", ""), "problem": row.get("problem", ""), "what": (row.get("what") or "")[:160]}
+        if status == "fixed" and detail:
+            out.update(note=detail.get("note", ""), version=detail.get("version", ""), date=detail.get("date", ""))
+        elif status in ("needs_info", "replied") and detail:
+            out.update(question=detail.get("question", ""), date=detail.get("date", ""))
+        if status in ("needs_info", "replied"):
+            out["replies"] = len(self._replies(row["id"]))
+        return out
+
+    def status(self, receipts, account=None):
+        """[{id, secret}] (and, signed in, the account's name) -> the public state of each report whose secret
+        matches ({id, state: unknown} for the rest), then the account's other reports (from_account)."""
+        with self.lock:
+            rows = {r.get("id"): r for r in self._rows()}
+            marks = self._status()
+        out, seen = [], set()
+        for rc in (receipts if isinstance(receipts, list) else [])[:MAX_STATUS_IDS]:
+            if not isinstance(rc, dict):
+                continue
+            rid = str(rc.get("id") or "")
+            row = rows.get(rid) if _valid_id(rid) else None
+            if rid in seen:
+                continue
+            seen.add(rid)
+            if not row or not row.get("secret_hash") or not secrets.compare_digest(
+                    row["secret_hash"], secret_hash(rc.get("secret"))):
+                out.append({"id": rid[:40], "state": "unknown"})
+                continue
+            out.append(self._public(row, marks.get(rid)))
+        if account:
+            for rid, row in rows.items():
+                if rid not in seen and row.get("account") == account:
+                    out.append(dict(self._public(row, marks.get(rid)), from_account=True))
+        return out
+
+    def reply(self, rid, secret, text, images, account=None):
+        """The sender's answer to a question (needs_info / replied): kept in replies.jsonl (+ its pictures), the
+        mark becomes replied -> (True, "") or (False, why)."""
+        with self.lock:
+            row = next((r for r in self._rows() if r.get("id") == rid), None) if _valid_id(rid) else None
+            ok = bool(row and row.get("secret_hash") and secrets.compare_digest(row["secret_hash"], secret_hash(secret)))
+            if not ok and not (row and account and row.get("account") == account):
+                return False, "No such report."
+            marks = self._status()
+            status, detail = _mark_of(marks.get(rid))
+            if status not in ("needs_info", "replied"):
+                return False, "This report isn't waiting for an answer."
+            folder = os.path.join(self.dir, _day(rid), rid)
+            replies = self._replies(rid)
+            if len(replies) >= MAX_REPLIES:
+                return False, "This report has all the answers it can take - post on our Discord instead."
+            n = len(replies)
+            names = []
+            for k, img in enumerate(images[:MAX_REPLY_IMAGES]):
+                name = "reply%d_%d.%s" % (n, k, image_ext(img))
+                with open(os.path.join(folder, name), "wb") as f:
+                    f.write(img)
+                names.append(name)
+            with open(os.path.join(folder, "replies.jsonl"), "a", encoding="utf-8") as f:
+                f.write(json.dumps({"date": time.strftime("%Y-%m-%d %H:%M:%S"), "text": text[:MAX_REPLY],
+                                    "images": names}, ensure_ascii=False) + "\n")
+            marks[rid] = dict(detail or clean_info({}), status="replied")
+            self._write_status(marks)
+        return True, ""
 
     def file(self, rid, name):
         """One of a report's files (report.json, report.zip, imageN.ext) -> bytes or None."""
-        if not _valid_id(rid) or not re.fullmatch(r"(report|match)\.zip|report\.json|image[0-4]\.(png|jpg|webp)",
-                                                  name or ""):
+        if not _valid_id(rid) or not re.fullmatch(r"(report|match)\.zip|report\.json|image[0-4]\.(png|jpg|webp)|"
+                                                  r"replies\.jsonl|reply\d_\d\.(png|jpg|webp)", name or ""):
             return None
         try:
             with open(os.path.join(self.dir, _day(rid), rid, name), "rb") as f:
@@ -550,14 +663,18 @@ class LocalReports:
         os.replace(tmp, self.status_path)
 
     def mark(self, rid, status, fix=None):
-        """One report: done / duplicate / fixed (fix: {note, commit, version, date}) / '' (open again)."""
+        """One report: done / duplicate / looking / fixed (fix: {note, commit, version, date}) / needs_info (fix:
+        {question}) / '' (open again)."""
         return bool(self.mark_many(rid, status, fix))
 
     def mark_many(self, target, status, fix=None):
         """A report id, or a signature (every report with it) -> the ids marked ([] when none)."""
-        if status not in STATUSES:
+        if status not in STATUSES or status == "replied":  # (replied: only a player's answer sets it)
             return []
-        value = dict(clean_fix(fix), status="fixed") if status == "fixed" else status
+        if status == "needs_info" and not clean_info(fix)["question"]:
+            return []
+        value = (dict(clean_fix(fix), status="fixed") if status == "fixed" else
+                 dict(clean_info(fix), status="needs_info") if status == "needs_info" else status)
         with self.lock:
             if _valid_id(target):
                 ids = [target] if os.path.isdir(os.path.join(self.dir, _day(target), target)) else []
@@ -698,6 +815,17 @@ class RemoteReports:
     def has_mods(self, hashes):
         with self._req("POST", "/reports/mods/check", json.dumps({"hashes": hashes}).encode(), "application/json") as f:
             return json.loads(f.read()).get("have", [])
+
+    def status(self, receipts, account=None):
+        with self._req("POST", "/reports/status", json.dumps({"receipts": receipts, "account": account}).encode(),
+                       "application/json") as f:
+            return json.loads(f.read()).get("reports", [])
+
+    def reply(self, rid, secret, text, images, account=None):
+        body = pack({"id": rid, "secret": secret, "text": text, "account": account}, b"", images)
+        with self._req("POST", "/reports/reply", body, "application/zip") as f:
+            d = json.loads(f.read())
+        return bool(d.get("ok")), d.get("why", "")
 
     def mod_usage(self):
         with self._req("GET", "/reports/mods/usage") as f:
@@ -888,7 +1016,32 @@ def node_routes(app, folder, key_ok, mod_quota=MOD_QUOTA):
         done = await asyncio.get_running_loop().run_in_executor(None, reports.delete, request.match_info["id"])
         return web.Response(status=200 if done else 404)
 
+    async def status(request):
+        if not key_ok(request):
+            return web.Response(status=403)
+        try:
+            body = await request.json()
+        except ValueError:
+            return web.Response(status=400)
+        rows = await asyncio.get_running_loop().run_in_executor(None, reports.status, body.get("receipts"),
+                                                                body.get("account"))
+        return web.json_response({"reports": rows})
+
+    async def reply(request):
+        if not key_ok(request):
+            return web.Response(status=403)
+        try:
+            meta, _, images, _ = unpack(await request.read())
+        except Exception:
+            return web.json_response({"ok": False, "why": "bad body"}, status=400)
+        ok, why = await asyncio.get_running_loop().run_in_executor(
+            None, reports.reply, str(meta.get("id", "")), meta.get("secret"), str(meta.get("text", "")), images,
+            meta.get("account"))
+        return web.json_response({"ok": ok, "why": why})
+
     app.router.add_post("/reports/mods/check", mods_check)
+    app.router.add_post("/reports/status", status)
+    app.router.add_post("/reports/reply", reply)
     app.router.add_get("/reports/mods/usage", mods_usage)
     app.router.add_post("/reports/mods/{hash}", mod_put)
     app.router.add_get("/reports/mods/{hash}", mod_get)
@@ -904,12 +1057,15 @@ def main():
     """On the machine that keeps the reports (the storage node's PC, or --role all), server running or not:
         python reports.py --data <data folder> mark <report id | signature> --fixed "how it was fixed"
                           --commit abc1234 --version 2.1.6 [--date 2026-10-25]
-        python reports.py --data <data folder> mark <id | signature> --done | --duplicate | --reopen
+        python reports.py --data <data folder> mark <id | signature> --needs-info "the question for the player"
+        python reports.py --data <data folder> mark <id | signature> --looking | --done | --duplicate | --reopen
         python reports.py --data <data folder> delete <report id>
         python reports.py --data <data folder> list [--fixed]
         python reports.py --data <data folder> resign [--write]   (every report signed again: before / after)
     A signature marks every report with it (the dashboard's groups). The dashboard shows the fixed ones under
-    "Fixed while you were away"."""
+    "Fixed while you were away". The players see the state in their launcher's Reports tab: received, looking,
+    "Fixed - in the next update (<version>)" with the note, "We need more information: <question>" (they can
+    answer it there), done, duplicate."""
     import argparse
     ap = argparse.ArgumentParser(description=main.__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--data", required=True, help="the server's --data folder (the one holding reports/)")
@@ -918,6 +1074,8 @@ def main():
     m.add_argument("target", help="a report id (20261025-101500-abc123) or a signature (16 hex)")
     how = m.add_mutually_exclusive_group(required=True)
     how.add_argument("--fixed", metavar="NOTE", help="fixed: a short plain-English note of how")
+    how.add_argument("--needs-info", metavar="QUESTION", help="ask the player (their Reports tab shows it)")
+    how.add_argument("--looking", action="store_true", help="we're looking at it")
     how.add_argument("--done", action="store_true")
     how.add_argument("--duplicate", action="store_true")
     how.add_argument("--reopen", action="store_true")
@@ -935,8 +1093,10 @@ def main():
         raise SystemExit("No reports folder in %s" % a.data)
     store = LocalReports(a.data)
     if a.cmd == "mark":
-        status = "fixed" if a.fixed is not None else "done" if a.done else "duplicate" if a.duplicate else ""
-        fix = {"note": a.fixed, "commit": a.commit, "version": a.version, "date": a.date} if status == "fixed" else None
+        status = ("fixed" if a.fixed is not None else "needs_info" if a.needs_info is not None else
+                  "looking" if a.looking else "done" if a.done else "duplicate" if a.duplicate else "")
+        fix = ({"note": a.fixed, "commit": a.commit, "version": a.version, "date": a.date} if status == "fixed" else
+               {"question": a.needs_info, "date": a.date} if status == "needs_info" else None)
         ids = store.mark_many(a.target, status, fix)
         if not ids:
             raise SystemExit("No report with that id or signature.")
@@ -954,10 +1114,11 @@ def main():
         for r in store.list(5000):
             if a.fixed and r["status"] != "fixed":
                 continue
-            fix = r.get("fix")
-            print("%s  %-9s %s %s  %s%s" % (r["id"], r["status"] or "open", r.get("app"), r.get("version"),
-                                           r.get("problem"), "  -> %s (%s, %s)" % (fix["note"], fix["commit"],
-                                                                                   fix["version"]) if fix else ""))
+            fix, info = r.get("fix"), r.get("info")
+            print("%s  %-10s %s %s  %s%s%s" % (r["id"], r["status"] or "open", r.get("app"), r.get("version"),
+                                              r.get("problem"), "  -> %s (%s, %s)" % (fix["note"], fix["commit"],
+                                                                                      fix["version"]) if fix else "",
+                                              "  ? %s (%d answer(s))" % (info["question"], r["replies"]) if info else ""))
 
 
 if __name__ == "__main__":

@@ -26,11 +26,35 @@ update or repair and how it ended; `update_log.h`). `what` / `before` are cut at
 600, the rest at 200. Other fields are dropped.
 
 Answers (JSON):
-- `200 {"ok": true, "id": "20261024-153012-ab12cd", "signature": "<16 hex>", "seen_before": N}`:
-  N = earlier reports with the same signature (0: new). A client can say "already reported N times, thanks".
+- `200 {"ok": true, "id": "20261024-153012-ab12cd", "secret": "<receipt>", "signature": "<16 hex>",
+  "seen_before": N}`: N = earlier reports with the same signature (0: new). A client can say "already reported N
+  times, thanks". `secret` is the sender's receipt (below): the server keeps only its SHA-256.
 - `400` bad input, `413` too large, `429` too many (5 in 10 minutes and 20 a day per address, and per account),
   `503` the storage node is down: `{"ok": false, "error": "<text to show>"}`. The client shows it with Try
   again (the zip is made again; it's deleted when the window closes).
+
+## Receipts: the players' Reports list (2.1.9+)
+
+Each client keeps a sent report's `id` + `secret` in `<game>\UserData\reports.json` (one object a line:
+`id, secret, date, app, problem, what` - the launcher, the Mod Maker and Android share it; `report_receipts.c`,
+`Receipts.java`). The launcher's **Reports** tab and Android's **My reports** list them and ask:
+
+`POST {online_server}/api/reports/status` `{"reports": [{"id", "secret"}, ...]}` (100 at most; 60 lookups in 10
+minutes per address; an `Authorization: Bearer <token>` adds the account's reports from other PCs,
+`from_account: true`) -> `{"ok": true, "reports": [...]}`, each:
+`{id, state, received, app, problem, what}` and, by state, `note`, `version`, `date` (fixed) or `question`, `date`,
+`replies` (needs_info / replied). `state`: `received` (no mark), `looking`, `fixed`, `needs_info`, `replied`, `done`,
+`duplicate`, or `unknown` (no such report, or a wrong secret - then only `{id, state}`). Never another report, never
+its logs, zip, pictures, contact or signature. Reports from before receipts have no secret: they can't be listed.
+
+`POST {online_server}/api/reports/reply` (multipart: `report` = `{id, secret, text}`, `image0`-`image2` PNG / JPEG /
+WebP): the player's answer to a question; only while the report is `needs_info` / `replied`, 5 answers a report at
+most, 2000 characters, rate-limited as reports, through the name filter. Kept beside the report as `replies.jsonl`
+(+ `reply<n>_<k>.png`); the mark becomes `replied` (the dashboard shows it). `409` not waiting for an answer, `404`
+no such report / wrong secret.
+
+The players' words: "Received", "We're looking at this one now.", "Fixed - in the next update (2.1.9): <note>",
+"We need more information: <question>", "Thanks - we have your answer to: <question>", "Done", "Already reported".
 
 ## The match folder and its mods (2.1.6+)
 
@@ -83,12 +107,15 @@ in its `--data` folder:
     reports/<yyyy-mm-dd>/<id>/report.zip
     reports/<yyyy-mm-dd>/<id>/image0.png ...
     reports/index.jsonl                     one line per report (the list, and the duplicates' counts)
-    reports/status.json                     the marks: id -> done / duplicate, or
-                                            {status: fixed, note, commit, version, date}
+    reports/status.json                     the marks: id -> done / duplicate / looking, or
+                                            {status: fixed, note, commit, version, date}, or
+                                            {status: needs_info / replied, question, date}
+    reports/<yyyy-mm-dd>/<id>/replies.jsonl  the player's answers ({date, text, images}) + reply<n>_<k>.png
 
 The core passes a report to the node as one stored zip (`POST /reports` with `X-Storage-Key`); the node also
 answers `GET /reports`, `GET /reports/<id>/<file>`, `POST /reports/<id>/mark` (the id may be a signature: every
-report with it; `{status, fix}`) and `POST /reports/<id>/delete`. The sender's address stays in the core's memory,
+report with it; `{status, fix}`), `POST /reports/<id>/delete`, `POST /reports/status` (`{receipts, account}`) and
+`POST /reports/reply` (a stored zip: meta.json `{id, secret, text, account}` + image0..2). The sender's address stays in the core's memory,
 for the rate limit only.
 
 ## Marking a fix
@@ -96,12 +123,14 @@ for the rate limit only.
 On the PC that keeps the reports (the storage node, or `--role all`), with the server running or not:
 
     python port/server/reports.py --data <the server's --data> mark <report id | signature> --fixed "how it was fixed" --commit abc1234 --version 2.1.6 [--date 2026-10-25]
-    python port/server/reports.py --data <...> mark <id | signature> --done | --duplicate | --reopen
+    python port/server/reports.py --data <...> mark <id | signature> --needs-info "the question for the player"
+    python port/server/reports.py --data <...> mark <id | signature> --looking | --done | --duplicate | --reopen
     python port/server/reports.py --data <...> delete <report id>
     python port/server/reports.py --data <...> list [--fixed]
 
 The same from the dashboard's API (admin): `POST /api/admin/report/<id | signature>/mark` with
-`{"status": "fixed", "fix": {"note", "commit", "version", "date"}}` (date: today when left out) and
+`{"status": "fixed", "fix": {"note", "commit", "version", "date"}}` (date: today when left out), `{"status":
+"needs_info", "fix": {"question"}}`, `{"status": "looking"}` (`replied`: only a player's answer sets it) and
 `POST /api/admin/report/<id>/delete`.
 
 ## Dashboard
@@ -111,12 +140,14 @@ The Reports tab:
   was fixed, the version it ships in, the commit, the date, its pictures and Details. Delete (and "Delete all shown")
   asks in place (a second click within 5 s) and removes the report's folder, index line and mark.
 - Then the open reports grouped by signature (newest first): their count, the error line, picture thumbnails,
-  Details (report.json), the zip, and Done / Duplicate / Reopen marks. Fixed ones leave this list.
+  Details (report.json), the zip, and Looking / Ask... (a question: the player's Reports tab shows it) / Done /
+  Duplicate / Reopen marks; an asked report shows its question and its answers (replies.jsonl). Fixed ones leave
+  this list; the tab's count is the new and the answered ones.
 
 ## Deploying
 
-- The VPS (core): `vps_install.sh` copies `reports.py` and writes the nginx location `/svr/api/reports`
-  (`client_max_body_size 70m`).
+- The VPS (core): `vps_install.sh` copies `reports.py` and writes the nginx locations `/svr/api/reports`
+  (`client_max_body_size 400m`) and `/svr/api/reports/reply` (30m; `/status` goes through `/svr/`).
 - The PC storage node runs `server.py --role storage` from its own folder: `reports.py` must be beside it, and
   its server restarted, before the core's new code goes live (until then the core answers 503).
 

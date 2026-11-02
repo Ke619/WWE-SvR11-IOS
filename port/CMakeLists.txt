@@ -369,7 +369,7 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/launcher/svr2011_launcher.c")
         set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${doc_path}")
     endforeach()
     add_executable(svr2011_modmaker WIN32
-        modmaker/app.cpp launcher/report_send.c launcher/update_log.c modmaker/arena_page.cpp modmaker/star_page.cpp modmaker/threads_page.cpp modmaker/simple_star.cpp modmaker/simple_steps.cpp modmaker/simple_arena.cpp modmaker/simple_port.cpp modmaker/disc_list.cpp modmaker/mod_check.cpp modmaker/signs_page.cpp modmaker/backgrounds_page.cpp
+        modmaker/app.cpp launcher/report_send.c launcher/update_log.c launcher/report_receipts.c modmaker/arena_page.cpp modmaker/star_page.cpp modmaker/threads_page.cpp modmaker/simple_star.cpp modmaker/simple_steps.cpp modmaker/simple_arena.cpp modmaker/simple_port.cpp modmaker/disc_list.cpp modmaker/mod_check.cpp modmaker/signs_page.cpp modmaker/backgrounds_page.cpp
         modmaker/media_page.cpp modmaker/full_preview.cpp modmaker/audio_out.cpp modmaker/video_mf.cpp modmaker/hair_sim.cpp modmaker/model_materials.cpp modmaker/material_panel.cpp modmaker/moves_page.cpp modmaker/move_check.cpp modmaker/anims_page.cpp modmaker/assets_page.cpp
         modmaker/icons_page.cpp modmaker/caw_page.cpp modmaker/help_page.cpp modmaker/other_page.cpp modmaker/match_page.cpp
         modmaker/tool_run.cpp modmaker/session_log.cpp launcher/movie_maker.c launcher/bink_encode.c launcher/caw_import.c launcher/stfs.c launcher/move_warning.c
@@ -396,7 +396,7 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/launcher/svr2011_launcher.c")
     # (Media Foundation only when used: Windows "N" without the Media Feature Pack)
     target_link_options(svr2011_modmaker PRIVATE -Wl,/DELAYLOAD:mfplat.dll -Wl,/DELAYLOAD:mfreadwrite.dll)
     set_target_properties(svr2011_modmaker PROPERTIES OUTPUT_NAME "SvR2011 Mod Maker")
-    add_executable(svr2011_launcher WIN32 launcher/svr2011_launcher.c launcher/move_warning.c launcher/apk_package.c launcher/report.c launcher/report_send.c launcher/update_log.c launcher/report_match.c launcher/stfs.c launcher/caw_import.c launcher/verify.c launcher/movie_maker.c launcher/bink_encode.c launcher/bink_decode.c launcher/updater.c launcher/release_check.c launcher/unzip.c launcher/mods_tab.c launcher/backgrounds.c launcher/music_tab.c launcher/roster_tab.c launcher/texpacks_tab.c launcher/ui_theme.c launcher/setup_tab.c launcher/discover_tab.c launcher/music_level.c launcher/launcher.rc src/utf8.manifest)
+    add_executable(svr2011_launcher WIN32 launcher/svr2011_launcher.c launcher/move_warning.c launcher/apk_package.c launcher/report.c launcher/report_send.c launcher/update_log.c launcher/report_receipts.c launcher/reports_tab.c launcher/report_match.c launcher/stfs.c launcher/caw_import.c launcher/verify.c launcher/movie_maker.c launcher/bink_encode.c launcher/bink_decode.c launcher/updater.c launcher/release_check.c launcher/unzip.c launcher/mods_tab.c launcher/backgrounds.c launcher/music_tab.c launcher/roster_tab.c launcher/texpacks_tab.c launcher/ui_theme.c launcher/setup_tab.c launcher/discover_tab.c launcher/music_level.c launcher/launcher.rc src/utf8.manifest)
     set_target_properties(svr2011_launcher PROPERTIES OUTPUT_NAME "SvR2011 Launcher")
     # The hybrid CRT: the VC++ part (vcruntime) built in, the Universal CRT from Windows (ucrtbase.dll /
     # api-ms-win-crt-*, part of Windows 10+; Windows 7/8.1 with update KB2999226). The launcher starts

@@ -26,6 +26,8 @@
  *                        --apk-package <game folder> <out folder>   (Create APK Package, no window)
  *                        --report <game folder> [description]   (Report a problem: the zip, no window)
  *                        --report-send <game folder> <answers file>   (Report a problem: zip + send to the server, no window)
+ *                        --reports-status <game folder> <server>   (the Reports tab's list and states, no window)
+ *                        --reports-reply <game folder> <server> <report id> <text> [<picture>...]   (an answer)
  *                        --import-360 <360 save folder> <saves folder>   (Xbox 360 saves -> port saves)
  *                        --import-caw <saves folder> <file.cas>...   (Created Superstars + their logos)
  *                        --adb-install <game folder>   (Install to phone over USB, no window)
@@ -61,6 +63,8 @@
 
 #include "apk_package.h"
 #include "mods_tab.h"
+#include "report_receipts.h"
+#include "reports_tab.h"
 #include "music_tab.h"
 #include "texpacks_tab.h"
 #include "setup_tab.h"
@@ -118,13 +122,14 @@ static void setup_console_progress(int permille, const WCHAR *text);
 
 /* ── state ─────────────────────────────────────────────────────────────── */
 
-enum { TAB_PLAY, TAB_SETTINGS, TAB_ONLINE, TAB_INSTALL, TAB_DLC, TAB_SAVES, TAB_PAINT, TAB_MOVIES, TAB_ANDROID, TAB_MODS, TAB_MUSIC, TAB_ROSTER, TAB_TEXPACKS, TAB_SETUP, TAB_DISCOVER, TAB_TOOLS, TAB_COUNT };
+enum { TAB_PLAY, TAB_SETTINGS, TAB_ONLINE, TAB_INSTALL, TAB_DLC, TAB_SAVES, TAB_PAINT, TAB_MOVIES, TAB_ANDROID, TAB_MODS, TAB_MUSIC, TAB_ROSTER, TAB_TEXPACKS, TAB_SETUP, TAB_DISCOVER, TAB_TOOLS, TAB_REPORTS, TAB_COUNT };
 #define ID_MODS_BASE 900  /* the Mods tab's controls (mods_tab.c) */
 #define ID_MUSIC_BASE 950 /* the Music tab's (music_tab.c) */
 #define ID_ROSTER_BASE 1000 /* the Roster tab's (roster_tab.c) */
 #define ID_TEXPACKS_BASE 1100 /* the Texture packs tab's (texpacks_tab.c) */
 #define ID_SETUP_BASE 1200 /* the Setup tab's (setup_tab.c) */
 #define ID_DISCOVER_BASE 1300 /* Mods -> Discovery's (discover_tab.c) */
+#define ID_REPORTS_BASE 1400 /* the Reports tab's (reports_tab.c) */
 
 enum {
     ID_TAB = 100,
@@ -1897,6 +1902,9 @@ static void discover_server(WCHAR *out, int n)
     }
 }
 
+/* The Reports tab's (reports_tab.c): the signed-in account's token ("" signed out). */
+static void reports_token(char *out, size_t n) { strcpy_s(out, n, s_online_token); }
+
 static void discover_account(char *token, size_t token_n, WCHAR *name, size_t name_n, long long *id)
 {
     strcpy_s(token, token_n, s_online_token);
@@ -3100,6 +3108,7 @@ static const struct { int tab; WCHAR icon; const WCHAR *name; } k_nav[] = {
     /* (below the line) */
     { TAB_ONLINE, 0xE774, L"Online" },      { TAB_MUSIC, 0xE8D6, L"Music" },
     { TAB_MOVIES, 0xE714, L"Movies" },      { TAB_PAINT, 0xE790, L"Paint Tool" },
+    { TAB_REPORTS, 0xED15, L"Reports" },
 };
 
 /* Mods, in three tabs: the installed mods (TAB_MODS), Discovery, Texture packs - a tab bar on top of each
@@ -3438,6 +3447,8 @@ static void show_tab(int t)
         texpacks_show(s_game_dir);
     if (t == TAB_DISCOVER)
         discover_show(s_game_dir);
+    if (t == TAB_REPORTS)
+        reports_show(s_game_dir);
     if (t == TAB_SETUP || t == TAB_TOOLS)
         setup_show(s_game_dir, s_launcher_dir);
     if (t == TAB_PLAY && !s_up_busy)
@@ -3932,8 +3943,9 @@ static DWORD WINAPI rep_send_thread(LPVOID p)
     if (test_run_refuses_url(s_rep_server, "/api/reports")) {  /* (a test run: never a server off this PC) */
         ZeroMemory(&s_rep_result, sizeof s_rep_result);
         wcscpy_s(s_rep_result.why, 300, L"Test run: a report to a server not on this PC was refused (SVR2011_ALLOW_LIVE=1 lets it through).");
-    } else
-        report_send(s_rep_server, &u, &s_rep_result);
+    } else if (report_send(s_rep_server, &u, &s_rep_result) && s_rep_result.secret[0]) {
+        receipt_add(s_game_dir, "launcher", s_rep_result.id, s_rep_result.secret, s_rep_problem, s_rep_what);
+    }
     rep_match_done(&s_rep_rm);
     free(json);
     PostMessageW(w, WM_APP_REP_SENT, 0, 0);
@@ -4212,7 +4224,7 @@ static void build_ui(void)
     HWND h;
     WCHAR v[64];
     int i;
-    static const WCHAR *names[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Install", L"DLC", L"Saves", L"Paint Tool", L"Movies", L"Android Install", L"Mods", L"Music", L"Roster", L"Texture packs", L"Setup", L"Discovery", L"Tools" };
+    static const WCHAR *names[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Install", L"DLC", L"Saves", L"Paint Tool", L"Movies", L"Android Install", L"Mods", L"Music", L"Roster", L"Texture packs", L"Setup", L"Discovery", L"Tools", L"Reports" };
 
     /* The tabs (never shown: the sidebar picks them; --capture and show_tab
        still use its selection). */
@@ -4572,6 +4584,8 @@ static void build_ui(void)
     /* Texture packs (texpacks_tab.c) */
     texpacks_build(s_wnd, add, TAB_TEXPACKS, ID_TEXPACKS_BASE, toml_get, toml_set);
     discover_build(s_wnd, add, TAB_DISCOVER, ID_DISCOVER_BASE, discover_server, discover_account);
+    receipts_set_guard(test_run_refuses_url);   /* (a test run: never a server off this PC) */
+    reports_build(s_wnd, add, TAB_REPORTS, ID_REPORTS_BASE, discover_server, reports_token);
     discover_set_ini(s_launcher_ini);
     /* Setup: what's needed, found or missing; the Mod Maker's tools (setup_tab.c) */
     setup_build(s_wnd, add, TAB_SETUP, TAB_TOOLS, ID_SETUP_BASE, setup_go_install);
@@ -8768,7 +8782,7 @@ static void paint_window(HDC dc)
     static const WCHAR *const titles[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Setup", L"Setup",
                                                     L"Saves", L"Paint Tool", L"Movies", L"Setup", L"Mods",
                                                     L"Music", L"Roster: sort categories", L"Mods",
-                                                    L"Setup", L"Mods", L"Setup" };
+                                                    L"Setup", L"Mods", L"Setup", L"Reports" };
     RECT cl, r;
     HBRUSH sb = CreateSolidBrush(C_SIDEBAR);
     HGDIOBJ old;
@@ -8921,7 +8935,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
                 set_text(ID_FR_NAME, name);
             }
         }
-        if (n->idFrom != ID_TAB && n->idFrom != ID_FR_LIST && !texpacks_notify(n) && !discover_notify(n)) {
+        if (n->idFrom != ID_TAB && n->idFrom != ID_FR_LIST && !texpacks_notify(n) && !discover_notify(n) && !reports_notify(n)) {
             const int r = mods_notify(n);
             if (r == 2 || r == 3) return r == 2;  /* (renaming a background: mods_tab.c) */
         }
@@ -8930,6 +8944,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
     case WM_COMMAND:
         if (mv_command(LOWORD(wp), HIWORD(wp)) || up_command(LOWORD(wp), HIWORD(wp)) ||
             mods_command(LOWORD(wp), HIWORD(wp)) || music_command(LOWORD(wp), HIWORD(wp)) ||
+            reports_command(LOWORD(wp), HIWORD(wp)) ||
             roster_command(LOWORD(wp), HIWORD(wp)) || texpacks_command(LOWORD(wp), HIWORD(wp)) ||
             discover_command(LOWORD(wp), HIWORD(wp)) ||
             setup_command(LOWORD(wp), HIWORD(wp)))
@@ -9318,6 +9333,9 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         break;
     case WM_APP_DISCOVER:
         discover_message(m, wp, lp);
+        return 0;
+    case WM_APP_REPORTS:
+        reports_message(m, wp, lp);
         return 0;
     case WM_LBUTTONDOWN: {
         const POINT pt = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
@@ -9792,11 +9810,46 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         i = report_send(wserver, &u, &r);
         rep_match_done(&rm);
         free(json);
+        if (i && r.secret[0] && receipt_add(argv[2], "launcher", r.id, r.secret, problem, what))
+            wprintf(L"receipt kept: %s\\UserData\\reports.json\n", argv[2]);
         if (i) wprintf(L"sent %S seen_before %d (zip %s)\n", r.id, r.seen_before, zip);
         else wprintf(L"not sent: %s (HTTP %d; the zip is kept: %s)\n", r.why, r.status, zip);
         rep_match_result_text(&rm, &r, line16, 600);
         if (line16[0]) wprintf(L"%s\n", line16);
         return i ? 0 : 1;
+    }
+    /* --reports-status <game folder> <server> / --reports-reply <game folder> <server> <id> <text> [<picture>...]:
+       the Reports tab's asks (report_receipts.h), no window (tests: a server on this PC only). */
+    if (argv && argc >= 4 && (!wcscmp(argv[1], L"--reports-status") || (!wcscmp(argv[1], L"--reports-reply") && argc >= 6))) {
+        static ReportReceipt items[RECEIPTS_MAX];
+        WCHAR why[300], badge[60], line[1400];
+        int n, i, ok;
+        console_setup();
+        s_test_run = 1;
+        receipts_set_guard(test_run_refuses_url);
+        n = receipts_load(argv[2], items, RECEIPTS_MAX);
+        if (!wcscmp(argv[1], L"--reports-reply")) {
+            char id[40], text[8192];
+            const WCHAR *pics[RECEIPT_MAX_IMAGES];
+            int k = 0;
+            WideCharToMultiByte(CP_UTF8, 0, argv[4], -1, id, sizeof id, NULL, NULL);
+            WideCharToMultiByte(CP_UTF8, 0, argv[5], -1, text, sizeof text, NULL, NULL);
+            for (i = 6; i < argc && k < RECEIPT_MAX_IMAGES; i++) pics[k++] = argv[i];
+            for (i = 0; i < n && strcmp(items[i].id, id); i++)
+                ;
+            if (i == n) { wprintf(L"not sent: no receipt for %s\n", argv[4]); return 1; }
+            ok = receipt_reply(argv[3], NULL, &items[i], text, pics, k, why, 300);
+            wprintf(ok ? L"answer sent\n" : L"not sent: %s\n", why);
+            return ok ? 0 : 1;
+        }
+        ok = receipts_status(argv[3], NULL, items, &n, RECEIPTS_MAX, why, 300);
+        if (!ok) { wprintf(L"not asked: %s\n", why); return 1; }
+        wprintf(L"%d report(s)\n", n);
+        for (i = 0; i < n; i++) {
+            receipt_state_text(&items[i], badge, 60, line, 1400);
+            wprintf(L"%S  %S  %S  [%s]  %s\n", items[i].id, items[i].app, items[i].date, badge, line);
+        }
+        return 0;
     }
     if (argv && argc >= 4 && !wcscmp(argv[1], L"--import-360")) {   /* <360 save folder> <saves folder> */
         int skipped = 0, n;
@@ -9950,7 +10003,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         return 0;
     }
     if (argv && argc >= 4 && !wcscmp(argv[1], L"--capture")) {
-        static const WCHAR *names[TAB_COUNT] = { L"play", L"settings", L"online", L"install", L"dlc", L"saves", L"paint", L"movies", L"android", L"mods", L"music", L"roster", L"texpacks", L"setup", L"discover", L"tools" };
+        static const WCHAR *names[TAB_COUNT] = { L"play", L"settings", L"online", L"install", L"dlc", L"saves", L"paint", L"movies", L"android", L"mods", L"music", L"roster", L"texpacks", L"setup", L"discover", L"tools", L"reports" };
         int i;
         const WCHAR *p = argv[2];
         /* A comma list: each tab is shown in turn (after 300 ms), the last captured. */
@@ -10162,11 +10215,28 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
             }
             /* (the Online tab: until the Friends list is in, 5 s at most) */
             while (GetTickCount64() - t0 < 400 || (s_fr_busy && GetTickCount64() - t0 < 5000) ||
-                   (s_cur_tab == TAB_DISCOVER && GetTickCount64() - t0 < 4000))   /* (its list and pictures) */
+                   (s_cur_tab == TAB_DISCOVER && GetTickCount64() - t0 < 4000) ||   /* (its list and pictures) */
+                   (s_cur_tab == TAB_REPORTS && reports_test_state(NULL, NULL, 0) && GetTickCount64() - t0 < 10000))
                 while (PeekMessageW(&pm, NULL, 0, 0, PM_REMOVE)) {
                     TranslateMessage(&pm);
                     DispatchMessageW(&pm);
                 }
+        }
+        if (s_cur_tab == TAB_REPORTS) {
+            /* Reports: the list and the status line in <file>.reports.txt; SVR2011_REPORTS_PICK=<row> selects one
+               (its line, the answer box) before the shot */
+            WCHAR log[MAX_PATH], line[400];
+            FILE *f = NULL;
+            int n = 0;
+            const char *pick = getenv("SVR2011_REPORTS_PICK");
+            if (pick) reports_test_pick(atoi(pick));
+            reports_test_state(&n, line, 400);
+            swprintf_s(log, MAX_PATH, L"%s.reports.txt", capture_file);
+            if (!_wfopen_s(&f, log, L"w, ccs=UTF-8") && f) {
+                fwprintf(f, L"reports: %d\nstatus: %s\n", n, line);
+                reports_test_dump(f);
+                fclose(f);
+            }
         }
         if (s_cur_tab == TAB_DISCOVER) {
             /* Discovery: a download running (SVR2011_DISCOVER_DOWNLOAD) is waited for (15 minutes at most), its

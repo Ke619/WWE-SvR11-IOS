@@ -1106,10 +1106,19 @@ td.acts { text-align: right; white-space: nowrap; }
       (share >= 1 ? '; new reports come without their mods' : '') : '');
   }
   function reportFile(r, name) { return 'api/admin/report/' + encodeURIComponent(r.id) + '/' + encodeURIComponent(name); }
+  // (open: not yet dealt with - new, being looked at, waiting for the player's answer, or answered)
+  function rpOpen(r) { return !r.status || r.status === 'looking' || r.status === 'needs_info' || r.status === 'replied'; }
+  function infoRow(r) {
+    if (!r.info) return '';
+    return '<tr class="sub"><td></td><td colspan="5"><b>' + (r.status === 'replied' ? 'Answered' : 'Asked') + ' (' +
+      esc(r.info.date || '') + '):</b> ' + esc(r.info.question || '') + (r.replies ? ' &middot; <a href="' +
+      reportFile(r, 'replies.jsonl') + '" target="_blank" rel="noopener">' + r.replies + ' answer' + (r.replies === 1 ? '' : 's') +
+      '</a> (pictures: reply&lt;n&gt;_&lt;k&gt; files of the report)' : '') + '</td></tr>';
+  }
   function renderReports() {
     var f = el('f-rp').value.toLowerCase(), open = el('rp-open').checked;
     var rows = reportRows.filter(function (r) {
-      return (!open || !r.status) && (!f || [r.app, r.version, r.problem, r.what, r.signature, r.signature_line, r.platform]
+      return (!open || rpOpen(r)) && (!f || [r.app, r.version, r.problem, r.what, r.signature, r.signature_line, r.platform]
         .join(' ').toLowerCase().indexOf(f) >= 0);
     });
     var groups = [], by = {};
@@ -1130,16 +1139,22 @@ td.acts { text-align: right; white-space: nowrap; }
             return '<a href="' + reportFile(r, n) + '" target="_blank" rel="noopener"><img class="thumb" loading="lazy" alt="' + esc(n) +
               '" src="' + reportFile(r, n) + '" style="height:48px;max-width:96px;object-fit:cover;margin-right:4px;border-radius:3px"></a>';
           }).join('');
-          return '<tr><td title="' + esc(r.received) + '">' + ago(r.received_at) + (r.status ? ' <span class="tag on">' + esc(r.status) + '</span>' : '') +
+          return '<tr><td title="' + esc(r.received) + '">' + ago(r.received_at) + (r.status ? ' <span class="tag' +
+            (r.status === 'replied' ? ' bad' : ' on') + '">' + esc(r.status === 'needs_info' ? 'asked' : r.status) + '</span>' : '') +
             '</td><td>' + esc(r.platform || '') + '</td><td>' + esc(r.happens || '') + '</td><td>' + esc(r.what || '') +
             (r.account ? ' <span class="note">(' + esc(r.account) + ')</span>' : '') +
             (r.updater ? '<br><span class="note" title="the last result in logs/updater.log">Updater: ' + esc(r.updater) + '</span>' : '') +
             '</td><td>' + pics + '</td><td class="acts">' +
             '<a class="btn" href="' + reportFile(r, 'report.json') + '" target="_blank" rel="noopener">Details</a>' +
             (r.zip_size ? '<a class="btn" href="' + reportFile(r, 'report.zip') + '">Zip ' + bytes(r.zip_size) + '</a>' : '') +
-            (r.status ? '<button class="btn" data-rp="' + esc(r.id) + '" data-s="">Reopen</button>' :
+            (rpOpen(r) ? (r.status !== 'looking' ? '<button class="btn" data-rp="' + esc(r.id) + '" data-s="looking" ' +
+              'title="the player sees: we\'re looking at it">Looking</button>' : '') +
+              '<button class="btn" data-rp="' + esc(r.id) + '" data-s="needs_info" title="ask the player a question: ' +
+              'their Reports tab shows it and they can answer">Ask\u2026</button>' +
               '<button class="btn" data-rp="' + esc(r.id) + '" data-s="done">Done</button>' +
-              '<button class="btn" data-rp="' + esc(r.id) + '" data-s="duplicate">Duplicate</button>') + '</td></tr>' + matchRow(r);
+              '<button class="btn" data-rp="' + esc(r.id) + '" data-s="duplicate">Duplicate</button>' : '') +
+            (r.status ? '<button class="btn" data-rp="' + esc(r.id) + '" data-s="">Reopen</button>' : '') +
+            '</td></tr>' + infoRow(r) + matchRow(r);
         }).join('') + '</tbody></table></div>';
     }).join('') : '<p class="empty">No reports' + (open && reportRows.length ? ' left open' : '') + '.</p>';
   }
@@ -1198,16 +1213,22 @@ td.acts { text-align: right; white-space: nowrap; }
   function loadReports() {
     return api('api/admin/reports').then(function (d) {
       reportRows = d.reports || []; reportError = ''; modStore = d.mod_store || null; renderModStore();
-      el('n-reports').textContent = reportRows.filter(function (r) { return !r.status; }).length || '';
+      el('n-reports').textContent = reportRows.filter(function (r) { return !r.status || r.status === 'replied'; }).length || '';
       if (current === 'reports') { renderFixed(); renderReports(); }
     }).catch(function (e) { reportError = 'The reports could not be loaded (' + e.message + ').'; if (current === 'reports') renderReports(); });
   }
   el('reports').addEventListener('click', function (e) {
     var b = e.target.closest('[data-rp]');
     if (!b) return;
+    var status = b.getAttribute('data-s'), body = {status: status};
+    if (status === 'needs_info') {  // (the question the player sees - plain words, they answer in their Reports tab)
+      var q = window.prompt('The question for the player (their Reports tab shows "We need more information: ..."):');
+      if (!q || !q.trim()) return;
+      body.fix = {question: q.trim()};
+    }
     b.disabled = true;
     api('api/admin/report/' + encodeURIComponent(b.getAttribute('data-rp')) + '/mark', {
-      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({status: b.getAttribute('data-s')})
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
     }).then(loadReports).catch(function () { b.disabled = false; });
   });
   el('f-rp').addEventListener('input', function () { renderFixed(); renderReports(); });

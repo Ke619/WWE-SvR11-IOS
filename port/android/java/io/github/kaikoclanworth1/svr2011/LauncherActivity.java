@@ -404,6 +404,10 @@ public class LauncherActivity extends Activity {
             ViewGroup.LayoutParams.WRAP_CONTENT);
         rp.topMargin = dp(10);
         c.addView(report, rp);
+        // My reports: the ones sent and what became of them (fixed, a question to answer - ReportsList).
+        Button mine = button("My reports", kBackground);
+        mine.setOnClickListener(v -> ReportsList.show(this));
+        c.addView(mine, fullWidth(8));
 
         TextView tips = text("Play with a controller or the on-screen touch controls (Settings → Touch "
             + "controls). Display options are also in game: MY WWE → Options → Graphics.", 13, kDim);

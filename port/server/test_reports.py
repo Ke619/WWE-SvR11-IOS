@@ -37,12 +37,17 @@ def png(w=4, h=3):
 JPG = b"\xff\xd8\xff\xe0" + b"\x00" * 64 + b"\xff\xd9"
 
 
+import datetime  # noqa: E402
+
+CRASH_NAME = "crashes/crash_%s.txt" % datetime.datetime.now().strftime("%Y%m%d_%H%M%S")  # (dated: it counts)
+
+
 def report_zip(crash=None, log=None):
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w") as z:
         z.writestr("system.txt", "Windows 10.0.19045\n")
         if crash:
-            z.writestr("crashes/crash_1.txt", crash)
+            z.writestr(CRASH_NAME, crash)
         if log:
             z.writestr("logs/svr2011.log", log)
     return out.getvalue()
@@ -96,6 +101,124 @@ def meta(**kw):
     return m
 
 
+def post_json(url, path, body, token=None):
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    r = urllib.request.Request(url + path, data=json.dumps(body).encode(), method="POST", headers=headers)
+    try:
+        with urllib.request.urlopen(r, timeout=60) as f:
+            return f.status, json.loads(f.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.loads(e.read() or b"{}")
+        except ValueError:
+            return e.code, {}
+
+
+def reply(url, rid, secret, text, images=(), ip=None):
+    parts = [("report", json.dumps({"id": rid, "secret": secret, "text": text}).encode(), "application/json")]
+    parts += [("image%d" % n, img, "image/png") for n, img in enumerate(images)]
+    body, ctype = multipart(parts)
+    headers = {"Content-Type": ctype, "X-Forwarded-For": ip or "10.9.%d.%d" % (secrets.randbelow(250),
+                                                                               secrets.randbelow(250))}
+    r = urllib.request.Request(url + "/api/reports/reply", data=body, method="POST", headers=headers)
+    try:
+        with urllib.request.urlopen(r, timeout=60) as f:
+            return f.status, json.loads(f.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.loads(e.read() or b"{}")
+        except ValueError:
+            return e.code, {}
+
+
+def mark(url, rid, status, fix=None):
+    return post_json(url, "/api/admin/report/%s/mark" % rid, {"status": status, "fix": fix})
+
+
+def receipts(url, node_data, r1, r2, ver):
+    """The senders' side: a secret per report, POST /api/reports/status, needs-info questions and replies."""
+    check("a receipt: a secret in the answer, not stored as it is",
+          len(r1.get("secret", "")) >= 20 and r1["secret"] != r2.get("secret"))
+    day = "%s-%s-%s" % (r1["id"][0:4], r1["id"][4:6], r1["id"][6:8])
+    text = open(os.path.join(node_data, "reports", day, r1["id"], "report.json"), encoding="utf-8").read()
+    check("report.json: the secret's hash only", r1["secret"] not in text and "secret_hash" in text)
+    st, d = post_json(url, "/api/reports/status", {"reports": [{"id": r1["id"], "secret": r1["secret"]},
+                                                                {"id": r2["id"], "secret": "wrong"},
+                                                                {"id": "20990101-000000-abcdef", "secret": "x"}]})
+    rows = {x["id"]: x for x in d.get("reports", [])}
+    check("status: the right secret -> received (%s)" % rows.get(r1["id"]),
+          st == 200 and rows.get(r1["id"], {}).get("state") == "received")
+    check("status: a wrong secret or no such report -> unknown, nothing else said",
+          rows.get(r2["id"]) == {"id": r2["id"], "state": "unknown"} and
+          rows.get("20990101-000000-abcdef") == {"id": "20990101-000000-abcdef", "state": "unknown"})
+    one = rows.get(r1["id"], {})
+    check("status: only the public fields (%s)" % sorted(one),
+          set(one) <= {"id", "state", "received", "app", "problem", "what", "note", "version", "question", "date",
+                       "replies", "from_account"} and "contact" not in one and "signature" not in one)
+    st, d = post_json(url, "/api/reports/status", {"reports": "nope"})
+    check("status: not a list -> 400", st == 400)
+    # a reply before any question: refused
+    st, d = reply(url, r1["id"], r1["secret"], "here is more")
+    check("reply: not asked yet -> 409 (%s)" % d.get("error"), st == 409)
+    # the question (dashboard / reports.py mark --needs-info)
+    st, d = mark(url, r1["id"], "needs_info", {"question": "Which arena was it?"})
+    check("mark needs_info with a question: 200", st == 200)
+    st, d = mark(url, r1["id"], "needs_info", {"question": ""})
+    check("mark needs_info without a question: refused", st == 404)
+    st, d = post_json(url, "/api/reports/status", {"reports": [{"id": r1["id"], "secret": r1["secret"]}]})
+    one = (d.get("reports") or [{}])[0]
+    check("status: needs_info with the question (%s)" % one,
+          one.get("state") == "needs_info" and one.get("question") == "Which arena was it?" and one.get("replies") == 0)
+    st, d = reply(url, r1["id"], "wrong", "an answer")
+    check("reply: a wrong secret -> 404", st == 404)
+    st, d = reply(url, r1["id"], r1["secret"], "", [])
+    check("reply: empty -> 400", st == 400)
+    st, d = reply(url, r1["id"], r1["secret"], "It was the RAW arena, after a ladder match.", [png()])
+    check("reply: the answer with a picture -> 200 (%s)" % d, st == 200 and d.get("ok"))
+    st, d = post_json(url, "/api/reports/status", {"reports": [{"id": r1["id"], "secret": r1["secret"]}]})
+    one = (d.get("reports") or [{}])[0]
+    check("status: replied, one answer (%s)" % one, one.get("state") == "replied" and one.get("replies") == 1)
+    folder = os.path.join(node_data, "reports", day, r1["id"])
+    got = [json.loads(l) for l in open(os.path.join(folder, "replies.jsonl"), encoding="utf-8")]
+    check("replies.jsonl: the text and its picture", got and got[0]["text"].startswith("It was the RAW arena")
+          and got[0]["images"] == ["reply0_0.png"] and os.path.isfile(os.path.join(folder, "reply0_0.png")))
+    st, body = get(url, "/api/admin/report/%s/replies.jsonl" % r1["id"])
+    check("the dashboard reads the answers", st == 200 and b"RAW arena" in body)
+    st, d = mark(url, r1["id"], "replied")
+    check("replied: only a player's answer sets it", st == 404)
+    # fixed: the note and version
+    st, d = mark(url, r1["id"], "fixed", {"note": "Ladder matches in RAW no longer crash.", "version": "2.1.9"})
+    st, d = post_json(url, "/api/reports/status", {"reports": [{"id": r1["id"], "secret": r1["secret"]}]})
+    one = (d.get("reports") or [{}])[0]
+    check("status: fixed with the note and version (%s)" % one, one.get("state") == "fixed"
+          and one.get("note") == "Ladder matches in RAW no longer crash." and one.get("version") == "2.1.9")
+    st, d = reply(url, r1["id"], r1["secret"], "more")
+    check("reply: once fixed -> 409", st == 409)
+    st, d = mark(url, r1["id"], "looking")
+    st, d = post_json(url, "/api/reports/status", {"reports": [{"id": r1["id"], "secret": r1["secret"]}]})
+    check("status: looking", (d.get("reports") or [{}])[0].get("state") == "looking")
+    # the dashboard's list: no secret hashes, the question / answers count
+    st, body = get(url, "/api/admin/reports")
+    check("the dashboard's list: no secret hashes", st == 200 and b"secret_hash" not in body)
+    # the name filter on answers
+    mark(url, r2["id"], "needs_info", {"question": "Again?"})
+    bad = None  # (a word the saved list flags, found through the dashboard's tester)
+    for line in json.loads(get(url, "/api/admin/names")[1] or b"{}").get("words", [])[:40]:
+        w = "".join(ch for ch in str(line).lower() if "a" <= ch <= "z")
+        if len(w) >= 4 and not post_json(url, "/api/admin/names/test", {"text": w})[1].get("passes", True):
+            bad = w
+            break
+    if bad:
+        st, d = reply(url, r2["id"], r2["secret"], "you are a %s" % bad)
+        check("reply: the name filter refuses a flagged word (%s)" % d.get("error"), st == 400)
+    # rate limit: 5 answers in 10 minutes from one address
+    ip = "10.251.%d.%d" % (secrets.randbelow(250), secrets.randbelow(250))
+    codes = [reply(url, r2["id"], r2["secret"], "answer %d" % n, ip=ip)[0] for n in range(6)]
+    check("reply: 5 at most per report (%s)" % codes, codes[:5] == [200] * 5 and codes[5] in (409, 429))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", required=True)
@@ -110,9 +233,10 @@ def main():
     n2 = reports.normalise("[2026-10-25 01:02:03.999] exception 0xC0000005 at 0x7FF6000000AA thread 77 in C:\\x\\svr2011.exe")
     check("normalise: times, addresses, thread ids and folders out (%s)" % n1, n1 == n2)
 
-    # report zips carry old crash files too: the newest counts, a stale one doesn't, report.txt is no log
-    import datetime
+    # report zips carry old crash files too: the newest counts, one from before the session doesn't, report.txt
+    # is no log (01e167a8: only the reported session - its logs and the crash reports written while it ran)
     stamp = lambda days: (datetime.datetime.now() - datetime.timedelta(days=days)).strftime("%Y%m%d_%H%M%S")
+    log_time = lambda days: (datetime.datetime.now() - datetime.timedelta(days=days)).strftime("[%Y-%m-%d %H:%M:%S]")
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w") as z:
         z.writestr("report.txt", "contents: the crashes folder, an error summary\n")
@@ -123,13 +247,15 @@ def main():
     with zipfile.ZipFile(out, "w") as z:
         z.writestr("report.txt", "contents: the crashes folder, an error summary\n")
         z.writestr("crashes/crash_%s.txt" % stamp(5), "exception OLD\n")
-    check("only a stale crash file and report.txt: no line (the client's hint stands in)",
+        z.writestr("logs/svr2011_7.log", "%s [info] started\n" % log_time(0.01))
+    check("a crash file from before the session and report.txt: no line (the client's hint stands in)",
           reports.first_error_line(out.getvalue(), "launcher") == "")
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w") as z:
-        z.writestr("game/crashes/crash_%s.txt" % stamp(0.01), "exception GAME\n")
-        z.writestr("logs/modmaker_%s.log" % stamp(0.01).replace("_", "-"), "info\nERROR: convert failed\n")
-    check("the Mod Maker: its own log before the game's crash",
+        z.writestr("game/crashes/crash_%s.txt" % stamp(5), "exception GAME\n")
+        z.writestr("logs/modmaker_%s.log" % stamp(0.01).replace("_", "-"), "%s info\nERROR: convert failed\n"
+                   % log_time(0.01))
+    check("the Mod Maker: its own log, not a game crash from before its session",
           reports.first_error_line(out.getvalue(), "modmaker") == "ERROR: convert failed")
 
     crash1 = "exception 0xC0000005 at 0x7FF6A1B2C3D4 (svr2011.exe+0x1234)\nstack...\n"
@@ -191,9 +317,10 @@ def main():
               and rec["signature"] == r1["signature"] and "0xC0000005" in rec["signature_line"])
         check("report.json: no sender address", "10.9." not in text and "127.0.0.1" not in text and "ip" not in rec)
         check("report.zip: the bytes sent", open(os.path.join(folder, "report.zip"), "rb").read() == report_zip(crash1)
-              or zipfile.ZipFile(os.path.join(folder, "report.zip")).read("crashes/crash_1.txt").decode() == crash1)
+              or zipfile.ZipFile(os.path.join(folder, "report.zip")).read(CRASH_NAME).decode() == crash1)
     index = [json.loads(l) for l in open(os.path.join(a.node_data, "reports", "index.jsonl"), encoding="utf-8")]
     mine = [x for x in index if x.get("version") == ver]
+    receipts(url, a.node_data, r1, r2, ver)
     check("index.jsonl: a line for each accepted report (%d)" % len(mine), len(mine) == 12)
 
     # the dashboard's routes

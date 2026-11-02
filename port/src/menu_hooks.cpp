@@ -609,6 +609,24 @@ REX_HOOK_RAW(sub_826E1D28) {
   svr2011::ApplyFrameRate(base);  // (frame_rate.h)
 }
 
+// An entrance event's handler (sub_821D4490(?, person, event), called from an event table) for a person whose object
+// is gone reads person +0x8B0 from 0: 2.1.8 reports 246b25 / 2db71e - the main thread crashed (lr 821D4498, read of
+// guest 0x8B0) as the second wrestler's entrance began, mod superstars, a few times a session. Skipped, logged.
+REX_EXTERN(__imp__sub_821D4490);
+REX_HOOK_RAW(sub_821D4490) {
+  // (test aid SVR2011_TEST_ENTRANCE_NULL=1: the first such event as if its person were gone)
+  if (static bool once = std::getenv("SVR2011_TEST_ENTRANCE_NULL") != nullptr; once && ctx.r4.u32) once = false, ctx.r4.u64 = 0;
+  if (ctx.r4.u32 == 0) {
+    static int told = 0;
+    if (told++ < 5)
+      REXLOG_WARN("[svr2011] entrance: an event for a person who isn't there skipped (event {:02X} {:02X}, caller {:08X})",
+                  ctx.r5.u32 ? base[ctx.r5.u32] : 0, ctx.r5.u32 ? base[ctx.r5.u32 + 1] : 0, uint32_t(ctx.lr));
+    ctx.r3.u64 = 1;  // (as its own "not this state" path returns)
+    return;
+  }
+  __imp__sub_821D4490(ctx, base);
+}
+
 REX_EXTERN(__imp__sub_826E1AE8);
 REX_HOOK_RAW(sub_826E1AE8) {
   REXLOG_INFO("[svr2011] SetFrameRate({}){}", ctx.r3.u32, ctx.r3.u32 != 60 ? " - kept at 60" : "");

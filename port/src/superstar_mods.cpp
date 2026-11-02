@@ -3668,7 +3668,7 @@ const std::vector<std::pair<uint32_t, uint32_t>>& MotionSwaps() {
 // (Not covered: sub_82394740, a second bank search at motion start - no tail
 // fallback; it only reads a per-slot byte, 0 for m.pac, so harmless so far.)
 namespace {
-uint8_t* GuestAt(uint8_t* base, uint32_t a) { return base + a + (a >= 0xE0000000u ? 0x1000u : 0u); }
+uint8_t* GuestAt(uint8_t* base, uint32_t a) { return base + a + REX_PHYS_HOST_OFFSET(a); }  // (as the game's loads)
 struct BankOrder { uint32_t count = 0, last = 0, sorted = 0; };  // sorted: entries in order from 0
 std::mutex g_order_mutex;
 std::unordered_map<uint32_t, BankOrder> g_order;  // bank -> its order (checked again when count or last key change)

@@ -808,6 +808,11 @@ def build_motion(keys, nframes, packed=False):
             pose = encode_packed({'subs': [{'form': 'mask', 'count': k['count'], 'mask': 0x1FFFFF, 'bones': k['bones']},
                                            {'form': 'root', 'count': k['count'],
                                             'root': tuple(int(v) for v in k['root'])}], 'trail': b''})
+        elif packed and k['count'] >= 0x80:
+            # (a blend of 128 frames or more - SvR 2008's The 619 holds a pose that long: the full form keeps 7 bits of
+            # count, the mask form 8 - every bone and the root as a mask; past 255, 255)
+            pose = encode_packed({'subs': [{'form': 'mask', 'count': min(k['count'], 0xff), 'mask': 0x1FFFFF,
+                                            'root': k['root'], 'bones': k['bones']}], 'trail': b''})
         elif packed:
             pose = encode_packed({'subs': [{'form': 'full', 'count': k['count'], 'root': k['root'],
                                             'bones': k['bones']}], 'trail': b''})

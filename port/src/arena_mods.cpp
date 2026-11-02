@@ -2099,7 +2099,8 @@ void InstallArenaMods(rex::memory::Memory* memory, rex::filesystem::VirtualFileS
   LoadCustomArenas();
   // Test aid: SVR2011_TEST_ARENA_MOD=<custom arena folder> - it is picked from the start, on its base arena's tile
   // (SVR2011_TEST_MATCH arena=<that base> plays it); SVR2011_TEST_ARENA_TILE=<n> - on arena n's tile instead (as on
-  // a page where it sits on another arena's tile: SVR2011_TEST_MATCH arena=<n>).
+  // a page where it sits on another arena's tile: SVR2011_TEST_MATCH arena=<n>). Tile 0 crashes at the load with a mod
+  // (FATAL call 0xA9AAAAAA, 2.1.8 too; a real pick on tile 0 plays) - use another tile.
   if (const char* v = std::getenv("SVR2011_TEST_ARENA_MOD"); v && *v) {
     const char* t = std::getenv("SVR2011_TEST_ARENA_TILE");
     for (const auto& c : g_customs)

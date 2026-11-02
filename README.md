@@ -132,7 +132,7 @@ Settings are saved in `svr2011.toml` in the game folder (the app's **Documents**
 | Texture Packs | ➖ Not part of this port. |
 | Achievements | ✅ Working |
 | Custom OSTs/Music | ❌ Not Available on IOS yet. |
-| iOS Launcher | ✅ Working |
+| iOS GUI Launcher | ✅ Working |
 | Online | ✅ Working |
 | Discord Status | ➖ Not part of this port. |
 | Built-in DISCOVERY Tab | ➖ Not part of this port. |

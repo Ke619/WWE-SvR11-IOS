@@ -36,6 +36,7 @@
 #include <rex/cvar.h>
 #include <rex/filesystem.h>
 #include <rex/logging.h>
+#include <rex/thread.h>
 
 #include "../modmaker/svrfmt/mod_travel.h"
 #include "online_files.h"
@@ -201,6 +202,7 @@ void RefreshSet() {
 // thread's). A file that changes gameplay but can't travel makes the mod unsendable (the joiner's copy would
 // never match the host's key). Works on a copy, stored if the set is still the same.
 void ListMod(uint32_t gen, size_t index, HostMod m) {
+  rex::thread::set_current_thread_name("mod transfer list");
   std::error_code ec;
   std::vector<fs::path> all;
   for (const auto& e : fs::recursive_directory_iterator(m.dir, ec))
@@ -679,6 +681,7 @@ bool FetchFile(uint32_t gen, uint16_t mod, uint16_t index, const Listed& f, cons
 }
 
 void Run(std::vector<ModOffer> wanted) {
+  rex::thread::set_current_thread_name("mod transfer");
   std::string error;
   uint32_t gen = 0;
   const auto t0 = Clock::now();

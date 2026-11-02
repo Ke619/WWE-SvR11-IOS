@@ -17,6 +17,7 @@
 
 #include <rex/filesystem.h>
 #include <rex/logging.h>
+#include <rex/thread.h>
 
 namespace svr2011 {
 namespace {
@@ -61,6 +62,7 @@ void InstallPlaytime() {
   if (std::getenv("SVR2011_INPUT_FILE")) return;  // (a test)
   const auto file = rex::filesystem::GetExecutableFolder() / "playtime.txt";
   std::thread([file] {
+    rex::thread::set_current_thread_name("playtime");
     using Clock = std::chrono::steady_clock;
     Totals t = Read(file);
     ++t.sessions;

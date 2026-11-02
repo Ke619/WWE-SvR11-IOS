@@ -34,6 +34,7 @@
 #include <rex/hook.h>
 #include <rex/logging.h>
 #include <rex/ppc.h>
+#include <rex/thread.h>
 
 #include "arena_mods.h"
 #include "caw_limits.h"
@@ -284,6 +285,7 @@ void WriteJson(bool complete) {  // (under g_rec)
 
 // The mods, in load order per kind (sorted folder names, as the game reads them), into mods.txt - a thread of its own.
 void ListMods(fs::path game, fs::path out, std::set<std::pair<std::string, std::string>> used, std::vector<ModInfo>* list) {
+  rex::thread::set_current_thread_name("match record mods");
   static const std::set<std::string> kGenerated = {"ArenaOverlay", "ArenaCrowdless", "PacOverlay", "ArenaTest"};
   std::error_code ec;
   std::vector<fs::path> kinds;

@@ -31,6 +31,7 @@
 #include <rex/cvar.h>
 #include <rex/filesystem.h>
 #include <rex/logging.h>
+#include <rex/thread.h>
 
 #include "match_types.h"
 #include "online_net.h"
@@ -208,6 +209,7 @@ bool VersionNewer(const std::string& a, const std::string& b) {
 }
 
 void CheckVersion(fs::path user_data) {
+  rex::thread::set_current_thread_name("version check");
   const std::string mine = svr2011::PortVersion();
   if (mine.empty() || !std::isdigit(static_cast<unsigned char>(mine[0]))) {  // (a developer build: no check)
     g_version = Version::kLatest;
@@ -432,6 +434,7 @@ void StartGameFilesCheck() {
     fs::path root = game_root;
     if (const char* v = std::getenv("SVR2011_TEST_FILES_ROOT"); v && *v) root = v;
     std::thread([root, user_data] {
+      rex::thread::set_current_thread_name("file check");
       // (background priority, low disk priority too: a first check - every
       // file hashed - mustn't compete with the game's own loading)
 #if defined(_WIN32)

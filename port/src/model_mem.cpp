@@ -25,6 +25,7 @@
 #include <rex/logging.h>
 #include <rex/ppc.h>
 #include <rex/system/xmemory.h>
+#include <rex/thread.h>
 
 #include "arena_mods.h"
 #include "caw_limits.h"
@@ -158,6 +159,7 @@ void StartLoadWatch(uint32_t lo, uint32_t hi, uint32_t size) {
   static std::once_flag started;
   std::call_once(started, [] {
     std::thread([] {
+      rex::thread::set_current_thread_name("model memory");
       static const int limit_s = [] {
         const char* v = std::getenv("SVR2011_TEST_OOM_WATCH_S");
 #if defined(__ANDROID__)

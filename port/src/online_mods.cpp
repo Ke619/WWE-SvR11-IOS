@@ -45,6 +45,7 @@
 #include <rex/logging.h>
 #include <rex/ppc.h>
 #include <rex/system/xmemory.h>
+#include <rex/thread.h>
 
 #include "generated/default/svr2011_init.h"
 #include "arena_mods.h"
@@ -578,6 +579,7 @@ void OnMessage(const uint8_t* data, size_t size) {
 // Every 2 s: this game's table to the lobby; the others' kept while they're
 // in it; a client plays the host's custom arena if it has it.
 void Loop() {
+  rex::thread::set_current_thread_name("online mods");
   for (;;) {
     std::this_thread::sleep_for(std::chrono::seconds(2));
     const svr2011::P2PLobby lobby = svr2011::P2PMatchLobby();

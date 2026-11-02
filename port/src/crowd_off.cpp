@@ -12,6 +12,7 @@
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
+#include <rex/thread.h>
 
 #include "modmaker/svrfmt/jboy.h"
 #include "modmaker/svrfmt/pac.h"
@@ -129,6 +130,7 @@ void Make(const Job& job) {
 }
 
 void Worker() {
+  rex::thread::set_current_thread_name("crowd off");
   for (;;) {
     Job job;
     {

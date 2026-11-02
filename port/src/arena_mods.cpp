@@ -229,6 +229,7 @@ bool g_bpe_log = false;
 // u32 and byte) kept across requests; "hex:<bytes>" finds a byte pattern.
 void StartScan() {
   std::thread([] {
+    rex::thread::set_current_thread_name("arena scan");
     const fs::path trigger = g_game / "scan.txt";
     std::string last_text;
     std::vector<uint32_t> cand32, cand8;

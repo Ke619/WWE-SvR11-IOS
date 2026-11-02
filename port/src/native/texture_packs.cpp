@@ -20,6 +20,7 @@
 #include <rex/cvar.h>
 #include <rex/filesystem.h>
 #include <rex/logging.h>
+#include <rex/thread.h>
 #define XXH_INLINE_ALL
 #include <xxhash.h>
 
@@ -377,6 +378,7 @@ bool DecodeDds(const std::vector<uint8_t>& d, Replacement& r) {
 }
 
 void LoaderThread() {
+  rex::thread::set_current_thread_name("texture pack loader");
   LowPriority();
   for (;;) {
     uint64_t hash;
@@ -495,6 +497,7 @@ std::vector<fs::path> PacFiles() {
 }
 
 void NamesThread() {
+  rex::thread::set_current_thread_name("texture pack names");
   LowPriority();
   const auto t0 = std::chrono::steady_clock::now();
   const std::vector<fs::path> files = PacFiles();
@@ -550,6 +553,7 @@ fs::path DumpPath(uint64_t hash, uint32_t w, uint32_t h, const std::string& form
 }
 
 void DumpThread() {
+  rex::thread::set_current_thread_name("texture dump");
   LowPriority();
   uint32_t written = 0;
   for (;;) {

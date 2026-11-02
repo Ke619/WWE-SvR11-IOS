@@ -4493,6 +4493,7 @@ void Attach(rex::memory::Memory* memory) {
       s = *e == ',' ? e + 1 : e;
     }
     std::thread([memory, regions] {
+      rex::thread::set_current_thread_name("memory regions log");
       for (;;) {
         std::this_thread::sleep_for(std::chrono::seconds(2));
         std::string line;

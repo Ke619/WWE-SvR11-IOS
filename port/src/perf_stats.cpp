@@ -13,6 +13,7 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 #include <rex/system/xmemory.h>
+#include <rex/thread.h>
 
 #include "frame_rate.h"
 #include "frame_stats.h"
@@ -215,6 +216,7 @@ PerfSample Take() {
 // perf_log_seconds: the log line, and the RAM / VRAM after each match (InMatch ends) - growing at every one of 3
 // matches in a row by more than a little each: a warning.
 void LogThread(int every) {
+  rex::thread::set_current_thread_name("perf log");
   std::vector<std::pair<double, double>> ends;  // (private MB, VRAM MB) at each match's end
   bool was_in = false, warned = false;
   int tick = 0;

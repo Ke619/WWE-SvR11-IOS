@@ -63,6 +63,7 @@
 #include <rex/logging.h>
 #include <rex/ppc.h>
 #include <rex/system/xmemory.h>
+#include <rex/thread.h>
 
 #include "generated/default/svr2011_init.h"
 #include "../modmaker/svrfmt/pac.h"
@@ -1895,6 +1896,7 @@ int BadgeAt(uint8_t* b, uint32_t guest) {
 }
 
 void BadgeLoop() {
+  rex::thread::set_current_thread_name("superstar badges");
   uint32_t guest = 0;
   int original = 1;  // the language's original there
   int64_t last_scan = 0;
@@ -3384,6 +3386,7 @@ void InstallSuperstarMods(rex::memory::Memory* memory, rex::filesystem::VirtualF
   // changes in the CHAR/PRO table (who overwrites a mod's profile, and when)
   if (std::getenv("SVR2011_TEST_PRO_LOG"))
     std::thread([memory] {
+      rex::thread::set_current_thread_name("pro log");
       std::vector<uint32_t> last(64, 0xFFFFFFFF);
       for (;;) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));

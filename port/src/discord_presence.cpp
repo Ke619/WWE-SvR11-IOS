@@ -16,6 +16,7 @@
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
+#include <rex/thread.h>
 
 REXCVAR_DEFINE_BOOL(discord_presence, true, "UI", "Show what you're playing in Discord (Rich Presence)");
 REXCVAR_DEFINE_STRING(discord_app_id, "1554845537088577716", "UI",
@@ -82,6 +83,7 @@ std::string Activity(DiscordScene scene, int64_t start) {
 }
 
 void Run(std::string app_id) {
+  rex::thread::set_current_thread_name("discord");
   const int64_t start =
       std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
   const DWORD pid = GetCurrentProcessId();

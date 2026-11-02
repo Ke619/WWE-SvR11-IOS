@@ -38,6 +38,7 @@
 #include <rex/ui/keybinds.h>
 #include <rex/ui/window.h>
 #include <rex/ui/windowed_app_context.h>
+#include <rex/thread.h>
 
 #include "generated/default/svr2011_init.h"
 #include "json_lite.h"
@@ -262,6 +263,7 @@ void Poll() {
 }
 
 void PollThread() {
+  rex::thread::set_current_thread_name("online poll");
   for (;;) {
     Poll();
     std::unique_lock lock(g_mutex);

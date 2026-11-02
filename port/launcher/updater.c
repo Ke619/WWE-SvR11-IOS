@@ -493,3 +493,83 @@ out:
     http_close(&h);
     return ok;
 }
+
+/* ── file helpers (the launcher and the updater) ───────────────────────── */
+
+int file_exists(const WCHAR *p)
+{
+    DWORD a = GetFileAttributesW(p);
+    return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+int dir_exists(const WCHAR *p)
+{
+    DWORD a = GetFileAttributesW(p);
+    return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+/* a\b into out (MAX_PATH); 0 when it would not fit. */
+int join(WCHAR *out, const WCHAR *a, const WCHAR *b)
+{
+    size_t la = wcslen(a);
+    if (la + 1 + wcslen(b) >= MAX_PATH) {
+        out[0] = 0;
+        return 0;
+    }
+    swprintf_s(out, MAX_PATH, (la && a[la - 1] == L'\\') ? L"%s%s" : L"%s\\%s", a, b);
+    return 1;
+}
+
+int same_dir(const WCHAR *a, const WCHAR *b)
+{
+    WCHAR fa[MAX_PATH], fb[MAX_PATH];
+    size_t n;
+    if (!GetFullPathNameW(a, MAX_PATH, fa, NULL) || !GetFullPathNameW(b, MAX_PATH, fb, NULL))
+        return 0;
+    n = wcslen(fa);
+    if (n > 3 && fa[n - 1] == L'\\') fa[n - 1] = 0;
+    n = wcslen(fb);
+    if (n > 3 && fb[n - 1] == L'\\') fb[n - 1] = 0;
+    return !_wcsicmp(fa, fb);
+}
+
+/* Copies the folder `from` into `to` with everything in it (files replaced). */
+int copy_tree(const WCHAR *from, const WCHAR *to)
+{
+    WCHAR pat[MAX_PATH], src[MAX_PATH], dst[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+    int ok = 1;
+    CreateDirectoryW(to, NULL);
+    if (!join(pat, from, L"*") || (h = FindFirstFileW(pat, &fd)) == INVALID_HANDLE_VALUE)
+        return 0;
+    do {
+        if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..") || !join(src, from, fd.cFileName) ||
+            !join(dst, to, fd.cFileName))
+            continue;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+            ok = copy_tree(src, dst) && ok;
+        else if (!CopyFileW(src, dst, FALSE))
+            ok = 0;
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    return ok;
+}
+
+/* The release's folders (Bundled Mods, native_shaders, pad_icons, Android ...) into `to`. */
+int copy_folders(const WCHAR *from, const WCHAR *to)
+{
+    WCHAR pat[MAX_PATH], src[MAX_PATH], dst[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+    int ok = 1;
+    if (!join(pat, from, L"*") || (h = FindFirstFileW(pat, &fd)) == INVALID_HANDLE_VALUE)
+        return 0;
+    do {
+        if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && wcscmp(fd.cFileName, L".") &&
+            wcscmp(fd.cFileName, L"..") && join(src, from, fd.cFileName) && join(dst, to, fd.cFileName))
+            ok = copy_tree(src, dst) && ok;
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    return ok;
+}

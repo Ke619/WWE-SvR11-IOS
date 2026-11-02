@@ -79,4 +79,13 @@ std::vector<std::array<uint16_t, 3>> StripToTriangles(const std::vector<uint16_t
 // Triangle list -> one strip (each triangle joined with degenerates).
 std::vector<uint16_t> TrianglesToStrip(const std::vector<std::array<uint16_t, 3>>& tris);
 
+// A mesh's texture slot param `name` (texDiffuse, texNormal ...): an index into its model's textures, -1 when
+// the mesh has none. SetDiffuseSlot points texDiffuse at `slot`.
+int DiffuseSlot(const Mesh& s, const char* name = "texDiffuse");
+void SetDiffuseSlot(Mesh& s, int slot);
+// `tex`'s index in m.textures, added at the end when it isn't there.
+int TextureSlot(Model& m, const std::string& tex);
+// s.sphere around the mesh's vertices (the centre of their box, the farthest one's distance).
+void Bound(Mesh& s);
+
 }  // namespace svrfmt

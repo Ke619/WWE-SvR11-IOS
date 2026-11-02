@@ -176,12 +176,6 @@ std::string Lower(std::string s) {
   return s;
 }
 
-int DiffuseSlot(const Mesh& s) {
-  for (const auto& p : s.params)
-    if (p.type == 0x0f && p.name == "texDiffuse" && p.value.size() >= 4) return int(Be32(p.value.data()));
-  return -1;
-}
-
 std::atomic<int> g_attire{1};  // the model's attire shown (1-4)
 std::atomic<bool> g_gear{false};       // entrance gear shown (kind 4) when the attire has it
 std::atomic<bool> g_gear_have{false};  // the shown attire has entrance gear

@@ -348,13 +348,6 @@ std::string Hex4(uint32_t v) { char b[16]; std::snprintf(b, sizeof b, "%04x", v)
 // Object names must be unique and readable: name__id (ids are unique).
 std::string ObjectName(const ArenaModel& m) { return m.model.name + "__" + Hex4(m.id); }
 
-// Texture slot of a mesh's diffuse map, or -1.
-int DiffuseSlot(const Mesh& s) {
-  for (const auto& p : s.params)
-    if (p.type == 0x0f && p.name == "texDiffuse" && p.value.size() >= 4) return int32_t(Be32(p.value.data()));
-  return -1;
-}
-
 const char* FormatName(DxtFormat f) {
   switch (f) {
     case DxtFormat::kDxt1: return "DXT1";

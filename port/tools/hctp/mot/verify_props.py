@@ -6,6 +6,7 @@ cardboard stack (danboru, 50101/01243) at the end of act 33 puts every box on th
 import sys, struct
 import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # (its own folder: the embeddable Python doesn't add it)
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))  # (tools\: ymks.py)
 import hmot, ymks as Y, hctp2ymks as C, objpose
 
 PB = r"D:/Xbox Games Ports/HCTP Extract/_unpacked/bg/stg_0030/50102.bin"

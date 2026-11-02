@@ -12,6 +12,7 @@ import sys, collections
 import numpy as np
 import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # (its own folder: the embeddable Python doesn't add it)
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))  # (tools\: ymks.py)
 import hmot, ymks as Y, fk, s11mot, hctp2ymks as C
 
 

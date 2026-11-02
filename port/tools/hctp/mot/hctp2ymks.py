@@ -49,6 +49,7 @@ import sys
 import collections
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))  # (tools\: ymks.py)
 import hmot  # noqa: E402
 import ymks as Y  # noqa: E402
 

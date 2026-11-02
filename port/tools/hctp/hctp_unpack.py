@@ -60,8 +60,7 @@ def pac(d):
     return out
 
 
-def unbpe(b):
-    return svrfmt.bpe_decode(b) if b[:4] == b'BPE ' else b
+unbpe = svrfmt.unbpe
 
 
 def ext(b, id_):

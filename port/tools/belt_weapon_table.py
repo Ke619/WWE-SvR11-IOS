@@ -56,8 +56,7 @@ WEAPON_NAMES = {
 }
 
 
-def un(b):
-    return svrfmt.bpe_decode(b) if b[:4] == b'BPE ' else b
+un = svrfmt.unbpe
 
 
 def texture_set(raw):

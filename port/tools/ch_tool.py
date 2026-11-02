@@ -35,8 +35,7 @@ def epk8_read(d):
     return d[:0x800], groups
 
 
-def unpack(b):
-    return svrfmt.bpe_decode(b) if b[:4] == b'BPE ' else b
+unpack = svrfmt.unbpe
 
 
 def is_bundle(raw):

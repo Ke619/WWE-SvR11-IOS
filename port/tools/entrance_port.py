@@ -315,8 +315,7 @@ def lone_source(path, g=None, entrance=None):
 
 # ============================================================================ containers
 
-def unbpe(b):
-    return svrfmt.bpe_decode(b) if b[:4] == b'BPE ' else b
+unbpe = svrfmt.unbpe
 
 
 def epk8_read(d):

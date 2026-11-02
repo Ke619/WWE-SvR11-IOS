@@ -14,19 +14,19 @@ Mk from the 2008 AO (bruise mask R = 0, AO in G / B), costume pieces merged
 into the body, and the template's 0x28/0x32/0x50/0x64, cube map and blood
 overlays.
 """
-import argparse, io, math, os, struct, sys
+import argparse, io, os, struct, sys
 import numpy as np
 from PIL import Image
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, TOOLS)
 import ch_tool, svrfmt, jboy  # noqa: E402
+from w13_char import tex_bundle_read as tex_read, resize_rgba, dds_encode  # noqa: E402 (the same texture helpers)
 
 B = 8
 
 
-def unp(b):
-    return svrfmt.bpe_decode(b) if b[:4] == b'BPE ' else b
+unp = svrfmt.unbpe
 
 
 def u32(d, o): return struct.unpack_from('>I', d, o)[0]
@@ -67,16 +67,6 @@ def read08(d):
     return m
 
 
-def tex_read(b):
-    n = struct.unpack_from('<I', b, 0)[0]
-    out = []
-    for i in range(n):
-        r = b[16 + 32 * i:48 + 32 * i]
-        sz, off = struct.unpack_from('<II', r, 20)
-        out.append((r[:16].split(b'\0')[0].decode('latin-1'), b[off:off + sz]))
-    return out
-
-
 def tex_write(texs, head):
     n = len(texs)
     off = (16 + 32 * n + 15) & ~15
@@ -85,36 +75,6 @@ def tex_write(texs, head):
         recs += name.encode('latin-1')[:16].ljust(16, b'\0') + b'dds\0' + struct.pack('<II', len(dd), off + len(blobs)) + b'\0' * 4
         blobs += dd + b'\0' * (-len(dd) % 16)
     return (struct.pack('<I', n) + head[4:16] + recs).ljust(off, b'\0') + blobs
-
-
-def resize_rgba(img, size, method=None):
-    """resize without Pillow's premultiplied alpha: RGB and A each on their own (the colour sheets'
-    alpha is a specular level around 45 - premultiplied, the RGB of the smaller mips turns to specks)"""
-    method = Image.BOX if method is None else method
-    if img.mode != 'RGBA':
-        return img.resize(size, method)
-    rgb = img.convert('RGB').resize(size, method)
-    rgb.putalpha(img.getchannel('A').resize(size, method))
-    return rgb
-
-
-def dds_encode(img, fourcc):
-    w, h = img.size
-    mips = int(math.log2(max(w, h))) + 1
-    out = None
-    for m in range(mips):
-        im = img if m == 0 else resize_rgba(img, (max(1, w >> m), max(1, h >> m)))
-        b = io.BytesIO()
-        im.save(b, 'DDS', pixel_format=fourcc)
-        v = b.getvalue()
-        out = bytearray(v) if out is None else out + v[128:]
-    struct.pack_into('<I', out, 8, struct.unpack_from('<I', out, 8)[0] | 0x20000)
-    struct.pack_into('<I', out, 28, mips)
-    # (the linear size = the top level's bytes, as Yuke's sheets have it: PIL writes a pitch there, and the
-    # game reading it to step through the mips draws the smaller ones from the wrong place)
-    struct.pack_into('<I', out, 20, max(1, (w + 3) // 4) * max(1, (h + 3) // 4) * (8 if fourcc == 'DXT1' else 16))
-    struct.pack_into('<I', out, 108, struct.unpack_from('<I', out, 108)[0] | 0x400008)
-    return bytes(out)
 
 
 def mk_from_ao(ao_dds):

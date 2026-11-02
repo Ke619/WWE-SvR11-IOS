@@ -122,22 +122,22 @@ Settings are saved in `svr2011.toml` in the game folder (the app's **Documents**
 
 | Feature | iOS Port Support |
 |---|---|
-| Native renderer, 60 fps | ✅ Working |
-| Touch controls | ✅ Working |
-| Save manager | ⚠️ Working, Not available in the Launcher yet. |
-| Wide-screen matches and entrances | ✅ Working |
-| Custom Titantrons/Entrance movies | ⚠️ Working only for `.svrmods`, Can't manually import yet from the Launcher |
+| Native Renderer, 60 fps | ✅ Working |
+| Touch Controls | ✅ Working |
+| Save Manager | ⚠️ Working, Not available in the Launcher yet. |
+| Wide-screen Matches and Entrances | ✅ Working |
+| Custom Titantrons/Videos | ⚠️ Working only for `.svrmods`, Can't manually import yet from the Launcher |
 | DLC | ✅ Working |
 | Mods (`.svrmod`) | ✅ Working |
-| Texture packs | ➖ Not part of this port. |
+| Texture Packs | ➖ Not part of this port. |
 | Achievements | ✅ Working |
 | Custom OSTs/Music | ⚠️ Working only for `.svrmods`, Can't manually import yet from the Launcher. |
-| iOS launcher | ✅ Working |
+| iOS Launcher | ✅ Working |
 | Online | ✅ Working |
-| Discord status | ➖ Not part of this port. |
+| Discord Status | ➖ Not part of this port. |
 | Built-in DISCOVERY Tab | ➖ Not part of this port. |
-| Paint tool | ⚠️ Not available in the Launcher, Works in-game. |
-| Custom main menu backgrounds | ⚠️ Not available in the Launcher, Can be added manually and setup in-game. |
+| Paint Tool | ⚠️ Not available in the Launcher, Works in-game. |
+| Custom Main Menu Backgrounds | ⚠️ Not available in the Launcher, Can be added manually and setup in-game. |
 | Mod Maker | ➖ Not part of this port. |
 ---
 

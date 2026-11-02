@@ -36,6 +36,7 @@ COLOR = (2048, 1024)
 NORMAL = (1024, 1024)
 MK = (512, 256)
 PAD = 4
+SHINE = 48   # (the normal sheet's alpha: bake)
 MISSING = '\0missing'   # (the box for meshes whose texture the pac doesn't carry)
 
 
@@ -103,7 +104,11 @@ def bake(kids, legs=None):
         images[MISSING] = Image.new('RGBA', (8, 8), (128, 128, 128, 0))   # (sorted: a set's order follows the hash seed - the packed sheet changed every run)
     scale, boxes = pack({d: im.size for d, im in images.items()}, *COLOR)
     color = Image.new('RGBA', COLOR, (128, 128, 128, 255))
-    normal = Image.new('RGBA', NORMAL, (128, 128, 255, 255))
+    # (the normal sheet's alpha is the skin shaders' shine mask - SpecLev x normal.a. 2007's skin normal maps keep a
+    # mask (Kurt Angle's body 0-68), its gear / hands / knees ones are opaque, as was this sheet behind parts with no
+    # normal map: those shone at full SpecLev, a white glare on SvR 2007 wrestlers - report 20261101-162315. 48, the
+    # FBX import's "no normal map" shine, where there is no mask)
+    normal = Image.new('RGBA', NORMAL, (128, 128, 255, SHINE))
     sx, sy = NORMAL[0] / COLOR[0], NORMAL[1] / COLOR[1]
     for d, (x, y, w, h) in boxes.items():
         # (S8.resize_rgba, not Image.resize: Pillow premultiplies RGBA, so where a 2007 part's alpha is near 0 -
@@ -112,6 +117,8 @@ def bake(kids, legs=None):
         if d in normal_of:
             nb = (int(x * sx), int(y * sy), max(1, int(w * sx)), max(1, int(h * sy)))
             nim = S8.resize_rgba(Image.open(io.BytesIO(tex[normal_of[d]])).convert('RGBA'), nb[2:], Image.LANCZOS)
+            if nim.getchannel('A').getextrema()[0] >= 250:   # (an opaque one: no mask of its own - 48)
+                nim.putalpha(SHINE)
             normal.paste(nim, nb[:2])
     for (k, i), d in diffuse_of.items():
         x, y, w, h = boxes[d]

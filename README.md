@@ -131,12 +131,12 @@ Settings are saved in `svr2011.toml` in the game folder (the app's **Documents**
 | Mods (`.svrmod`) | ✅ Working |
 | Texture packs | ❌ Not available on iOS yet |
 | Achievements | ✅ Working |
-| Entrance music from your own songs | ❌ Not available on iOS yet |
+| Entrance music from your own songs | ⚠️ Working only for `.svrmods` (Can't manually import yet from the Launcher |
 | iOS launcher | ✅ Working |
 | Online | ✅ Working |
 | Discord status | ➖ Not part of this port. |
 | Built-in DISCOVERY Tab | ➖ Not part of this port. |
-| Built-in Paint Tool Tab | ➖ Not part of this port. |
+| Paint Tool Tab | ⚠️ Not available in the Launcher, Works in-game. |
 ---
 
 ## Building from source

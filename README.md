@@ -134,7 +134,7 @@ Settings are saved in `svr2011.toml` in the game folder (the app's **Documents**
 | Entrance music from your own songs | ❌ Not available on iOS yet |
 | iOS launcher | ✅ Working |
 | Online | ✅ Working |
-| Discord status | ➖ Not part of this port. See the original README. |
+| Discord status | ➖ Not part of this port. |
 | Built-in DISCOVERY Tab | ➖ Not part of this port. |
 | Built-in Paint Tool Tab | ➖ Not part of this port. |
 ---

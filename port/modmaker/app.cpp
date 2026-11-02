@@ -143,8 +143,32 @@ std::map<PageId, int> g_touches;  // edits a page reported with Touch()
 
 }  // namespace
 
+namespace {
+// (ReleaseAfterFrame's queue, released after each Present; never destroyed - a picture let go of while the program
+// exits, after the last frame, is left to the process's end)
+std::mutex& ReleaseMutex() { static auto* m = new std::mutex; return *m; }
+std::vector<IUnknown*>& ReleaseQueue() { static auto* q = new std::vector<IUnknown*>; return *q; }
+
+void FlushReleases() {
+  std::vector<IUnknown*> now;
+  {
+    std::lock_guard lock(ReleaseMutex());
+    now.swap(ReleaseQueue());
+  }
+  for (IUnknown* v : now) v->Release();
+}
+}  // namespace
+
+void ReleaseAfterFrame(IUnknown* v) {
+  if (!v) return;
+  std::lock_guard lock(ReleaseMutex());
+  ReleaseQueue().push_back(v);
+}
+
 ID3D11ShaderResourceView* MakeTexture(const Image& img) {
   if (img.rgba.empty() || !g_dev) return nullptr;
+  // (the driver reads w x h pixels from the picture: never more than it has)
+  if (img.w <= 0 || img.h <= 0 || img.rgba.size() < size_t(img.w) * size_t(img.h) * 4) return nullptr;
   D3D11_TEXTURE2D_DESC td = {};
   td.Width = UINT(img.w);
   td.Height = UINT(img.h);
@@ -3888,7 +3912,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     }
     DrainD3DMessages();
     session::PresentResult(g_swap->Present(1, 0));
+    FlushReleases();  // (the textures let go of while this frame was built: drawn now - app.h ReleaseAfterFrame)
   }
+  FlushReleases();
   if (g_worker.joinable()) g_worker.join();
   editor::Shutdown();
   char_preview::Shutdown();

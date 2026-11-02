@@ -34,6 +34,8 @@ final class ReportSend {
     // through adb reverse, or a PC on the LAN - never the live one, unless
     // allowLive (the svr2011_allow_live extra, as SVR2011_ALLOW_LIVE=1).
     static volatile boolean testRun, allowLive;
+    // A test's report server (the svr2011_report_server extra, test runs only), or null.
+    static volatile String testServer;
 
     // A server address -> its base URL (a bare host:port is plain http; as OnlinePage.base).
     static String base(String server) {

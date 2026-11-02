@@ -125,6 +125,9 @@ public class LauncherActivity extends Activity {
         // --es report_send <answers file> sends one with no window (ReportForm.testSend).
         ReportSend.testRun = getIntent().getStringExtra("svr2011_test") != null;
         ReportSend.allowLive = "1".equals(getIntent().getStringExtra("svr2011_allow_live"));
+        // (--es svr2011_report_server <test server>: Report a problem and My reports use it instead of the
+        // settings' online_server - tests only, and still only a server on this phone or its network)
+        if (ReportSend.testRun) ReportSend.testServer = getIntent().getStringExtra("svr2011_report_server");
         String reportSend = getIntent().getStringExtra("report_send");
         if (reportSend != null) ReportForm.testSend(this, new java.io.File(reportSend));
         // The shaders from this APK into the game folder (when it's newer).

@@ -69,6 +69,8 @@ final class ReportForm {
     }
 
     static String server(LauncherActivity a) {
+        String test = ReportSend.testRun ? ReportSend.testServer : null;  // (a test's own server)
+        if (test != null && !test.isEmpty()) return test;
         return a.settings().getString("online_server", OnlinePage.kDefaultServer);
     }
 

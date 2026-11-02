@@ -193,6 +193,13 @@ public class InstallActivity extends Activity {
                 next.putExtras(getIntent().getExtras());
             } else {
                 next = new Intent(this, LauncherActivity.class);
+                // (the launcher's own test extras - svr2011_test, svr2011_report_server, report_send, tab: adb
+                // can't start it, it isn't exported)
+                android.os.Bundle in = getIntent().getExtras();
+                if (in != null)
+                    for (String key : in.keySet())
+                        if (key.startsWith("svr2011_") || key.equals("report_send") || key.equals("tab"))
+                            next.putExtra(key, in.getString(key));
             }
             startActivity(next);
             finish();

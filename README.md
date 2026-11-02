@@ -205,7 +205,7 @@ The recompiled game code is **generated on your machine from your own game files
 | 🛠️ | [**plume**](https://github.com/renderbag/plume) | The graphics layer the native renderer draws through (MIT license). |
 | 🛠️ | [**XenosRecomp**](https://github.com/hedge-dev/XenosRecomp) | Converts the game's shaders. |
 
-Special thanks to [**iMrBurn**](https://github.com/iMrBurn) for their assistance and contribution to the project. Much appreciated!🫶🏻
+Special thanks to [**iMrBurn**](https://github.com/iMrBurn) for their assistance and contribution to the project. Much appreciated! 🫶🏻
 
 The original PC port was developed with Claude Code, and has its own AI disclosure. See its [README](https://github.com/KaikoClanworth1/wwe-svr2011-pc#contributors) and `CONTRIBUTORS.md` for the full list of contributors and credits, including the people who made the parts of the PC port that this one inherits.
 

@@ -65,7 +65,7 @@ Other iPhones and iPads haven't been tested. It's an early port, so expect rough
 ## Install and play
 
 1. **Get the app.**
-   - **Option A: download the IPA** from [**Releases**](https://github.com/Ke619/wwe-svr2011-ios/releases/latest). It holds no game data, but it does contain code generated from the game's executable, so download it only if you own the game.
+   - **Option A: download the IPA** from [**Releases**](https://github.com/Ke619/WWE-SvR11-IOS/releases/latest). It holds no game data, but it does contain code generated from the game's executable, so download it only if you own the game.
    - **Option B: build it yourself.** See [Building from source](#building-from-source). This keeps all game-derived code on your own machine.
 
 2. **Install it with your sideloading tool.** Add the IPA in AltStore, SideStore or LiveContainer, and follow that tool's steps. Apps signed with a free Apple ID usually expire after 7 days, and need refreshing in your tool.

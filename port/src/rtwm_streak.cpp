@@ -30,6 +30,7 @@
 #include "generated/default/svr2011_init.h"
 #include "rtwm_streak.h"
 #include "superstar_mods.h"
+#include "../modmaker/svrfmt/bytes.h"
 
 namespace svr2011 {
 bool InRoadToWrestleMania();  // (menu_hooks.cpp: the main menu's last choice)
@@ -37,20 +38,8 @@ bool InRoadToWrestleMania();  // (menu_hooks.cpp: the main menu's last choice)
 
 namespace {
 
-uint32_t Rd32(const uint8_t* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; }
-void Wr32(uint8_t* p, uint32_t v) { p[0] = uint8_t(v >> 24), p[1] = uint8_t(v >> 16), p[2] = uint8_t(v >> 8), p[3] = uint8_t(v); }
+using svrfmt::Rd32, svrfmt::RdF, svrfmt::Wr32, svrfmt::WrF;
 void Wr16(uint8_t* p, uint32_t v) { p[0] = uint8_t(v >> 8), p[1] = uint8_t(v); }
-float RdF(const uint8_t* p) {
-  const uint32_t v = Rd32(p);
-  float f;
-  std::memcpy(&f, &v, 4);
-  return f;
-}
-void WrF(uint8_t* p, float f) {
-  uint32_t v;
-  std::memcpy(&v, &f, 4);
-  Wr32(p, v);
-}
 uint32_t g_solo_frames = 0;
 // The swap in force: the story's player is the CAW (its person id, the save slot) but his character carries the
 // mod's id - sub_825344E0 below finds him by either (0 / 0: none)

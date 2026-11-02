@@ -29,6 +29,7 @@
 #include "match_record.h"
 #include "move_packs.h"
 #include "p2p.h"
+#include "../modmaker/svrfmt/bytes.h"
 
 REXCVAR_DECLARE(int32_t, frame_rate);
 REXCVAR_DECLARE(int32_t, cpu_reversal_chance);
@@ -47,13 +48,7 @@ constexpr int kPeople = 10, kMotions = 32, kEvents = 64;
 constexpr uint32_t kStanding = 20500;
 bool Lying(uint32_t m) { return m >= 430 && m <= 448; }  // (match_diag.cpp: 473-478, selling, stand up straight in stock too)
 
-uint32_t Rd32(const uint8_t* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; }
-float RdF(const uint8_t* p) {
-  const uint32_t v = Rd32(p);
-  float f;
-  std::memcpy(&f, &v, 4);
-  return f;
-}
+using svrfmt::Rd32, svrfmt::RdF;
 
 struct MotionNote {
   uint32_t clock = 0, motion = 0, slot = 0, move = 0xFFFF;

@@ -54,6 +54,7 @@
 #include "match_box.h"
 #include "match_record.h"
 #include "thread_cpu.h"
+#include "../modmaker/svrfmt/bytes.h"
 
 namespace svr2011 {
 std::atomic<uint32_t> g_match_rule{~0u}, g_match_arena{~0u};  // (the last match placed: LastMatch)
@@ -72,16 +73,7 @@ constexpr uint32_t kNoText = 0x05F5E0FF;
 
 rex::memory::Memory* g_memory = nullptr;
 
-uint32_t Rd32(const uint8_t* p) {
-  uint32_t v;
-  std::memcpy(&v, p, 4);
-  return __builtin_bswap32(v);
-}
-void Wr32(uint8_t* p, uint32_t v) {
-  v = __builtin_bswap32(v);
-  std::memcpy(p, &v, 4);
-}
-
+using svrfmt::Rd32, svrfmt::RdF, svrfmt::Wr32, svrfmt::WrF;
 // A row to add: after the row labelled `anchor` in menu group `group`, a copy
 // of it with this label, description and rule (its match type mod: `mod`).
 struct Row {
@@ -1625,17 +1617,6 @@ bool g_making_cameras = false;
 
 bool WholeBackstage(uint8_t* base) { return Rd32(base + kLiveSettings + 64) == 78 && g_free_roam; }
 
-float RdF(const uint8_t* p) {
-  const uint32_t v = Rd32(p);
-  float f;
-  std::memcpy(&f, &v, 4);
-  return f;
-}
-void WrF(uint8_t* p, float f) {
-  uint32_t v;
-  std::memcpy(&v, &f, 4);
-  Wr32(p, v);
-}
 // (test aids: a fighter put at x, y, z - his base +288 and the body's three copies (+0, +704, +768, hctp_room) -
 // in area `area` (+444: 0 the ring, 1 outside); a paired start keeps such places)
 void PutFighter(uint8_t* base, uint32_t f, float x, float y, float z, uint8_t area = 0) {

@@ -33,6 +33,7 @@
 #include "fps_overlay.h"
 #include "mem_trace.h"
 #include "generated/default/svr2011_init.h"
+#include "../modmaker/svrfmt/bytes.h"
 
 namespace {
 std::mutex g_mutex;
@@ -395,10 +396,7 @@ REX_HOOK_RAW(sub_8215A380) {
 namespace {
 constexpr uint32_t kLoaderCache = 0x82ED5FE8;
 
-uint32_t Rd32(const uint8_t* base, uint32_t a) {
-  const uint8_t* p = base + a;
-  return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3];
-}
+using svrfmt::Rd32;
 
 std::string GuestName(const uint8_t* base, uint32_t a) {
   std::string s;

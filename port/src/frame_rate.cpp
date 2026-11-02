@@ -73,6 +73,7 @@
 #include "android_perf.h"
 #include "mem_trace.h"
 #include "superstar_mods.h"
+#include "../modmaker/svrfmt/bytes.h"
 #if SVR2011_DEBUG_SUITE
 #include "debug_suite/debug_suite.h"
 #endif
@@ -97,26 +98,7 @@ std::atomic<bool> g_lockstep{false};      // online: one world update per frame 
 std::atomic<bool> g_in_match{false};      // 30 fps applies in matches only
 std::atomic<void (*)()> g_match_start{nullptr};  // armed match start (ArmMatchStart)
 
-void Wr32(uint8_t* p, uint32_t v) {
-  v = __builtin_bswap32(v);
-  std::memcpy(p, &v, 4);
-}
-uint32_t Rd32(const uint8_t* p) {
-  uint32_t v;
-  std::memcpy(&v, p, 4);
-  return __builtin_bswap32(v);
-}
-float RdF(const uint8_t* p) {
-  const uint32_t v = Rd32(p);
-  float f;
-  std::memcpy(&f, &v, 4);
-  return f;
-}
-void WrF(uint8_t* p, float f) {
-  uint32_t v;
-  std::memcpy(&v, &f, 4);
-  Wr32(p, v);
-}
+using svrfmt::Rd32, svrfmt::RdF, svrfmt::Wr32, svrfmt::WrF;
 
 // The frame clock: the frames the game draws a second. 30 fps (in a match,
 // or an entrance at the original's 30) with the native renderer: the game

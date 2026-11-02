@@ -44,6 +44,7 @@
 #include "pad_types.h"
 
 #include "generated/default/svr2011_init.h"
+#include "../modmaker/svrfmt/bytes.h"
 
 #ifndef SVR2011_PORT_VERSION
 #define SVR2011_PORT_VERSION "dev"
@@ -88,13 +89,7 @@ constexpr uint32_t kObjects = 0x82DE0220, kObjectSlots = 72;
 constexpr uint32_t kSeedCounters = 0x82EC6A2C;  // (u8 x2: the seed table's next index, by caller kind)
 constexpr uint32_t kInputsVersion = 1;  // (1: + the frames' world updates, user 0xFF)
 
-uint32_t Rd32(const uint8_t* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; }
-float RdF(const uint8_t* p) {
-  const uint32_t v = Rd32(p);
-  float f;
-  std::memcpy(&f, &v, 4);
-  return f;
-}
+using svrfmt::Rd32, svrfmt::RdF;
 
 std::string Json(const std::string& s) {  // (a JSON string, quoted)
   std::string o = "\"";

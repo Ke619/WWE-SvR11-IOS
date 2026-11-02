@@ -30,17 +30,14 @@
 #include "text_guard.h"
 
 #include "generated/default/svr2011_init.h"
+#include "../modmaker/svrfmt/bytes.h"
 
 namespace {
 
 constexpr uint32_t kMoveTable = 0x82E3C214;
 constexpr uint32_t kRecordSize = 160;
 
-uint32_t Rd32(uint8_t* base, uint32_t a) {
-  return uint32_t(base[a]) << 24 | uint32_t(base[a + 1]) << 16 | uint32_t(base[a + 2]) << 8 | base[a + 3];
-}
-uint16_t Rd16(uint8_t* base, uint32_t a) { return uint16_t(base[a] << 8 | base[a + 1]); }
-void Wr16(uint8_t* base, uint32_t a, uint16_t v) { base[a] = uint8_t(v >> 8), base[a + 1] = uint8_t(v); }
+using svrfmt::Rd32, svrfmt::Rd16, svrfmt::Wr16;
 
 rex::memory::Memory* g_memory = nullptr;
 std::mutex g_mutex;

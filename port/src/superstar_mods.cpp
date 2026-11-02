@@ -75,6 +75,7 @@
 #include "hd_movies.h"
 #include "user_movies.h"
 #include "ascii_fold.h"  // (launcher/)
+#include "../modmaker/svrfmt/bytes.h"
 
 namespace fs = std::filesystem;
 
@@ -192,10 +193,7 @@ fs::path g_game;
 bool g_mounted = false;
 
 uint32_t Rd16(const uint8_t* p) { return uint32_t(p[0]) << 8 | p[1]; }
-uint32_t Rd32(const uint8_t* p) { return uint32_t(p[0]) << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
-void Wr32(uint8_t* p, uint32_t v) {
-  p[0] = uint8_t(v >> 24), p[1] = uint8_t(v >> 16), p[2] = uint8_t(v >> 8), p[3] = uint8_t(v);
-}
+using svrfmt::Rd32, svrfmt::Wr32;
 
 // A model pac's EMD entry names ("%06d%02d": character id, attire*10 + kind)
 // get the slot's id, whichever character the pac was made for (the base's

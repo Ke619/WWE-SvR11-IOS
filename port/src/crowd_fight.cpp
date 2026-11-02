@@ -39,6 +39,7 @@
 #include "weapons_page.h"
 
 #include "generated/default/svr2011_init.h"
+#include "../modmaker/svrfmt/bytes.h"
 
 namespace {
 
@@ -52,19 +53,7 @@ constexpr uint32_t kLoaderFirst = 0x82187258, kLoaderEnd = 0x821874C8;  // sub_8
 
 std::atomic<bool> g_crowd{false};
 
-uint32_t Rd32(const uint8_t* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; }
-void Wr32(uint8_t* p, uint32_t v) { p[0] = uint8_t(v >> 24), p[1] = uint8_t(v >> 16), p[2] = uint8_t(v >> 8), p[3] = uint8_t(v); }
-float RdF(const uint8_t* p) {
-  const uint32_t v = Rd32(p);
-  float f;
-  std::memcpy(&f, &v, 4);
-  return f;
-}
-void WrF(uint8_t* p, float f) {
-  uint32_t v;
-  std::memcpy(&v, &f, 4);
-  Wr32(p, v);
-}
+using svrfmt::Rd32, svrfmt::RdF, svrfmt::Wr32, svrfmt::WrF;
 
 // A fighter put somewhere: his place (+288..+296), facing (+276), the body's place (*(+304)) and its two other
 // copies (+704, +768 - as hctp_room.cpp's PlaceBody: without them the body eased him back).

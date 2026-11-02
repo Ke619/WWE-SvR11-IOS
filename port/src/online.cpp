@@ -39,6 +39,7 @@
 #include "online_chat.h"
 #include "p2p.h"
 #include "paint_pages.h"
+#include "../modmaker/svrfmt/bytes.h"
 
 namespace svr2011 {
 
@@ -266,15 +267,7 @@ constexpr uint32_t kDownloadMax = 0xC00000;
 constexpr uint32_t kCawFileSize = 1347532, kPaintFileSize = 394516, kReelFileSize = 1555802;
 constexpr uint32_t kStoryMax = 0x6CCC94;
 
-uint32_t Rd32(const uint8_t* base, uint32_t a) {
-  const uint8_t* p = base + a;
-  return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3];
-}
-void Wr32(uint8_t* base, uint32_t a, uint32_t v) {
-  uint8_t* p = base + a;
-  p[0] = uint8_t(v >> 24), p[1] = uint8_t(v >> 16), p[2] = uint8_t(v >> 8), p[3] = uint8_t(v);
-}
-
+using svrfmt::Rd32, svrfmt::Rd16, svrfmt::Wr32;
 std::atomic<bool> g_importing{false};  // a download is being saved
 
 // Copies a save file before a download replaces it: Saves\.backup\<name>.<time>
@@ -1038,7 +1031,6 @@ constexpr uint8_t kCamSlot[224] = {  // (cam_mod_moves.cpp kSlotCategory != 128:
     1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0, 1,
     1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0};
 
-uint16_t Rd16(const uint8_t* base, uint32_t a) { return uint16_t(base[a] << 8 | base[a + 1]); }
 
 // The pack a move comes from (its folder's name), "" if none.
 std::string PackOfMove(uint16_t id) {

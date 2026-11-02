@@ -43,6 +43,7 @@
 #include "generated/default/svr2011_init.h"
 #include "../modmaker/svrfmt/pac.h"
 #include "../modmaker/svrfmt/texture.h"
+#include "../modmaker/svrfmt/bytes.h"
 
 namespace fs = std::filesystem;
 
@@ -56,10 +57,7 @@ std::map<uint32_t, fs::path> g_signs;  // sign id -> its DDS (ours)
 std::vector<uint32_t> g_general;       // the general signs: the game's 16, then the packs'
 uint32_t g_bank = 0, g_bank_size = 0;  // guest: the merged bank
 
-void Wr32(uint8_t* p, uint32_t v) {
-  p[0] = uint8_t(v >> 24), p[1] = uint8_t(v >> 16), p[2] = uint8_t(v >> 8), p[3] = uint8_t(v);
-}
-uint32_t Rd32(const uint8_t* p) { return uint32_t(p[0]) << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
+using svrfmt::Rd32, svrfmt::Wr32;
 
 // A sign's entry: a texture bundle with the DDS as "no01".
 svrfmt::Bytes SignEntry(const fs::path& dds) {

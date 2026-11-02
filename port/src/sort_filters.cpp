@@ -41,13 +41,11 @@
 #include "generated/default/svr2011_init.h"
 #include "rtwm_streak.h"
 #include "superstar_mods.h"
+#include "../modmaker/svrfmt/bytes.h"
 
 namespace {
 
-uint32_t Rd32(const uint8_t* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; }
-void Wr32(uint8_t* p, uint32_t v) {
-  p[0] = uint8_t(v >> 24), p[1] = uint8_t(v >> 16), p[2] = uint8_t(v >> 8), p[3] = uint8_t(v);
-}
+using svrfmt::Rd32, svrfmt::Wr32;
 
 constexpr uint32_t kListSize = 2580, kMaxEntries = 322, kFlags = 4 + 1288;
 constexpr uint32_t kSmackDown = 1, kRaw = 2, kNpc = 3, kMods = 5;

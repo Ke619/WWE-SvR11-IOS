@@ -18,6 +18,7 @@
 #include <rex/ppc.h>
 
 #include "generated/default/svr2011_init.h"
+#include "../modmaker/svrfmt/bytes.h"
 
 namespace {
 
@@ -27,13 +28,7 @@ FILE* g_file = nullptr;
 uint32_t g_frame = 0;
 constexpr uint32_t kChars = 0x82E3CC50;
 
-uint32_t Rd32(const uint8_t* p) { return uint32_t(p[0]) << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
-float RdF(const uint8_t* p) {
-  const uint32_t v = Rd32(p);
-  float f;
-  std::memcpy(&f, &v, 4);
-  return f;
-}
+using svrfmt::Rd32, svrfmt::RdF;
 
 bool Wanted(uint8_t* base, uint32_t h) {
   if (!g_path || !h) return false;

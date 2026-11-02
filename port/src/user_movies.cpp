@@ -34,6 +34,7 @@
 #include "cae_mod_motions.h"
 
 #include "generated/default/svr2011_init.h"
+#include "../modmaker/svrfmt/bytes.h"
 
 namespace {
 
@@ -50,16 +51,8 @@ std::map<int, std::string> g_ids;             // id -> file name (ASCII)
 std::set<std::string> g_pending;              // files being written (ReserveUserMovie)
 std::map<std::string, uint32_t> g_labels;     // label -> guest string
 
-uint32_t Rd32(uint8_t* base, uint32_t a) {
-  uint32_t v;
-  std::memcpy(&v, base + a, 4);
-  return __builtin_bswap32(v);
-}
+using svrfmt::Rd32, svrfmt::Wr32;
 int16_t Rd16(uint8_t* base, uint32_t a) { return int16_t(base[a] << 8 | base[a + 1]); }
-void Wr32(uint8_t* base, uint32_t a, uint32_t v) {
-  v = __builtin_bswap32(v);
-  std::memcpy(base + a, &v, 4);
-}
 
 // A path for the log (UTF-8).
 std::string Utf8(const std::filesystem::path& p) {

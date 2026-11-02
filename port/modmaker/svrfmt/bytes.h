@@ -22,6 +22,18 @@ inline void PutBe32(uint8_t* p, uint32_t v) { p[0] = uint8_t(v >> 24); p[1] = ui
 inline void PutBe16(uint8_t* p, uint16_t v) { p[0] = uint8_t(v >> 8); p[1] = uint8_t(v); }
 inline void PutBeF(uint8_t* p, float f) { uint32_t v; std::memcpy(&v, &f, 4); PutBe32(p, v); }
 
+// The same with the game code's names (src/*.cpp), and at base + a (guest memory).
+inline uint32_t Rd32(const uint8_t* p) { return Be32(p); }
+inline uint16_t Rd16(const uint8_t* p) { return Be16(p); }
+inline float RdF(const uint8_t* p) { return BeF(p); }
+inline void Wr32(uint8_t* p, uint32_t v) { PutBe32(p, v); }
+inline void Wr16(uint8_t* p, uint16_t v) { PutBe16(p, v); }
+inline void WrF(uint8_t* p, float f) { PutBeF(p, f); }
+inline uint32_t Rd32(const uint8_t* base, uint32_t a) { return Be32(base + a); }
+inline uint16_t Rd16(const uint8_t* base, uint32_t a) { return Be16(base + a); }
+inline void Wr32(uint8_t* base, uint32_t a, uint32_t v) { PutBe32(base + a, v); }
+inline void Wr16(uint8_t* base, uint32_t a, uint16_t v) { PutBe16(base + a, v); }
+
 inline void AppLe32(Bytes& b, uint32_t v) { size_t o = b.size(); b.resize(o + 4); PutLe32(&b[o], v); }
 inline void AppBe32(Bytes& b, uint32_t v) { size_t o = b.size(); b.resize(o + 4); PutBe32(&b[o], v); }
 inline void AppBe16(Bytes& b, uint16_t v) { size_t o = b.size(); b.resize(o + 2); PutBe16(&b[o], v); }

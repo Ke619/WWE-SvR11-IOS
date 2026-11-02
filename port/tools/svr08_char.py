@@ -397,7 +397,8 @@ def attire(kids, tp, portrait, costume_ids, first_kids):
     color, normal = pick('color'), pick('normal') or pick('nomal')   # (2009 Maria's sheet is "12702nomal")
     ao = next((d for n, d in base.items() if n.lower().endswith('ao')), None) or pick('ao')
     cos = dict(tex_read(kids[0x27])) if 0x27 in kids else {}
-    cpick = lambda suffix: next((d for n, d in cos.items() if n.lower().endswith(suffix)), None)
+    # (the costume sheets' names: "_c" / "_n" / "ao" mostly; 2008 Rey Mysterio's are 2304_color / 2304_nomal / 2304_AO)
+    cpick = lambda *suffixes: next((d for s in suffixes for n, d in cos.items() if n.lower().endswith(s)), None)
     pieces = [cid for cid in costume_ids if cid in kids and kids[cid][:4] == b'JBOY'] if cos else []
     textures = ['color', 'normal', 'mk', 'noise', 'cubemap']
     SKIN = {'texDiffuse': 'color', 'texNormal': 'normal', 'texOcclusion': 'mk', 'texTilingMap': 'noise'}
@@ -420,11 +421,13 @@ def attire(kids, tp, portrait, costume_ids, first_kids):
             w, h = body.size
             x0, y0, x1, y1 = int(BOX[0] * w), int(BOX[1] * h), int(round(BOX[2] * w)), int(round(BOX[3] * h))
             im = body.copy()
-            im.paste(resize_rgba(piece, (x1 - x0, y1 - y0), Image.LANCZOS), (x0, y0))
+            if piece is not None:   # (a costume sheet that isn't there: the box keeps the body sheet's pixels)
+                im.paste(resize_rgba(piece, (x1 - x0, y1 - y0), Image.LANCZOS), (x0, y0))
             return im
-        color_d = dds_encode(paint(dds_img(color), dds_img(cpick('_c'))), 'DXT5')
-        normal_d = dds_encode(paint(dds_img(normal), dds_img(cpick('_n'))), 'DXT5')
-        ao_img = paint(dds_img(ao).convert('L'), dds_img(cpick('ao')).convert('L'))
+        piece = lambda d, mode='RGBA': dds_img(d).convert(mode) if d else None
+        color_d = dds_encode(paint(dds_img(color), piece(cpick('_c', 'color'))), 'DXT5')
+        normal_d = dds_encode(paint(dds_img(normal), piece(cpick('_n', 'normal', 'nomal'))), 'DXT5')
+        ao_img = paint(dds_img(ao).convert('L'), piece(cpick('ao'), 'L'))
         mk_d = dds_encode(Image.merge('RGBA', (Image.new('L', ao_img.size, 0), ao_img, ao_img, Image.new('L', ao_img.size, 255))), 'DXT5')
     else:
         color_d, normal_d, mk_d = color, normal, mk_from_ao(ao)

@@ -51,7 +51,11 @@ void ShellOpen(const std::wstring& what);
 // An RGBA picture as a shader resource (nullptr for an empty picture).
 ID3D11ShaderResourceView* MakeTexture(const Image& img);
 inline ImTextureID Tex(ID3D11ShaderResourceView* v) { return ImTextureID(reinterpret_cast<uintptr_t>(v)); }
-inline void Release(ID3D11ShaderResourceView*& v) { if (v) v->Release(), v = nullptr; }
+// A texture let go of while the UI is being built is released after the frame is drawn and presented: this frame's
+// draw list may still hold it (a picture box's thumbnail replaced by the picture just picked - report
+// 20261102-050209: Intel's D3D11 driver crashed binding the freed view when the frame was drawn).
+void ReleaseAfterFrame(IUnknown* v);
+inline void Release(ID3D11ShaderResourceView*& v) { if (v) ReleaseAfterFrame(v), v = nullptr; }
 
 // A picture kept with its GPU copy (the copy is made on first use, on the UI thread).
 struct Picture {

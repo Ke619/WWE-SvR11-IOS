@@ -610,7 +610,19 @@ def convert0789(a, rep, outdir, g):
         # a template its EXH made 2008's Swanton Bomb 1 a finisher triggered running, not from the top rope - report
         # 20261101-060824. The floor flights are then dropped below. A dive with no in-ring template still gets one.)
         dive = sit == 9
-        for cs, where, same_sit, hold in tries:
+        # (2011's moves named after the source - its name and more words: SvR 2008's The 619 -> The 619 Senton 6604 /
+        # The 619 Body Splash 6605, rope moves. By start gap alone it got Spinning Toe Hold 4576, a standing grapple's
+        # record and menus: it wasn't where a player looks for it in CREATE A MOVE-SET - report 20261102-170057)
+        words = lambda s: re.findall(r'[a-z0-9]+', s.lower())
+        src_w = words(name)
+        family = {i for i in motp if i in g11.waze and len(src_w) >= 2 and usable11(g11.waze, i)
+                  and words(g11.waze[i][1])[:len(src_w)] == src_w and len(words(g11.waze[i][1])) > len(src_w)
+                  and (sit is None or g11.situation.get(i) == sit)}
+        if family:
+            tid = choose_template(g11, SINGLES, nf, gap, family, paired)
+            if tid:
+                how = 'the 2011 moves named "%s ...", the closest start gap and length' % name
+        for cs, where, same_sit, hold in ([] if tid else tries):
             tid = (dive and choose_template(g11, cs, nf, gap, pool(same_sit, hold), paired, ringside=False)) or \
                 choose_template(g11, cs, nf, gap, pool(same_sit, hold), paired)
             if tid:

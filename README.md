@@ -124,14 +124,14 @@ Settings are saved in `svr2011.toml` in the game folder (the app's **Documents**
 |---|---|
 | Native renderer, 60 fps | ✅ Working |
 | Touch controls | ✅ Working |
-| Save manager | ⚠️ Working, Not available in the Launcher yet |
+| Save manager | ⚠️ Working, Not available in the Launcher yet. |
 | Wide-screen matches and entrances | ✅ Working |
-| Entrance movies | ⚠️ Working only for `.svrmods` (Can't manually import yet from the Launcher) |
+| Entrance movies | ⚠️ Working only for `.svrmods`,Can't manually import yet from the Launcher |
 | DLC | ✅ Working |
 | Mods (`.svrmod`) | ✅ Working |
-| Texture packs | ❌ Not available on iOS yet |
+| Texture packs | ❌ Not available on iOS yet. |
 | Achievements | ✅ Working |
-| Entrance music from your own songs | ⚠️ Working only for `.svrmods` (Can't manually import yet from the Launcher |
+| Entrance music from your own songs | ⚠️ Working only for `.svrmods`, Can't manually import yet from the Launcher. |
 | iOS launcher | ✅ Working |
 | Online | ✅ Working |
 | Discord status | ➖ Not part of this port. |

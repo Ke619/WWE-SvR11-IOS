@@ -352,6 +352,39 @@ void CheckGameFilesThere() {
 #endif
 }
 
+// A Mac through Wine / CrossOver (Wine's ntdll says the host is Darwin): its Vulkan is MoltenVK, which lacks what the
+// game's Vulkan path needs - the game aborted in winevulkan a moment in, a black window (2.1.7 report f331f8, Apple
+// M1). Logged, and a question (Windows): play anyway, or quit. Test aid SVR2011_TEST_MAC_WINE=1 (as if on one).
+void CheckMacWine() {
+#if defined(_WIN32)
+  bool mac = std::getenv("SVR2011_TEST_MAC_WINE") != nullptr;
+  if (HMODULE ntdll = GetModuleHandleW(L"ntdll.dll"))
+    if (auto host = reinterpret_cast<void (*)(const char**, const char**)>(GetProcAddress(ntdll, "wine_get_host_version"))) {
+      const char *sysname = nullptr, *release = nullptr;
+      host(&sysname, &release);
+      REXLOG_INFO("platform: Wine on {} {}", sysname ? sysname : "?", release ? release : "");
+      mac |= sysname && !std::strcmp(sysname, "Darwin");
+    }
+  if (!mac) return;
+  REXLOG_WARN("platform: a Mac through Wine / CrossOver - not supported (its Vulkan driver, MoltenVK, lacks what the "
+              "game needs: a black window or a crash at start are likely)");
+  rex::FlushLogging();
+  if (std::getenv("SVR2011_TEST_NO_DIALOGS")) return;
+  const int answer = MessageBoxW(
+      nullptr,
+      L"This looks like a Mac running the game through Wine or CrossOver. That isn't supported: the Vulkan driver "
+      L"there (MoltenVK) lacks what the game needs, so it usually shows a black window or closes at start.\n\n"
+      L"Try anyway?",
+      L"SvR 2011 - Mac through Wine isn't supported", MB_YESNO | MB_ICONWARNING | MB_SETFOREGROUND);
+  if (answer != IDYES) {
+    REXLOG_INFO("platform: the player chose not to try");
+    rex::FlushLogging();
+    std::_Exit(4);
+  }
+  REXLOG_INFO("platform: the player chose to try anyway");
+#endif
+}
+
 // default.xex from another release of the game (online_files.h DefaultXexSupported): the port's code is the
 // supported xex's, recompiled, so another's ran a moment and quit without a word ("No function registered at
 // 8216B140": the Japanese disc, 2.1.8 report 6fd821). Stopped here with a message (Windows) instead.
@@ -534,6 +567,7 @@ void Svr2011App::OnPreSetup(rex::RuntimeConfig& config) {
   g_settings_notes.clear();
   CheckGameFilesThere();  // (a game folder without the disc's essential files: a message, not a crash)
   CheckSupportedXex();     // (another release's default.xex: a message, not a silent exit)
+  CheckMacWine();          // (a Mac through Wine: told it isn't supported, may still try)
   // A settings file that couldn't be read (every setting ignored) still draws.
   if (config.gpu_plugin.empty()) {
     rex::cvar::SetFlagByName("gpu_plugin", "xenos");

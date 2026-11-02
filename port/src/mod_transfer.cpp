@@ -42,6 +42,7 @@
 #include "online_files.h"
 #include "online_mods.h"
 #include "p2p.h"
+#include "util.h"
 
 REXCVAR_DEFINE_BOOL(online_mods_load, false, "Online",
                     "This run also loads the mods fetched from a session's host (<user data>\\OnlineMods; set by the "
@@ -106,10 +107,7 @@ std::vector<std::string> Split(const std::string& s, char by) {
   return out;
 }
 
-std::string Lower(std::string s) {
-  for (char& c : s) c = char(std::tolower(static_cast<unsigned char>(c)));
-  return s;
-}
+using svr2011::Lower;
 
 int64_t NowMs() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count();

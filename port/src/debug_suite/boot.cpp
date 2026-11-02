@@ -37,6 +37,7 @@
 #include "debug_suite/debug_suite.h"
 #include "script_input.h"
 #include "../../modmaker/svrfmt/bytes.h"
+#include "../util.h"
 
 REXCVAR_DEFINE_STRING(dbg_boot, "", "Debug",
                       "SVRDBG: start straight in: match (dbg_match's), a page (caw, threads, cae, options, "
@@ -66,10 +67,7 @@ struct Match {
   bool all_cpu = false;
 };
 
-std::string Upper(std::string s) {
-  for (char& c : s) c = char(std::toupper(static_cast<unsigned char>(c)));
-  return s;
-}
+using svr2011::Upper;
 
 // "people=EDGE,KANE attires=1,1 arena=1 rule=0 cpu=all" (a value runs to the next " key=": names have spaces;
 // rule in hex as SVR2011_TEST_RULE)

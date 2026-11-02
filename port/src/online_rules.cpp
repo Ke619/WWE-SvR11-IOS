@@ -33,13 +33,11 @@
 #include "match_types.h"
 #include "frame_rate.h"
 #include "p2p.h"
+#include "util.h"
 
 namespace {
 
-int64_t NowMs() {
-  return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
-      .count();
-}
+using svr2011::NowMs;
 
 enum Mode : uint32_t { kNone = 0, kWeapons = 1, kStages = 2, kTablesLadders = 3, kWeaponsInside = 4, kMystery = 5, kGauntletElim = 6, kSlobber = 7, kRoof = 8 };
 struct Option {

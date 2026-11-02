@@ -10,6 +10,7 @@
 #include <imgui.h>
 
 #include "frame_rate.h"
+#include "util.h"
 
 namespace {
 
@@ -17,11 +18,7 @@ constexpr uint32_t kMatchFrames = 0x82E3CD0C;
 
 uint32_t Rd32(const uint8_t* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; }
 
-int64_t NowMs() {
-  return std::chrono::duration_cast<std::chrono::milliseconds>(
-             std::chrono::steady_clock::now().time_since_epoch())
-      .count();
-}
+using svr2011::NowMs;
 
 std::atomic<uint32_t> g_frames{0};
 std::atomic<int64_t> g_ticked_at{0};  // ms: the clock last went up

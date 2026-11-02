@@ -77,6 +77,7 @@
 #include "user_movies.h"
 #include "ascii_fold.h"  // (launcher/)
 #include "../modmaker/svrfmt/bytes.h"
+#include "util.h"
 
 namespace fs = std::filesystem;
 
@@ -1873,10 +1874,7 @@ void LoadBadges() {
   REXLOG_INFO("[svr2011] superstar mods: badge ({} languages)", found.size());
 }
 
-int64_t NowMs() {
-  return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
-      .count();
-}
+using svr2011::NowMs;
 
 bool Committed(uint32_t at) {
   auto* heap = g_memory->LookupHeap(at);

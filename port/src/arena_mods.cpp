@@ -72,6 +72,7 @@
 #include "../modmaker/svrfmt/pac.h"
 #include "../modmaker/svrfmt/texture.h"
 #include "../modmaker/svrfmt/jboy.h"
+#include "util.h"
 
 namespace {
 
@@ -125,11 +126,7 @@ std::vector<std::pair<StgEntry, size_t>> StgEntries(const char* head, size_t n) 
   return out;
 }
 
-std::string Upper(std::string s) {
-  for (char& c : s) c = char(std::toupper(static_cast<unsigned char>(c)));
-  return s;
-}
-
+using svr2011::NowMs, svr2011::Upper;
 // Makes the file system see overlay/<name> as it is now: the host device
 // indexes a folder created after startup lazily, and keeps a file's size
 // from when it first saw it.
@@ -590,10 +587,6 @@ void LoadCustomArenas() {
 
 int Pages() { return 1 + int(g_layout.size()); }
 
-int64_t NowMs() {
-  return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
-      .count();
-}
 
 // Finds each banner in guest physical memory (4 KB view) by a run of blocks.
 // A block of the banner to look for it by: one of two colours mixed (a flat

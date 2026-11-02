@@ -51,6 +51,7 @@
 #include "online_mods.h"
 #include "online_overlay.h"
 #include "online_rules.h"
+#include "util.h"
 
 REXCVAR_DEFINE_BOOL(online_cpu_slots, true, "Online",
                     "CPU players in online Player Matches: the host's Y on a vacant lobby slot");
@@ -703,9 +704,7 @@ uint32_t TagFor(const std::string* render) {
   return kPictureTag | uint32_t(g_given.size() - 1);
 }
 
-int64_t NowMs() {
-  return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-}
+using svr2011::NowMs;
 
 // A slot's player's online id (the network library's: the lobby's table at
 // L + 0x2CF20 was empty on the host for a joiner's slot).

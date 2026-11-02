@@ -32,6 +32,7 @@
 #define STBI_ONLY_PNG
 #define STBI_NO_STDIO
 #include "stb_image.h"
+#include "../util.h"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -140,10 +141,7 @@ bool HashOfStem(const std::string& stem, uint64_t* hash) {
   return true;
 }
 
-std::string Lower(std::string s) {
-  for (char& c : s) c = char(std::tolower(static_cast<unsigned char>(c)));
-  return s;
-}
+using svr2011::Lower;
 
 std::string Safe(const std::string& s) {
   std::string o;

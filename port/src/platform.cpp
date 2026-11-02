@@ -3,6 +3,7 @@
 #include "platform.h"
 
 #include <cstdlib>
+#include "util.h"
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -17,16 +18,7 @@ namespace svr2011 {
 
 namespace {
 
-std::string Env(const char* name) {
-  char* value = nullptr;
-  size_t len = 0;
-  std::string result;
-  if (_dupenv_s(&value, &len, name) == 0 && value) {
-    result = value;
-    free(value);
-  }
-  return result;
-}
+using svr2011::Env;
 
 #if defined(_WIN32)
 HMODULE Ntdll() { return GetModuleHandleW(L"ntdll.dll"); }

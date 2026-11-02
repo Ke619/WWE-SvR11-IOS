@@ -80,6 +80,7 @@
 #include "native/guest_d3d.h"
 #include "native/textures.h"
 #include "free_cam.h"
+#include "../util.h"
 #if SVR2011_DEBUG_SUITE
 #include "debug_suite/debug_suite.h"
 #endif
@@ -950,16 +951,7 @@ void Fail(const char* reason = "it stopped working") {
 #endif
 }
 
-bool EnvFlag(const char* name) {
-  char* v = nullptr;
-  size_t n = 0;
-  bool on = false;
-  if (_dupenv_s(&v, &n, name) == 0 && v) {
-    on = v[0] == '1';
-    free(v);
-  }
-  return on;
-}
+using svr2011::EnvFlag;
 
 int EnvInt(const char* name, int fallback) {
   char* v = nullptr;

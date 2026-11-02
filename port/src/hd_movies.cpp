@@ -53,6 +53,7 @@
 
 #include "generated/default/svr2011_init.h"
 #include "user_movies.h"
+#include "util.h"
 
 extern "C" {
 #include "bink_encode.h"
@@ -106,10 +107,7 @@ struct HdMovie {
 std::mutex g_mutex;
 std::map<std::string, HdMovie> g_movies;  // by the stub's file name (lower case)
 
-std::string Lower(std::string s) {
-  for (char& c : s) c = char(std::tolower(uint8_t(c)));
-  return s;
-}
+using svr2011::Lower;
 
 // A .bik's size from its header (0: not one).
 int BinkSize(const fs::path& bik) {

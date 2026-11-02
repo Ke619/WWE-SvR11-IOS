@@ -29,6 +29,7 @@
 #include <rex/ppc.h>
 #include <rex/logging.h>
 #include <rex/system/xmemory.h>
+#include <rex/thread.h>
 
 #include "caw_logos.h"
 #include "entrance_media.h"
@@ -202,6 +203,7 @@ constexpr size_t kLogoSize = 1024 + 65536;  // a stored logo: palette + pixels (
 // uploaded but whose logos it doesn't have: the ones this player has go up.
 // (The game's own upload carries only the Superstar file.)
 void LogoUploads() {
+  rex::thread::set_current_thread_name("logo uploads");
   for (;;) {
     auto wanted = net::ServerRequest("GET", "/api/logos/wanted");
     if (wanted && wanted->status == 200) {

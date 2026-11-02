@@ -49,6 +49,7 @@
 #include <rex/hook.h>
 #include <rex/logging.h>
 #include <rex/ppc.h>
+#include <rex/thread.h>
 
 #include "generated/default/svr2011_init.h"
 #include "user_movies.h"
@@ -214,7 +215,7 @@ class DecoderBase {
 
   // (the subclass starts its thread when constructed and stops it in its
   // destructor, while its own members still exist)
-  void Start() { thread_ = std::thread([this] { Run(); }); }
+  void Start() { thread_ = std::thread([this] { rex::thread::set_current_thread_name("hd movie"); Run(); }); }
   void Stop() {
     stop_ = true;
     if (thread_.joinable()) thread_.join();
@@ -710,7 +711,7 @@ bool PrepareHdMovie(const fs::path& movies, const std::string& file, const fs::p
   uint32_t sw = 0, sh = 0;
   bool decodes = false;
   // (on a thread of its own: Media Foundation's COM set-up stays off the caller's)
-  std::thread([&] { decodes = Probe(mp4, &seconds, &sw, &sh); }).join();
+  std::thread([&] { rex::thread::set_current_thread_name("hd movie probe"); decodes = Probe(mp4, &seconds, &sw, &sh); }).join();
   if (!decodes || seconds <= 0) {
     REXLOG_INFO("[svr2011] hd movies: {} doesn't play here (no decoder) - its .bik does", mp4.filename().string());
     return false;

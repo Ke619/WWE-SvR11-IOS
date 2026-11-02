@@ -59,6 +59,7 @@
 #include <rex/system/xmemory.h>
 #include <rex/system/xthread.h>
 #include <rex/ui/presenter.h>
+#include <rex/thread.h>
 
 #include "arena_mods.h"
 #include "caw_limits.h"
@@ -621,6 +622,7 @@ REX_HOOK_RAW(sub_8269C728) {
     const int ms = v ? std::atoi(v) : 0;
     if (ms <= 0) return;
     std::thread([ms] {
+      rex::thread::set_current_thread_name("frame pacing test");
       int64_t logged_for = -1;
       for (;;) {
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
@@ -637,6 +639,7 @@ REX_HOOK_RAW(sub_8269C728) {
   });
   std::call_once(watchdog, [] {
     std::thread([] {
+      rex::thread::set_current_thread_name("frame watchdog");
       // (test aid: SVR2011_TEST_DUMP_AT=<s> - every guest thread's back chain once, <s> s after the start)
       static const int dump_at = [] { const char* v = std::getenv("SVR2011_TEST_DUMP_AT"); return v ? std::atoi(v) : 0; }();
       const auto started = Clock::now();
@@ -907,6 +910,7 @@ void StartDeveloperAids(uint8_t* base) {
   // the game's speed), the frames shown and wrestler 1's position.
   if (const char* v = std::getenv("SVR2011_FPS_PROBE"); v && (*v == '1' || *v == '2')) {
     std::thread([base, v] {
+      rex::thread::set_current_thread_name("fps probe");
       uint32_t last = Rd32(base + kMatchFrames);
       uint64_t last_presents = rex::ui::HostPresentCount(), last_new = rex::ui::HostNewGuestFramePresentCount();
       for (;;) {
@@ -938,6 +942,7 @@ void StartDeveloperAids(uint8_t* base) {
   // compares two runs).
   if (const char* path = std::getenv("SVR2011_FPS_DUMP"); path && *path) {
     std::thread([base, file = std::string(path)] {
+      rex::thread::set_current_thread_name("fps dump");
       constexpr uint32_t kSize = 0x10000;
       const auto t0 = Clock::now();
       for (;;) {
@@ -1169,6 +1174,7 @@ void LatencyOnPublish() {
   static std::once_flag started;
   std::call_once(started, [] {
     std::thread([] {
+      rex::thread::set_current_thread_name("frame times");
       uint64_t seen = rex::ui::HostNewGuestFramePresentCount();
       double sum_ms = 0, max_ms = 0;
       int n = 0;

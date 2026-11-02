@@ -9479,3 +9479,71 @@ diff --git a/src/kernel/xboxkrnl/xboxkrnl_io.cpp b/src/kernel/xboxkrnl/xboxkrnl_
          result = X_STATUS_PENDING;
        }
  
+diff --git a/src/system/xfile.cpp b/src/system/xfile.cpp
+index 4179e8b..8c6b6e1 100644
+--- a/src/system/xfile.cpp
++++ b/src/system/xfile.cpp
+@@ -19,14 +19,47 @@
+ #include <rex/system/xfile.h>
+ #include <rex/thread/mutex.h>
+ 
++#include <atomic>
++#include <chrono>
++#include <cstdio>
++#include <cstdlib>
++#include <mutex>
+ #include <span>
+ 
+ namespace rex::system {
+ 
++namespace {
++// Test aid SVR2011_TEST_IO_TRACE=<file>: every guest file open and read, a line each -
++// "<ms> <thread> open <path>" / "<ms> <thread> read <path> <offset> <bytes> <us>" (the load-time measurements).
++std::FILE* IoTrace() {
++  static std::FILE* f = [] {
++    const char* p = std::getenv("SVR2011_TEST_IO_TRACE");
++    return p && *p ? std::fopen(p, "w") : nullptr;
++  }();
++  return f;
++}
++
++void IoTraceLine(const char* kind, const std::string& path, uint64_t offset, uint64_t bytes, int64_t us) {
++  static std::mutex mutex;
++  static const auto t0 = std::chrono::steady_clock::now();
++  static std::atomic<int> threads{0};
++  thread_local const int thread = ++threads;
++  const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
++  std::lock_guard lock(mutex);
++  if (us < 0)
++    std::fprintf(IoTrace(), "%.1f %d %s %s\n", ms, thread, kind, path.c_str());
++  else
++    std::fprintf(IoTrace(), "%.1f %d %s %s %llu %llu %lld\n", ms, thread, kind, path.c_str(),
++                 (unsigned long long)offset, (unsigned long long)bytes, (long long)us);
++  std::fflush(IoTrace());
++}
++}  // namespace
++
+ XFile::XFile(KernelState* kernel_state, rex::filesystem::File* file, bool synchronous)
+     : XObject(kernel_state, kObjectType), file_(file), is_synchronous_(synchronous) {
+   async_event_ = rex::thread::Event::CreateAutoResetEvent(false);
+   assert_not_null(async_event_);
++  if (IoTrace()) IoTraceLine("open", path(), 0, 0, -1);
+ }
+ 
+ XFile::XFile() : XObject(kObjectType) {
+@@ -105,6 +138,15 @@ X_STATUS XFile::QueryDirectory(X_FILE_DIRECTORY_INFORMATION* out_info, size_t le
+ X_STATUS XFile::Read(uint32_t buffer_guest_address, uint32_t buffer_length, uint64_t byte_offset,
+                      uint32_t* out_bytes_read, uint32_t apc_context, bool notify_completion) {
+   std::lock_guard<std::mutex> lock(file_lock_);
++  if (IoTrace()) {
++    const uint64_t at = byte_offset == uint64_t(-1) ? position_ : byte_offset;
++    const auto t = std::chrono::steady_clock::now();
++    const X_STATUS r = ReadInternal(buffer_guest_address, buffer_length, byte_offset, out_bytes_read,
++                                    apc_context, notify_completion);
++    IoTraceLine("read", path(), at, buffer_length,
++                std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t).count());
++    return r;
++  }
+   return ReadInternal(buffer_guest_address, buffer_length, byte_offset, out_bytes_read, apc_context,
+                       notify_completion);
+ }

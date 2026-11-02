@@ -308,7 +308,10 @@ std::string Line() {
     else if (Has(t.name, "audio") || Has(t.name, "xma") || Has(t.name, "music")) label = "audio";
     else if (auto g = guest.find(t.tid); g != guest.end()) label = fmt::format("g{:08X}", g->second);
     else if (Has(t.name, "timer")) label = "timers";
-    else label = "other";
+    else if (!t.name.empty()) {  // (the port's own threads, by the name each gives itself: "file check", "hd movie")
+      label = t.name;
+      std::replace(label.begin(), label.end(), ' ', '_');
+    } else label = "other";
     const double pct = 100.0 * double(delta) / wall_ns;
     by_label[label] += pct;
     if (label[0] == 'g' && label != "gpu" && pct > top_pct) top_tid = t.tid, top_pct = pct;

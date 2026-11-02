@@ -32,6 +32,7 @@
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
+#include <rex/thread.h>
 
 #if SVR2011_ADRENOTOOLS
 #include <dlfcn.h>
@@ -138,6 +139,7 @@ void StartStuckWatch(const std::string& driver) {
   if (started) return;
   started = true;
   std::thread([driver] {
+    rex::thread::set_current_thread_name("gpu driver check");
     constexpr int kSeconds = 60;
     const auto t0 = std::chrono::steady_clock::now();
     while (rex::external_frame::SwapCount() == 0) {

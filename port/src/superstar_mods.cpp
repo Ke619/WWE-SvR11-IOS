@@ -63,6 +63,7 @@
 #include <rex/logging.h>
 #include <rex/ppc.h>
 #include <rex/system/xmemory.h>
+#include <rex/thread.h>
 
 #include "generated/default/svr2011_init.h"
 #include "../modmaker/svrfmt/pac.h"
@@ -1893,6 +1894,7 @@ int BadgeAt(uint8_t* b, uint32_t guest) {
 }
 
 void BadgeLoop() {
+  rex::thread::set_current_thread_name("superstar badges");
   uint32_t guest = 0;
   int original = 1;  // the language's original there
   int64_t last_scan = 0;
@@ -1915,6 +1917,7 @@ void BadgeLoop() {
       if (!active || scans >= 10 || NowMs() - last_scan < 1000) continue;
       last_scan = NowMs();
       ++scans;
+      const auto scan_t0 = std::chrono::steady_clock::now();
       // (the menu textures: physical memory, seen at 0xE0000000+ in the
       // VS screen search; then the other views)
       for (uint64_t lo : {0xE0000000ull, 0xA0000000ull}) {
@@ -1927,13 +1930,16 @@ void BadgeLoop() {
             continue;
           }
           const uint64_t end = std::min<uint64_t>(uint64_t(info.base_address) + info.region_size, hi);
+          // (a texture's base is 4 KB aligned - the GPU's fetch constant holds it in 4 KB units: only page starts
+          // are tried, each badge's signature bytes at its place there - 256 times fewer compares than every 16
+          // bytes, which held a core for seconds through a match's load)
           if ((info.state & rex::memory::kMemoryAllocationCommit) && (info.protect & rex::memory::kMemoryProtectRead))
-            for (uint64_t a = at; a + 64 <= end && !guest; a += 16)
+            for (uint64_t t = (at + 0xFFF) & ~0xFFFull; t < end && !guest; t += 0x1000)
               for (size_t i = 0; i < g_badges.size(); ++i) {
                 const auto& g = g_badges[i];
-                if (a < lo + g.sig || std::memcmp(b + a, g.data.data() + g.sig, 64)) continue;
-                if (BadgeAt(b, uint32_t(a - g.sig)) == int(i)) {
-                  guest = uint32_t(a - g.sig);
+                if (t + g.sig + 64 > end || std::memcmp(b + t + g.sig, g.data.data() + g.sig, 64)) continue;
+                if (BadgeAt(b, uint32_t(t)) == int(i)) {
+                  guest = uint32_t(t);
                   break;
                 }
               }
@@ -1943,7 +1949,8 @@ void BadgeLoop() {
       }
       if (!guest) continue;
       now = BadgeAt(b, guest);
-      REXLOG_INFO("[svr2011] superstar mods: badge texture at {:08X}", guest);
+      REXLOG_INFO("[svr2011] superstar mods: badge texture at {:08X} (scan {} of this select screen, {} ms)", guest, scans,
+                  std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - scan_t0).count());
     }
     if (now > 0) original = now;
     const int target = want ? 0 : original;
@@ -3382,6 +3389,7 @@ void InstallSuperstarMods(rex::memory::Memory* memory, rex::filesystem::VirtualF
   // changes in the CHAR/PRO table (who overwrites a mod's profile, and when)
   if (std::getenv("SVR2011_TEST_PRO_LOG"))
     std::thread([memory] {
+      rex::thread::set_current_thread_name("pro log");
       std::vector<uint32_t> last(64, 0xFFFFFFFF);
       for (;;) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));

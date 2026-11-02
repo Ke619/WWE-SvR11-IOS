@@ -50,6 +50,7 @@
 
 #include <rex/logging.h>
 #include <rex/system/xmemory.h>
+#include <rex/thread.h>
 
 #include "movie_transcode.h"
 #include "music.h"
@@ -276,6 +277,7 @@ std::string SendMedia(const char* kind, const std::string& data) {
 }
 
 void SendEntrance(int fileid, int slot, std::u16string song_name, std::filesystem::path movie) {
+  rex::thread::set_current_thread_name("entrance send");
   std::string music_json, movie_json;
   if (!song_name.empty()) {
     const auto song = PlaylistSong(song_name);
@@ -397,6 +399,7 @@ void FetchMovie(std::string file, std::string sha) {
 }
 
 void SettleDownload(int fileid) {
+  rex::thread::set_current_thread_name("entrance download");
   Incoming in;
   in.fileid = fileid;
   std::vector<std::thread> fetches;

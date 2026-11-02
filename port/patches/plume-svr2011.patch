@@ -1029,10 +1029,10 @@ index 0789c20..3f803fe 100644
  endif()
 diff --git a/plume_d3d11.h b/plume_d3d11.h
 new file mode 100644
-index 0000000..97d63af
+index 0000000..1808745
 --- /dev/null
 +++ b/plume_d3d11.h
-@@ -0,0 +1,304 @@
+@@ -0,0 +1,311 @@
 +//
 +// plume
 +//
@@ -1236,6 +1236,10 @@ index 0000000..97d63af
 +        std::deque<Submission> pending;
 +        std::atomic<uint64_t> submitted = 0;
 +        std::atomic<uint64_t> replayed = 0;
++        // The GPU has finished every submission up to this one: the fences' queries checked by the replay thread while
++        // it holds the context lock (pollFinished) - a frame wait that finds its submission here takes no lock.
++        std::atomic<uint64_t> finished = 0;
++        std::deque<std::pair<uint64_t, Microsoft::WRL::ComPtr<ID3D11Query>>> inFlight;  // (the context lock's)
 +        bool stop = false;
 +        std::thread thread;
 +
@@ -1246,6 +1250,8 @@ index 0000000..97d63af
 +        void worker();
 +        // Waits until submission `number` has been replayed.
 +        bool waitReplayed(uint64_t number, uint32_t timeoutMs);
++        // The queries the GPU has passed (oldest first, without a flush): `finished` moved on. The context lock held.
++        void pollFinished();
 +        std::unique_ptr<RenderCommandList> createCommandList() override;
 +        std::unique_ptr<RenderSwapChain> createSwapChain(const RenderSwapChainDesc &desc) override { return nullptr; }
 +        void executeCommandLists(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount, RenderCommandSemaphore **signalSemaphores, uint32_t signalSemaphoreCount, RenderCommandFence *signalFence) override;
@@ -1271,6 +1277,7 @@ index 0000000..97d63af
 +        // and time uploading upload buffers, time replaying the commands.
 +        std::atomic<uint64_t> statDraws = 0;
 +        std::atomic<uint64_t> statUploadBytes = 0;
++        std::atomic<uint64_t> statFenceWaits = 0, statFenceLockFree = 0;  // (frame waits; those answered without the context lock)
 +        std::atomic<uint64_t> statUploadNs = 0;
 +        std::atomic<uint64_t> statReplayNs = 0;
 +        std::atomic<uint64_t> statLockWaitNs = 0;  // (the presenter holding the context)
@@ -1339,10 +1346,10 @@ index 0000000..97d63af
 +};
 diff --git a/plume_d3d11.cpp b/plume_d3d11.cpp
 new file mode 100644
-index 0000000..3490577
+index 0000000..3118f5f
 --- /dev/null
 +++ b/plume_d3d11.cpp
-@@ -0,0 +1,1856 @@
+@@ -0,0 +1,1874 @@
 +//
 +// plume
 +//
@@ -2813,6 +2820,7 @@ index 0000000..3490577
 +        std::lock_guard lock(*device->contextMutex);
 +        const auto t1 = std::chrono::steady_clock::now();
 +        device->statLockWaitNs += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
++        pollFinished();
 +        uint32_t draws = 0;
 +        for (const RenderCommandList *list : submission.lists) {
 +            static_cast<const D3D11CommandList *>(list)->replay();
@@ -2823,6 +2831,7 @@ index 0000000..3490577
 +            Microsoft::WRL::ComPtr<ID3D11Query> query;
 +            if (SUCCEEDED(device->d3d->CreateQuery(&q, &query))) {
 +                device->context->End(query.Get());
++                inFlight.emplace_back(submission.number, query);
 +            }
 +            std::lock_guard fenceLock(fence->mutex);
 +            if (fence->submission == submission.number) fence->query = query;
@@ -2833,6 +2842,16 @@ index 0000000..3490577
 +        // and the fence wait (GetData) or the presenter's Present flushes them.
 +        if (draws < D3D11FlushDrawLimit) {
 +            device->context->Flush();
++        }
++    }
++
++    void D3D11CommandQueue::pollFinished() {
++        while (!inFlight.empty()) {
++            BOOL done = FALSE;
++            const HRESULT hr = device->context->GetData(inFlight.front().second.Get(), &done, sizeof(done), D3D11_ASYNC_GETDATA_DONOTFLUSH);
++            if (hr != S_OK && SUCCEEDED(hr)) return;  // (S_FALSE: not yet)
++            finished = inFlight.front().first;
++            inFlight.pop_front();
 +        }
 +    }
 +
@@ -2883,6 +2902,11 @@ index 0000000..3490577
 +            number = f->submission;
 +        }
 +        if (!number) return true;
++        ++device->statFenceWaits;
++        if (finished >= number) {  // (seen done by the replay thread: no context lock)
++            ++device->statFenceLockFree;
++            return true;
++        }
 +        // Replayed first (the fence's query is made then), then the GPU done.
 +        if (!waitReplayed(number, timeoutMs)) return false;
 +        Microsoft::WRL::ComPtr<ID3D11Query> query;
@@ -2898,6 +2922,7 @@ index 0000000..3490577
 +                BOOL done = FALSE;
 +                const HRESULT hr = device->context->GetData(query.Get(), &done, sizeof(done), 0);
 +                if (hr == S_OK || FAILED(hr)) {
++                    pollFinished();  // (the lock held: the older ones too)
 +                    return true;
 +                }
 +            }

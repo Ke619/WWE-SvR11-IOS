@@ -2049,10 +2049,11 @@ void UpdateTitle(Renderer* r) {
     if (SlotTables()) {
       auto* d = static_cast<plume::D3D11Device*>(r->device.get());
       REXLOG_INFO("native perf: D3D11 per frame: uploads {:.2f} ms ({:.1f} MB), replay {:.2f} ms ({:.0f} draws), "
-                  "context lock wait {:.2f} ms, flush {:.2f} ms",
+                  "context lock wait {:.2f} ms, flush {:.2f} ms; frame waits {} ({} without the context lock)",
                   d->statUploadNs.exchange(0) / f / 1e6, d->statUploadBytes.exchange(0) / f / 1e6,
                   d->statReplayNs.exchange(0) / f / 1e6, d->statDraws.exchange(0) / f,
-                  d->statLockWaitNs.exchange(0) / f / 1e6, d->statFlushNs.exchange(0) / f / 1e6);
+                  d->statLockWaitNs.exchange(0) / f / 1e6, d->statFlushNs.exchange(0) / f / 1e6,
+                  d->statFenceWaits.exchange(0), d->statFenceLockFree.exchange(0));
     }
 #endif
     REXLOG_INFO("native perf: {:.1f} fps, per frame: draw {:.2f} ms, gpu wait {:.2f} ms, submit {:.2f} ms, "

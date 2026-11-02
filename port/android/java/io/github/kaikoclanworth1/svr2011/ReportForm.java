@@ -383,7 +383,10 @@ final class ReportForm {
                 if (ReportSend.zipDir(m.folder, z)) m.zip = z;
             }
         try {
-            return ReportSend.send(server, u);
+            ReportSend.Result got = ReportSend.send(server, u);
+            // (its receipt: the reports list asks the server with it - Receipts, the PC's UserData/reports.json)
+            if (got.ok && !got.secret.isEmpty()) Receipts.add(game, "android", got.id, got.secret, ans.problem, ans.what);
+            return got;
         } finally {
             if (u.zip != null) u.zip.delete();
             for (ReportSend.Mod m : mods) {

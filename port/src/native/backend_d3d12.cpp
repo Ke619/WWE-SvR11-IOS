@@ -17,6 +17,7 @@
 #include <wrl/client.h>
 
 #include <plume_d3d12.h>
+#include "../util.h"
 
 namespace plume {
 std::unique_ptr<RenderInterface> CreateD3D12Interface();  // (plume_d3d12.cpp; no header declares it)
@@ -54,16 +55,7 @@ ID3D12Device* Native(plume::RenderDevice* device) {
   return device ? static_cast<plume::D3D12Device*>(device)->d3d : nullptr;
 }
 
-bool EnvFlag(const char* name) {
-  char* v = nullptr;
-  size_t n = 0;
-  bool on = false;
-  if (_dupenv_s(&v, &n, name) == 0 && v) {
-    on = v[0] == '1';
-    free(v);
-  }
-  return on;
-}
+using svr2011::EnvFlag;
 
 }  // namespace
 

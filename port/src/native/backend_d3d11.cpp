@@ -24,6 +24,7 @@
 #include <rex/logging.h>
 
 #include "frame_rate.h"
+#include "../util.h"
 
 REXCVAR_DEFINE_INT32(native_d3d11_flush_draws, 1000, "GPU",
                      "Direct3D 11: submissions with fewer draws than this start on the GPU at once (0: none)");
@@ -75,16 +76,7 @@ ID3D11Device* Native(plume::RenderDevice* device) {
   return device ? static_cast<plume::D3D11Device*>(device)->d3d.Get() : nullptr;
 }
 
-bool EnvFlag(const char* name) {
-  char* v = nullptr;
-  size_t n = 0;
-  bool on = false;
-  if (_dupenv_s(&v, &n, name) == 0 && v) {
-    on = v[0] == '1';
-    free(v);
-  }
-  return on;
-}
+using svr2011::EnvFlag;
 
 class D3D11Backend final : public Backend {
  public:

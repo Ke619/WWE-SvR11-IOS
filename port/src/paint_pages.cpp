@@ -54,6 +54,7 @@
 
 #include "generated/default/svr2011_init.h"
 #include "../modmaker/svrfmt/bytes.h"
+#include "util.h"
 
 namespace {
 
@@ -84,11 +85,7 @@ std::atomic<svr2011::PaintDownloadCheck> g_download_check{nullptr};
 
 using svrfmt::Rd32, svrfmt::Rd16, svrfmt::Wr32;
 
-int64_t NowMs() {
-  return std::chrono::duration_cast<std::chrono::milliseconds>(
-             std::chrono::steady_clock::now().time_since_epoch())
-      .count();
-}
+using svr2011::NowMs;
 
 // The game's slot checksum (sub_827B3118; launcher pt_slot_sum): every field
 // of the slot added as the type the game reads it as. `b` = the slot's start

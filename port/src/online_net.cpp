@@ -38,6 +38,7 @@
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
+#include "util.h"
 
 REXCVAR_DEFINE_STRING(online_token, "", "Online",
                       "The player's Community Creations session (the launcher signs in and writes it)");
@@ -90,10 +91,7 @@ bool SendAll(Socket s, const std::string& data) {
   return true;
 }
 
-std::string Lower(std::string s) {
-  for (auto& c : s) c = char(std::tolower(uint8_t(c)));
-  return s;
-}
+using svr2011::Lower;
 
 std::string Trim(const std::string& s) {
   const size_t a = s.find_first_not_of(" \t\r\n");

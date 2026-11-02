@@ -42,6 +42,7 @@
 #include "match_hud.h"
 #include "match_types.h"
 #include "../modmaker/svrfmt/bytes.h"
+#include "util.h"
 
 namespace {
 
@@ -53,11 +54,7 @@ constexpr uint32_t kBusy = 476;  // (0 once a beaten character has left - the Ro
 using svrfmt::Rd32, svrfmt::Wr32;
 uint32_t Rd16(const uint8_t* p) { return uint32_t(p[0]) << 8 | p[1]; }
 
-int64_t NowMs() {
-  return std::chrono::duration_cast<std::chrono::milliseconds>(
-             std::chrono::steady_clock::now().time_since_epoch())
-      .count();
-}
+using svr2011::NowMs;
 
 std::atomic<int> g_beaten{0};    // opponents beaten this match
 std::atomic<int64_t> g_seen{0};  // ms: the match's last update (the count is shown)

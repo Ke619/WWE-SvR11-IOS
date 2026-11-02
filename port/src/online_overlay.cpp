@@ -51,6 +51,7 @@
 #include "online_mods.h"
 #include "script_input.h"
 #include "frame_rate.h"
+#include "util.h"
 
 // The game's own Xbox LIVE invite path (it restarts itself to join): off - the
 // restarted game says "a sign-in change has occurred" (see the notes below).
@@ -106,10 +107,7 @@ void Put64(uint8_t* p, uint64_t v) {
   Put32(p, uint32_t(v >> 32)), Put32(p + 4, uint32_t(v));
 }
 
-std::string Upper(std::string s) {
-  for (char& c : s) c = char(std::toupper(uint8_t(c)));
-  return s;
-}
+using svr2011::Upper;
 
 // -- the server's list, polled in the background ------------------------------------
 

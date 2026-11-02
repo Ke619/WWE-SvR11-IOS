@@ -41,6 +41,7 @@
 #include "script_input.h"
 #include "superstar_mods.h"
 #include "../modmaker/svrfmt/bytes.h"
+#include "util.h"
 
 namespace {
 
@@ -129,10 +130,7 @@ const uint8_t* Record(const uint8_t* base, uint32_t id) {
   return Rd16(rec + kOwnId) == id ? rec : nullptr;
 }
 
-std::string Upper(std::string s) {
-  for (char& c : s) c = char(std::toupper(static_cast<unsigned char>(c)));
-  return s;
-}
+using svr2011::Upper;
 
 // A name or id -> the superstar id (0: none).
 uint32_t FindSuperstar(const uint8_t* base, const std::string& want) {

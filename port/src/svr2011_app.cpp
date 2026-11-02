@@ -106,6 +106,7 @@
 #include "p2p.h"
 #include "universe_mods.h"
 #include "universe_welcome.h"
+#include "util.h"
 #if defined(_WIN32)
 #include "xaudio2_audio.h"
 #endif
@@ -164,16 +165,7 @@ constexpr char kDefaultConfig[] =
 std::filesystem::path g_config_path;  // svr2011.toml (the GRAPHICS page saves there)
 
 // Value of an environment variable, or "" when unset.
-std::string Env(const char* name) {
-  char* value = nullptr;
-  size_t len = 0;
-  std::string result;
-  if (_dupenv_s(&value, &len, name) == 0 && value) {
-    result = value;
-    free(value);
-  }
-  return result;
-}
+using svr2011::Env;
 
 // A settings file's "basic strings" broken over lines joined again: a
 // `key = "...` line with no closing quote takes the next non-blank lines

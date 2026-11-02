@@ -82,6 +82,7 @@
 #include <rex/system/xam/content_manager.h>
 
 #include "../modmaker/svrfmt/pac.h"
+#include "util.h"
 
 namespace {
 
@@ -1196,10 +1197,7 @@ bool BuildMisc(const fs::path& game, const fs::path& overlay, const Packs& p) {
   return BuildMiscFile(game / "pac" / "misc.pac", overlay / "misc.pac", p);
 }
 
-std::string Lower(std::string s) {
-  for (char& ch : s) ch = char(std::tolower(uint8_t(ch)));
-  return s;
-}
+using svr2011::Lower;
 
 // ---- DLC copies of the merged pacs
 // An installed DLC package (dlc.cpp: <user data>\0000000000000000\<title>\00000002\<package>\) can bring its

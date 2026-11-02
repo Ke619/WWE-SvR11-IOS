@@ -40,6 +40,7 @@
 #include "generated/default/svr2011_init.h"
 #include "thread_cpu.h"
 #include "../modmaker/svrfmt/bytes.h"
+#include "util.h"
 
 REXCVAR_DEFINE_BOOL(replays, true, "Gameplay", "Instant replays (after finishers and at the end of a match)");
 
@@ -76,10 +77,7 @@ uint32_t g_step = 0, g_state = 0;  // the highlight step and its state last fram
 int64_t g_since = 0;               // when it got there
 uint32_t g_recorder_state = 0;     // the recorder's state at the last refused clip
 uint32_t g_recorder = 0;           // and the recorder
-int64_t NowMs() {
-  return std::chrono::duration_cast<std::chrono::milliseconds>(
-             std::chrono::steady_clock::now().time_since_epoch()).count();
-}
+using svr2011::NowMs;
 }  // namespace
 
 // The recorder hands out a clip: sub_8219F9F0(recorder, clip), 0 = not now.

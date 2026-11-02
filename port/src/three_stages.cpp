@@ -80,6 +80,7 @@
 #include "generated/default/svr2011_init.h"
 #include "match_hud.h"
 #include "match_types.h"
+#include "util.h"
 
 namespace {
 
@@ -89,11 +90,7 @@ constexpr int kMaxSides = 6, kTeams = 16;
 
 uint32_t Rd32(const uint8_t* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; }
 
-int64_t NowMs() {
-  return std::chrono::duration_cast<std::chrono::milliseconds>(
-             std::chrono::steady_clock::now().time_since_epoch())
-      .count();
-}
+using svr2011::NowMs;
 
 enum Kind { kNormal, kFca, kLms, kNoDq, kFirstBlood, kFinishers, kSubmission, kTable, kTlc, kLadder, kTablesLadders };
 constexpr const char* kKindName[] = {"NORMAL", "FALLS COUNT ANYWHERE", "LAST MAN STANDING", "NO DISQUALIFICATION",

@@ -34,6 +34,7 @@
 #include "generated/default/svr2011_init.h"
 #include "match_hud.h"
 #include "match_types.h"
+#include "util.h"
 
 namespace {
 
@@ -44,11 +45,7 @@ constexpr int kFirstEntry = 60, kEntryGap = 60;  // (s: the entrants come in at 
 uint32_t Rd32(const uint8_t* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; }
 uint32_t Rd16(const uint8_t* p) { return uint32_t(p[0]) << 8 | p[1]; }
 
-int64_t NowMs() {
-  return std::chrono::duration_cast<std::chrono::milliseconds>(
-             std::chrono::steady_clock::now().time_since_epoch())
-      .count();
-}
+using svr2011::NowMs;
 
 std::atomic<int> g_left{0};            // superstars still in it (in the ring or waiting)
 std::atomic<int> g_next_entry{-1};     // s of match time: the next entrant's, -1 none

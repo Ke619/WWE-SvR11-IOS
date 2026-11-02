@@ -57,7 +57,7 @@ static void json_str(Buf *b, const char *key, const char *v, int first)
 }
 
 char *report_json(const char *app, const char *version, const char *problem, const char *happens, const char *what,
-                  const char *before, const char *contact, const char *signature)
+                  const char *before, const char *contact, const char *signature, const char *updater)
 {
     Buf b = { 0 };
     char os[64];
@@ -81,6 +81,7 @@ char *report_json(const char *app, const char *version, const char *problem, con
     json_str(&b, "before", before, 0);
     json_str(&b, "contact", contact, 0);
     json_str(&b, "signature", signature, 0);
+    json_str(&b, "updater", updater, 0);
     buf_str(&b, "}");
     if (b.bad) { free(b.p); return NULL; }
     return b.p;

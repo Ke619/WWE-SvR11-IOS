@@ -1,7 +1,9 @@
 # Problem reports API
 
-Report a problem in the launcher, the Mod Maker (and later the game / Android) sends its report to the online
-server. The server is `port/server/reports.py` + `server.py` (`api_report`); the clients are owned by the Log File
+Report a problem in the launcher, the Mod Maker and the Android app (`ReportSend.java`) sends its report to the
+online server - only sends: no client saves a zip for posting elsewhere, and a send that fails offers Try again.
+Tests send only to a server on this PC (Android: this phone or its LAN, adb reverse) unless SVR2011_ALLOW_LIVE=1
+(Android: the `svr2011_allow_live` extra). The server is `port/server/reports.py` + `server.py` (`api_report`); the clients are owned by the Log File
 Reporting work.
 
 ## POST {online_server}/api/reports
@@ -18,14 +20,17 @@ needed; an `Authorization: Bearer <token>` (optional, not sent by today's client
 | `image0` .. `image4` | PNG / JPEG / WebP (checked by their bytes) | optional, 8 MB each |
 
 `report` fields: `format` (1), `app` (`launcher` / `modmaker` / `game` / `android`, required), `version` (required),
-`platform`, `os`, `problem` (required), `happens`, `what`, `before`, `contact`, `signature` (the client's hint).
-`what` / `before` are cut at 4000 characters, the rest at 200. Other fields are dropped.
+`platform` (`windows` / `android`), `os`, `problem` (required), `happens`, `what`, `before`, `contact`, `signature`
+(the client's hint), `updater` (PC: the last "result" line of `<game>\logs\updater.log` - the updater's last
+update or repair and how it ended; `update_log.h`). `what` / `before` are cut at 4000 characters, `updater` at
+600, the rest at 200. Other fields are dropped.
 
 Answers (JSON):
 - `200 {"ok": true, "id": "20261024-153012-ab12cd", "signature": "<16 hex>", "seen_before": N}`:
   N = earlier reports with the same signature (0: new). A client can say "already reported N times, thanks".
 - `400` bad input, `413` too large, `429` too many (5 in 10 minutes and 20 a day per address, and per account),
-  `503` the storage node is down: `{"ok": false, "error": "<text to show>"}`. The client keeps its zip.
+  `503` the storage node is down: `{"ok": false, "error": "<text to show>"}`. The client shows it with Try
+  again (the zip is made again; it's deleted when the window closes).
 
 ## The match folder and its mods (2.1.6+)
 

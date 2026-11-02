@@ -34,13 +34,13 @@ APPS = ("launcher", "modmaker", "game", "android")
 MAX_ZIP = 25 << 20
 MAX_IMAGE = 8 << 20
 MAX_IMAGES = 5
-TEXT_CAP = {"what": 4000, "before": 4000}  # (every other text field: 200)
+TEXT_CAP = {"what": 4000, "before": 4000, "updater": 600}  # (every other text field: 200; updater: the updater's last result line)
 MAX_MATCH = 5 << 20          # the match folder's zip
 MAX_MOD = 300 << 20          # one mod
 MAX_NEW_MOD_BYTES = 300 << 20  # the mods sent with one report
 MAX_MODS = 64                # mods listed in one report
 MOD_QUOTA = 20 << 30         # every report's mods together (the node's --report-mod-quota-gb)
-FIELDS = ("format", "app", "version", "platform", "os", "problem", "happens", "what", "before", "contact")
+FIELDS = ("format", "app", "version", "platform", "os", "problem", "happens", "what", "before", "contact", "updater")
 STATUSES = ("", "done", "duplicate", "fixed")
 FIX_FIELDS = {"note": 1000, "commit": 40, "version": 20, "date": 10}
 
@@ -422,6 +422,8 @@ class LocalReports:
                                            "images", "account", "match", "match_size")}
             row["mods"] = [{k: m[k] for k in ("hash", "name", "type", "id", "size", "stored")} for m in mods]
             row["what"] = meta.get("what", "")[:200]
+            if meta.get("updater"):
+                row["updater"] = meta["updater"][:300]  # (the updater's last result: the dashboard's What column)
             with open(self.index_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")
             self.counts[sig] = seen + 1

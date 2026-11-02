@@ -26,6 +26,7 @@
 #include "updater.h"
 #include "unzip.h"
 #include "release_check.h"
+#include "update_log.h"
 
 #define GAME_EXE     L"svr2011.exe"
 #define LAUNCHER_EXE L"SvR2011 Launcher.exe"
@@ -205,6 +206,7 @@ static void say(const WCHAR *fmt, ...)
     va_start(ap, fmt);
     vswprintf_s(buf, 700, fmt, ap);
     va_end(ap);
+    update_log(s_game, "updater", L"%s", buf);   /* (each step, for Report a problem) */
     if (s_console)
         cprint(L"%s\n", buf);
     else if (s_text)
@@ -735,6 +737,8 @@ static DWORD WINAPI apply_thread(LPVOID arg)
     int ok;
     (void)arg;
     err[0] = 0;
+    update_log(s_game, "updater", L"start: %s of %s (version %s, to %s)", s_repair ? L"repair" : L"update", s_game,
+               PORT_VERSION, s_want[0] ? s_want : L"the newest");
     if (s_repair) {
         ok = repair_install(s_want[0] ? s_want : NULL, &s_repaired, err, 700);
     } else {
@@ -743,6 +747,13 @@ static DWORD WINAPI apply_thread(LPVOID arg)
         if (ok)
             ok = install_release(&info, err, 700);
     }
+    if (ok && s_repair)
+        update_log(s_game, "updater", L"result: repaired (%d file(s))", s_repaired);
+    else if (ok)
+        update_log(s_game, "updater", L"result: updated to %s", info.version);
+    else
+        update_log(s_game, "updater", L"result: %s failed - %s", s_repair ? L"the repair" : L"the update",
+                   err[0] ? err : L"(no reason given)");
     PostMessageW(s_wnd, WM_APP + 1, (WPARAM)ok, (LPARAM)err);
     return 0;
 }
@@ -870,7 +881,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
         int n = 0;
         console_setup();
         wcscpy_s(s_game, MAX_PATH, argv[2]);
-        if (!repair_install(argc >= 4 ? argv[3] : NULL, &n, err, 700)) { cprint(L"repair failed: %s\n", err); return 1; }
+        update_log(s_game, "updater", L"start: repair of %s (tests)", s_game);
+        if (!repair_install(argc >= 4 ? argv[3] : NULL, &n, err, 700)) {
+            update_log(s_game, "updater", L"result: the repair failed - %s", err[0] ? err : L"(no reason given)");
+            cprint(L"repair failed: %s\n", err);
+            return 1;
+        }
+        update_log(s_game, "updater", L"result: repaired (%d file(s))", n);
         cprint(L"repaired %d file(s) in %s\n", n, s_game);
         return 0;
     }
@@ -925,7 +942,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
         console_setup();
         if (argc >= 4)
             wcscpy_s(s_game, MAX_PATH, argv[3]);
-        if (!install_zip(argv[2], err, 700)) { cprint(L"update failed: %s\n", err); return 1; }
+        update_log(s_game, "updater", L"start: update of %s from %s (tests)", s_game, argv[2]);
+        if (!install_zip(argv[2], err, 700)) {
+            update_log(s_game, "updater", L"result: the update failed - %s", err[0] ? err : L"(no reason given)");
+            cprint(L"update failed: %s\n", err);
+            return 1;
+        }
+        update_log(s_game, "updater", L"result: updated from %s", argv[2]);
         cprint(L"updated %s from %s\n", s_game, argv[2]);
         return 0;
     }

@@ -1132,7 +1132,9 @@ td.acts { text-align: right; white-space: nowrap; }
           }).join('');
           return '<tr><td title="' + esc(r.received) + '">' + ago(r.received_at) + (r.status ? ' <span class="tag on">' + esc(r.status) + '</span>' : '') +
             '</td><td>' + esc(r.platform || '') + '</td><td>' + esc(r.happens || '') + '</td><td>' + esc(r.what || '') +
-            (r.account ? ' <span class="note">(' + esc(r.account) + ')</span>' : '') + '</td><td>' + pics + '</td><td class="acts">' +
+            (r.account ? ' <span class="note">(' + esc(r.account) + ')</span>' : '') +
+            (r.updater ? '<br><span class="note" title="the updater's last result (logs/updater.log)">Updater: ' + esc(r.updater) + '</span>' : '') +
+            '</td><td>' + pics + '</td><td class="acts">' +
             '<a class="btn" href="' + reportFile(r, 'report.json') + '" target="_blank" rel="noopener">Details</a>' +
             (r.zip_size ? '<a class="btn" href="' + reportFile(r, 'report.zip') + '">Zip ' + bytes(r.zip_size) + '</a>' : '') +
             (r.status ? '<button class="btn" data-rp="' + esc(r.id) + '" data-s="">Reopen</button>' :

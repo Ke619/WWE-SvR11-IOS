@@ -120,7 +120,7 @@ Settings are saved in `svr2011.toml` in the game folder (the app's **Documents**
 ## What carries over from the OG port
 
 
-| Feature | On iOS |
+| Feature | iOS Port Support |
 |---|---|
 | Native renderer, 60 fps | ✅ Working |
 | Touch controls | ✅ Working |

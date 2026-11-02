@@ -183,7 +183,6 @@ The recompiled game code is **generated on your machine from your own game files
 
 ## Troubleshooting
 
-- **PLAY is greyed out.** The launcher can't see `default.xex`. It has to be directly in the app's `Documents` folder, not in a subfolder.
 - **The app closes right after it opens.** Start-up messages are written to `boot.log` in the game folder. Include it when you report a problem.
 - **The game closed unexpectedly.** A crash report is saved in `UserData/crashes/` in the game folder. Please include it when you report a problem.
 - **The app won't open after about a week.** Apps signed with a free Apple ID expire after 7 days. Refresh or re-sign it in your sideloading tool.

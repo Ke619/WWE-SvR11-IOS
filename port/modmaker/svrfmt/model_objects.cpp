@@ -33,37 +33,6 @@ size_t Triangles(const Mesh& s) {
   return n;
 }
 
-int DiffuseSlot(const Mesh& s) {
-  for (const auto& p : s.params)
-    if (p.type == 0x0f && p.name == "texDiffuse" && p.value.size() >= 4) return int(int32_t(Be32(p.value.data())));
-  return -1;
-}
-
-void SetDiffuseSlot(Mesh& s, int slot) {
-  for (auto& p : s.params)
-    if (p.type == 0x0f && p.name == "texDiffuse" && p.value.size() >= 4) PutBe32(p.value.data(), uint32_t(slot));
-}
-
-int TextureSlot(Model& m, const std::string& tex) {
-  for (size_t i = 0; i < m.textures.size(); ++i)
-    if (m.textures[i] == tex) return int(i);
-  m.textures.push_back(tex);
-  return int(m.textures.size() - 1);
-}
-
-void Bound(Mesh& s) {
-  if (s.verts.empty()) return;
-  float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f};
-  for (const auto& v : s.verts)
-    for (int k = 0; k < 3; ++k) lo[k] = std::min(lo[k], v.pos[k]), hi[k] = std::max(hi[k], v.pos[k]);
-  const float c[3] = {(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2};
-  float r = 0;
-  for (const auto& v : s.verts)
-    r = std::max(r, (v.pos[0] - c[0]) * (v.pos[0] - c[0]) + (v.pos[1] - c[1]) * (v.pos[1] - c[1]) +
-                        (v.pos[2] - c[2]) * (v.pos[2] - c[2]));
-  s.sphere = {c[0], c[1], c[2], std::sqrt(r)};
-}
-
 // A texture name the game's 16-byte fields hold: letters, digits and _ (lower case), at most 15.
 std::string GameTextureName(std::string n) {
   std::string out;

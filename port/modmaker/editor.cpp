@@ -599,7 +599,6 @@ void ForgetGpu(int model = -1) {
   }
 }
 
-int DiffuseSlot(const Mesh& s);
 std::string ObjTexture(const Obj& o) {
   if (o.meshes.empty() || !g_arena) return "";
   const Model& m = g_arena->models[o.model].model;
@@ -628,12 +627,6 @@ void ToggleSelect(int i) {
   auto it = std::find(g_multi.begin(), g_multi.end(), i);
   if (it == g_multi.end()) g_multi.push_back(i);
   else g_multi.erase(it);
-}
-
-int DiffuseSlot(const Mesh& s) {
-  for (const auto& p : s.params)
-    if (p.type == 0x0f && p.name == "texDiffuse" && p.value.size() >= 4) return int(Be32(p.value.data()));
-  return -1;
 }
 
 GpuMesh* Gpu(int model, int mesh) {

@@ -103,12 +103,6 @@ void ReadBundle(const Bytes& b, std::map<std::string, Bytes>& out) {
   }
 }
 
-int DiffuseSlot(const Mesh& s, const char* name = "texDiffuse") {
-  for (const auto& p : s.params)
-    if (p.type == 0x0f && p.name == name && p.value.size() >= 4) return int(Be32(p.value.data()));
-  return -1;
-}
-
 struct Bone {
   std::string name;
   int parent = -1;

@@ -140,12 +140,6 @@ bool SameGeometry(const Mesh& s, const Part& p) {
   return Keys(a, ta) == Keys(b, p.tris);
 }
 
-int DiffuseSlotOf(const Mesh& s) {
-  for (const auto& p : s.params)
-    if (p.type == 0x0f && p.name == "texDiffuse" && p.value.size() >= 4) return int32_t(Be32(p.value.data()));
-  return -1;
-}
-
 void FillMesh(Mesh& s, const Part& p) {
   s.verts.clear();
   s.uvs.clear();
@@ -163,19 +157,6 @@ void FillMesh(Mesh& s, const Part& p) {
   s.strips.assign(1, Strip{6, TrianglesToStrip(p.tris)});
   const auto sp = Sphere(s.verts);
   std::copy(sp.begin(), sp.end(), s.sphere.begin());
-}
-
-// Texture slot param "texDiffuse" -> point it at texture list entry `slot`.
-void SetDiffuseSlot(Mesh& s, int slot) {
-  for (auto& p : s.params)
-    if (p.type == 0x0f && p.name == "texDiffuse" && p.value.size() >= 4) PutBe32(p.value.data(), uint32_t(slot));
-}
-
-int TextureSlot(Model& m, const std::string& tex) {
-  for (size_t i = 0; i < m.textures.size(); ++i)
-    if (m.textures[i] == tex) return int(i);
-  m.textures.push_back(tex);
-  return int(m.textures.size() - 1);
 }
 
 }  // namespace
@@ -267,7 +248,7 @@ bool ImportFbx(Arena& arena, const std::string& fbx_path, const ImportOptions& o
       const int mi = target ? MeshIndexFromMaterial(mname, oname) : -1;
       if (mi >= 0 && mi < int(m.meshes.size())) {
         Mesh& s = m.meshes[mi];
-        const int cur_slot = DiffuseSlotOf(s);
+        const int cur_slot = DiffuseSlot(s);
         const std::string cur_tex = cur_slot >= 0 && cur_slot < int(m.textures.size()) ? m.textures[cur_slot] : "";
         if ((tex.empty() || tex == cur_tex) && SameGeometry(s, part)) continue;  // untouched: keep as is
         const bool skinned = s.palette.size() > 1 || s.weights.size() > 1;

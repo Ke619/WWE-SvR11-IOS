@@ -129,7 +129,7 @@ Settings are saved in `svr2011.toml` in the game folder (the app's **Documents**
 | Entrance movies | ⚠️ Working only for `.svrmods`, Can't manually import yet from the Launcher |
 | DLC | ✅ Working |
 | Mods (`.svrmod`) | ✅ Working |
-| Texture packs | ❌ Not available on iOS yet. |
+| Texture packs | ➖ Not part of this port. |
 | Achievements | ✅ Working |
 | Entrance music from your own songs | ⚠️ Working only for `.svrmods`, Can't manually import yet from the Launcher. |
 | iOS launcher | ✅ Working |
@@ -138,6 +138,7 @@ Settings are saved in `svr2011.toml` in the game folder (the app's **Documents**
 | Built-in DISCOVERY Tab | ➖ Not part of this port. |
 | Paint tool | ⚠️ Not available in the Launcher, Works in-game. |
 | Custom main menu backgrounds | ⚠️ Not available in the Launcher, Can be added manually and setup in-game. |
+| Mod Maker | ➖ Not part of this port. |
 ---
 
 ## Building from source

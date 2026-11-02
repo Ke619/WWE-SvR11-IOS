@@ -126,12 +126,12 @@ Settings are saved in `svr2011.toml` in the game folder (the app's **Documents**
 | Touch controls | ✅ Working |
 | Save manager | ⚠️ Working, Not available in the Launcher yet. |
 | Wide-screen matches and entrances | ✅ Working |
-| Entrance movies | ⚠️ Working only for `.svrmods`, Can't manually import yet from the Launcher |
+| Custom Titantrons/Entrance movies | ⚠️ Working only for `.svrmods`, Can't manually import yet from the Launcher |
 | DLC | ✅ Working |
 | Mods (`.svrmod`) | ✅ Working |
 | Texture packs | ➖ Not part of this port. |
 | Achievements | ✅ Working |
-| Entrance music from your own songs | ⚠️ Working only for `.svrmods`, Can't manually import yet from the Launcher. |
+| Custom OSTs/Music | ⚠️ Working only for `.svrmods`, Can't manually import yet from the Launcher. |
 | iOS launcher | ✅ Working |
 | Online | ✅ Working |
 | Discord status | ➖ Not part of this port. |

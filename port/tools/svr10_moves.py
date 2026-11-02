@@ -61,8 +61,7 @@ SENTINEL_IDS = (0x7fff,)
 
 # ------------------------------------------------------------------ containers
 
-def unpack(b):
-    return svrfmt.bpe_decode(b) if b[:4] == b'BPE ' else b
+unpack = svrfmt.unbpe
 
 
 def repack(raw, was_bpe):

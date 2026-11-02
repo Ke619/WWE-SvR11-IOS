@@ -5,6 +5,7 @@
          the m.pac / evt banks in dfe83e05's ymks/banks folder (optional, --all)."""
 import sys, glob, collections, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # (its own folder: the embeddable Python doesn't add it)
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))  # (tools\: ymks.py)
 import hmot, ymks as Y
 
 H = [r"D:/Xbox Games Ports/HCTP Extract/_unpacked/m/MOT_GAME/0000%d.bin" % b for b in (0, 1, 2, 3, 4, 6, 7)] + \

@@ -129,6 +129,15 @@ def port_moveset(c):
         else:
             cand = sorted(by11.get(_norm(nm), set())) if nm else []
         fit = [x for x in cand if x in moved and MP.usable11(w11, x) and (to in in_slot[x] or menu_of.get(to, '') in in_menu[x])]
+        # (a taunt - 9000-9999, as 2007-2011 keep them - only in a taunt slot, and the ring movement sets (BASE) only
+        # as 2011 itself has them: SvR 2007's map put Booker T's and Kurt Angle's taunts in the ring in / out slots and
+        # strike slots - in a Hell in a Cell they ran on forever or froze, report 20261101-180328)
+        if 9000 <= v < 10000 and menu_of.get(to) != 'Taunts':
+            rows.append((so, to, v, nm, 'base kept (a taunt in a %s slot)' % (menu_of.get(to) or 'move'), base[to // 2]))
+            continue
+        if bank == 'BASE' and not fit:
+            rows.append((so, to, v, nm, 'base kept (a ring movement slot: 2011\'s own sets only)', base[to // 2]))
+            continue
         if fit:
             area[to // 2] = fit[0]
             rows.append((so, to, v, nm, 'same move in 2011', fit[0]))

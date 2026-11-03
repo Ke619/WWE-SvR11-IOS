@@ -84,7 +84,6 @@ Tested on an **iPhone 15 Pro (Apple A17 Pro chip)**, running inside LiveContaine
    **=> Method 1:**
    1. On a PC, extract your disc image so you have a folder containing `default.xex` and the rest of the game files.
    2. Copy the contents of that folder into the app's **Documents** folder with the Files app (file sharing is turned on for the app). `default.xex` must sit **directly** in `Documents`, not in a subfolder. 
-   3. It's about 5.3 GB, so the copy takes a while.
    
    **=> Method 2:**
    - use the built-in install feature in the game launcher to add the game files directly from your ISO dump.

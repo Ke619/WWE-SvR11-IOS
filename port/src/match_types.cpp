@@ -2232,6 +2232,28 @@ REX_HOOK_RAW(sub_82216C58) {
       }
     }
   }
+  // Test aid: SVR2011_TEST_COND_PROBE=<person>,<id> - once, while that person's character's +4 is empty (a match's
+  // start): the event condition <id> (sub_82856B00) asked about him, as a CPU's check does - ids 30 / 31 / 97 hand
+  // the empty +4 on and crashed at clock 13 (3 Nov); with the guard they answer false. SVR2011_TEST_COND_GUARD_OFF=1
+  // runs it unguarded (the crash, for a before / after).
+  if (static const char* probe = std::getenv("SVR2011_TEST_COND_PROBE"); probe) {
+    static bool done = false;
+    uint32_t who = 0, cid = 0;
+    if (!done && std::sscanf(probe, "%u,%u", &who, &cid) == 2 && who < 6) {
+      const uint32_t cell = 0x82E3CC50 + who * 4, ch = Rd32(base + cell);
+      if (ch && ch == fighter && !Rd32(base + ch + 4)) {
+        done = true;
+        const auto saved = ctx;
+        ctx.r3.u64 = cell;
+        ctx.r4.u64 = cid;
+        REXLOG_INFO("[svr2011] test: event condition {} for person {} (character {:08X}, its +4 empty, frame {})", cid, who,
+                    ch, Rd32(base + 0x82E3CD0C));
+        sub_82856B00(ctx, base);
+        REXLOG_INFO("[svr2011] test: event condition {} for person {} answered {}", cid, who, ctx.r3.u32);
+        ctx = saved;
+      }
+    }
+  }
   // Test aid: SVR2011_TEST_FORCE_MOVE=<attacker person>,<target person>,<every s>,<motion>[,<motion>...]
   // - in a match, every <s> seconds the attacker starts the next motion (a
   // paired move, sub_82191AA8) on the target, wherever they are: for seeing
@@ -3868,7 +3890,12 @@ REX_HOOK_RAW(sub_82856B00) {
   const uint32_t id = ctx.r4.u32;
   if (ctx.r3.u32 && id < 128 && (kReadsChar[id / 64] >> (id % 64) & 1)) {
     const uint32_t ch = Rd32(base + ctx.r3.u32);
-    if (!ch || (id == 32 && !Rd32(base + ch + 20))) {
+    // (ids 30, 31 and 97 hand the character's +4 to sub_82804EC8 / sub_82804FD0 / sub_82809A38, which read its +1768
+    // at once: a CPU's check at a match's start - clock 13, the people still on the stage with entrances off - found
+    // +4 empty, an access violation in sub_82804EC8, 2 of 10 test matches on 3 Nov)
+    static const bool plus4_off = std::getenv("SVR2011_TEST_COND_GUARD_OFF") != nullptr;  // (test: the crash)
+    if (!ch || (id == 32 && !Rd32(base + ch + 20)) ||
+        (!plus4_off && (id == 30 || id == 31 || id == 97) && !Rd32(base + ch + 4))) {
       static int logged = 0;
       if (logged++ < 3)
         REXLOG_INFO("[svr2011] event condition {} with no character to check - false (as on the console)", id);

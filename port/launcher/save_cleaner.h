@@ -17,6 +17,7 @@ typedef struct {
     int universe;  /* an entry in .universe\mods.bin */
     int mark;      /* a line in .universe\mod_profiles.txt */
     int mod_save;  /* Saves\.mods\<folder>.dat (per_mod_saves) */
+    int refs;      /* how many teams / titles / Universe card places name it in Saves\.mods\refs.bin */
     WCHAR folder[MAX_PATH];
     WCHAR name[40];
 } ScItem;
@@ -28,6 +29,6 @@ int save_clean_scan(const WCHAR *saves, const WCHAR *mods, ScItem *items, WCHAR 
 
 /* Takes out the items whose `off` is 0, and the turned-off ones too with with_off: their ids' records and
  * profiles (and 40-byte entries) back to the game's placeholders (SaveData.dat's checksum set again), their mods.bin entries and
- * mod_profiles.txt lines, their Saves\.mods\<folder>.dat. The caller makes the backup first. Returns how many mods were
+ * mod_profiles.txt lines, their Saves\.mods\<folder>.dat and their refs in .mods\refs.bin (and refs.bin.bak). The caller makes the backup first. Returns how many mods were
  * taken out, or -1 with a message in err (nothing changed). */
 int save_clean_apply(const WCHAR *saves, const ScItem *items, int n, int with_off, WCHAR *err, size_t err_n);

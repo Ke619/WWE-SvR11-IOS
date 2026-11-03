@@ -22,7 +22,7 @@ import java.util.Locale;
 
 final class SaveCleaner {
     static final class Item {
-        int id, index;
+        int id, index, refs;  // refs: teams / titles / Universe card places naming it in Saves/.mods/refs.bin
         boolean off, profile, universe, mark, modSave;
         String folder = "", name = "";
 
@@ -31,6 +31,7 @@ final class SaveCleaner {
             if (profile) s.append("superstar, moves, entrance, Threads");
             if (universe) s.append(s.length() > 0 ? ", Universe" : "Universe");
             if (modSave) s.append(s.length() > 0 ? ", its mod save" : "its mod save");
+            if (refs > 0) s.append(s.length() > 0 ? ", teams / titles / Universe cards" : "teams / titles / Universe cards");
             return s.length() > 0 ? s.toString() : "a note of it";
         }
     }
@@ -182,6 +183,48 @@ final class SaveCleaner {
         return at + (long) n * n <= d.univ.length ? out : null;
     }
 
+    // Saves/.mods/refs.bin (superstar_mods.cpp key refs): "SVRMREFS", u32 1, u32 CRC-32 of the rest, u16 folder
+    // count, folders (u16 byte count + UTF-8), u32 ref count, refs {u32 save image offset, u16 folder index, u16
+    // stand-in}; big-endian. The save's fields hold the stand-ins - never rewritten here.
+    private static final class Refs {
+        final List<String> folders = new ArrayList<>();
+        final List<Integer> at = new ArrayList<>();  // each folder's u16 length
+        int[] count;
+        int refs, refsAt;
+    }
+
+    private static int be16(byte[] b, int at) { return (b[at] & 0xFF) << 8 | (b[at + 1] & 0xFF); }
+
+    private static int be32(byte[] b, int at) { return be16(b, at) << 16 | be16(b, at + 2); }
+
+    private static Refs readRefs(byte[] d) {
+        if (d == null || d.length < 18 || !new String(d, 0, 8, StandardCharsets.US_ASCII).equals("SVRMREFS")
+            || be32(d, 8) != 1)
+            return null;
+        java.util.zip.CRC32 crc = new java.util.zip.CRC32();
+        crc.update(d, 16, d.length - 16);
+        if ((int) crc.getValue() != be32(d, 12)) return null;
+        Refs r = new Refs();
+        int n = be16(d, 16), at = 18;
+        for (int i = 0; i < n; i++) {
+            if (at + 2 > d.length || at + 2 + be16(d, at) > d.length) return null;
+            r.at.add(at);
+            r.folders.add(new String(d, at + 2, be16(d, at), StandardCharsets.UTF_8));
+            at += 2 + be16(d, at);
+        }
+        if (at + 4 > d.length) return null;
+        r.refs = be32(d, at);
+        r.refsAt = at + 4;
+        if (r.refs < 0 || (d.length - r.refsAt) / 8 < r.refs) return null;
+        r.count = new int[n];
+        for (int k = 0; k < r.refs; k++) {
+            int fi = be16(d, r.refsAt + k * 8 + 4);
+            if (fi >= n) return null;
+            r.count[fi]++;
+        }
+        return r;
+    }
+
     // What `saves` keeps for mods that aren't installed or are off in `mods` (the game's Mods/Superstars).
     static List<Item> scan(File saves, File mods) throws Failure {
         Data d = load(saves);
@@ -227,6 +270,17 @@ final class SaveCleaner {
                 if (st == 2) continue;
                 Item it = itemFor(items, 0, folder);
                 it.modSave = true;
+                it.off = st == 1;
+                if (it.name.isEmpty()) it.name = folder;
+            }
+        Refs r = readRefs(read(new File(saves, ".mods/refs.bin")));
+        if (r != null)
+            for (int i = 0; i < r.folders.size(); i++) {
+                String folder = r.folders.get(i);
+                int st = modState(mods, folder);
+                if (r.count[i] == 0 || st == 2) continue;
+                Item it = itemFor(items, 0, folder);
+                it.refs += r.count[i];
                 it.off = st == 1;
                 if (it.name.isEmpty()) it.name = folder;
             }
@@ -325,6 +379,48 @@ final class SaveCleaner {
             done++;
             if (it.modSave) new File(saves, ".mods/" + it.folder + ".dat").delete();  // (the backup has it; .on stays)
         }
+        // refs.bin and refs.bin.bak: the others' refs (each file on its own; none left = an empty one)
+        for (String name : new String[] {"refs.bin", "refs.bin.bak"}) {
+            File f = new File(saves, ".mods/" + name);
+            byte[] b = read(f);
+            Refs r = readRefs(b);
+            if (r == null) continue;
+            int[] to = new int[r.folders.size()];
+            int kept = 0;
+            boolean drop = false;
+            for (int i = 0; i < to.length; i++) {
+                to[i] = taken(items, withOff, 0, r.folders.get(i)) ? -1 : kept++;
+                drop |= to[i] < 0;
+            }
+            if (!drop) continue;
+            java.io.ByteArrayOutputStream body = new java.io.ByteArrayOutputStream();
+            body.write(kept >>> 8);
+            body.write(kept);
+            for (int i = 0; i < to.length; i++)
+                if (to[i] >= 0) body.write(b, r.at.get(i), 2 + be16(b, r.at.get(i)));
+            java.io.ByteArrayOutputStream list = new java.io.ByteArrayOutputStream();
+            int nr = 0;
+            for (int k = 0; k < r.refs; k++) {
+                int at = r.refsAt + k * 8, t = to[be16(b, at + 4)];
+                if (t < 0) continue;
+                list.write(b, at, 4);
+                list.write(t >>> 8);
+                list.write(t);
+                list.write(b, at + 6, 2);
+                nr++;
+            }
+            body.write(new byte[] {(byte) (nr >>> 24), (byte) (nr >>> 16), (byte) (nr >>> 8), (byte) nr});
+            list.writeTo(body);
+            byte[] rest = body.toByteArray();
+            java.util.zip.CRC32 crc = new java.util.zip.CRC32();
+            crc.update(rest);
+            int c = (int) crc.getValue();
+            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+            out.write("SVRMREFS".getBytes(StandardCharsets.US_ASCII));
+            out.write(new byte[] {0, 0, 0, 1, (byte) (c >>> 24), (byte) (c >>> 16), (byte) (c >>> 8), (byte) c});
+            out.write(rest);
+            Files.write(f.toPath(), out.toByteArray());
+        }
         return done;
     }
 
@@ -339,7 +435,7 @@ final class SaveCleaner {
         for (Item it : items)
             System.out.println("id " + it.id + "\t" + it.name + "\t" + (it.folder.isEmpty() ? "-" : it.folder) + "\t"
                 + (it.off ? "off " : "") + (it.profile ? "profile " : "") + (it.universe ? "universe " : "")
-                + (it.mark ? "mark " : "") + (it.modSave ? "mod_save" : ""));
+                + (it.mark ? "mark " : "") + (it.modSave ? "mod_save" : "") + " refs " + it.refs);
         System.out.println(items.size() + " mods");
         if (apply) System.out.println("cleaned " + apply(new File(args[0]), items, withOff));
     }

@@ -983,6 +983,23 @@ bool g_no_depth = false;  // SVR2011_NATIVE_NO_DEPTH=1
 double g_pipeline_ms = 0;  // pipeline builds since the last perf line
 // Bytes hashed since the last perf line: static / dynamic vertex buffers, constants.
 uint64_t g_hash_vb_static = 0, g_hash_vb_dynamic = 0, g_hash_const = 0;
+// Test aid SVR2011_TEST_CONST_TIMES=1: the constants path's time a frame on the native perf line - SharedConstants
+// (its texture lookups, its sets), GpuConstants - and the textures looked up a draw.
+const bool g_const_times = std::getenv("SVR2011_TEST_CONST_TIMES") != nullptr;
+uint64_t g_ct_shared_ns = 0, g_ct_tex_ns = 0, g_ct_sets_ns = 0, g_ct_gpu_ns = 0, g_ct_textures = 0, g_ct_draws = 0;
+uint64_t g_ct_tex_same = 0, g_ct_memo_hits = 0;  // (a slot's fetch as its last draw's; SharedConstants' kept answers)
+uint32_t g_ct_last_fetch[2][32][6] = {};
+struct ConstTimer {
+  uint64_t& sum;
+  std::chrono::steady_clock::time_point t0;
+  explicit ConstTimer(uint64_t& s) : sum(s) {
+    if (g_const_times) t0 = std::chrono::steady_clock::now();
+  }
+  ~ConstTimer() {
+    if (g_const_times)
+      sum += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count());
+  }
+};
 uint32_t g_vb_demotions = 0;
 uint64_t g_repeat_same = 0, g_repeat_changed = 0;  // (total) dynamic buffers seen changing within a frame after trusting them
 // Debug (SVR2011_NATIVE_VB_STATS=1): hashed uses per dynamic buffer (address << 32 | size).
@@ -2087,6 +2104,17 @@ void UpdateTitle(Renderer* r) {
         g_vb_stats.clear();
       }
       r->perf_const_uploads = r->perf_const_reused = 0;
+      if (g_const_times && g_ct_draws) {
+        REXLOG_INFO("native perf: constants per frame: shared {:.3f} ms (texture lookups {:.3f}, sets {:.3f}), "
+                    "gpu constants {:.3f} ms; {:.2f} textures a draw ({:.0f} draws); a slot's texture as its last "
+                    "draw's {:.0f}%; kept answers {:.0f}%",
+                    g_ct_shared_ns / f / 1e6, g_ct_tex_ns / f / 1e6, g_ct_sets_ns / f / 1e6, g_ct_gpu_ns / f / 1e6,
+                    double(g_ct_textures) / double(g_ct_draws), g_ct_draws / f,
+                    g_ct_textures ? 100.0 * g_ct_tex_same / g_ct_textures : 0.0,
+                    g_ct_textures ? 100.0 * g_ct_memo_hits / g_ct_textures : 0.0);
+      }
+      g_ct_shared_ns = g_ct_tex_ns = g_ct_sets_ns = g_ct_gpu_ns = g_ct_textures = g_ct_draws = 0;
+      g_ct_tex_same = g_ct_memo_hits = 0;
     }
     g_pipeline_ms = 0;
     r->perf_draw_ms = r->perf_wait_ms = r->perf_span_ms = r->perf_submit_ms = 0;
@@ -3062,6 +3090,7 @@ RenderBufferReference Constants(Renderer* r, uint32_t device_offset, uint32_t by
 // the upload; the constants loaded from memory for this draw (so far only
 // the shaders' literal c252-c255) take precedence.
 RenderBufferReference GpuConstants(Renderer* r, uint32_t first, uint32_t bytes) {
+  ConstTimer timer(g_ct_gpu_ns);
   const uint32_t count = bytes / 16;
   const uint8_t* mirror = Device() + 0x780 + 16 * first;
   bool loaded_here = false;
@@ -3194,9 +3223,24 @@ uint32_t SlotSwizzle(Renderer* r, uint32_t index) {
 #endif
 }
 
+// Each shader stage's fetch slots' last answers (SharedConstants): most draws sample what the draw before them did
+// in the same slot (80% of the lookups in a 6-man match), and while the frame and textures::Generation stay the same
+// fetch constants get the same texture and sampler - the lookups (a key hash, two maps, the recheck rules) are
+// skipped. Debug: SVR2011_NATIVE_NO_SLOT_MEMO=1 looks every one up.
+struct SlotMemo {
+  uint32_t fetch[6] = {};
+  uint32_t dimension = UINT32_MAX;
+  uint64_t frame = ~0ull, generation = 0;
+  uint32_t srv = UINT32_MAX, sampler = UINT32_MAX;  // (sampler: UINT32_MAX until asked)
+};
+SlotMemo g_slot_memo[2][32];
+const bool g_slot_memo_on = std::getenv("SVR2011_NATIVE_NO_SLOT_MEMO") == nullptr;
+
 // `ndc`: g_NdcScale (x, y) and g_HalfPixelOffset (the NDC offset, z, w).
 RenderBufferReference SharedConstants(Renderer* r, bool alpha_test, const Shader* vs,
                                       const Shader* ps, const float ndc[4]) {
+  ConstTimer timer(g_ct_shared_ns);
+  ++g_ct_draws;
   auto [cpu, gpu] = Allocate(r, kSharedConstantsBytes);
   if (!cpu) return {};
   auto* u = reinterpret_cast<uint32_t*>(cpu);
@@ -3219,11 +3263,19 @@ RenderBufferReference SharedConstants(Renderer* r, bool alpha_test, const Shader
   }
   // The textures the shaders sample, from the fetch constants.
   const textures::Context& ctx = r->texture_context;
+  {
+  ConstTimer tex_timer(g_ct_tex_ns);
   for (const Shader* s : {vs, ps}) {
     for (const auto& [slot, dimension] : s->textures) {
+      ++g_ct_textures;
       const uint8_t* f = Device() + guest::RegisterOffset(0x4800) + slot * 24;
       uint32_t fetch[6];
       for (int k = 0; k < 6; ++k) fetch[k] = Be32(f + 4 * k);
+      if (g_const_times) {
+        uint32_t* lf = g_ct_last_fetch[s == ps ? 1 : 0][slot & 31];
+        if (!std::memcmp(lf, fetch, sizeof(fetch))) ++g_ct_tex_same;
+        std::memcpy(lf, fetch, sizeof(fetch));
+      }
       {
         // debug: SVR2011_NATIVE_BLANK_CYCLE slot gets the placeholder, or with
         // SVR2011_NATIVE_CYCLE_ALPHA=1 its alpha forced to 1 (=2: every other
@@ -3246,13 +3298,31 @@ RenderBufferReference SharedConstants(Renderer* r, bool alpha_test, const Shader
             fetch[3] = (fetch[3] & ~(7u << 10)) | (5u << 10);
         }
       }
-      const uint32_t srv = textures::Texture(ctx, fetch, dimension);
+      SlotMemo& memo = g_slot_memo[s == ps ? 1 : 0][slot & 31];
+      uint32_t srv;
+      if (g_slot_memo_on && memo.frame == ctx.frame && memo.dimension == dimension &&
+          memo.generation == textures::Generation() && !std::memcmp(memo.fetch, fetch, sizeof(fetch))) {
+        srv = memo.srv;
+        ++g_ct_memo_hits;
+      } else {
+        srv = textures::Texture(ctx, fetch, dimension);
+        std::memcpy(memo.fetch, fetch, sizeof(fetch));
+        memo.dimension = dimension;
+        memo.frame = ctx.frame;
+        memo.generation = textures::Generation();  // (after the lookup: its own upload counted)
+        memo.srv = srv;
+        memo.sampler = UINT32_MAX;
+      }
+      auto sampler_of = [&] {
+        if (memo.sampler == UINT32_MAX) memo.sampler = textures::Sampler(ctx, fetch);
+        return memo.sampler;
+      };
       if (slots) {
         if (dimension > 2 || slot >= kSlotCount[dimension] || srv == UINT32_MAX) continue;
         const uint32_t index = r->texture_base[dimension] + srv;
         places[0][kSlotFirst[dimension] + slot] = index;
         u[(dimension * 8 + slot / 4) * 4 + slot % 4] = SlotSwizzle(r, index);
-        places[1][SlotSampler(slot) & 15] = textures::Sampler(ctx, fetch);
+        places[1][SlotSampler(slot) & 15] = sampler_of();
         continue;
       }
       if (compact) {
@@ -3267,7 +3337,7 @@ RenderBufferReference SharedConstants(Renderer* r, bool alpha_test, const Shader
             srv == UINT32_MAX ? UINT32_MAX : r->texture_base[dimension] + srv;
         u[(dimension * 8 + slot / 4) * 4 + slot % 4] = place;
         if (srv == UINT32_MAX) continue;
-        const uint32_t sampler = textures::Sampler(ctx, fetch);
+        const uint32_t sampler = sampler_of();
         uint32_t s = 0;
         while (s < samplers && places[1][s] != sampler) ++s;  // (shared)
         if (s == samplers && samplers < kCompactSamplers) places[1][samplers++] = sampler;
@@ -3276,10 +3346,12 @@ RenderBufferReference SharedConstants(Renderer* r, bool alpha_test, const Shader
       }
       if (srv == UINT32_MAX) continue;
       u[(dimension * 8 + slot / 4) * 4 + slot % 4] = srv;
-      u[(3 * 8 + slot / 4) * 4 + slot % 4] = textures::Sampler(ctx, fetch);
+      u[(3 * 8 + slot / 4) * 4 + slot % 4] = sampler_of();
     }
   }
+  }
   if (compact || slots) {
+    ConstTimer sets_timer(g_ct_sets_ns);
     r->draw_sets[0] = CompactSet(r, 0, places[0]);
     r->draw_sets[1] = CompactSet(r, 1, places[1]);
   }

@@ -60,6 +60,11 @@ uint32_t Texture(const Context& ctx, const uint32_t fetch[6], uint32_t dimension
 // Sampler table index for the fetch constant's filtering and addressing.
 uint32_t Sampler(const Context& ctx, const uint32_t fetch[6]);
 
+// Moves on whenever a Texture or Sampler answer could change: a texture uploaded, changed, replaced or dropped, a
+// resolve registered or forgotten, guest memory written, the quality or the check mode set. Within one frame,
+// while it stays, the same fetch constants get the same answers (the renderer keeps each slot's last one).
+uint64_t Generation();
+
 // false: the GPU can't sample BC (DXT) textures (Mali): they are decoded on
 // the CPU to RGBA8 / RG8 / R8 instead (before any texture is uploaded).
 void SetBlockCompressionSupported(bool supported);

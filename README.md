@@ -103,7 +103,7 @@ iOS uses the same touch-control system as the PC port's Android build, so the ma
 ## Settings
 
 Open **My WWE → Options → Graphics** in the game. It has two tabs (**LB / RB**). **Display** holds the basics. **Quality** trades looks for speed, and its changes apply at once.
-> Also available in the Launcher. 
+> Game settings can also be adjusted in the Launcher. 
 
 | Quality setting | What it does |
 |---|---|
@@ -192,7 +192,7 @@ The recompiled game code is **generated on your machine from your own game files
 - **The app closes right after it opens.** Start-up messages are written to `boot.log` in the game folder. Include it when you report a problem.
 - **The game closed unexpectedly.** A crash report is saved in `UserData/crashes/` in the game folder. Please include it when you report a problem.
 - **The app won't open after about a week.** Apps signed with a free Apple ID expire after 7 days. Refresh or re-sign it in your sideloading tool.
-- **It's slow.** Open **My WWE → Options → Graphics → Quality**. Set **Shadows & effects** to **Normal**, lower **Render resolution**, turn **Anti-aliasing** off, and set **Textures** to **Medium**. If entrances still stutter, set **Entrance frame rate** to **30 fps**. The first time a scene is shown can hitch while its shaders are prepared. They're kept in `UserData/cache/` for next time.
+- **It's slow.** Adjust the Game settings in the Launcher or Open **My WWE → Options → Graphics → Quality**. Set **Shadows & effects** to **Normal**, lower **Render resolution**, turn **Anti-aliasing** off, and set **Textures** to **Medium**. If entrances still stutter, set **Entrance frame rate** to **30 fps**. The first time a scene is shown can hitch while its shaders are prepared. They're kept in `UserData/cache/` for next time.
 - **Something is drawn wrong.** Report it with a screenshot and the crash report if there is one. The Emulated renderer isn't available on iOS, so there's no fallback to try.
 
 ---

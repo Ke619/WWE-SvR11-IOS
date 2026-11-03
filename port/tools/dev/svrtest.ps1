@@ -220,6 +220,9 @@ if ($Command -in "match", "entrance") {
     if ($o.arena) { $spec += " arena=$($o.arena)" } else { $spec += " arena=$defaultArena" }
     if ($o.attire) { $spec += " attires=$($o.attire)" }
     if ($o.cpu -eq "all") { $spec += " cpu=all" }  # (every person a CPU: test_match.cpp)
+    # (only the people given: a slot the route's presses picked is emptied - a 1v1 had a third wrestler; a Royal
+    # Rumble's other entrants are the game's own)
+    if ($o.rule -notmatch '^(0x)?14$') { $spec += " exact=1" }
     $env:SVR2011_TEST_MATCH = $spec
     if ($o.rule) { $env:SVR2011_TEST_RULE = $(if ($o.rule -match '^\d+$' -and $o.rule.Length -lt 3) { "{0:X2}" -f [int]$o.rule } else { $o.rule -replace '^0x', '' }) }
     $steps = if ($o.boot) { @() } elseif ($o.entrances) { @("route normal", "pressuntil A test match: people") } else { @("route match") }

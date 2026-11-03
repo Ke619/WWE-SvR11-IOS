@@ -35,6 +35,8 @@
 
 #if defined(_WIN32)
 #include <windows.h>
+#include <dbghelp.h>
+#include <tlhelp32.h>
 #endif
 
 #include <algorithm>
@@ -289,8 +291,91 @@ void Virt(PPCContext& ctx, uint8_t* base, uint32_t obj, int slot, uint32_t r4 = 
   REX_CALL_INDIRECT_FUNC(ctx.ctr.u32);
 }
 
+// Test aid (Windows): SVR2011_TEST_HW_WATCH=<hex guest address> - a hardware write breakpoint (DR0, 4 bytes) on that
+// guest word in every thread of the game (threads made later armed within a second): each write logs the new value
+// and the writing thread's host calls, symbolized - the recompiled guest functions (sub_XXXXXXXX) that wrote it. For
+// the INFERNO's system AED0F740, whose first word turns FFFFFFFF while it's still listed.
+#if defined(_WIN32)
+uint8_t* g_hw_watch = nullptr;  // (the watched word's host address)
+LONG CALLBACK HwWatchHandler(EXCEPTION_POINTERS* e) {
+  if (e->ExceptionRecord->ExceptionCode != EXCEPTION_SINGLE_STEP || !(e->ContextRecord->Dr6 & 1)) return EXCEPTION_CONTINUE_SEARCH;
+  e->ContextRecord->Dr6 = 0;
+  static std::atomic<int> hits{0};
+  if (const int n = ++hits; n <= 40) {
+    static std::mutex mu;
+    std::lock_guard lock(mu);
+    static const bool sym = [] {
+      SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
+      return SymInitialize(GetCurrentProcess(), nullptr, TRUE) != FALSE;
+    }();
+    void* frames[24];
+    const USHORT count = RtlCaptureStackBackTrace(0, 24, frames, nullptr);
+    std::string calls;
+    alignas(SYMBOL_INFO) char buf[sizeof(SYMBOL_INFO) + 128] = {};
+    auto* s = reinterpret_cast<SYMBOL_INFO*>(buf);
+    s->SizeOfStruct = sizeof(SYMBOL_INFO), s->MaxNameLen = 127;
+    for (USHORT i = 1; i < count; ++i) {  // (0: this handler)
+      DWORD64 d = 0;
+      if (sym && SymFromAddr(GetCurrentProcess(), DWORD64(frames[i]), &d, s)) calls += fmt::format(" {}+{:X}", s->Name, d);
+      else calls += fmt::format(" {:X}", uintptr_t(frames[i]));
+      if (calls.size() > 900) break;
+    }
+    const uint32_t v = svrfmt::Rd32(g_hw_watch);
+    REXLOG_WARN("frame rate: hw watch #{} - the word is now {:08X} (host thread {}, rip {:X}):{}", n, v,
+                GetCurrentThreadId(), e->ContextRecord->Rip, calls);
+  }
+  return EXCEPTION_CONTINUE_EXECUTION;
+}
+
+void HwWatchStart(uint8_t* base) {
+  static std::once_flag once;
+  std::call_once(once, [base] {
+    const char* v = std::getenv("SVR2011_TEST_HW_WATCH");
+    const uint32_t guest = v ? uint32_t(std::strtoul(v, nullptr, 16)) : 0u;
+    if (!guest) return;
+    g_hw_watch = base + guest;
+    AddVectoredExceptionHandler(1, HwWatchHandler);
+    REXLOG_INFO("frame rate: hw watch on guest {:08X} (host {:X})", guest, uintptr_t(g_hw_watch));
+    std::thread([] {
+      std::vector<DWORD> armed;
+      const DWORD self = GetCurrentThreadId(), pid = GetCurrentProcessId();
+      for (;;) {
+        if (HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0); snap != INVALID_HANDLE_VALUE) {
+          THREADENTRY32 te{sizeof(te)};
+          for (BOOL ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te)) {
+            if (te.th32OwnerProcessID != pid || te.th32ThreadID == self ||
+                std::find(armed.begin(), armed.end(), te.th32ThreadID) != armed.end())
+              continue;
+            HANDLE t = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE, te.th32ThreadID);
+            if (!t) continue;
+            bool set = false;  // (nothing allocated while it's suspended: it may hold the heap's lock)
+            if (SuspendThread(t) != DWORD(-1)) {
+              CONTEXT c{};
+              c.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+              if (GetThreadContext(t, &c)) {
+                c.Dr0 = DWORD64(g_hw_watch);
+                c.Dr7 = (c.Dr7 & ~0xF0003ull) | 1 | (1ull << 16) | (3ull << 18);  // (L0; write; 4 bytes)
+                set = SetThreadContext(t, &c) != FALSE;
+              }
+              ResumeThread(t);
+            }
+            if (set) armed.push_back(te.th32ThreadID);
+            CloseHandle(t);
+          }
+          CloseHandle(snap);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+      }
+    }).detach();
+  });
+}
+#else
+void HwWatchStart(uint8_t*) {}
+#endif
+
 // The manager's systems (list +0..+8, then +68): their slot `slot`.
 void Systems(PPCContext& ctx, uint8_t* base, uint32_t m, int slot, bool scheduler_first) {
+  HwWatchStart(base);  // (test aid, above)
   // (as the original: list ends read once before each loop, +68 read when used)
   if (scheduler_first)
     if (const uint32_t o = G32(base, m + 68)) Virt(ctx, base, o, slot);

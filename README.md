@@ -23,6 +23,8 @@ This is an unofficial iOS port of the 2010 Xbox 360 game *WWE SmackDown vs. Raw 
 
 ## Status
 
+**Playability: 4,5/5 ⭐️**
+
 Tested on an **iPhone 15 Pro (Apple A17 Pro chip)**, running inside LiveContainer / sideloaded via SideStore:
 
 - Menus, character select, entrances and matches all work, at 60 fps in testing.
@@ -31,7 +33,7 @@ Tested on an **iPhone 15 Pro (Apple A17 Pro chip)**, running inside LiveContaine
 - Saves are plain files in the game folder.
 - On the iPhone's wide screen, matches and entrances fill the whole screen.
 
-Other iPhones and iPads haven't been tested. It's an early port, so expect rough edges. See [What carries over from the OG port](#what-carries-over-from-the-og-port) for what is and isn't available.
+iPads and older iPhones haven't been tested.
 
 ---
 

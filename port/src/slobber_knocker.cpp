@@ -344,7 +344,16 @@ REX_HOOK_RAW(sub_8280CFD0) {
     std::memcpy(&fx, &x, 4), std::memcpy(&fz, &z, 4);
     return std::fabs(fx) < 58.0f && std::fabs(fz) < 58.0f;  // (the ramp starts at about z 60)
   };
+  // Test aid SVR2011_TEST_NO_OTHER=<from s>,<to s>: in that part of a match nobody passes valid_other below (a rumble
+  // where nobody else is in the ring and up)
+  static const std::pair<int, int> no_other = [] {
+    int a = -1, b = -1;
+    if (const char* v = std::getenv("SVR2011_TEST_NO_OTHER")) std::sscanf(v, "%d,%d", &a, &b);
+    return std::make_pair(a, b);
+  }();
+  const int32_t now_frame = int32_t(Rd32(base + 0x82E3CD0C));
   const auto valid_other = [&] {
+    if (no_other.first >= 0 && now_frame >= no_other.first * 60 && now_frame < no_other.second * 60) return 0u;
     for (uint32_t i = 0; i < 6; ++i) {
       const uint32_t c = Rd32(base + kChars + i * 4);
       if (c && c != self && base[c + kState] == 0 && !base[c + kLost] && Rd32(base + c + kTeam) < 30 &&
@@ -384,11 +393,38 @@ REX_HOOK_RAW(sub_8280CFD0) {
   // (+20 the character himself: the stand-in above - someone else as soon as there's one)
   if (const uint32_t on = Rd32(base + pair + 20); self && (!on || on == self) && Rd32(base + self + kTeam) < 30 &&
       (had || int32_t(Rd32(base + 0x82E3CD0C)) > 300)) {
-    const uint32_t other = valid_other();
+    uint32_t other = valid_other();
+    // (nobody in the ring and up - a ROYAL RUMBLE: skipping every update left a CPU standing for the last 12 minutes,
+    // 3 Nov: the nearest one in the match (state 0: not waiting to come in, 1, nor thrown out, 4) on another team,
+    // wherever he is - on the floor, on the ramp; nobody at all - the
+    // character himself, the update runs and the game's own pick inside it may find someone. SVR2011_TEST_IDLE_OLD=1:
+    // skipped as before)
+    static const bool idle_old = std::getenv("SVR2011_TEST_IDLE_OLD") != nullptr;
+    const char* how = "now";
+    if (!other && !idle_old) {
+      const auto RdF = [](const uint8_t* p) {
+        uint32_t u;
+        std::memcpy(&u, p, 4);
+        u = __builtin_bswap32(u);
+        float f;
+        std::memcpy(&f, &u, 4);
+        return f;
+      };
+      float best = 1e30f;
+      for (uint32_t i = 0; i < 6; ++i) {
+        const uint32_t c = Rd32(base + kChars + i * 4);
+        if (!c || c == self || base[c + kState] != 0 || base[c + kLost] || Rd32(base + c + kTeam) >= 30 ||
+            Rd32(base + c + kTeam) == Rd32(base + self + kTeam))
+          continue;
+        const float dx = RdF(base + c + 288) - RdF(base + self + 288), dz = RdF(base + c + 296) - RdF(base + self + 296);
+        if (dx * dx + dz * dz < best) best = dx * dx + dz * dz, other = c, how = "the nearest";
+      }
+      if (!other) other = self, how = "himself";
+    }
     static int count = 0;
     if (++count <= 10 || count % 1000 == 0)
       REXLOG_INFO("match types: a character's opponent was gone ({:08X}) - {} ({} times)", self,
-                  other ? fmt::format("now {:08X}", other) : std::string("skipped"), count);
+                  other ? fmt::format("{} {:08X}", how, other) : std::string("skipped"), count);
     if (!other) return;
     Wr32(base + pair + 20, other);
   }

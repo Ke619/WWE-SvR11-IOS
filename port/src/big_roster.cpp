@@ -169,6 +169,38 @@ BIG_ROSTER_CHECK(BigRosterCheck_8259CB0C)
 BIG_ROSTER_CHECK(BigRosterCheck_8259CB3C)
 BIG_ROSTER_CHECK(BigRosterCheck_8259CC20)
 
+// The select screen's portrait cache (sub_82741FC0: 268 slots of 8 B at cache + 48, slot = record index; 242 = none,
+// 243 up the CAW tiles, filled when first shown): an index from 242 up takes a slot from 268 up, in the extension
+// of the slots (slot 268 + k = index 242 + k).
+constexpr uint32_t kPortraitSlots = 268;
+void BigRosterPortraitIndex_82741FE4(PPCRegister& slot) {  // (after the id -> index call)
+  if (g_on && slot.u32 >= svr2011::kStockIndices && slot.u32 < svr2011::kMaxIndices)
+    slot.u64 = kPortraitSlots + slot.u32 - svr2011::kStockIndices;
+}
+void BigRosterPortraitBound_82742024(PPCCRRegister& cr, PPCXERRegister& xer, PPCRegister& slot) {  // (slot < 268)
+  if (g_on && slot.u32 >= kPortraitSlots && slot.u32 < kPortraitSlots + svr2011::kMaxIndices - svr2011::kStockIndices)
+    cr.compare<int32_t>(0, 1, xer);
+}
+namespace {
+void PortraitSlot(std::atomic<bool>& logged, const char* name, PPCRegister& d, const PPCRegister& cache,
+                  const PPCRegister& slot) {
+  if (!g_on || slot.u32 < kPortraitSlots || slot.u32 >= kPortraitSlots + svr2011::kMaxIndices - svr2011::kStockIndices)
+    return;
+  const uint32_t index = svr2011::kStockIndices + slot.u32 - kPortraitSlots;
+  d.u64 = svr2011::RosterEntry(cache.u32 + 48, 8, index);
+  if (!logged.exchange(true))
+    REXLOG_INFO("[svr2011] big roster: site {} sends index {} to the portrait slots' extension", name, index);
+}
+}  // namespace
+void BigRosterPortrait_82742034(PPCRegister& d, PPCRegister& cache, PPCRegister& slot) {
+  static std::atomic<bool> logged;
+  PortraitSlot(logged, "BigRosterPortrait_82742034", d, cache, slot);
+}
+void BigRosterPortrait_8274205C(PPCRegister& d, PPCRegister& cache, PPCRegister& slot) {
+  static std::atomic<bool> logged;
+  PortraitSlot(logged, "BigRosterPortrait_8274205C", d, cache, slot);
+}
+
 namespace svr2011 {
 
 bool BigRosterOn() { return g_on; }

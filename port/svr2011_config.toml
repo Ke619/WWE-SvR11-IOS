@@ -269,3 +269,27 @@ name = "BigRosterCheck_8259CC20"
 address = 0x8259CC20
 registers = ["cr6", "xer", "r3"]
 after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterPortraitIndex_82741FE4"
+address = 0x82741FE4
+registers = ["r31"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterPortraitBound_82742024"
+address = 0x82742024
+registers = ["cr6", "xer", "r31"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterPortrait_82742034"
+address = 0x82742034
+registers = ["r30", "r27", "r31"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterPortrait_8274205C"
+address = 0x8274205C
+registers = ["r11", "r27", "r31"]
+after_instruction = true

@@ -603,6 +603,11 @@ public class LauncherActivity extends Activity {
 
     // An on/off setting.
     void toggle(LinearLayout card, String label, String hint, String key, boolean fallback) {
+        toggle(card, label, hint, key, fallback, null);
+    }
+
+    // warn_on: a warning to confirm each time it's switched on (Turn on / Cancel; Cancel leaves it off).
+    void toggle(LinearLayout card, String label, String hint, String key, boolean fallback, String warn_on) {
         Switch s = new Switch(this);
         // (the theme's own colours left an "on" switch nearly invisible on the dark cards)
         int[][] states = {{android.R.attr.state_checked}, {}};
@@ -610,6 +615,22 @@ public class LauncherActivity extends Activity {
         s.setTrackTintList(new android.content.res.ColorStateList(states, new int[] {0x88C8102E, 0xFF4A4A54}));
         s.setOnCheckedChangeListener((b, on) -> {
             if (loading_ || on == settings_.getBool(key, fallback)) return;
+            if (on && warn_on != null) {
+                final boolean[] yes = {false};
+                new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_DARK)
+                    .setTitle("\uD83E\uDDEA Experimental").setMessage(warn_on)
+                    .setPositiveButton("Turn on", (dlg, w) -> {
+                        yes[0] = true;
+                        settings_.setBool(key, true);
+                        saved(label);
+                    })
+                    .setNegativeButton("Cancel", null)
+                    .setOnDismissListener(dlg -> {
+                        if (!yes[0]) s.setChecked(false);
+                    })
+                    .show();
+                return;
+            }
             settings_.setBool(key, on);
             saved(label);
         });
@@ -735,6 +756,12 @@ public class LauncherActivity extends Activity {
         toggle(game, "Experimental: mod saves in their own files",
             "Each superstar mod's save data in Saves/.mods - an uninstalled mod leaves the save clean. At the next start",
             "per_mod_saves", false);
+        // (src/big_roster.cpp: big_roster - each time it's switched on, the warning first)
+        String big_roster_warning = "Experimental - still being worked on. More mod superstars is not finished. "
+            + "Turning it on may corrupt your save or even damage your game install. Back up your Saves folder "
+            + "first. Turn it on anyway?";
+        toggle(game, "\uD83E\uDDEA Experimental: more superstar mods at once", big_roster_warning, "big_roster",
+            false, big_roster_warning);
 
         drivers_ = new Drivers(this, settings_);
         drivers_.build(c);
@@ -763,6 +790,7 @@ public class LauncherActivity extends Activity {
             settings_.setBool("skip_training", false);
             settings_.setBool("fast_loads", false);
             settings_.setBool("per_mod_saves", false);
+            settings_.setBool("big_roster", false);
             settings_.setString("native_texture_quality", "high");
             saved("Defaults");
             refresh();

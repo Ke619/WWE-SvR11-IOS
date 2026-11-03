@@ -36,14 +36,16 @@ Answers (JSON):
 ## Receipts: the players' Reports list (2.1.9+)
 
 Each client keeps a sent report's `id` + `secret` in `<game>\UserData\reports.json` (one object a line:
-`id, secret, date, app, problem, what` - the launcher, the Mod Maker and Android share it; `report_receipts.c`,
+`id, secret, date, app, problem, what`, and `"pictures_later": 1` when the game's form sent it with "add pictures
+later in the launcher" - the launcher, the Mod Maker, the game and Android share it; `report_receipts.c`,
 `Receipts.java`). The launcher's **Reports** tab and Android's **My reports** list them and ask:
 
 `POST {online_server}/api/reports/status` `{"reports": [{"id", "secret"}, ...]}` (100 at most; 60 lookups in 10
 minutes per address; an `Authorization: Bearer <token>` adds the account's reports from other PCs,
 `from_account: true`) -> `{"ok": true, "reports": [...]}`, each:
 `{id, state, received, app, problem, what}` and, by state, `note`, `version`, `date` (fixed) or `question`, `date`,
-`replies` (needs_info / replied). `state`: `received` (no mark), `looking`, `fixed`, `needs_info`, `replied`, `done`,
+`replies` (needs_info / replied), and `edits` (the player's changes), `pictures` (how many it has, sent + added),
+`editable` (not done / duplicate). `state`: `received` (no mark), `looking`, `fixed`, `needs_info`, `replied`, `done`,
 `duplicate`, or `unknown` (no such report, or a wrong secret - then only `{id, state}`). Never another report, never
 its logs, zip, pictures, contact or signature. Reports from before receipts have no secret: they can't be listed.
 
@@ -52,6 +54,16 @@ WebP): the player's answer to a question; only while the report is `needs_info` 
 most, 2000 characters, rate-limited as reports, through the name filter. Kept beside the report as `replies.jsonl`
 (+ `reply<n>_<k>.png`); the mark becomes `replied` (the dashboard shows it). `409` not waiting for an answer, `404`
 no such report / wrong secret.
+
+`POST {online_server}/api/reports/edit` (multipart: `report` = `{id, secret, what, before, contact}`, `image0`-`image4`
+PNG / JPEG / WebP): the player adds to a report it sent - text to add to what happened and / or before (4000 each),
+a new contact (200), pictures - until it's `done` or a `duplicate`; 5 pictures a report in all (the sent ones count),
+10 changes a report, rate-limited as reports ("edit:" + address / account), through the name filter (all three
+texts). Kept as a history beside the report: `edits.jsonl` (`{date, what, before, contact, images}`, only what was
+given) + `edit<n>_<k>.png`; report.json stays as it was sent. -> `{ok, edits, pictures}`; `409` closed, too many
+pictures or changes, `404` no such report / wrong secret, `400` nothing to add. The launcher's Reports tab ("Edit /
+add pictures...", `--reports-edit`) and Android's My reports send it; reports waiting for their pictures
+(`pictures_later`, none yet) say "Add your pictures".
 
 The players' words: "Received", "We're looking at this one now.", "Fixed - in the next update (2.1.9): <note>",
 "We need more information: <question>", "Thanks - we have your answer to: <question>", "Done", "Already reported".
@@ -111,11 +123,14 @@ in its `--data` folder:
                                             {status: fixed, note, commit, version, date}, or
                                             {status: needs_info / replied, question, date}
     reports/<yyyy-mm-dd>/<id>/replies.jsonl  the player's answers ({date, text, images}) + reply<n>_<k>.png
+    reports/<yyyy-mm-dd>/<id>/edits.jsonl    the player's changes ({date, what, before, contact, images}) + edit<n>_<k>.png
+    reports/edits.json                      id -> {n, date, pictures}: the changes' counts for the lists
 
 The core passes a report to the node as one stored zip (`POST /reports` with `X-Storage-Key`); the node also
 answers `GET /reports`, `GET /reports/<id>/<file>`, `POST /reports/<id>/mark` (the id may be a signature: every
 report with it; `{status, fix}`), `POST /reports/<id>/delete`, `POST /reports/status` (`{receipts, account}`) and
-`POST /reports/reply` (a stored zip: meta.json `{id, secret, text, account}` + image0..2). The sender's address stays in the core's memory,
+`POST /reports/reply` (a stored zip: meta.json `{id, secret, text, account}` + image0..2) and `POST /reports/edit` (the same,
+meta.json `{id, secret, what, before, contact, account}` + image0..4). The sender's address stays in the core's memory,
 for the rate limit only.
 
 ## Marking a fix
@@ -126,7 +141,8 @@ On the PC that keeps the reports (the storage node, or `--role all`), with the s
     python port/server/reports.py --data <...> mark <id | signature> --needs-info "the question for the player"
     python port/server/reports.py --data <...> mark <id | signature> --looking | --done | --duplicate | --reopen
     python port/server/reports.py --data <...> delete <report id>
-    python port/server/reports.py --data <...> list [--fixed]
+    python port/server/reports.py --data <...> list [--fixed]      (+ N edit(s) on the changed ones)
+    python port/server/reports.py --data <...> show <report id>     (its fields, mark, answers and the player's edits)
 
 The same from the dashboard's API (admin): `POST /api/admin/report/<id | signature>/mark` with
 `{"status": "fixed", "fix": {"note", "commit", "version", "date"}}` (date: today when left out), `{"status":
@@ -142,12 +158,14 @@ The Reports tab:
 - Then the open reports grouped by signature (newest first): their count, the error line, picture thumbnails,
   Details (report.json), the zip, and Looking / Ask... (a question: the player's Reports tab shows it) / Done /
   Duplicate / Reopen marks; an asked report shows its question and its answers (replies.jsonl). Fixed ones leave
-  this list; the tab's count is the new and the answered ones.
+  this list; the tab's count is the new and the answered ones. A report the player changed has an "edited" tag and a
+  row under it with each change (its text, contact and pictures, from edits.jsonl).
 
 ## Deploying
 
 - The VPS (core): `vps_install.sh` copies `reports.py` and writes the nginx locations `/svr/api/reports`
-  (`client_max_body_size 400m`) and `/svr/api/reports/reply` (30m; `/status` goes through `/svr/`).
+  (`client_max_body_size 400m`), `/svr/api/reports/reply` (30m) and `/svr/api/reports/edit` (45m; `/status` goes
+  through `/svr/`).
 - The PC storage node runs `server.py --role storage` from its own folder: `reports.py` must be beside it, and
   its server restarted, before the core's new code goes live (until then the core answers 503).
 

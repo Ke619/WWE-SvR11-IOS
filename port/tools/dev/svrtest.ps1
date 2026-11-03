@@ -204,8 +204,12 @@ $env:SDL_WINDOW_ACTIVATE_WHEN_SHOWN = "0"; $env:SDL_WINDOW_ACTIVATE_WHEN_RAISED 
 $env:SVR2011_NATIVE_WINDOW_POS = "-2600,0"
 foreach ($v in "SVR2011_TEST_MATCH", "SVR2011_TEST_RULE", "SVR2011_NATIVE_SHADERS") { [Environment]::SetEnvironmentVariable($v, $null, "Process") }
 $steps = @()
+# (no --arena: arena 1 - but a Royal Rumble its own, as the game forces it (RUL +40: 22, story copy 0x56: 19); on
+# another arena its eliminated never leave, no slot frees up, and no entrant past the sixth comes in - 3 Nov)
+$ruleHex = if (-not $o.rule) { "" } elseif ($o.rule -match '^\d+$' -and $o.rule.Length -lt 3) { "{0:X2}" -f [int]$o.rule } else { ($o.rule -replace '^0x', '').ToUpper() }
+$defaultArena = if ($ruleHex -in "14", "15", "16", "17", "18") { "22" } elseif ($ruleHex -eq "56") { "19" } else { "1" }
 if ($Command -eq "script" -and $o.p[1]) {  # (a script's "route match" with these people: test_match.cpp)
-    $env:SVR2011_TEST_MATCH = "people=" + (@(1..6 | Where-Object { $o.p[$_] } | ForEach-Object { $o.p[$_] }) -join ",") + " arena=" + $(if ($o.arena) { $o.arena } else { "1" })
+    $env:SVR2011_TEST_MATCH = "people=" + (@(1..6 | Where-Object { $o.p[$_] } | ForEach-Object { $o.p[$_] }) -join ",") + " arena=" + $(if ($o.arena) { $o.arena } else { $defaultArena })
     if ($o.rule) { $env:SVR2011_TEST_RULE = $o.rule -replace '^0x', '' }
 }
 if ($Command -in "match", "entrance") {
@@ -213,7 +217,7 @@ if ($Command -in "match", "entrance") {
     if ($people.Count -lt 2 -and $Command -eq "match") { throw "svrtest match: --p1 and --p2 at least" }
     if ($people.Count -lt 2) { $people += "EDGE" }
     $spec = "people=" + ($people -join ",")
-    if ($o.arena) { $spec += " arena=$($o.arena)" } else { $spec += " arena=1" }
+    if ($o.arena) { $spec += " arena=$($o.arena)" } else { $spec += " arena=$defaultArena" }
     if ($o.attire) { $spec += " attires=$($o.attire)" }
     if ($o.cpu -eq "all") { $spec += " cpu=all" }  # (every person a CPU: test_match.cpp)
     $env:SVR2011_TEST_MATCH = $spec

@@ -54,4 +54,21 @@ uint32_t OnlineScratch();
 // Superstar pictures shown with a stand-in - that one isn't usable).
 void OnlineCawPictureFailed(uint8_t* base, uint32_t holder);
 
+// For one call of the match's pad exchange (net_stats.cpp's hooks of the send
+// sub_82893BD0 and the take sub_82893E18, net = the match's net object): with
+// CPU slots, the entry count reaches the humans' highest lobby slot - a human
+// in 3P with a CPU in 2P sent and took no pads (online_cpu.cpp).
+class OnlineCpuPadScope {
+ public:
+  OnlineCpuPadScope(uint8_t* base, uint32_t net);
+  ~OnlineCpuPadScope();
+  OnlineCpuPadScope(const OnlineCpuPadScope&) = delete;
+  OnlineCpuPadScope& operator=(const OnlineCpuPadScope&) = delete;
+
+ private:
+  uint8_t* base_;
+  uint32_t net_ = 0, count_ = 0, wide_ = 0, left_ = 0;
+  uint32_t slots_[6] = {};
+};
+
 }  // namespace svr2011

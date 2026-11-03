@@ -280,7 +280,7 @@ REX_HOOK_RAW(sub_82245618) {
 // (fatal-4-way, Fold) the pair's +20 was NULL once one had been eliminated:
 // a read of guest 0xA0C over and over, then a hang. A pair missing a
 // character takes the zeroing path.
-// Called from the update below (sub_8280CFD0) after its own pick of the people the CPU looks at - +8, +12 and +20,
+// Called from the update below (sub_8280CFD0) after its own pick of the people the CPU looks at - +8, +12, +16 and +20,
 // each read through right after (their +444, +446 ...). In a ROYAL RUMBLE the pick could find nobody once the
 // opponent was thrown out (all three NULL: an access violation at the +444 read - 2 of 3 heavy 15-man rumbles on
 // PC, 3 Nov, main too): the empty ones become the character himself and stay so - more of the CPU's code reads +20
@@ -288,14 +288,28 @@ REX_HOOK_RAW(sub_82245618) {
 // NULL) - until the next update's guard below finds someone in the ring for +20.
 namespace {
 thread_local uint32_t t_update_pair = 0;  // (inside sub_8280CFD0 for this pair)
-thread_local bool t_stand_in = false;    // (+8 / +12 / +20 given the character this update: logged)
-constexpr uint32_t kLooksAt[] = {8, 12, 20};
+thread_local bool t_stand_in = false;    // (+8 / +12 / +16 / +20 given the character this update: logged)
+constexpr uint32_t kLooksAt[] = {8, 12, 16, 20};  // (+16 too: an empty one read at its +304 - guest 0x130 - in a stalled rumble, 3 Nov)
 }  // namespace
+// The Royal Rumble's manager, sub_8224C1B8(object): a state machine on +92 (0-16; 13, sub_8224BF08, unloads the
+// eliminated one's slot at +112). Research aid (with SVR2011_TEST_PEOPLE_LOG): each change of its state.
+REX_EXTERN(__imp__sub_8224C1B8);
+REX_HOOK_RAW(sub_8224C1B8) {
+  static const bool log = std::getenv("SVR2011_TEST_PEOPLE_LOG") != nullptr;
+  const uint32_t obj = ctx.r3.u32;
+  const uint32_t before = log && obj ? Rd32(base + obj + 92) : 0;
+  __imp__sub_8224C1B8(ctx, base);
+  if (log && obj && Rd32(base + obj + 92) != before)
+    REXLOG_INFO("rumble manager {:08X}: state {} -> {} (+80 {:08X} +84 {:08X} +116 {} +112 {:08X}), frame {}", obj, before,
+                Rd32(base + obj + 92), Rd32(base + obj + 80), Rd32(base + obj + 84), Rd32(base + obj + 116),
+                Rd32(base + obj + 112), Rd32(base + 0x82E3CD0C));
+}
+
 REX_EXTERN(__imp__sub_828061E8);
 REX_HOOK_RAW(sub_828061E8) {
   const uint32_t pair = ctx.r3.u32;
   // Test aid SVR2011_TEST_PAIR_NULL=<s>: once, that many seconds into a match, the update's pick comes out empty
-  // (+8, +12, +20 NULL) as in the rumble - with SVR2011_TEST_PAIR_OLD=1 the old way, which crashes
+  // (+8, +12, +16, +20 NULL) as in the rumble - with SVR2011_TEST_PAIR_OLD=1 the old way, which crashes
   static const int null_at = [] { const char* v = std::getenv("SVR2011_TEST_PAIR_NULL"); return v ? std::atoi(v) : -1; }();
   if (static bool done = false; null_at >= 0 && !done && pair && pair == t_update_pair && Rd32(base + pair + 20) &&
                                 int32_t(Rd32(base + 0x82E3CD0C)) > null_at * 60) {
@@ -330,6 +344,15 @@ std::map<uint32_t, uint32_t> g_targets;  // character -> its AI pair's +20, last
 REX_EXTERN(__imp__sub_8280CFD0);
 REX_HOOK_RAW(sub_8280CFD0) {
   const uint32_t pair = ctx.r3.u32;
+  // Test aid SVR2011_TEST_PEOPLE_LOG=<s>: in any match, every <s> seconds the six people's state, team and entry
+  // (SVR2011_TEST_SK_LOG's line - a ROYAL RUMBLE's entrants coming in, or not)
+  if (static const int every = [] { const char* v = std::getenv("SVR2011_TEST_PEOPLE_LOG"); return v ? std::atoi(v) : 0; }();
+      every > 0) {
+    static std::atomic<int32_t> last{-1};
+    const int32_t f = int32_t(Rd32(base + 0x82E3CD0C)), slot = f / (every * 60);
+    if (f > 0 && last.exchange(slot) != slot)
+      REXLOG_INFO("people at frame {}:{} | live +0 {:02X}", f, Characters(base), base[kLive]);
+  }
   // (not at a match's start - there +20 is empty until the game sets it - and
   // only for a competitor: not the referee or the commentators, teams 30+)
   const uint32_t self = pair ? Rd32(base + pair) : 0;

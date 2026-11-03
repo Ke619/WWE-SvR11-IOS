@@ -71,6 +71,7 @@
 #include <string>
 #include <system_error>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include <rex/filesystem.h>
@@ -79,6 +80,7 @@
 #include <rex/hook.h>
 #include <rex/logging.h>
 #include <rex/ppc.h>
+#include <rex/thread.h>
 #include <rex/system/xam/content_manager.h>
 
 #include "../modmaker/svrfmt/pac.h"
@@ -147,6 +149,54 @@ bool ReadAll(const fs::path& p, Bytes& out) {
 
 // ---- reading the packs
 
+// The motion files read ahead before a merge's read of the packs (ReadPack, data): the stamp's read lists them
+// (g_ahead_list), ReadAhead reads them on several threads, ReadMotion takes each from there. One by one, the 5,256
+// files of six superstar mods took 9.8 s to open and read, though they were in the file cache (each new file's
+// open is slow - scanned); several at once overlap that.
+std::mutex g_ahead_mutex;
+std::vector<fs::path> g_ahead_list;
+std::unordered_map<std::string, Bytes> g_ahead;
+
+void ReadAhead() {
+  std::vector<fs::path> list;
+  {
+    std::lock_guard lock(g_ahead_mutex);
+    list.swap(g_ahead_list);
+    g_ahead.clear();
+  }
+  if (list.empty()) return;
+  std::atomic<size_t> next{0}, done{0};
+  std::vector<std::thread> threads;
+  const unsigned n = std::clamp(std::thread::hardware_concurrency(), 2u, 8u);
+  for (unsigned i = 0; i < n; ++i)
+    threads.emplace_back([&] {
+      rex::thread::set_current_thread_name("move pack read");
+      for (size_t k; (k = next++) < list.size(); ++done) {
+        Bytes b;
+        if (!ReadAll(list[k], b)) continue;  // (missing: ReadMotion tries again and warns)
+        std::lock_guard lock(g_ahead_mutex);
+        g_ahead.emplace(list[k].string(), std::move(b));
+      }
+    });
+  while (done.load() < list.size()) {  // (the window keeps answering meanwhile)
+    svr2011::KeepWindowAlive();
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  for (auto& t : threads) t.join();
+}
+
+bool ReadMotion(const fs::path& p, Bytes& out) {
+  {
+    std::lock_guard lock(g_ahead_mutex);
+    if (auto it = g_ahead.find(p.string()); it != g_ahead.end()) {
+      out = std::move(it->second);
+      g_ahead.erase(it);
+      return true;
+    }
+  }
+  return ReadAll(p, out);
+}
+
 // The motion ids the enabled packs bring as YMBs (streamed) motions - a
 // motion line with a 20-byte header (YmbsInsert) - for the game's "streamed
 // motion" flag (sub_82154F00, below). Set as the packs are read (each start,
@@ -208,10 +258,14 @@ void ReadPack(const fs::path& dir, Packs& p, std::string& stamp, bool data = tru
         }
         stamp += file + " " + std::to_string(ec ? 0 : size) + " " +
                  std::to_string(static_cast<long long>(fs::last_write_time(dir / fs::u8path(file), ec).time_since_epoch().count())) + "\n";
+        if (!data && !ec) {
+          std::lock_guard lock(g_ahead_mutex);
+          g_ahead_list.push_back(dir / fs::u8path(file));
+        }
       }
       if (data) {
         svr2011::KeepWindowAlive();
-        if (!ReadAll(dir / fs::u8path(file), m.data)) {
+        if (!ReadMotion(dir / fs::u8path(file), m.data)) {
           REXLOG_WARN("[svr2011] move packs: {}: missing {}", dir.filename().string(), file);
           ++n;
           continue;
@@ -1844,6 +1898,10 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs, const fs::path& d
   std::string stamp;
   // (data false: the stamp and lists only; the motion files are read when merging)
   auto read_packs = [&](bool data) {
+    if (!data) {
+      std::lock_guard lock(g_ahead_mutex);
+      g_ahead_list.clear();
+    }
     packs = Packs{};
     stamp = std::string(kFormat) + "\n";
     std::map<std::pair<std::string, std::string>, std::set<uint16_t>> pack_ids;
@@ -1874,7 +1932,12 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs, const fs::path& d
     for (const auto& [pac, e] : packs.entries) stamp += FileStamp(game / "pac" / PacPath(pac));
     for (const auto& gm : gms) stamp += "gimmick " + gm.string() + " " + FileStamp(gm);
   };
+  const auto t_start = std::chrono::steady_clock::now();
+  auto ms_since = [](std::chrono::steady_clock::time_point t) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t).count();
+  };
   read_packs(false);
+  const auto stamp_ms = ms_since(t_start);
   SetModEntrances(packs.entry_lines);
   WarnOverrides(packs);
   std::set<std::string> pacs;
@@ -1926,15 +1989,24 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs, const fs::path& d
       LinkDlcCopies(vfs, overlay, dlc);
       Register(vfs, overlay);
       g_folder = "Mods\\PacOverlay";
-      REXLOG_INFO("[svr2011] move packs: {} packs ({} items), overlay up to date", dirs.size(), packs.count);
+      REXLOG_INFO("[svr2011] move packs: {} packs ({} items), overlay up to date (lists read in {} ms, checked in {} ms)",
+                  dirs.size(), packs.count, stamp_ms, ms_since(t_start));
       LoadMoveTables(game);
       return;
     }
   }
-  REXLOG_INFO("[svr2011] move packs: merging {} packs ({} items) into {} ...", dirs.size(), packs.count, overlay.string());
+  REXLOG_INFO("[svr2011] move packs: merging {} packs ({} items) into {} (lists read in {} ms) ...", dirs.size(),
+              packs.count, overlay.string(), stamp_ms);
+  const auto t_merge = std::chrono::steady_clock::now();
   {
     const std::string checked = stamp;
+    ReadAhead();
     read_packs(true);  // (now the motion files too)
+    {
+      std::lock_guard lock(g_ahead_mutex);
+      g_ahead.clear();  // (any not taken)
+    }
+    REXLOG_INFO("[svr2011] move packs: the packs' files read in {} ms", ms_since(t_merge));
     if (stamp != checked) REXLOG_WARN("[svr2011] move packs: a pack changed while it was read");
   }
   fs::create_directories(overlay, ec);
@@ -2064,7 +2136,7 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs, const fs::path& d
   LinkDlcCopies(vfs, overlay, dlc);
   Register(vfs, overlay);
   g_folder = "Mods\\PacOverlay";
-  REXLOG_INFO("[svr2011] move packs: merged");
+  REXLOG_INFO("[svr2011] move packs: merged in {} ms", ms_since(t_merge));
   LoadMoveTables(game);
 }
 

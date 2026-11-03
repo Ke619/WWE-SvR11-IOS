@@ -16,7 +16,7 @@
 //
 // Here:
 //  - a character's own signs (superstar mods: sign1..4.dds) go in as
-//    id*10 + 1..4 (replacing a DLC slot's "Dummy" placeholders);
+//    10000 + key*10 + 1..4 (the mod's key: whatever id it holds - superstar_mods.cpp);
 //  - sign packs, <game>/Mods/Signs/<pack>/*.dds (a manifest.txt; a "disabled"
 //    file turns one off), go in as 6001, 6011, ... and join the general
 //    signs: the free slots of each match are drawn from the game's 16 and
@@ -133,8 +133,8 @@ bool BuildBank(rex::memory::Memory* memory) {
 
 namespace svr2011 {
 
-void AddCharacterSigns(uint32_t id, const std::vector<fs::path>& dds) {
-  for (size_t k = 0; k < dds.size() && k < 4; ++k) g_signs[id * 10 + 1 + uint32_t(k)] = dds[k];
+void AddCharacterSigns(uint32_t first, const std::vector<fs::path>& dds) {
+  for (size_t k = 0; k < dds.size() && k < 4; ++k) g_signs[first + 1 + uint32_t(k)] = dds[k];
 }
 
 void InstallCrowdSigns(rex::memory::Memory* memory) {

@@ -744,12 +744,22 @@ void Svr2011App::OnPostLoadXexImage() {
       REXLOG_INFO("settings ({}): {}", group[0], line);
     }
   }
-  // Test aid: SVR2011_TEST_CRASH=1 - a bad memory access 20 s after start
+  // Test aid: SVR2011_TEST_CRASH=1 - a bad memory access 20 s after start, =stack a stack overflow
   // (checks the crash report and its lines in the log).
-  if (!Env("SVR2011_TEST_CRASH").empty()) {
-    std::thread([] {
+  if (const std::string crash = Env("SVR2011_TEST_CRASH"); !crash.empty()) {
+    std::thread([crash] {
       std::this_thread::sleep_for(std::chrono::seconds(20));
-      REXLOG_WARN("SVR2011_TEST_CRASH: crashing on purpose");
+      REXLOG_WARN("SVR2011_TEST_CRASH: crashing on purpose ({})", crash == "stack" ? "stack overflow" : "bad access");
+      if (crash == "stack") {
+        struct Deep {
+          static int Go(volatile int n) {
+            volatile char pad[4096];
+            pad[0] = char(n);
+            return Go(n + 1) + pad[0];
+          }
+        };
+        Deep::Go(0);
+      }
       *static_cast<volatile int*>(nullptr) = 1;
     }).detach();
   }

@@ -113,6 +113,19 @@ void BoundSite(std::atomic<bool>& logged, const char* name, PPCCRRegister& cr, c
     REXLOG_INFO("[svr2011] big roster: site {} lets index {} past 241", name, i.u32);
 }
 
+// A walk site: a loop over the indices stepping pointers through tables (and on into what follows them, the
+// CAWs' part): right after its "cmpwi i, 242", the bound as above, and when i has just reached 242 each pointer
+// jumps to its table's extension (the code after the loop starts its own pointers again).
+void WalkSite(std::atomic<bool>& logged, const char* name, PPCCRRegister& cr, const PPCXERRegister& xer,
+              const PPCRegister& i, PPCRegister* p, const uint32_t* size, int n) {
+  BoundSite(logged, name, cr, xer, i, true, true);
+  if (!g_on || g_count == svr2011::kStockIndices || i.u32 != svr2011::kStockIndices) return;
+  for (int k = 0; k < n; ++k) {
+    const uint32_t start = p[k].u32 - svr2011::kStockIndices * size[k];
+    if (const int64_t shift = Shift(start, size[k])) p[k].u64 = uint32_t(int64_t(p[k].u32) + shift);
+  }
+}
+
 }  // namespace
 
 // ---- the sites (named in svr2011_config.toml's [[midasm_hook]] entries; registers d, o / cr6, xer, i)
@@ -125,6 +138,20 @@ void BoundSite(std::atomic<bool>& logged, const char* name, PPCCRRegister& cr, c
   void name(PPCCRRegister& cr, PPCXERRegister& xer, PPCRegister& i) {       \
     static std::atomic<bool> logged;                                        \
     BoundSite(logged, #name, cr, xer, i, is_signed, true);                  \
+  }
+#define BIG_ROSTER_WALK1(name, size)                                        \
+  void name(PPCCRRegister& cr, PPCXERRegister& xer, PPCRegister& i, PPCRegister& p) {\
+    static std::atomic<bool> logged;                                        \
+    const uint32_t sizes[] = {size};                                        \
+    WalkSite(logged, #name, cr, xer, i, &p, sizes, 1);                      \
+  }
+#define BIG_ROSTER_WALK2(name, size_a, size_b)                              \
+  void name(PPCCRRegister& cr, PPCXERRegister& xer, PPCRegister& i, PPCRegister& a, PPCRegister& b) {\
+    static std::atomic<bool> logged;                                        \
+    PPCRegister p[] = {a, b};                                               \
+    const uint32_t sizes[] = {size_a, size_b};                              \
+    WalkSite(logged, #name, cr, xer, i, p, sizes, 2);                       \
+    a = p[0], b = p[1];                                                     \
   }
 #define BIG_ROSTER_CHECK(name)                                              \
   void name(PPCCRRegister& cr, PPCXERRegister& xer, PPCRegister& i) {       \
@@ -158,6 +185,23 @@ BIG_ROSTER_ADDRESS(BigRosterChar_8259CA58, 1056, 0xF5CC, true)
 BIG_ROSTER_ADDRESS(BigRosterChar_8259CB1C, 260, 4, false)
 BIG_ROSTER_ADDRESS(BigRosterChar_8259CB4C, 1056, 0xF5CC, true)
 BIG_ROSTER_ADDRESS(BigRosterChar_8259CC30, 260, 4, true)
+// The roster snapshot (*0x82E3DB34; per list position 8 B at +0 and 18 B at +2336, then the CAWs' 50; 40 B at
+// +26548; records 260 B at +0x9554): taken (sub_8243A380, A9E0), put back (A488, AAA0), compared (A590, AB60,
+// AC98), a record by id (A920, AD48, C068).
+BIG_ROSTER_WALK2(BigRosterSnapWalk_8243A3F4, 8, 18)
+BIG_ROSTER_WALK2(BigRosterSnapWalk_8243A4F0, 8, 18)
+BIG_ROSTER_WALK2(BigRosterSnapWalk_8243A624, 8, 18)
+BIG_ROSTER_WALK1(BigRosterSnapWalk_8243AD34, 18)
+BIG_ROSTER_WALK1(BigRosterSnapWalk_8243AA3C, 40)
+BIG_ROSTER_WALK1(BigRosterSnapWalk_8243AAFC, 40)
+BIG_ROSTER_WALK1(BigRosterSnapWalk_8243ABB8, 40)
+BIG_ROSTER_ADDRESS(BigRosterSnap_8243A99C, 260, 0x9554, true)
+BIG_ROSTER_ADDRESS(BigRosterSnap_8243ADB8, 260, 0x9554, true)
+BIG_ROSTER_ADDRESS(BigRosterSnap_8243C130, 260, 0x9554, false)
+// A 64 B list per index (*0x82E3DB30 + 52: 14 values, count +56, cursor +60 - written back; the CAWs' 50 at
+// +15540, 18848 B in all): sub_82438BA0, C30.
+BIG_ROSTER_ADDRESS(BigRosterList_82438BE0, 64, 52, true)
+BIG_ROSTER_ADDRESS(BigRosterList_82438C70, 64, 52, true)
 // (their "index < 242" checks before the address)
 BIG_ROSTER_CHECK(BigRosterCheck_8259C7F4)
 BIG_ROSTER_CHECK(BigRosterCheck_8259C85C)

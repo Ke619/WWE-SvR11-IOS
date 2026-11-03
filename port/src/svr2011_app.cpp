@@ -902,6 +902,7 @@ void Svr2011App::OnPostLoadXexImage() {
   // PC keyboard typing in the game's on-screen keyboard (keyboard_typing.h).
   svr2011::InstallKeyboardTyping(window());
   svr2011::InstallFreeCam(window());  // (F5-F8: free_cam.h)
+  svr2011::InstallPadIconsKeys(window());
   // 10 pages of Paint Tool logos (paint_pages.h).
   svr2011::InstallPaintPages(runtime()->memory(),
                              static_cast<rex::input::InputSystem*>(runtime()->input_system()), g_saves);

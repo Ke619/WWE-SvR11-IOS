@@ -9,8 +9,9 @@
  * is none of its placeholders (DLC ids 59-69 have one per DLC) holds a mod's data. Taking it out puts the
  * placeholder back - the save as one that never had the mod; the game gives a mod installed there later its own.
  * The game's superstars, Created Superstars (their own ids and .cas files) and the mods that are on aren't
- * touched. Saves\Mods\<mod>.dat (per-mod saves, Limit Breaking - not built yet) of a mod taken out goes as a
- * whole, unread. */
+ * touched. With them goes each id's 40-byte entry (block B +0x3E648). The per-mod saves (per_mod_saves:
+ * Saves\.mods\<folder>.dat, superstar_mods.cpp) leave the slots as placeholders - nothing to clean there; a mod
+ * taken out loses its file as a whole, unread (the backup has it); .mods\.on stays. */
 #include "save_cleaner.h"
 
 #include <stdint.h>
@@ -18,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
+#include <wctype.h>
 
 #define SD_SUM_FROM 0x1Cu
 #define SD_SUM_TO 0x812DCu
@@ -28,7 +30,7 @@
 typedef struct {
     int n;
     int index;
-    const uint8_t *rec[MAX_VERSIONS], *prof[MAX_VERSIONS];
+    const uint8_t *rec[MAX_VERSIONS], *prof[MAX_VERSIONS], *ent[MAX_VERSIONS];
 } Pool;
 
 static uint8_t *read_all(const WCHAR *path, size_t *size)
@@ -126,12 +128,38 @@ static void read_id_folders(const WCHAR *path, int id_first, WCHAR (*by_id)[MAX_
     free(t);
 }
 
+/* Letters and digits only, lower case, a leading "the" dropped: "The Sandman" and "sandman", "Bob Orton" and
+ * "bob_orton" are the same. */
+static void name_key(const WCHAR *s, WCHAR *out, size_t n)
+{
+    size_t k = 0;
+    for (; *s && k + 1 < n; s++)
+        if (iswalnum(*s))
+            out[k++] = (WCHAR)towlower(*s);
+    out[k] = 0;
+    if (!wcsncmp(out, L"the", 3) && out[3])
+        memmove(out, out + 3, (wcslen(out + 3) + 1) * sizeof(WCHAR));
+}
+
 static ScItem *item_for(ScItem *items, int *n, int id, const WCHAR *folder)
 {
     int i;
     for (i = 0; i < *n; i++)
         if ((folder[0] && !_wcsicmp(items[i].folder, folder)) || (id && items[i].id == id))
             return &items[i];
+    if (folder[0] && !id) {  /* a folder only (Universe, a mod save): the save's mod of that name, its folder unknown */
+        WCHAR a[MAX_PATH], b[64];
+        name_key(folder, a, MAX_PATH);
+        for (i = 0; i < *n; i++) {
+            if (items[i].folder[0] || !items[i].id)
+                continue;
+            name_key(items[i].name, b, 64);
+            if (a[0] && !wcscmp(a, b)) {
+                wcscpy_s(items[i].folder, MAX_PATH, folder);
+                return &items[i];
+            }
+        }
+    }
     if (*n >= SC_MAX)
         return NULL;
     ZeroMemory(&items[*n], sizeof items[*n]);
@@ -143,7 +171,7 @@ static ScItem *item_for(ScItem *items, int *n, int id, const WCHAR *folder)
 typedef struct {
     uint8_t *pool, *save, *univ;
     size_t pool_n, save_n, univ_n;
-    uint32_t rec_size, prof_size, rec_off, prof_off;
+    uint32_t rec_size, prof_size, ent_size, rec_off, prof_off, ent_off;
     Pool ids[512];
 } Data;
 
@@ -167,28 +195,30 @@ static int data_read(const WCHAR *saves, Data *d, WCHAR *err, size_t err_n)
     }
     swprintf_s(p, MAX_PATH, L"%s\\.universe\\pool_placeholders.bin", saves);
     d->pool = read_all(p, &d->pool_n);
-    if (!d->pool || d->pool_n < 28 || memcmp(d->pool, "SVRPOOL1", 8)) {
+    if (!d->pool || d->pool_n < 36 || memcmp(d->pool, "SVRPOOL2", 8)) {
         swprintf_s(err, err_n, L"Start the game once with these saves first: at its start it notes the game's own "
                                L"superstar data the cleaner compares the save with (version 2.1.9 and later).");
         return 0;
     }
-    d->rec_size = le32(d->pool + 8), d->prof_size = le32(d->pool + 12);
-    d->rec_off = le32(d->pool + 16), d->prof_off = le32(d->pool + 20), count = le32(d->pool + 24);
-    if (d->rec_size != 260 || d->prof_size != 1056 ||
-        d->save_n < (size_t)d->prof_off + 512u * d->prof_size || d->save_n < SD_SUM_TO) {
+    d->rec_size = le32(d->pool + 8), d->prof_size = le32(d->pool + 12), d->ent_size = le32(d->pool + 16);
+    d->rec_off = le32(d->pool + 20), d->prof_off = le32(d->pool + 24), d->ent_off = le32(d->pool + 28);
+    count = le32(d->pool + 32);
+    if (d->rec_size != 260 || d->prof_size != 1056 || d->ent_size != 40 || d->save_n < SD_SUM_TO ||
+        d->save_n < (size_t)d->prof_off + 512u * d->prof_size || d->save_n < (size_t)d->ent_off + 512u * d->ent_size) {
         swprintf_s(err, err_n, L"The save or the game's notes (.universe\\pool_placeholders.bin) aren't as expected.");
         return 0;
     }
-    for (i = 0, at = 28; i < count && at + 4 + d->rec_size + d->prof_size <= d->pool_n; i++) {
+    for (i = 0, at = 36; i < count && at + 4 + d->rec_size + d->prof_size + d->ent_size <= d->pool_n; i++) {
         const uint32_t id = d->pool[at] | d->pool[at + 1] << 8, index = d->pool[at + 2] | d->pool[at + 3] << 8;
         Pool *v = id < 512 && index < 512 ? &d->ids[id] : NULL;
         if (v && v->n < MAX_VERSIONS) {
             v->index = (int)index;
             v->rec[v->n] = d->pool + at + 4;
             v->prof[v->n] = d->pool + at + 4 + d->rec_size;
+            v->ent[v->n] = d->pool + at + 4 + d->rec_size + d->prof_size;
             v->n++;
         }
-        at += 4 + d->rec_size + d->prof_size;
+        at += 4 + d->rec_size + d->prof_size + d->ent_size;
     }
     swprintf_s(p, MAX_PATH, L"%s\\.universe\\mods.bin", saves);
     d->univ = read_all(p, &d->univ_n);
@@ -197,20 +227,22 @@ static int data_read(const WCHAR *saves, Data *d, WCHAR *err, size_t err_n)
     return 1;
 }
 
-/* The id's record and profile in the save are one of its placeholders (the selectable byte aside: the game turns
- * it off for an id no mod holds). */
+/* The id's record, profile and entry in the save are one of its placeholders (the selectable byte aside: the game
+ * turns it off for an id no mod holds). */
 static int is_placeholder(const Data *d, int id)
 {
     const Pool *v = &d->ids[id];
     const uint8_t *rec = d->save + d->rec_off + (size_t)v->index * d->rec_size;
     const uint8_t *prof = d->save + d->prof_off + (size_t)v->index * d->prof_size;
-    int k, rec_ok = 0, prof_ok = 0;
+    const uint8_t *ent = d->save + d->ent_off + (size_t)v->index * d->ent_size;
+    int k, rec_ok = 0, prof_ok = 0, ent_ok = 0;
     for (k = 0; k < v->n; k++) {
         rec_ok |= !memcmp(rec, v->rec[k], REC_SELECTABLE) &&
                   !memcmp(rec + REC_SELECTABLE + 1, v->rec[k] + REC_SELECTABLE + 1, d->rec_size - REC_SELECTABLE - 1);
         prof_ok |= !memcmp(prof, v->prof[k], d->prof_size);
+        ent_ok |= !memcmp(ent, v->ent[k], d->ent_size);
     }
-    return rec_ok && prof_ok;
+    return rec_ok && prof_ok && ent_ok;
 }
 
 /* mods.bin: "SVRUNIV1", u32 n, per mod: u8 length + folder, 24 entry bytes, 150 place bytes; then n x n bytes.
@@ -302,10 +334,10 @@ int save_clean_scan(const WCHAR *saves, const WCHAR *mods, ScItem *items, WCHAR 
         UnivScan s = {mods, items, &n};
         univ_each(d, univ_scan_one, &s);
     }
-    {   /* Saves\Mods\<mod>.dat */
+    {   /* Saves\.mods\<folder>.dat (not .on: the option's marker) */
         WIN32_FIND_DATAW fd;
         HANDLE f;
-        swprintf_s(p, MAX_PATH, L"%s\\Mods\\*.dat", saves);
+        swprintf_s(p, MAX_PATH, L"%s\\.mods\\*.dat", saves);
         if ((f = FindFirstFileW(p, &fd)) != INVALID_HANDLE_VALUE) {
             do {
                 WCHAR folder[MAX_PATH];
@@ -361,6 +393,7 @@ int save_clean_apply(const WCHAR *saves, const ScItem *items, int n, int with_of
                 continue;
             memcpy(d->save + d->rec_off + (size_t)v->index * d->rec_size, v->rec[v->n - 1], d->rec_size);
             memcpy(d->save + d->prof_off + (size_t)v->index * d->prof_size, v->prof[v->n - 1], d->prof_size);
+            memcpy(d->save + d->ent_off + (size_t)v->index * d->ent_size, v->ent[v->n - 1], d->ent_size);
             changed = 1;
         }
         if (changed) {
@@ -448,11 +481,11 @@ int save_clean_apply(const WCHAR *saves, const ScItem *items, int n, int with_of
             free(t);
         }
     }
-    /* Saves\Mods\<mod>.dat (the backup has it) */
+    /* Saves\.mods\<folder>.dat (the backup has it) */
     for (i = 0; ok && i < n; i++) {
         if (!items[i].mod_save || (items[i].off && !with_off))
             continue;
-        swprintf_s(p, MAX_PATH, L"%s\\Mods\\%s.dat", saves, items[i].folder);
+        swprintf_s(p, MAX_PATH, L"%s\\.mods\\%s.dat", saves, items[i].folder);
         DeleteFileW(p);
     }
     for (i = 0; i < n; i++)

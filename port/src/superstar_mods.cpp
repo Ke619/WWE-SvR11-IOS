@@ -1489,13 +1489,16 @@ void TempFromSave(uint8_t* base) {
 // no mod holds now - in <saves>/.universe/pool_placeholders.bin. A save whose record or profile at a mod id is none
 // of them holds a mod's data (one removed or turned off: its name, moves, entrance, Threads, edits); the launcher
 // writes the placeholder back. (DLC ids 59-69 have a version per DLC chEtc: each one seen is kept.)
-// The file: "SVRPOOL1", u32 record size, u32 profile size, u32 the records' and the profiles' offsets in
-// SaveData.dat, u32 count, then per version: u16 id, u16 index (little-endian), the record (its selectable byte
-// 0), the profile.
+// With them each id's 40-byte entry (block B +0x3E648 + index * 40: kEntries40, the per-mod saves' 'E40 ').
+// The file: "SVRPOOL2", u32 record size, u32 profile size, u32 entry size, u32 the records', the profiles' and the
+// entries' offsets in SaveData.dat, u32 count, then per version: u16 id, u16 index (little-endian), the record (its
+// selectable byte 0), the profile, the entry.
 bool g_save_loaded = false;  // (a save was loaded this run: the slots hold its data now, not the placeholders)
 std::map<uint32_t, std::vector<svrfmt::Bytes>> g_pool_blank;  // id -> versions (record + profile)
 
 void KeepPoolPlaceholders(uint8_t* base) {
+  constexpr uint32_t kEntry = 0x82E7C918 + 0x3E648, kEntrySize = 40;  // (kEntries40, below)
+  constexpr uint32_t kFileProfiles = 0x18 + 0x3C160;                  // (CheckSavedProfiles: kProfiles in the file)
   if (g_save_loaded || g_save_file.empty()) return;
   bool added = false;
   for (uint32_t id : kPool) {
@@ -1507,6 +1510,7 @@ void KeepPoolPlaceholders(uint8_t* base) {
     svrfmt::Bytes b(r, r + kRecordSize);
     b[kSelectable] = 0;
     b.insert(b.end(), base + kProfiles + si * kProfileSize, base + kProfiles + (si + 1) * kProfileSize);
+    b.insert(b.end(), base + kEntry + si * kEntrySize, base + kEntry + (si + 1) * kEntrySize);
     b.insert(b.begin(), {uint8_t(id), uint8_t(id >> 8), uint8_t(si), uint8_t(si >> 8)});
     auto& v = g_pool_blank[id];
     if (std::find(v.begin(), v.end(), b) != v.end()) continue;
@@ -1515,8 +1519,9 @@ void KeepPoolPlaceholders(uint8_t* base) {
   }
   if (!added) return;
   auto u32 = [](std::string& s, uint32_t v) { s.append(reinterpret_cast<const char*>(&v), 4); };
-  std::string out = "SVRPOOL1";
-  u32(out, kRecordSize), u32(out, kProfileSize), u32(out, 0x1C), u32(out, 0x18 + 0x3C160);
+  std::string out = "SVRPOOL2";
+  u32(out, kRecordSize), u32(out, kProfileSize), u32(out, kEntrySize);
+  u32(out, 0x1C), u32(out, kFileProfiles), u32(out, kEntry - kProfiles + kFileProfiles);
   uint32_t n = 0;
   for (const auto& [id, v] : g_pool_blank) n += uint32_t(v.size());
   u32(out, n);

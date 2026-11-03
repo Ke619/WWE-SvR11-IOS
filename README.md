@@ -159,7 +159,7 @@ The recompiled game code is **generated on your machine from your own game files
 2. **Generate the game code** from your `default.xex`, on your own machine, and commit the result to the private repo as `generated/` (it contains `rexglue.cmake`, `default/sources.cmake`, `svr2011_pch.h` and the recompiled sources).
 
    Never commit `default.xex`. The workflow stops if it finds one.
-3. **Add the shader pack** as `shaders/`, and optionally a home-screen icon as `icon/icon.png`.
+3. **Add the shader pack** as `shaders/`, and optionally a home-screen icon as `icon/icon.PNG` and a launcher logo as `icon/launcher_logo.png
 4. **Run the workflow:** Actions → **ios-port** → **Run workflow**. It:
    - fetches the ReXGlue SDK at `c94f5ebdcb3c9d1a460ca48e04f9758448f8d518` (its v0.10.0 release commit), plume at `d72379344dacd3dbf9f810f92ddc87e6de1845b1`, and the PC port's source;
    - applies the PC port's own patches, then the iOS changes in the table below;

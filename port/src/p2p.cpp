@@ -99,6 +99,9 @@ constexpr uint32_t kContextGameMode = 0x0000800B;  // X_CONTEXT_GAME_MODE
 constexpr uint32_t kPortRules = 0x1000F001;        // the port's match rules (match_types: mode << 16 | set)
 constexpr uint32_t kNetMode = 0x1000F004;          // the host's match network (NetMode)
 constexpr uint32_t kNetcode = 0x1000F005;          // the host's netcode (0 lockstep, 1 rollback, 2 lockstep_vclock)
+// The game's own "downloadable content" property: the join check (online.cpp, sub_824CDE90) refuses a session
+// whose value isn't 113 - a constant of the game's session settings, the same in every copy of the port.
+constexpr uint32_t kDlcProperty = 0x1000000B, kDlcValue = 113;
 constexpr uint8_t kVersion = 1;
 enum : uint8_t {
   kSearch = 1, kSessions = 2, kQosRequest = 3, kQosReply = 4, kHello = 5, kData = 6,
@@ -725,6 +728,34 @@ void WriteSession(Writer& w, const Session& s) {
   }
 }
 
+// A match session (flags 0x20) always carries kDlcProperty = 113: a host's game without it (its settings or
+// properties lost it - 2.1.8 report 38981a advertised 0) made every joiner's game refuse it with "you must have the
+// same downloadable content" (the port's real differences - version, mods - have their own checks). For the host's
+// session and for each found one (older hosts). Logged when changed.
+// Test aids: SVR2011_TEST_DLC_PROPERTY=<n> - this game hosts with that value instead (an older host);
+// SVR2011_TEST_DLC_KEEP=1 - this game leaves found sessions' value as it is (the game before the fix).
+void CarryDlcProperty(Session& s, const char* who, bool host) {
+  if (!(s.flags & 0x20)) return;
+  if (!host && std::getenv("SVR2011_TEST_DLC_KEEP")) return;
+  if (const char* t = std::getenv("SVR2011_TEST_DLC_PROPERTY"); host && t && *t) {
+    s.properties.erase(std::remove_if(s.properties.begin(), s.properties.end(),
+                                      [](const Property& q) { return q.id == kDlcProperty; }),
+                       s.properties.end());
+    const uint32_t v = uint32_t(std::strtoul(t, nullptr, 10));
+    s.properties.push_back(Property{kDlcProperty, 1, {uint8_t(v >> 24), uint8_t(v >> 16), uint8_t(v >> 8), uint8_t(v)}});
+    REXLOG_INFO("p2p: test - session {:016X} hosted with DLC property {}", s.id, v);
+    return;
+  }
+  auto p = std::find_if(s.properties.begin(), s.properties.end(), [](const Property& q) { return q.id == kDlcProperty; });
+  const bool had = p != s.properties.end();
+  const uint32_t value = had && p->value.size() >= 4 ? Be32(p->value.data()) : 0;
+  if (had && p->value.size() == 4 && value == kDlcValue) return;
+  REXLOG_INFO("p2p: session {:016X}'s DLC property was {} - {} carries {}", s.id,
+              had ? fmt::format("{}", value) : std::string("missing"), who, kDlcValue);
+  if (had) s.properties.erase(p);
+  s.properties.push_back(Property{kDlcProperty, 1, {0, 0, 0, uint8_t(kDlcValue)}});
+}
+
 bool ReadSession(Reader& r, Session& s) {
   s.id = r.u64();
   r.bytes(s.host.data(), 36);
@@ -745,6 +776,7 @@ bool ReadSession(Reader& r, Session& s) {
     r.at += len;
     s.properties.push_back(std::move(p));
   }
+  if (r.ok) CarryDlcProperty(s, "this game", false);
   return r.ok && s.id && s.public_slots + s.private_slots <= 32;
 }
 
@@ -1838,6 +1870,19 @@ uint16_t GuestPort(uint16_t port) {
   return g_bound.count(guest) ? guest : port;
 }
 
+// The QoS data a match session's host listens with is the game's session attribute block (154 bytes: a 10-byte
+// head, then word 0 and attribute k at word k + 1 - the session list's details and the join check read it), so
+// the DLC value (attribute 5, kDlcProperty's) is in it too, at byte 34: 113 there as well, like CarryDlcProperty.
+// (SVR2011_TEST_DLC_PROPERTY: an older host's value here too.)
+constexpr size_t kQosBlockSize = 154, kQosDlcAt = 10 + 6 * 4;
+void CarryDlcQos(std::vector<uint8_t>& data, uint64_t id) {
+  if (data.size() != kQosBlockSize || std::getenv("SVR2011_TEST_DLC_KEEP")) return;
+  const uint32_t value = Be32(data.data() + kQosDlcAt);
+  if (value == kDlcValue) return;
+  REXLOG_INFO("p2p: session {:016X}'s QoS DLC value was {} - this game carries {}", id, value, kDlcValue);
+  Put32(data.data() + kQosDlcAt, kDlcValue);
+}
+
 uint32_t QosListen(const uint8_t* xnkid, const uint8_t* data, uint32_t size, uint32_t flags) {
   const uint64_t id = Be64(xnkid);
   std::lock_guard lock(g_mutex);
@@ -1845,6 +1890,8 @@ uint32_t QosListen(const uint8_t* xnkid, const uint8_t* data, uint32_t size, uin
     g_qos.erase(id);
   } else if ((flags & 0x04) && data) {  // SET_DATA
     g_qos[id].assign(data, data + std::min<uint32_t>(size, 1024));
+    if (const char* t = std::getenv("SVR2011_TEST_DLC_PROPERTY"); t && *t && size == kQosBlockSize)
+      Put32(g_qos[id].data() + kQosDlcAt, uint32_t(std::strtoul(t, nullptr, 10)));  // (CarryDlcProperty's test aid)
   } else {
     g_qos.try_emplace(id);
   }
@@ -1874,6 +1921,7 @@ std::vector<rex::kernel::xam::OnlineHooks::QosResult> QosLookup(
     out.rtt_ms = uint16_t(std::max<int64_t>(
         1, std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t0).count()));
     if (len && r.need(len)) out.data.assign(r.p + r.at, r.p + r.at + len);
+    CarryDlcQos(out.data, Be64(targets[i].xnkid.data()));
   }
   return results;
 }
@@ -1970,6 +2018,8 @@ std::optional<uint32_t> Xgi(uint32_t message, uint32_t buffer, uint32_t length) 
   switch (message) {
     case 0xB0006: {  // XUserSetContext: kept for the sessions this game hosts
       std::lock_guard lock(g_mutex);
+      if (auto c = g_contexts.find(u32(16)); c == g_contexts.end() || c->second != u32(20))
+        REXLOG_INFO("p2p: context {:08X} = {}", u32(16), u32(20));
       g_contexts[u32(16)] = u32(20);
       return std::nullopt;
     }
@@ -1978,6 +2028,11 @@ std::optional<uint32_t> Xgi(uint32_t message, uint32_t buffer, uint32_t length) 
       const uint32_t size = std::min<uint32_t>(u32(20), 4096), ptr = u32(24);
       if (size && ptr) p.value.assign(Guest(ptr), Guest(ptr) + size);
       std::lock_guard lock(g_mutex);
+      if (auto o = g_properties.find(p.id); o == g_properties.end() || o->second.value != p.value) {
+        std::string hex;
+        for (size_t i = 0; i < std::min<size_t>(p.value.size(), 16); ++i) hex += fmt::format("{:02X}", p.value[i]);
+        REXLOG_INFO("p2p: property {:08X} = {}{}", p.id, hex, p.value.size() > 16 ? "..." : "");
+      }
       g_properties[p.id] = std::move(p);
       return std::nullopt;
     }
@@ -2024,6 +2079,7 @@ std::optional<uint32_t> Xgi(uint32_t message, uint32_t buffer, uint32_t length) 
           g_match_netcode = netcode;
           REXLOG_INFO("p2p: netcode {} (host; the server's)", NetcodeName(netcode));
         }
+        CarryDlcProperty(s, "the host", true);
         // X_PROPERTY_GAMER_HOSTNAME (LIVE filled it in: the host's name, UTF-16)
         Property name{0x40008109, 4, {}};
         for (char c : rex::cvar::Query<std::string>("online_name")) name.value.push_back(0), name.value.push_back(uint8_t(c));

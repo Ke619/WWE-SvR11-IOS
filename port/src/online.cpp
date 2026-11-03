@@ -988,18 +988,31 @@ uint32_t OnlineScratch() { return g_scratch; }
 }  // namespace svr2011
 
 // The game's DLC check on joining (sub_824CDE90: attribute 5 of the session's
-// search entry - one number the host's game advertises - must be 113, else
-// "Unable to join the session due to a difference in downloadable content",
-// C67E). Not a list of packs; what the number means isn't known yet: logged
-// (the entry +48 the attribute) for the reports.
+// search entry must be 113, else "Unable to join. You must have the same
+// downloadable content..." C67E). The entry's attribute block (+24: word 0,
+// then attribute k at word k + 1) comes from the found session's properties:
+// attribute 5 is property 0x1000000B, the host's session settings' constant
+// 113 (sub_824F3E00 +24, copied by sub_8288F098) - not a list of packs. p2p.cpp
+// makes every match session carry it (2.1.8 report 38981a: 0). Logged with
+// the block when it isn't 113.
 REX_EXTERN(__imp__sub_824FDFC8);
 REX_HOOK_RAW(sub_824FDFC8) {
+  const uint32_t entry = ctx.r3.u32;
   __imp__sub_824FDFC8(ctx, base);
-  static uint32_t last = 0;
+  static uint32_t last = 0xFFFFFFFF;  // (0 is logged too: "no attribute")
   if (ctx.r3.u32 != last) {
     last = ctx.r3.u32;
     REXLOG_INFO("online: a session's DLC attribute is {} (the game wants 113{})", ctx.r3.u32,
                 ctx.r3.u32 == 113 ? "" : " - it says 'a difference in downloadable content'");
+    if (ctx.r3.u32 != 113 && entry) {  // (the entry's +8 and its attribute block +24: word 0, attributes 0-11)
+      auto rd = [&](uint32_t a) {
+        const uint8_t* p = base + a;
+        return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3];
+      };
+      std::string words;
+      for (uint32_t i = 0; i < 13; ++i) words += fmt::format(" {}", int32_t(rd(entry + 24 + 4 * i)));
+      REXLOG_INFO("online: that session's entry +8 {}, attributes{}", rd(entry + 8), words);
+    }
   }
 }
 

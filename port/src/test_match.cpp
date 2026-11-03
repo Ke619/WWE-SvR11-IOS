@@ -33,6 +33,7 @@
 #include <rex/logging.h>
 #include <rex/ppc.h>
 
+#include "big_roster.h"
 #include "generated/default/svr2011_init.h"
 #include "arena_mods.h"
 #include "fast_start.h"
@@ -126,7 +127,7 @@ const uint8_t* Record(const uint8_t* base, uint32_t id) {
   if (id >= 1000) return nullptr;
   const uint32_t index = Rd16(base + kIdToIndex + id * 2);
   if (index >= 1000) return nullptr;
-  const uint8_t* rec = base + kRecords + index * kRecordSize;
+  const uint8_t* rec = base + svr2011::RosterEntry(kRecords, kRecordSize, index);
   return Rd16(rec + kOwnId) == id ? rec : nullptr;
 }
 

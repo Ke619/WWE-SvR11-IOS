@@ -18,6 +18,7 @@
 //
 // A mod's slots are kept by its folder (Saves\.threads\<folder>.bin), not by the id it holds this run: put
 // into its profile as it is set up (never the base's slots), written when the game saves.
+#include "big_roster.h"
 #include "superstar_threads.h"
 #include "superstar_mods.h"
 
@@ -338,7 +339,7 @@ void LogThreadsSlots(const uint8_t* base) {
     if (si >= 512) continue;
     std::string names;
     for (uint32_t k = 0; k < kSlots; ++k) {
-      const char* n = reinterpret_cast<const char*>(base + kProfiles + si * kProfileSize + kSlotsAt + k * kSlotSize + 0x28);
+      const char* n = reinterpret_cast<const char*>(base + svr2011::RosterEntry(kProfiles, kProfileSize, si) + kSlotsAt + k * kSlotSize + 0x28);
       if (n[0] >= 32 && n[0] < 127) names += (names.empty() ? "" : "|") + std::string(n, strnlen(n, 16));
     }
     if (!names.empty()) s += " [id " + Dec(id) + " profile " + Dec(si) + ": " + names + "]";
@@ -374,7 +375,7 @@ REX_HOOK_RAW(sub_827235D8) {
     for (const auto& m : g_mods) {
       const uint32_t si = uint32_t(base[kIdToIndex + m.slot * 2] << 8 | base[kIdToIndex + m.slot * 2 + 1]);
       if (si >= 512) continue;
-      const uint8_t* s = base + kProfiles + si * kProfileSize + kSlotsAt;
+      const uint8_t* s = base + svr2011::RosterEntry(kProfiles, kProfileSize, si) + kSlotsAt;
       std::vector<uint8_t> now(s, s + kSlotsSize);
       auto& was = g_saved[m.folder];
       if (was == now) continue;

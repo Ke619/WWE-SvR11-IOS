@@ -23,6 +23,7 @@
 // - owned: DLC-flagged ids must be owned (sub_828C1288 / sub_82589198):
 //   mods are.
 // The select screen shows them in the EXTRA list (managers.cpp, the M tile).
+#include "big_roster.h"
 #include "cae_mod_motions.h"
 #include "no_mods.h"
 #include "caw_limits.h"
@@ -1461,11 +1462,11 @@ void Remember(uint8_t* base) {
   for (const auto& m : g_mods) {
     const uint32_t si = Rd16(base + kIdToIndex + m.slot * 2);
     if (si >= 512) continue;
-    const uint8_t* sr = base + kRecords + si * kRecordSize;
+    const uint8_t* sr = base + svr2011::RosterEntry(kRecords, kRecordSize, si);
     if (std::strncmp(reinterpret_cast<const char*>(sr + kFullName), m.name.c_str(), kNameLen - 1)) continue;
     Kept& k = KeptFor(m.slot);
     k.record.assign(sr, sr + kRecordSize);
-    const uint8_t* sp = base + kProfiles + si * kProfileSize;
+    const uint8_t* sp = base + svr2011::RosterEntry(kProfiles, kProfileSize, si);
     if (!IsBlank(m.slot, sp)) k.profile.assign(sp, sp + kProfileSize);
   }
 }
@@ -1571,12 +1572,12 @@ void KeepPoolPlaceholders(uint8_t* base) {
     if (ModOf(id)) continue;
     const uint32_t si = Rd16(base + kIdToIndex + id * 2);
     if (si >= 512) continue;
-    const uint8_t* r = base + kRecords + si * kRecordSize;
+    const uint8_t* r = base + svr2011::RosterEntry(kRecords, kRecordSize, si);
     if (base[0x82DB3AE0 + id] == 1 && !r[kFullName]) continue;  // (CHAR/DAT not loaded yet; an absent id: as it is)
     svrfmt::Bytes b(r, r + kRecordSize);
     b[kSelectable] = 0;
-    b.insert(b.end(), base + kProfiles + si * kProfileSize, base + kProfiles + (si + 1) * kProfileSize);
-    b.insert(b.end(), base + kEntry + si * kEntrySize, base + kEntry + (si + 1) * kEntrySize);
+    b.insert(b.end(), base + svr2011::RosterEntry(kProfiles, kProfileSize, si), base + svr2011::RosterEntry(kProfiles, kProfileSize, si) + kProfileSize);
+    b.insert(b.end(), base + svr2011::RosterEntry(kEntry, kEntrySize, si), base + svr2011::RosterEntry(kEntry, kEntrySize, si) + kEntrySize);
     b.insert(b.begin(), {uint8_t(id), uint8_t(id >> 8), uint8_t(si), uint8_t(si >> 8)});
     auto& v = g_pool_blank[id];
     if (std::find(v.begin(), v.end(), b) != v.end()) continue;
@@ -1698,7 +1699,7 @@ void MarksTick(uint8_t* base) {
     for (const auto& m : g_mods) {
       const uint32_t si = Rd16(base + kIdToIndex + m.slot * 2);
       if (si >= 512) continue;
-      const uint8_t* sp = base + kProfiles + si * kProfileSize;
+      const uint8_t* sp = base + svr2011::RosterEntry(kProfiles, kProfileSize, si);
       const uint32_t ent = sp[kEntrance + 0x14] << 8 | sp[kEntrance + 0x15];
       const uint32_t mv = m.moves.empty() ? 0 : uint32_t(sp[m.moves[0].first] << 8 | sp[m.moves[0].first + 1]);
       if (last.count(m.slot) && last[m.slot] == (ent << 16 | mv)) continue;
@@ -1730,7 +1731,7 @@ void ApplyRecords(uint8_t* base) {
     for (uint32_t id = 0; id < 322; ++id) {
       if (base[0x82DB3AE0 + id] == 1) continue;
       const uint32_t si = Rd16(base + kIdToIndex + id * 2);
-      absent += fmt::format(" {}:{}:{}", id, si, si < 512 ? base[kRecords + si * kRecordSize + kFullName] : 0);
+      absent += fmt::format(" {}:{}:{}", id, si, si < 512 ? base[svr2011::RosterEntry(kRecords, kRecordSize, si) + kFullName] : 0);
       ++n;
     }
     REXLOG_INFO("[svr2011] superstar mods: test - {} ids absent (id:index:name byte){}", n, absent);
@@ -1738,23 +1739,23 @@ void ApplyRecords(uint8_t* base) {
   for (uint32_t id : kPool) {
     if (ModOf(id)) continue;
     const uint32_t si = Rd16(base + kIdToIndex + id * 2);
-    if (si < 512) base[kRecords + si * kRecordSize + kSelectable] = 0;
+    if (si < 512) base[svr2011::RosterEntry(kRecords, kRecordSize, si) + kSelectable] = 0;
   }
   for (const auto& m : g_mods) {
     const uint32_t bi = Rd16(base + kIdToIndex + m.base * 2), si = Rd16(base + kIdToIndex + m.slot * 2);
     if (bi >= 512 || si >= 512 || bi == si) continue;
-    uint8_t* br = base + kRecords + bi * kRecordSize;
-    uint8_t* sr = base + kRecords + si * kRecordSize;
+    uint8_t* br = base + svr2011::RosterEntry(kRecords, kRecordSize, bi);
+    uint8_t* sr = base + svr2011::RosterEntry(kRecords, kRecordSize, si);
     if (!br[kFullName]) continue;  // (not loaded yet)
     if (m.temp && !g_temp_saved.count(m.slot)) {  // (the id as it was, an unused pool slot: not selectable)
       std::vector<uint8_t> b(sr, sr + kRecordSize);
       b[kSelectable] = 0;
-      const uint8_t* sp = base + kProfiles + si * kProfileSize;
+      const uint8_t* sp = base + svr2011::RosterEntry(kProfiles, kProfileSize, si);
       b.insert(b.end(), sp, sp + kProfileSize);
       g_temp_saved[m.slot] = std::move(b);
     }
-    uint8_t* bp = base + kProfiles + bi * kProfileSize;
-    uint8_t* sp = base + kProfiles + si * kProfileSize;
+    uint8_t* bp = base + svr2011::RosterEntry(kProfiles, kProfileSize, bi);
+    uint8_t* sp = base + svr2011::RosterEntry(kProfiles, kProfileSize, si);
     bool have_blank = false;
     for (const auto& b : g_blank) have_blank |= b.first == m.slot;
     if (have_blank && IsBlank(m.slot, sp)) {
@@ -1862,8 +1863,8 @@ void RedoHandovers(uint8_t* base, bool frame) {
     if (h == g_handed.end()) continue;
     const uint32_t bi = Rd16(base + kIdToIndex + m.base * 2), si = Rd16(base + kIdToIndex + m.slot * 2);
     if (bi >= 512 || si >= 512 || bi == si) continue;
-    uint8_t* sp = base + kProfiles + si * kProfileSize;
-    const uint8_t* bp = base + kProfiles + bi * kProfileSize;
+    uint8_t* sp = base + svr2011::RosterEntry(kProfiles, kProfileSize, si);
+    const uint8_t* bp = base + svr2011::RosterEntry(kProfiles, kProfileSize, bi);
     if (std::memcmp(sp, h->second.given.data(), kProfileSize)) {
       // (the save's profile for the slot, written after the handover: this mod's again - once)
       const int movie = sp[kEntrance + kMovie] << 8 | sp[kEntrance + kMovie + 1];
@@ -1891,7 +1892,7 @@ void RecordBlanks(uint8_t* base, const std::vector<svrfmt::Bytes>& before) {
     const auto& m = g_mods[i];
     const uint32_t si = Rd16(base + kIdToIndex + m.slot * 2);
     if (si >= 512 || before[i].empty()) continue;
-    const uint8_t* sp = base + kProfiles + si * kProfileSize;
+    const uint8_t* sp = base + svr2011::RosterEntry(kProfiles, kProfileSize, si);
     if (!std::memcmp(sp, before[i].data(), kProfileSize)) continue;  // (not rewritten)
     int n = 0;
     bool known = false;
@@ -1910,7 +1911,7 @@ void KeepBlankProfiles(uint8_t* base) {
     for (const auto& b : g_blank) have |= b.first == m.slot;
     const uint32_t si = Rd16(base + kIdToIndex + m.slot * 2);
     if (have || si >= 512) continue;
-    const uint8_t* sp = base + kProfiles + si * kProfileSize;
+    const uint8_t* sp = base + svr2011::RosterEntry(kProfiles, kProfileSize, si);
     g_blank.push_back({m.slot, svrfmt::Bytes(sp, sp + kProfileSize)});
   }
 }
@@ -2130,7 +2131,7 @@ REX_HOOK_RAW(sub_828C3318) {
   if (lr != kCaeDefaultsCallers[0] && lr != kCaeDefaultsCallers[1]) return;
   const uint32_t si = id < 512 ? Rd16(base + kIdToIndex + id * 2) : 512;
   if (!out || si >= 512 || !ModOf(id)) return;
-  const uint8_t* e = base + kProfiles + si * kProfileSize + kEntrance;
+  const uint8_t* e = base + svr2011::RosterEntry(kProfiles, kProfileSize, si) + kEntrance;
   std::memcpy(base + out + 0, e + 0x14, 2);  // entrance
   std::memcpy(base + out + 2, e + 0x16, 2);  // champion
   std::memcpy(base + out + 4, e + kMovie, 2);
@@ -2544,7 +2545,7 @@ const uint8_t* RosterRecord(uint8_t* base, uint32_t id) {
   if (!id || id >= 1000) return nullptr;
   const uint32_t si = Rd16(base + kIdToIndex + id * 2);
   if (si >= 512) return nullptr;
-  const uint8_t* r = base + kRecords + si * kRecordSize;
+  const uint8_t* r = base + svr2011::RosterEntry(kRecords, kRecordSize, si);
   return Rd16(r + kOwnId) == id ? r : nullptr;
 }
 uint32_t CallDonor(PPCContext& ctx, uint8_t* base, uint32_t id) {
@@ -2890,7 +2891,7 @@ REX_HOOK_RAW(sub_828C4060) {
 uint32_t FramingStandIn(uint8_t* base, uint32_t mgr, uint32_t layout, uint32_t id) {
   const auto rec = [&](uint32_t i) -> const uint8_t* {
     const uint32_t si = i < 512 ? Rd16(base + kIdToIndex + i * 2) : 0xFFFF;
-    return si < 512 ? base + kRecords + si * kRecordSize : nullptr;
+    return si < 512 ? base + svr2011::RosterEntry(kRecords, kRecordSize, si) : nullptr;
   };
   const uint8_t* r = rec(id);
   if (!r) return 0;
@@ -3027,9 +3028,9 @@ REX_HOOK_RAW(sub_82B89E50) {
     for (const auto& k : g_kept) kept |= k.slot == uint32_t(held) && !k.record.empty();
     if (kept && si < 512 && oi < 512) {
       held_done = true;
-      PutName(base + kRecords + si * kRecordSize, kFullName, "OLD MOD");
-      held_sp = base + kProfiles + si * kProfileSize;
-      std::memcpy(held_sp, base + kProfiles + oi * kProfileSize, kProfileSize);
+      PutName(base + svr2011::RosterEntry(kRecords, kRecordSize, si), kFullName, "OLD MOD");
+      held_sp = base + svr2011::RosterEntry(kProfiles, kProfileSize, si);
+      std::memcpy(held_sp, base + svr2011::RosterEntry(kProfiles, kProfileSize, oi), kProfileSize);
       held_profile.assign(held_sp, held_sp + kProfileSize);
       REXLOG_INFO("[svr2011] superstar mods: test - id {} given \"OLD MOD\"'s record and id 100's profile", held);
     }
@@ -3038,7 +3039,7 @@ REX_HOOK_RAW(sub_82B89E50) {
   if (held_sp)
     REXLOG_INFO("[svr2011] superstar mods: test - id {} after the load: profile {}, name \"{}\"", held,
                 std::memcmp(held_sp, held_profile.data(), kProfileSize) ? "its own" : "STILL THE OLD MOD'S",
-                reinterpret_cast<const char*>(base + kRecords + Rd16(base + kIdToIndex + uint32_t(held) * 2) * kRecordSize + kFullName));
+                reinterpret_cast<const char*>(base + svr2011::RosterEntry(kRecords, kRecordSize, Rd16(base + kIdToIndex + uint32_t(held) * 2)) + kFullName));
   ctx.r3.u64 = r3;
 }
 bool g_pro_load_ran = false;  // (sub_82594C78 ran inside sub_82B89DC0)
@@ -3049,8 +3050,8 @@ REX_HOOK_RAW(sub_82594C78) {
   std::vector<svrfmt::Bytes> before;  // (the mods' slots before the load: RecordBlanks)
   for (const auto& m : g_mods) {
     const uint32_t si = Rd16(base + kIdToIndex + m.slot * 2);
-    before.push_back(si < 512 ? svrfmt::Bytes(base + kProfiles + si * kProfileSize,
-                                              base + kProfiles + (si + 1) * kProfileSize)
+    before.push_back(si < 512 ? svrfmt::Bytes(base + svr2011::RosterEntry(kProfiles, kProfileSize, si),
+                                              base + svr2011::RosterEntry(kProfiles, kProfileSize, si) + kProfileSize)
                               : svrfmt::Bytes());
   }
   __imp__sub_82594C78(ctx, base);
@@ -3065,7 +3066,7 @@ REX_HOOK_RAW(sub_82594C78) {
     for (const auto& m : g_mods) {
       const uint32_t si = Rd16(base + kIdToIndex + m.slot * 2);
       if (si >= 512) continue;
-      const uint8_t* e = base + kProfiles + si * kProfileSize + kEntrance;
+      const uint8_t* e = base + svr2011::RosterEntry(kProfiles, kProfileSize, si) + kEntrance;
       REXLOG_INFO("[svr2011] superstar mods: CHAR/PRO loaded: id {} music {} movie {} entrance {}", m.slot,
                   Rd16(e + kMusic), Rd16(e + kMovie), Rd16(e + 0x14));
     }
@@ -3081,8 +3082,8 @@ REX_HOOK_RAW(sub_8259CAA8) {
   std::vector<svrfmt::Bytes> before;
   for (const auto& m : g_mods) {
     const uint32_t si = Rd16(base + kIdToIndex + m.slot * 2);
-    before.push_back(si < 512 ? svrfmt::Bytes(base + kProfiles + si * kProfileSize,
-                                              base + kProfiles + (si + 1) * kProfileSize)
+    before.push_back(si < 512 ? svrfmt::Bytes(base + svr2011::RosterEntry(kProfiles, kProfileSize, si),
+                                              base + svr2011::RosterEntry(kProfiles, kProfileSize, si) + kProfileSize)
                               : svrfmt::Bytes());
   }
   __imp__sub_8259CAA8(ctx, base);
@@ -3103,8 +3104,8 @@ REX_HOOK_RAW(sub_82B89DC0) {
   std::vector<svrfmt::Bytes> before;
   for (const auto& m : g_mods) {
     const uint32_t si = Rd16(base + kIdToIndex + m.slot * 2);
-    before.push_back(si < 512 ? svrfmt::Bytes(base + kProfiles + si * kProfileSize,
-                                              base + kProfiles + (si + 1) * kProfileSize)
+    before.push_back(si < 512 ? svrfmt::Bytes(base + svr2011::RosterEntry(kProfiles, kProfileSize, si),
+                                              base + svr2011::RosterEntry(kProfiles, kProfileSize, si) + kProfileSize)
                               : svrfmt::Bytes());
   }
   g_pro_load_ran = false;
@@ -3176,14 +3177,14 @@ void EnsureMoveset(uint8_t* base, uint8_t* sp, const Mod& m) {
   const MovesetCount now = CountMoves(sp);
   if (MovesetWorks(now)) return;
   const uint32_t mi = Rd16(base + kIdToIndex + m.slot * 2);
-  const int gender = mi < 512 ? base[kRecords + mi * kRecordSize + 208] : -1;
+  const int gender = mi < 512 ? base[svr2011::RosterEntry(kRecords, kRecordSize, mi) + 208] : -1;
   std::vector<uint32_t> donors;
   for (uint32_t id = 100; id <= 321; ++id) {
     if (ModOf(id) || std::find(std::begin(kPool), std::end(kPool), id) != std::end(kPool)) continue;
     const uint32_t i = Rd16(base + kIdToIndex + id * 2);
-    if (i >= 512 || !base[kRecords + i * kRecordSize + kFullName]) continue;
-    if (gender >= 0 && base[kRecords + i * kRecordSize + 208] != gender) continue;
-    if (MovesetWorks(CountMoves(base + kProfiles + i * kProfileSize))) donors.push_back(id);
+    if (i >= 512 || !base[svr2011::RosterEntry(kRecords, kRecordSize, i) + kFullName]) continue;
+    if (gender >= 0 && base[svr2011::RosterEntry(kRecords, kRecordSize, i) + 208] != gender) continue;
+    if (MovesetWorks(CountMoves(base + svr2011::RosterEntry(kProfiles, kProfileSize, i)))) donors.push_back(id);
   }
   if (donors.empty()) {
     REXLOG_WARN("[svr2011] superstar mods: {}: its move-set doesn't work ({} of {} moves usable) and no stock one "
@@ -3193,7 +3194,7 @@ void EnsureMoveset(uint8_t* base, uint8_t* sp, const Mod& m) {
   uint32_t h = 2166136261u;
   for (char c : m.folder) h = (h ^ uint8_t(c)) * 16777619u;
   const uint32_t donor = donors[h % donors.size()];
-  const uint8_t* dp = base + kProfiles + Rd16(base + kIdToIndex + donor * 2) * kProfileSize;
+  const uint8_t* dp = base + svr2011::RosterEntry(kProfiles, kProfileSize, Rd16(base + kIdToIndex + donor * 2));
   std::memcpy(sp, dp, kEntrance);  // (the move block only: below the entrance)
   for (const auto& [off, id] : m.moves)
     if (off + 1u < kEntrance && svr2011::MoveUsable(id) == 1) sp[off] = uint8_t(id >> 8), sp[off + 1] = uint8_t(id);
@@ -3211,13 +3212,13 @@ void ExportCreatedEntrances(const uint8_t* base) {
   if (++frames % 300) return;  // (every 5 s: a save loaded, an entrance made in the game)
   {
     const uint32_t ri = Rd16(base + kIdToIndex + 100 * 2);  // (the profiles loaded)
-    if (ri >= 512 || !CountMoves(base + kProfiles + ri * kProfileSize).set) return;
+    if (ri >= 512 || !CountMoves(base + svr2011::RosterEntry(kProfiles, kProfileSize, ri)).set) return;
   }
   std::string now;
   for (uint32_t id = 1; id < 512; ++id) {
     const uint32_t i = Rd16(base + kIdToIndex + id * 2);
-    if (i < 512 && base[kProfiles + i * kProfileSize + kEntrance + 0xC7])
-      now.append(reinterpret_cast<const char*>(base + kProfiles + i * kProfileSize + kEntrance), kCaeSize);
+    if (i < 512 && base[svr2011::RosterEntry(kProfiles, kProfileSize, i) + kEntrance + 0xC7])
+      now.append(reinterpret_cast<const char*>(base + svr2011::RosterEntry(kProfiles, kProfileSize, i) + kEntrance), kCaeSize);
   }
   if (now == last) return;
   last = now;
@@ -3227,8 +3228,8 @@ void ExportCreatedEntrances(const uint8_t* base) {
   std::set<std::string> keep = {"list.txt"}, seen;  // (seen: name + block - a copy slot of the same superstar once)
   for (uint32_t id = 1; id < 512; ++id) {
     const uint32_t i = Rd16(base + kIdToIndex + id * 2);
-    if (i >= 512 || !base[kRecords + i * kRecordSize + kFullName]) continue;
-    const uint8_t* e = base + kProfiles + i * kProfileSize + kEntrance;
+    if (i >= 512 || !base[svr2011::RosterEntry(kRecords, kRecordSize, i) + kFullName]) continue;
+    const uint8_t* e = base + svr2011::RosterEntry(kProfiles, kProfileSize, i) + kEntrance;
     if (!e[0xC7]) continue;
     bool real = true;  // (each scene's motion: 0, or 10000 + 1000 * scene + an entrance)
     int parts = 0;
@@ -3239,7 +3240,7 @@ void ExportCreatedEntrances(const uint8_t* base) {
     }
     if (!real || !parts) continue;
     char name[kNameLen + 1] = {};
-    std::memcpy(name, base + kRecords + i * kRecordSize + kFullName, kNameLen);
+    std::memcpy(name, base + svr2011::RosterEntry(kRecords, kRecordSize, i) + kFullName, kNameLen);
     if (!seen.insert(std::string(name) + std::string(reinterpret_cast<const char*>(e), kCaeSize)).second) continue;
     const std::string file = std::to_string(id) + ".bin";
     keep.insert(file);
@@ -3313,7 +3314,7 @@ void CheckModProfiles(uint8_t* base) {
     if (si >= 512) continue;
     bool have_blank = false;
     for (const auto& b : g_blank) have_blank |= b.first == m.slot;
-    if (have_blank && IsBlank(m.slot, base + kProfiles + si * kProfileSize)) {
+    if (have_blank && IsBlank(m.slot, base + svr2011::RosterEntry(kProfiles, kProfileSize, si))) {
       ApplyRecords(base);
       g_moves_checked = false;  // (the profiles were set up again: checked again)
       return;
@@ -3327,7 +3328,7 @@ void CheckModProfiles(uint8_t* base) {
   if (checked || MoveUsable(0) < 0) return;
   {  // (the profiles loaded: a stock superstar holds its moves - else later)
     const uint32_t ri = Rd16(base + kIdToIndex + 100 * 2);  // (THE ROCK)
-    if (ri >= 512 || !CountMoves(base + kProfiles + ri * kProfileSize).set) return;
+    if (ri >= 512 || !CountMoves(base + svr2011::RosterEntry(kProfiles, kProfileSize, ri)).set) return;
   }
   checked = true;
   if (const char* f = std::getenv("SVR2011_TEST_DUMP_ENTRANCES")) {  // (test aid: every profile's entrance block, hex)
@@ -3335,7 +3336,7 @@ void CheckModProfiles(uint8_t* base) {
       for (uint32_t id = 0; id < 512; ++id) {
         const uint32_t i = Rd16(base + kIdToIndex + id * 2);
         if (i >= 512) continue;
-        const uint8_t* e = base + kProfiles + i * kProfileSize + kEntrance;
+        const uint8_t* e = base + svr2011::RosterEntry(kProfiles, kProfileSize, i) + kEntrance;
         std::fprintf(o, "%u ", id);
         for (uint32_t k = 0; k < 284; ++k) std::fprintf(o, "%02x", e[k]);
         std::fputc('\n', o);
@@ -3347,8 +3348,8 @@ void CheckModProfiles(uint8_t* base) {
   for (const auto& m : g_mods) {
     const uint32_t si = Rd16(base + kIdToIndex + m.slot * 2), bi = Rd16(base + kIdToIndex + m.base * 2);
     if (si >= 512 || bi >= 512) continue;
-    uint8_t* sp = base + kProfiles + si * kProfileSize;
-    const uint8_t* bp = base + kProfiles + bi * kProfileSize;
+    uint8_t* sp = base + svr2011::RosterEntry(kProfiles, kProfileSize, si);
+    const uint8_t* bp = base + svr2011::RosterEntry(kProfiles, kProfileSize, bi);
     std::string fixed, repaired;
     for (const auto& [off, id] : m.moves) {
       if (off + 1u >= kEntrance) continue;
@@ -3392,7 +3393,7 @@ void ModSortKeys(uint8_t* base, bool on) {
   for (const auto& m : g_mods) {
     const uint32_t si = Rd16(base + kIdToIndex + m.slot * 2);
     if (si >= 512) continue;
-    uint8_t* key = base + kRecords + si * kRecordSize + kSelectTile;
+    uint8_t* key = base + svr2011::RosterEntry(kRecords, kRecordSize, si) + kSelectTile;
     const uint32_t mine = 0x7000 + n++;
     if (on && !Rd16(key)) key[0] = uint8_t(mine >> 8), key[1] = uint8_t(mine);
     else if (!on && Rd16(key) == mine) key[0] = key[1] = 0;
@@ -3682,7 +3683,7 @@ void RecordStubs(uint8_t* base) {
   for (const auto& m : g_mods) {
     const uint32_t si = Rd16(base + kIdToIndex + m.slot * 2);
     if (si >= 512 || g_stub_record.count(m.slot)) continue;
-    const uint8_t* sr = base + kRecords + si * kRecordSize;
+    const uint8_t* sr = base + svr2011::RosterEntry(kRecords, kRecordSize, si);
     if (!std::strncmp(reinterpret_cast<const char*>(sr + kFullName), m.name.c_str(), kNameLen - 1)) continue;
     g_stub_record[m.slot].assign(sr, sr + kRecordSize);
     const uint8_t* se = base + kEntries40 + si * kEntry40Size;
@@ -3734,7 +3735,7 @@ void PutBackEntries(uint8_t* base) {
   for (auto it = g_saved_entry.begin(); it != g_saved_entry.end();) {
     const Mod* m = ModOf(it->first);
     const uint32_t si = m ? Rd16(base + kIdToIndex + m->slot * 2) : 512;
-    const uint8_t* sr = si < 512 ? base + kRecords + si * kRecordSize : nullptr;
+    const uint8_t* sr = si < 512 ? base + svr2011::RosterEntry(kRecords, kRecordSize, si) : nullptr;
     if (!sr || std::strncmp(reinterpret_cast<const char*>(sr + kFullName), m->name.c_str(), kNameLen - 1)) {
       ++it;
       continue;
@@ -3921,8 +3922,8 @@ void PerModSavesForSave(uint8_t* base, bool saving) {
         break;
       }
     if (!sp_stub) continue;
-    uint8_t* sr = base + kRecords + si * kRecordSize;
-    uint8_t* sp = base + kProfiles + si * kProfileSize;
+    uint8_t* sr = base + svr2011::RosterEntry(kRecords, kRecordSize, si);
+    uint8_t* sp = base + svr2011::RosterEntry(kProfiles, kProfileSize, si);
     uint8_t* se = base + kEntries40 + si * kEntry40Size;
     if (saving) {
       if (std::strncmp(reinterpret_cast<const char*>(sr + kFullName), m.name.c_str(), kNameLen - 1)) continue;
@@ -3996,7 +3997,7 @@ void InstallSuperstarMods(rex::memory::Memory* memory, rex::filesystem::VirtualF
         for (size_t i = 0; i < g_mods.size() && i < last.size(); ++i) {
           const uint32_t si = Rd16(base + kIdToIndex + g_mods[i].slot * 2);
           if (si >= 512) continue;
-          const uint32_t e = Rd16(base + kProfiles + si * kProfileSize + kEntrance + 0x14);
+          const uint32_t e = Rd16(base + svr2011::RosterEntry(kProfiles, kProfileSize, si) + kEntrance + 0x14);
           if (e != last[i]) {
             REXLOG_INFO("[svr2011] superstar mods: watch: id {} entrance {} -> {}", g_mods[i].slot, last[i], e);
             last[i] = e;
@@ -4006,6 +4007,12 @@ void InstallSuperstarMods(rex::memory::Memory* memory, rex::filesystem::VirtualF
     }).detach();
   g_game = rex::filesystem::GetExecutableFolder();
   LoadMods();
+  {
+    // (test aid SVR2011_TEST_HIGH_INDEX, big_roster on: mods with record indices from 242 up)
+    std::vector<uint32_t> ids;
+    for (const auto& m : g_mods) ids.push_back(m.slot);
+    svr2011::BigRosterTestMove(memory->virtual_membase(), ids.data(), int(ids.size()));
+  }
   StartModSaves();
   LoadAttireMods();
   // the attires' COS pairs and names (string ids kAttireNameIds + mod * 4 + attire)
@@ -4087,8 +4094,8 @@ void OnlineTempForSave(uint8_t* base, bool saving) {
   for (const auto& [id, saved] : g_temp_saved) {
     const uint32_t si = Rd16(base + kIdToIndex + id * 2);
     if (si >= 512) continue;
-    uint8_t* r = base + kRecords + si * kRecordSize;
-    uint8_t* p = base + kProfiles + si * kProfileSize;
+    uint8_t* r = base + svr2011::RosterEntry(kRecords, kRecordSize, si);
+    uint8_t* p = base + svr2011::RosterEntry(kProfiles, kProfileSize, si);
     if (saving) {
       std::vector<uint8_t> live(r, r + kRecordSize);
       live.insert(live.end(), p, p + kProfileSize);

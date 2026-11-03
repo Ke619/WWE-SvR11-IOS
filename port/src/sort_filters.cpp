@@ -38,6 +38,7 @@
 #include <rex/system/kernel_state.h>
 #include <rex/system/xmemory.h>
 
+#include "big_roster.h"
 #include "generated/default/svr2011_init.h"
 #include "rtwm_streak.h"
 #include "superstar_mods.h"
@@ -171,7 +172,7 @@ void DumpRoster(uint8_t* base) {
   for (uint32_t id = 1; id < 1000; ++id) {
     const uint32_t index = uint32_t(base[kIdToIndex + id * 2]) << 8 | base[kIdToIndex + id * 2 + 1];
     if (index >= 1000) continue;
-    const uint8_t* rec = base + kRecords + index * kRecordSize;
+    const uint8_t* rec = base + svr2011::RosterEntry(kRecords, kRecordSize, index);
     if ((uint32_t(rec[32]) << 8 | rec[33]) != id) continue;
     const std::string name(reinterpret_cast<const char*>(rec + 34), strnlen(reinterpret_cast<const char*>(rec + 34), 32));
     if (name.empty()) continue;

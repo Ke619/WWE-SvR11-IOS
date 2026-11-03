@@ -833,8 +833,10 @@ void OpenResult() {
 
 std::wstring PickOneFile() {
   static const COMDLG_FILTERSPEC kPac[1] = {{L"An arena, entrance or character file (*.pac)", L"*.pac"}};
-  return PickFile(false, L"One file from another game: an arena (pac\\bg\\bgNN.pac), an entrance (Nyujyo0.pac, Entrance01.pac) "
-                         L"or a character (pac\\ch\\chNNN.pac, a PS2 game's CH.PAC)", kPac, 1);
+  const std::wstring f = PickFile(false, L"One file from another game: an arena (pac\\bg\\bgNN.pac), an entrance (Nyujyo0.pac, Entrance01.pac) "
+                         L"or a character (pac\\ch\\chNNN.pac, a PS2 game's CH.PAC)", kPac, 1, nullptr, nullptr, OtherGameStart());
+  if (!f.empty()) OtherGamePicked(f);
+  return f;
 }
 bool CharacterName(const std::string& stem);
 // the one-file source, read as a character file (not named like an arena or entrance pac)
@@ -1118,8 +1120,9 @@ void DiscRow() {
         g_disc = i, g_folder.clear(), g_image.clear(), g_file.clear(), g_list = Json(), g_list_for.clear(), g_result = Json();
     ImGui::Separator();
     if (ImGui::Selectable("An extracted folder ...")) {
-      const std::wstring f = PickFolder(L"A folder with another game's files (an extracted disc)");
-      if (!f.empty()) g_folder = f, g_image.clear(), g_file.clear(), g_list = Json(), g_list_for.clear(), g_result = Json();
+      const std::wstring f = PickFolder(L"A folder with another game's files (an extracted disc)", OtherGameStart());
+      if (const std::string why = disc_list::NotGameFiles(f); !why.empty()) Status(why), Log("port: " + Utf8(f) + " - " + why);
+      else if (!f.empty()) OtherGamePicked(f), g_folder = f, g_image.clear(), g_file.clear(), g_list = Json(), g_list_for.clear(), g_result = Json();
     }
     if (ImGui::Selectable("One file: an arena, an entrance or a character (.pac) ...")) {
       const std::wstring f = PickOneFile();

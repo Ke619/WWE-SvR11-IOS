@@ -94,10 +94,18 @@ std::string Value(const std::string& text, const char* key);
 std::vector<std::string> Values(const std::string& text, const char* key);  // every line with that key
 
 // Dialogs (on the UI thread).
+// `start`: the folder the dialog opens in (a folder picker: its parent, with that folder picked; "" = Windows' choice).
 std::wstring PickFile(bool save, const wchar_t* title, const COMDLG_FILTERSPEC* spec, UINT nspec,
-                      const wchar_t* def_ext = nullptr, const wchar_t* def_name = nullptr);
+                      const wchar_t* def_ext = nullptr, const wchar_t* def_name = nullptr, const std::wstring& start = {});
 std::vector<std::wstring> PickFiles(const wchar_t* title, const COMDLG_FILTERSPEC* spec, UINT nspec);
-std::wstring PickFolder(const wchar_t* title);
+std::wstring PickFolder(const wchar_t* title, const std::wstring& start = {});
+// Another game's files: where they were last picked (a disc folder, a pac file), per game (a My game discs key; "" any
+// game) - the From another game pickers open there (2.1.8 report 20261103-040523-d343a2: "doesn't default to the folder
+// extracted"). OtherGameStart: that game's, else the last one picked, else the game's My game discs folder.
+std::wstring OtherGameStart(const std::string& game = "");
+void OtherGamePicked(const std::wstring& path, const std::string& game = "");
+// Test aid --test-pick <path>: a hidden run's next file / folder dialog answers <path> (once).
+void TestPick(const std::wstring& path);
 extern const COMDLG_FILTERSPEC kPictureFilter[1], kSoundFilter[1], kBinkFilter[1], kPacFilter[1], kModFilter[1],
     kProjectFilter[1], kOpenFilter[1];
 // A picture file -> Image (false logged).
@@ -387,6 +395,7 @@ struct Settings {
   bool discs_seeded = false;  // the old disc folders were searched once to fill My game discs
   bool keep_bik = false;      // mods keep a movie's Bink beside its .mp4 (the game's fallback where MP4 can't play)
   bool moves_warning_off = false;  // "Don't show this again" on the move-converting warning
+  std::vector<std::pair<std::string, std::wstring>> other_game;  // OtherGamePicked: game key ("" any) -> the path
 };
 extern Settings g_settings;
 void SaveSettings();

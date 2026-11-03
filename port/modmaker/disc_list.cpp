@@ -185,11 +185,18 @@ std::string g_note;  // a message under the list (a picked file wasn't that game
 void PickFor(const Game& g, bool folder) {
   static const COMDLG_FILTERSPEC kIso[1] = {{L"Disc images (*.iso)", L"*.iso"}};
   const std::wstring title = Wide(std::string(folder ? "The extracted folder of " : "The disc image of ") + FullName(g));
-  const std::wstring p = folder ? PickFolder(title.c_str()) : PickFile(false, title.c_str(), kIso, 1);
+  const std::wstring start = OtherGameStart(g.key);
+  const std::wstring p = folder ? PickFolder(title.c_str(), start) : PickFile(false, title.c_str(), kIso, 1, nullptr, nullptr, start);
   if (p.empty()) return;
+  if (const std::string why = NotGameFiles(p); !why.empty()) {  // (not set: the game keeps what it had)
+    g_note = FullName(g) + ": " + why;
+    Log("discs: not set for " + FullName(g) + ": " + Utf8(p) + " - " + why);
+    return;
+  }
   bool xbox = g.xbox;
   const std::string id = Identify(p, &xbox);
   const Game* is = GameById(id);
+  OtherGamePicked(p, is ? is->key : g.key);
   if (is && is != &g) {
     Set(is->key, p, id);
     g_note = "That disc is " + FullName(*is) + ", not " + FullName(g) + ": it is set for " + is->name + ".";
@@ -408,6 +415,41 @@ std::string FolderNote(const std::string& key) {
   return note;
 }
 
+std::string NotGameFiles(const std::wstring& folder) {
+  std::error_code ec;
+  const fs::path dir(folder);
+  if (folder.empty() || !fs::is_directory(dir, ec) || !FolderId(folder, nullptr).empty()) return {};
+  for (const auto& n : NeedTable())  // (a partial copy of a game: FolderNote says what it can do)
+    for (const char* f : n.moves)
+      if (fs::exists(dir / fs::u8path(f), ec)) return {};
+  for (const char* f : {"pac/ch/chEtc.pac", "pac/misc.pac", "pac/m.pac", "pac/createmode.pac"})
+    if (fs::exists(dir / fs::u8path(f), ec)) return {};
+  // The console's own packages (Content\0000000000000000\<title id>\00000002\<40 hex>): STFS files, "LIVE" / "PIRS" / "CON "
+  int packages = 0;
+  for (fs::directory_iterator it(dir, fs::directory_options::skip_permission_denied, ec), end; !ec && it != end && packages < 1;
+       it.increment(ec)) {
+    std::error_code e2;
+    if (!it->is_regular_file(e2) || it->file_size(e2) < 0x1000) continue;
+    char magic[4] = {};
+    if (FILE* f = _wfopen(it->path().c_str(), L"rb")) {
+      std::fread(magic, 1, 4, f);
+      std::fclose(f);
+    }
+    packages += !std::memcmp(magic, "LIVE", 4) || !std::memcmp(magic, "PIRS", 4) || !std::memcmp(magic, "CON ", 4);
+  }
+  const std::string name = Utf8(dir.filename().wstring());
+  if (packages)
+    return "\"" + name + "\" holds Xbox 360 packages (DLC or a game update as the console keeps them), not a game's files. "
+           "DLC superstars can't be read from the DLC alone - their names, moves and entrances are in the game's own files: "
+           "set the game's disc (an .iso, or the whole extracted disc with default.xex). A DLC superstar's model can still come "
+           "in on its own: unpack the package with an Xbox 360 package tool, then From another game > One file > its "
+           "pac\\ch\\chNNN.pac.";
+  return "\"" + name + "\" has none of a game's own files (no default.xex, pac\\misc.pac, pac\\ch\\chEtc.pac ...): is it DLC? "
+         "DLC superstars can't be read from the DLC alone - their names, moves and entrances are in the game's own files: "
+         "set the game's disc (an .iso, or the whole extracted disc with default.xex). A DLC superstar's model can still come "
+         "in on its own: From another game > One file > its pac\\ch\\chNNN.pac.";
+}
+
 bool Scanning() { return g_scanning; }
 
 void FindIn(const std::wstring& folder) { FindInFolders({folder}); }
@@ -496,8 +538,9 @@ void Draw() {
     ImGui::BeginDisabled(g_scanning);
     PushAccent();
     if (ImGui::Button(label, ImVec2(bw, 0))) {
-      const std::wstring f = PickFolder(L"A folder with your disc images or game folders (searched with everything under it)");
-      if (!f.empty()) FindIn(f);
+      const std::wstring f = PickFolder(L"A folder with your disc images or game folders (searched with everything under it)",
+                                        OtherGameStart());
+      if (!f.empty()) OtherGamePicked(f), FindIn(f);
     }
     PopAccent();
     ImGui::EndDisabled();

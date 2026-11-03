@@ -252,8 +252,9 @@ void StartFromDisc() {
   if (choosing || (g_disc_key.empty() && !lone)) {
     if (ImGui::Button("One arena file (.pac)...")) {
       static const COMDLG_FILTERSPEC kPac[1] = {{L"An arena file (bgNN.pac)", L"*.pac"}};
-      const std::wstring f = PickFile(false, L"One arena file from another game (SvR 2007 - WWE 2K17: pac\\bg\\bgNN.pac)", kPac, 1);
-      if (!f.empty()) g_lone_file = f, port_page::ClearEmbeddedResult(), choosing = false;
+      const std::wstring f = PickFile(false, L"One arena file from another game (SvR 2007 - WWE 2K17: pac\\bg\\bgNN.pac)", kPac, 1,
+                                      nullptr, nullptr, OtherGameStart());
+      if (!f.empty()) OtherGamePicked(f), g_lone_file = f, port_page::ClearEmbeddedResult(), choosing = false;
     }
     ImGui::SameLine();
     ImGui::TextDisabled("(no disc: just the arena's bgNN.pac, e.g. one a friend sent)");

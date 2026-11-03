@@ -1847,7 +1847,7 @@ def main(argv):
         else:
             raise BadInput('unknown command %r' % cmd)
     except (BadInput, FileNotFoundError) as e:
-        print(json.dumps({'ok': False, 'error': __import__('superstar_port').missing(__import__('superstar_port').rel_to(e.filename or str(e), a.get('src')))
+        print(json.dumps({'ok': False, 'error': __import__('superstar_port').missing(__import__('superstar_port').rel_to(e.filename or str(e), a.get('src')), a.get('src'))
                           if isinstance(e, FileNotFoundError) else str(e)}))
         return 2
     except Exception as e:   # noqa: BLE001

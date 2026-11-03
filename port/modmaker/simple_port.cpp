@@ -403,11 +403,17 @@ void UseFolderFor(State& s, const std::string& key, const std::wstring& folder, 
 }
 
 void PickGameFolder(Kind k, State& s) {
-  const std::wstring f = PickFolder(L"A folder with the game's files (the one holding its pac folder)");
+  const std::wstring f = PickFolder(L"A folder with the game's files (the one holding its pac folder)", OtherGameStart(s.game));
   if (f.empty()) return;
+  if (const std::string why = disc_list::NotGameFiles(f); !why.empty()) {
+    Status(why);
+    Log("simple port: " + Utf8(f) + " - " + why);
+    return;
+  }
   bool xbox = true;
   const std::string id = disc_list::Identify(f, &xbox);
   const disc_list::Game* g = id.empty() ? nullptr : disc_list::GameById(id);
+  OtherGamePicked(f, g ? g->key : s.game);
   if (g && !ConverterGame(ScriptOf(k), *g).empty()) return UseFolderFor(s, g->key, f, id);  // (its game read off it)
   g_folder = f;
 }
@@ -448,8 +454,9 @@ void SourceCards(Kind k, State& s) {
   if (k == kEntrance) {
     if (Card("src_file", "One file", "an entrance pac (Nyujyo0.pac, Entrance01.pac, EVTENT.PAC ...)", !s.file.empty(), w, h)) {
       static const COMDLG_FILTERSPEC kPac[1] = {{L"An entrance file (*.pac)", L"*.pac"}};
-      const std::wstring f = PickFile(false, L"An entrance file from another game (Nyujyo0.pac, Entrance01.pac, EVTENT.PAC ...)", kPac, 1);
-      if (!f.empty()) LoneFile(s, f);
+      const std::wstring f = PickFile(false, L"An entrance file from another game (Nyujyo0.pac, Entrance01.pac, EVTENT.PAC ...)", kPac, 1,
+                                      nullptr, nullptr, OtherGameStart(s.game));
+      if (!f.empty()) OtherGamePicked(f, s.game), LoneFile(s, f);
     }
   } else if (Card("src_file", "One file", k == kMoves ? "a move-set isn't in one file: pick a folder with m.pac + misc.pac"
                                                       : "taunts aren't in one file: pick a folder with m.pac + misc.pac",

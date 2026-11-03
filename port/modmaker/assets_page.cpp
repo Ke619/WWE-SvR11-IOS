@@ -740,12 +740,12 @@ void SourceRow() {
     ImGui::Separator();
     if (ImGui::Selectable("A disc image (.iso) ...")) {
       static const COMDLG_FILTERSPEC kIso[1] = {{L"Disc images (*.iso)", L"*.iso"}};
-      const std::wstring f = PickFile(false, L"A disc image (Xbox 360 / PS2)", kIso, 1);
-      if (!f.empty()) g_source = f, g_source_name = PathStr(fs::path(f).filename());
+      const std::wstring f = PickFile(false, L"A disc image (Xbox 360 / PS2)", kIso, 1, nullptr, nullptr, OtherGameStart());
+      if (!f.empty()) OtherGamePicked(f), g_source = f, g_source_name = PathStr(fs::path(f).filename());
     }
     if (ImGui::Selectable("A folder (an extracted disc) ...")) {
-      const std::wstring f = PickFolder(L"A folder with game files");
-      if (!f.empty()) g_source = f, g_source_name = PathStr(fs::path(f).filename());
+      const std::wstring f = PickFolder(L"A folder with game files", OtherGameStart());
+      if (!f.empty()) OtherGamePicked(f), g_source = f, g_source_name = PathStr(fs::path(f).filename());
     }
     ImGui::EndCombo();
   }

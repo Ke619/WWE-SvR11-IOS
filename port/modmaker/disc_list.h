@@ -49,6 +49,12 @@ std::vector<std::string> MissingFiles(const std::string& key, const std::string&
 // a disc image or a whole extract).
 std::string FolderNote(const std::string& key);
 
+// A picked folder that holds none of a game's own files (DLC - an extracted DLC folder or the console's packages - or
+// something else): why it can't be used and what to pick instead, in plain words; "" for a disc, an extract or a
+// partial copy of a game. (2.1.8 report 20261103-040523-d343a2: a DLC folder picked for a game -> "the game files have
+// no pac/ch/chEtc.pac" from the converter.)
+std::string NotGameFiles(const std::wstring& folder);
+
 // A disc image's or an extracted folder's disc id ("" when it isn't a disc / has none): the image's default.xex /
 // SYSTEM.CNF, or the folder's.
 std::string Identify(const std::wstring& path, bool* xbox = nullptr);

@@ -726,6 +726,8 @@ public class LauncherActivity extends Activity {
         toggle(game, "Skip the intro movies", "Straight to the Start Screen at launch", "skip_intros", false);
         toggle(game, "Skip the practice ring", "Straight to the main menu after the Start Screen", "skip_training",
             false);
+        // (src/fast_loads.cpp: the Start Screen's loading screens at four updates a frame)
+        toggle(game, "Faster loading screens", "Their animations play faster", "fast_loads", false);
 
         drivers_ = new Drivers(this, settings_);
         drivers_.build(c);
@@ -752,6 +754,7 @@ public class LauncherActivity extends Activity {
             settings_.setBool("unlock_everything", true);
             settings_.setBool("skip_intros", false);
             settings_.setBool("skip_training", false);
+            settings_.setBool("fast_loads", false);
             settings_.setString("native_texture_quality", "high");
             saved("Defaults");
             refresh();

@@ -135,7 +135,7 @@ enum {
     ID_TAB = 100,
     /* play */
     ID_GAMEDIR, ID_GAMEDIR_CHANGE, ID_PLAY, ID_CLOSE_ON_PLAY, ID_PLAY_STATUS, ID_VERSION, ID_REPORT, ID_PLAYTIME,
-    ID_SKIP_INTROS, ID_SKIP_TRAINING, ID_PLAY_NOMODS, ID_PL_EXPORT, ID_PL_IMPORT, ID_PL_NOTICE,
+    ID_SKIP_INTROS, ID_SKIP_TRAINING, ID_FAST_LOADS, ID_PLAY_NOMODS, ID_PL_EXPORT, ID_PL_IMPORT, ID_PL_NOTICE,
     /* settings */
     ID_WINDOWED, ID_FULLSCREEN, ID_RESOLUTION, ID_VSYNC, ID_INPUT, ID_AUDIO, ID_MUTE, ID_SHOWFPS, ID_MSAA, ID_RENDERER, ID_LANGUAGE, ID_FRAMERATE, ID_MUSIC_OPEN, ID_DEFAULTS, ID_SAVE,
     ID_SETTINGS_STATUS, ID_PREPARE, ID_PRIORITY, ID_UNLOCK_ALL, ID_TEXTURES, ID_ARENA_LIGHT, ID_UPSCALE, ID_MATCH_CAMERA,
@@ -2383,7 +2383,7 @@ static void settings_load(void)
     Lines l;
     int i, fullscreen = 0, vsync = 1, sdl = 0, sdl_audio = 0, mute = 0, fps = 1, perf = -1, w = 1280, h = 720, res = 0, in_section = 0;
     int msaa = 0, aa = 0, emulated = 0, api = 0, language = 1, online = 0, prepare = 1, frame_rate = 60;
-    int priority = 0, unlock_all = 1, textures = 0, skip_intros = 0, skip_training = 0, arena_light = 100;
+    int priority = 0, unlock_all = 1, textures = 0, skip_intros = 0, skip_training = 0, fast_loads = 0, arena_light = 100;
     int match_camera = 0;
     int share = 1, up_kbs = 0, up_peers = 0, mod_mb = 0, mods_mb = 0;  /* (the game's online mod settings) */
     int exclusive = 0, max_scale = 4, scene_height = 0, upscale = 0, upscale_quality = 1;
@@ -2422,6 +2422,7 @@ static void settings_load(void)
             else if (!strcmp(key, "unlock_everything")) unlock_all = strcmp(val, "false") != 0;
             else if (!strcmp(key, "skip_intros")) skip_intros = !strcmp(val, "true");
             else if (!strcmp(key, "skip_training")) skip_training = !strcmp(val, "true");
+            else if (!strcmp(key, "fast_loads")) fast_loads = !strcmp(val, "true");
             else if (!strcmp(key, "arena_brightness")) arena_light = atoi(val);
             else if (!strcmp(key, "match_camera")) match_camera = atoi(val);
             else if (!strcmp(key, "native_texture_quality"))
@@ -2490,6 +2491,7 @@ static void settings_load(void)
     CheckDlgButton(s_wnd, ID_UNLOCK_ALL, unlock_all ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(s_wnd, ID_SKIP_INTROS, skip_intros ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(s_wnd, ID_SKIP_TRAINING, skip_training ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(s_wnd, ID_FAST_LOADS, fast_loads ? BST_CHECKED : BST_UNCHECKED);
     SendMessageW(ctl(ID_TEXTURES), CB_SETCURSEL, (WPARAM)textures, 0);
     /* (Off, then FSR 1 / FSR 2 / DLSS ultra quality .. performance: native_upscale_quality 0-3) */
     upscale_fill(upscale ? 1 + 4 * (upscale - 1) + (upscale_quality >= 0 && upscale_quality <= 3 ? upscale_quality : 1)
@@ -2506,7 +2508,7 @@ static void settings_load(void)
 
 static int settings_save(void)
 {
-    enum { NK = 43 };
+    enum { NK = 44 };
     static const char *keys[NK] = { "gpu_plugin", "input_backend", "resolution", "resolution_scale", "window_width",
                                     "window_height", "fullscreen", "vsync", "audio_mute", "audio_backend", "show_fps",
                                     "native_2x_msaa", "native_renderer", "gpu_backend", "user_language",
@@ -2517,7 +2519,7 @@ static int settings_save(void)
                                     "native_render_scale", "native_scene_height", "arena_brightness", "perf_overlay",
                                     "native_upscale", "native_upscale_quality", "match_camera",
                                     "online_mod_upload", "online_mod_upload_kbs", "online_mod_upload_peers",
-                                    "online_mod_max_mb", "online_mods_max_mb" };
+                                    "online_mod_max_mb", "online_mods_max_mb", "fast_loads" };
     const int renderer = (int)SendMessageW(ctl(ID_RENDERER), CB_GETCURSEL, 0, 0);
     char vals[NK][160];
     int done[NK] = { 0 };
@@ -2584,6 +2586,7 @@ static int settings_save(void)
     strcpy_s(vals[25], 64, IsDlgButtonChecked(s_wnd, ID_UNLOCK_ALL) == BST_CHECKED ? "true" : "false");
     strcpy_s(vals[27], 64, IsDlgButtonChecked(s_wnd, ID_SKIP_INTROS) == BST_CHECKED ? "true" : "false");
     strcpy_s(vals[28], 64, IsDlgButtonChecked(s_wnd, ID_SKIP_TRAINING) == BST_CHECKED ? "true" : "false");
+    strcpy_s(vals[43], 64, IsDlgButtonChecked(s_wnd, ID_FAST_LOADS) == BST_CHECKED ? "true" : "false");
     {
         static const char *k_textures[3] = { "\"high\"", "\"medium\"", "\"low\"" };
         const int ti = (int)SendMessageW(ctl(ID_TEXTURES), CB_GETCURSEL, 0, 0);
@@ -2704,6 +2707,7 @@ static void settings_defaults(void)
     CheckDlgButton(s_wnd, ID_UNLOCK_ALL, BST_CHECKED);
     CheckDlgButton(s_wnd, ID_SKIP_INTROS, BST_UNCHECKED);
     CheckDlgButton(s_wnd, ID_SKIP_TRAINING, BST_UNCHECKED);
+    CheckDlgButton(s_wnd, ID_FAST_LOADS, BST_UNCHECKED);
     SendMessageW(ctl(ID_TEXTURES), CB_SETCURSEL, 0, 0);
     SendMessageW(ctl(ID_UPSCALE), CB_SETCURSEL, 0, 0);
     SendMessageW(ctl(ID_ARENA_LIGHT), CB_SETCURSEL, 5, 0);
@@ -4214,6 +4218,9 @@ static void build_ui(void)
     add(TAB_PLAY, L"Button", L"Skip intros", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 160, 300, 104, 20, ID_SKIP_INTROS);
     add(TAB_PLAY, L"Button", L"Skip practice ring", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 270, 300, 130, 20,
         ID_SKIP_TRAINING);
+    /* (fast_loads.cpp: the Start Screen's loading screens at four updates a frame) */
+    add(TAB_PLAY, L"Button", L"Faster loading screens (animations speed up)", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 406,
+        300, 300, 20, ID_FAST_LOADS);
     add(TAB_PLAY, L"Button", L"", BS_PUSHBUTTON | WS_TABSTOP, X0 + 724 - 16 - 160, 472, 160, 28, ID_PL_NOTICE);
     add(TAB_PLAY, L"Static", L"", SS_LEFT | SS_NOPREFIX | SS_ENDELLIPSIS, X0 + 48, 559, 236, 20, ID_PLAY_STATUS);
     add(-1, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0 + 16, 82, 300, 22, ID_PLAYTIME);

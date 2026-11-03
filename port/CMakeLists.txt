@@ -80,6 +80,7 @@ set(SVR2011_SOURCES
     src/weapon_mods.cpp
     src/cpu_difficulty.cpp
     src/crowd_fight.cpp
+    src/fast_loads.cpp
     src/fast_start.cpp
     src/players.cpp
     src/sort_filters.cpp

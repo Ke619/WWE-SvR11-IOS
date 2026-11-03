@@ -376,8 +376,10 @@ static int render_index(int max_scale, double res, int height)
 static int S(int v) { return MulDiv(v, s_dpi, 96); }
 /* big_roster (Saves tab): the option's tooltip and the warning before it is turned on */
 #define BIG_ROSTER_WARNING L"Experimental - still being worked on. More mod superstars is not finished. Turning it on " \
-    L"may corrupt your save or even damage your game install. Back up your Saves folder first. Turn it on anyway?"
+    L"may corrupt your save or even damage your game install. Back up your Saves folder first. This also turns on " \
+    L"per-mod save files. Turn it on anyway?"
 static int big_roster_confirm(const WCHAR *capture_file);
+static void saves_permod_lock(void);
 
 /* ── small helpers ─────────────────────────────────────────────────────── */
 
@@ -4143,6 +4145,17 @@ static void report_problem(void)
     report_window(1, NULL);
 }
 
+/* While big_roster is on, per-mod saves are on too (the indices from 242 up are in no table SaveData.dat holds):
+   ticked and greyed out, its label says why. */
+static void saves_permod_lock(void)
+{
+    const int big = IsDlgButtonChecked(s_wnd, ID_SV_BIGROSTER) == BST_CHECKED;
+    if (big) CheckDlgButton(s_wnd, ID_SV_PERMOD, BST_CHECKED);
+    EnableWindow(ctl(ID_SV_PERMOD), !big);
+    SetWindowTextW(ctl(ID_SV_PERMOD), big ? L"Experimental: each mod's save data in its own file - on: big roster needs it"
+                                          : L"Experimental: each superstar mod's save data in its own file (Saves\\.mods)");
+}
+
 /* big_roster's warning: a window of its own (so --capture can draw it), Turn on / Cancel (the default). Returns 1
    for Turn on. capture_file: drawn off-screen, saved as a BMP and closed (--capture saves <file> --big-roster-warning). */
 static int s_br_done;
@@ -5860,6 +5873,7 @@ static void saves_folder_show(void)
                                                                                                            : BST_UNCHECKED);
         CheckDlgButton(s_wnd, ID_SV_BIGROSTER,
                        toml_get("big_roster", v, sizeof v) && !strcmp(v, "true") ? BST_CHECKED : BST_UNCHECKED);
+        saves_permod_lock();
     }
     presets_fill();
 }
@@ -9272,13 +9286,16 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
                 saves_status(L"More superstar mods at once: left off.");
                 break;
             }
-            if (!toml_set("big_roster", on ? "true" : "false")) {
+            if (!toml_set("big_roster", on ? "true" : "false") || (on && !toml_set("per_mod_saves", "true"))) {
                 CheckDlgButton(s_wnd, ID_SV_BIGROSTER, on ? BST_UNCHECKED : BST_CHECKED);
                 saves_status(L"Couldn't write the setting (" GAME_TOML L").");
             } else {
-                saves_status(on ? L"More superstar mods at once: on at the game's next start (experimental)."
-                                : L"More superstar mods at once: off at the game's next start.");
+                saves_status(on ? L"More superstar mods at once: on at the game's next start (experimental), with "
+                                  L"per-mod save files."
+                                : L"More superstar mods at once: off at the game's next start (per-mod save files "
+                                  L"stay on until you untick them).");
             }
+            saves_permod_lock();
             break;
         }
         case ID_SV_PRESET_NEW: presets_new();    break;

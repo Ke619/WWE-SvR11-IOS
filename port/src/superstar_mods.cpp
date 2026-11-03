@@ -3701,6 +3701,11 @@ void StartModSaves() {
   g_mod_saves_on = REXCVAR_GET(per_mod_saves);
   // Test aid: SVR2011_TEST_PER_MOD_SAVES=0 / 1 overrides the setting.
   if (const char* v = std::getenv("SVR2011_TEST_PER_MOD_SAVES"); v && *v) g_mod_saves_on = *v == '1';
+  // (big_roster: the indices from 242 up are in no table SaveData.dat holds - the mods' files are their only save)
+  if (svr2011::BigRosterOn() && !g_mod_saves_on) {
+    g_mod_saves_on = true;
+    REXLOG_INFO("[svr2011] per-mod saves: on - big_roster needs them (per_mod_saves is off in the settings)");
+  }
   if (g_mod_saves_on && !was_on) {
     // (turned on: the saves backed up first - the first save then moves the mods' data out)
     const auto stamp = std::chrono::duration_cast<std::chrono::seconds>(

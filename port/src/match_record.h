@@ -34,5 +34,8 @@ void MatchRecordEnded(const std::string& box);
 
 // The crash report's line (crash_report.cpp, through the box's text hook): the match's folder, its match.json marked.
 void MatchRecordCrashText(FILE* f);
+// REPORT A PROBLEM (report_page.cpp): the recording of the match being played (its files written out so far) or of
+// the last one this run; "" when none.
+std::string MatchRecordFolder();
 
 }  // namespace svr2011

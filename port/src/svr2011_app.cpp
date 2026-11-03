@@ -35,6 +35,7 @@
 #include "achievements_page.h"
 #include "jukebox.h"
 #include "backgrounds_page.h"
+#include "report_page.h"
 #include "weapons_page.h"
 #include "weapon_mods.h"
 #include "caw_logos.h"
@@ -683,6 +684,7 @@ void Svr2011App::OnConfigureFonts(ImFontAtlas* atlas) {
   svr2011::SetJukeboxPageFonts(menu, title ? title : menu);
   svr2011::SetBackgroundsPageFonts(menu, title ? title : menu);
   svr2011::SetWeaponsPageFonts(menu, title ? title : menu);
+  svr2011::SetReportPageFonts(menu, title ? title : menu);
   svr2011::SetMatchHudFonts(menu, title ? title : menu);
 }
 
@@ -948,6 +950,9 @@ void Svr2011App::OnPostLoadXexImage() {
     svr2011::InstallJukeboxPage(imgui_drawer(), static_cast<rex::input::InputSystem*>(runtime()->input_system()));
     svr2011::InstallBackgroundsPage(imgui_drawer(), static_cast<rex::input::InputSystem*>(runtime()->input_system()));
     svr2011::InstallWeaponsPage(imgui_drawer(), static_cast<rex::input::InputSystem*>(runtime()->input_system()));
+    svr2011::InstallReportPage(imgui_drawer(), immediate_drawer(), window(),
+                               static_cast<rex::input::InputSystem*>(runtime()->input_system()), runtime()->memory(),
+                               g_user_data);  // (report_page.h)
     svr2011::InstallGraphicsPage(
         imgui_drawer(), window(),
         static_cast<rex::input::InputSystem*>(runtime()->input_system()), g_config_path);

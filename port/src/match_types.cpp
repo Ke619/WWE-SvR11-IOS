@@ -144,6 +144,8 @@ std::vector<uint32_t> g_own_row_text;  // guest strings
 // kWeaponsLabel. Its match is that Extreme Rules match with weapons already
 // lying in and around the ring at the bell (see "Weapons everywhere" below).
 constexpr uint32_t kWeaponsLabel = 0x0FA0B100, kWeaponsText = 0x0FA0B101;  // (label, description)
+// MY WWE -> OPTIONS: its WEAPONS row (game_files.cpp) and REPORT A PROBLEM after it (menu_hooks.cpp gives its text).
+constexpr uint32_t kOptionsGroup = 0x11, kOptionsWeaponsLabel = 0x0FA0B201, kReportLabel = 0x0FA0B202;
 constexpr uint32_t kExtremeFirst = 0x4D, kExtremeLast = 0x50;
 constexpr uint32_t kFullGroup = 0x06;  // ONE ON ONE: 14 rows, the most a list shows
 struct WeaponsRow {
@@ -447,6 +449,18 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
   for (uint32_t i = 0; i < total; ++i) {
     const uint8_t* rec = table + kFirst + i * kRec;
     out.insert(out.end(), rec, rec + kRec);
+    // MY WWE -> OPTIONS -> REPORT A PROBLEM (report_page.h) after WEAPONS, the group's last: a copy of it (its node
+    // id too, as menu.pac's port rows - game_files.cpp; menu.pac has no room left for one more record).
+    if (Rd32(rec) == kOptionsWeaponsLabel && Rd32(rec + 0x18) == kOptionsGroup && (Rd32(rec + 0x3C) & 2)) {
+      uint8_t* prev = out.data() + out.size() - kRec;
+      std::vector<uint8_t> copy(prev, prev + kRec);
+      Wr32(copy.data() + 0x00, kReportLabel);
+      Wr32(copy.data() + 0x40, 0);  // no NEW badge, not hidden
+      Wr32(prev + 0x3C, Rd32(prev + 0x3C) & ~2u);
+      out.insert(out.end(), copy.begin(), copy.end());
+      ++added;
+      continue;
+    }
     if (Rd32(rec + 0x54) != kScreenMatch) continue;
     for (const Row& row : kRows) {
       if (Rd32(rec) != row.anchor || Rd32(rec + 0x18) != row.group || !svr2011::MatchTypeSwitchOn(row.mod)) continue;

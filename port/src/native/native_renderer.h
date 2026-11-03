@@ -20,6 +20,7 @@
 #include <functional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <cstdint>
 
@@ -69,6 +70,12 @@ uint64_t FramesShown();
 // Game state (any thread): a match (entrances on) or the menus - on a wide
 // window, matches fill it (native_widescreen), menus stay 16:9.
 void SetMatchScene(bool in_match);
+
+// REPORT A PROBLEM's screenshot (report_page.cpp): the next shown frame's image (the game's, without the port's
+// overlays) kept in memory - previous: the frame shown before the request instead (a pause menu drawn in the frame
+// that read START) - TakeFrameCapture hands it over once (RGB, 3 bytes a pixel; false: none yet).
+void RequestFrameCapture(bool previous = false);
+bool TakeFrameCapture(std::vector<uint8_t>& rgb, uint32_t& width, uint32_t& height);
 
 // 30 fps with the world at 60 Hz (frame_rate.cpp): every other frame is
 // drawn without its draws and clears and not shown. HalfFrames: on, with

@@ -43,7 +43,14 @@ final class Receipts {
     }
 
     // Keeps a sent report's receipt (the oldest go past kMax).
-    static synchronized boolean add(File gameFolder, String app, String id, String secret, String problem, String what) {
+    static boolean add(File gameFolder, String app, String id, String secret, String problem, String what) {
+        return add(gameFolder, app, id, secret, problem, what, false);
+    }
+
+    // picturesLater: the player adds pictures later from the launcher (the game's own form) - "pictures_later":1 on
+    // its line (the PC's report_receipts.c receipt_add_ex; the Reports tab offers an edit with pictures).
+    static synchronized boolean add(File gameFolder, String app, String id, String secret, String problem, String what,
+                                    boolean picturesLater) {
         if (id == null || id.isEmpty() || secret == null || secret.isEmpty()) return false;
         List<String> kept = new ArrayList<>();
         File f = file(gameFolder);
@@ -64,6 +71,7 @@ final class Receipts {
         ReportSend.str(o, "app", app);
         ReportSend.str(o, "problem", problem);
         ReportSend.str(o, "what", w);
+        if (picturesLater) o.append(",\"pictures_later\":1");
         kept.add(o.append('}').toString());
         StringBuilder out = new StringBuilder("[\n");
         for (int i = 0; i < kept.size(); i++) out.append(kept.get(i)).append(i + 1 < kept.size() ? ",\n" : "\n");

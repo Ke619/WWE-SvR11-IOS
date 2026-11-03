@@ -353,6 +353,15 @@ final class ReportForm {
     static ReportSend.Result send(Context c, String server, File game, ReportSend.Answers ans, boolean withSave,
                                   File match, List<ReportSend.Mod> mods, boolean withMods, List<File> pics,
                                   ReportSend.Progress progress) {
+        return send(cache(c), server, game, ans, withSave, match, mods, withMods, pics, progress, false);
+    }
+
+    // ... into `cache` (the game's own form: GameReport), the receipt marked picturesLater when the player adds
+    // pictures later from the launcher.
+    static ReportSend.Result send(File cache, String server, File game, ReportSend.Answers ans, boolean withSave,
+                                  File match, List<ReportSend.Mod> mods, boolean withMods, List<File> pics,
+                                  ReportSend.Progress progress, boolean picturesLater) {
+        cache.mkdirs();
         ReportSend.Result r = new ReportSend.Result();
         String refused = ReportSend.refuses(server);
         if (refused != null) {
@@ -366,7 +375,7 @@ final class ReportForm {
             + "Just before:\n" + (ans.before.isEmpty() ? "(not said)" : ans.before) + "\n";
         ReportSend.Upload u = new ReportSend.Upload();
         try {
-            u.zip = ProblemReport.make(cache(c), game, ans.version, description, withSave).zip;
+            u.zip = ProblemReport.make(cache, game, ans.version, description, withSave).zip;
         } catch (Exception e) {
             r.why = "The report couldn't be made: " + e.getMessage();
             return r;
@@ -381,13 +390,14 @@ final class ReportForm {
         if (withMods)
             for (ReportSend.Mod m : mods) {
                 if (m.folder == null || m.onServer) continue;
-                File z = new File(cache(c), "mod-" + m.hash.substring(0, 16) + ".zip");
+                File z = new File(cache, "mod-" + m.hash.substring(0, 16) + ".zip");
                 if (ReportSend.zipDir(m.folder, z)) m.zip = z;
             }
         try {
             ReportSend.Result got = ReportSend.send(server, u);
             // (its receipt: the reports list asks the server with it - Receipts, the PC's UserData/reports.json)
-            if (got.ok && !got.secret.isEmpty()) Receipts.add(game, "android", got.id, got.secret, ans.problem, ans.what);
+            if (got.ok && !got.secret.isEmpty())
+                Receipts.add(game, ans.app, got.id, got.secret, ans.problem, ans.what, picturesLater);
             return got;
         } finally {
             if (u.zip != null) u.zip.delete();

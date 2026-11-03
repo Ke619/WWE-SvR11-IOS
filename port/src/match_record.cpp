@@ -902,6 +902,17 @@ void MatchRecordEnded(const std::string& box) {
   g.on = false;
 }
 
+std::string MatchRecordFolder() {
+  std::lock_guard lock(g_rec);
+  if (g.dir.empty()) return {};
+  if (g.on) {
+    if (g.inputs) std::fflush(g.inputs);
+    WriteJson(false);
+  }
+  const std::u8string u = g.dir.u8string();
+  return std::string(u.begin(), u.end());
+}
+
 void MatchRecordCrashText(FILE* f) {
   if (!f || !g_rec.try_lock()) return;
   if (g.on) {

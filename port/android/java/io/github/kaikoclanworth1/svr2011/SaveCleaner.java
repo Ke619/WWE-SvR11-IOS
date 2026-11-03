@@ -189,8 +189,11 @@ final class SaveCleaner {
         String[] slots = idFolders(new File(mods, "slots.txt"), false);
         String[] marks = idFolders(new File(saves, ".universe/mod_profiles.txt"), true);
         for (int id = 1; id < 512; id++) {
-            if (slots[id] != null && modState(mods, slots[id]) == 2) continue;  // (a mod that's on holds it)
-            String folder = slots[id] != null ? slots[id] : marks[id] != null ? marks[id] : "";
+            if ((slots[id] != null && modState(mods, slots[id]) == 2) || (marks[id] != null && modState(mods, marks[id]) == 2))
+                continue;  // (a mod that's on holds it, or gets it at the next start: the game hands the slot over)
+            // (whose data the save holds there: mod_profiles.txt, written with each save - slots.txt is where the game
+            // puts a mod next; ids can change hands between starts)
+            String folder = marks[id] != null ? marks[id] : slots[id] != null ? slots[id] : "";
             boolean leftover = !d.versions.get(id).isEmpty() && !isPlaceholder(d, id);
             if (!leftover && marks[id] == null) continue;
             Item it = itemFor(items, id, folder);

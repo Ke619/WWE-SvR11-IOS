@@ -731,6 +731,10 @@ public class LauncherActivity extends Activity {
             false);
         // (src/fast_loads.cpp: the Start Screen's loading screens at four updates a frame)
         toggle(game, "Faster loading screens", "Their animations play faster", "fast_loads", false);
+        // (src/superstar_mods.cpp: per_mod_saves - the save is backed up first when it's turned on)
+        toggle(game, "Experimental: mod saves in their own files",
+            "Each superstar mod's save data in Saves/.mods - an uninstalled mod leaves the save clean. At the next start",
+            "per_mod_saves", false);
 
         drivers_ = new Drivers(this, settings_);
         drivers_.build(c);
@@ -758,6 +762,7 @@ public class LauncherActivity extends Activity {
             settings_.setBool("skip_intros", false);
             settings_.setBool("skip_training", false);
             settings_.setBool("fast_loads", false);
+            settings_.setBool("per_mod_saves", false);
             settings_.setString("native_texture_quality", "high");
             saved("Defaults");
             refresh();

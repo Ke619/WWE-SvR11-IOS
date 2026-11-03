@@ -3133,6 +3133,7 @@ REX_HOOK_RAW(sub_8257A218) {
   TempFromSave(base);  // (the fetched mods' ids as this save has them: from its image, before they're written)
   CheckSavedProfiles(base);  // (slots whose saved profile is another mod's: handed over by ApplyRecords)
   ApplyRecords(base);
+  svr2011::PerModSavesLoaded(base);  // (key refs: the save's teams / titles / cards naming a mod)
   g_moves_checked = false;  // (the save's profiles - its kept edits - get CheckModProfiles' move check too)
   svr2011::UniverseModsLoaded(base);  // (the mods' Universe side table for this save)
   ctx.r3.u64 = r3;
@@ -3261,7 +3262,42 @@ void ExportCreatedEntrances(const uint8_t* base) {
     if (!keep.count(f.path().filename().string())) fs::remove(f.path(), ec);
 }
 
+// Test aid SVR2011_TEST_SAVE_DUMP=<dir>: every 10 s, the save image in memory (0x812C0 bytes from 0x82E407C0: block A
+// then block B, as the writer writes them) to <dir>\save_<n>.bin when it changed, and the mods' ids to <dir>\ids.txt -
+// diffing the dumps finds the save's fields that hold a mod's id (superstar_threads.cpp's save-time dumps share the
+// folder).
+void SaveDumpTick(uint8_t* base) {
+  static const char* dir = std::getenv("SVR2011_TEST_SAVE_DUMP");
+  if (!dir) return;
+  static auto next = std::chrono::steady_clock::now();
+  static uint64_t last = 0;
+  static int n = 0;
+  const auto now = std::chrono::steady_clock::now();
+  if (now < next) return;
+  next = now + std::chrono::seconds(10);
+  constexpr uint32_t kImage = 0x82E407C0, kImageSize = 0x812C0;
+  const uint8_t* p = base + kImage;
+  uint64_t h = 1469598103934665603ull;
+  for (uint32_t i = 0; i < kImageSize; ++i) h = (h ^ p[i]) * 1099511628211ull;
+  if (h == last) return;
+  last = h;
+  const fs::path d(dir);
+  std::error_code ec;
+  fs::create_directories(d, ec);
+  std::ofstream(d / ("save_" + std::to_string(n) + ".bin"), std::ios::binary)
+      .write(reinterpret_cast<const char*>(p), kImageSize);
+  std::string ids;
+  {
+    std::lock_guard lock(g_slots_mutex);
+    for (const auto& m : g_mods) ids += m.folder + "\t" + std::to_string(m.slot) + "\t" + std::to_string(m.key) + "\n";
+  }
+  std::ofstream(d / "ids.txt", std::ios::binary) << ids;
+  REXLOG_INFO("[svr2011] save dump: save_{}.bin", n);
+  ++n;
+}
+
 void CheckModProfiles(uint8_t* base) {
+  SaveDumpTick(base);
   ExportCreatedEntrances(base);
   {
     std::lock_guard lock(g_slots_mutex);
@@ -3707,6 +3743,156 @@ void PutBackEntries(uint8_t* base) {
     it = g_saved_entry.erase(it);
   }
 }
+
+// Key refs (per_mod_saves): the save's other fields that name a superstar by id (step 0's map, docs/
+// UNLIMITED_MOD_SLOTS.md) hold no mod's id in the file. While the save is built each one that holds a mod gets a
+// stand-in (the mod's base superstar, else 0x200 = nobody) and Saves\.mods\refs.bin keeps (field, mod folder,
+// stand-in); after a load each field that still holds its stand-in gets the mod's id back - a mod that's gone keeps
+// the stand-in. Offsets are from the save image (*0x82E407B4); u16 ids, big-endian.
+constexpr char kRefsMagic[8] = {'S', 'V', 'R', 'M', 'R', 'E', 'F', 'S'};
+constexpr uint32_t kNobody = 0x200;
+
+// Every u16 id field (save image offsets).
+std::vector<uint32_t> IdFields() {
+  std::vector<uint32_t> f;
+  for (uint32_t t = 0; t < 70; ++t)  // teams / stables: 70 x 270 B, members at +2 (count at +0)
+    for (uint32_t k = 0; k < 5; ++k) f.push_back(0xF5C8 + t * 270 + 2 + k * 2);
+  for (uint32_t k = 0; k < 28; ++k) f.push_back(0x7CD70 + k * 2);  // title holders: 14 titles x 2
+  constexpr uint32_t P = 0x364B4;
+  for (uint32_t c = P + 14942; c + 88 <= P + 20808; c += 88)  // Universe cards: 16 B header, 6 people x 12 B
+    for (uint32_t k = 0; k < 6; ++k) f.push_back(c + 16 + k * 12);
+  for (uint32_t k = 0; k < 240; ++k) f.push_back(P + 20808 + k * 12), f.push_back(P + 20808 + k * 12 + 2);  // the list
+  return f;
+}
+
+struct Ref {
+  uint32_t off;
+  std::string folder;
+  uint16_t stub;
+};
+std::vector<std::pair<uint32_t, uint16_t>> g_refs_live;  // (field, the mod's id) while the save is built
+svrfmt::Bytes g_refs_written;
+
+fs::path RefsFile() { return ModSavesDir() / "refs.bin"; }
+
+svrfmt::Bytes RefsBytes(const std::vector<Ref>& refs) {
+  std::vector<std::string> folders;
+  svrfmt::Bytes body;
+  Put32(body, uint32_t(refs.size()));
+  for (const Ref& r : refs) {
+    auto it = std::find(folders.begin(), folders.end(), r.folder);
+    if (it == folders.end()) it = folders.insert(folders.end(), r.folder);
+    Put32(body, r.off);
+    body.push_back(uint8_t((it - folders.begin()) >> 8)), body.push_back(uint8_t(it - folders.begin()));
+    body.push_back(uint8_t(r.stub >> 8)), body.push_back(uint8_t(r.stub));
+  }
+  svrfmt::Bytes names;
+  names.push_back(uint8_t(folders.size() >> 8)), names.push_back(uint8_t(folders.size()));
+  for (const auto& s : folders) PutStr(names, s);
+  names.insert(names.end(), body.begin(), body.end());
+  svrfmt::Bytes o(kRefsMagic, kRefsMagic + 8);
+  Put32(o, 1);
+  Put32(o, Crc32(names.data(), names.size()));
+  o.insert(o.end(), names.begin(), names.end());
+  return o;
+}
+
+bool ReadRefs(const fs::path& file, std::vector<Ref>& refs) {
+  svrfmt::Bytes d;
+  if (!svrfmt::ReadFile(file.string(), d) || d.size() < 18 || std::memcmp(d.data(), kRefsMagic, 8) ||
+      Rd32(d.data() + 8) != 1 || Crc32(d.data() + 16, d.size() - 16) != Rd32(d.data() + 12))
+    return false;
+  size_t at = 16;
+  std::vector<std::string> folders(Rd16(d.data() + at));
+  at += 2;
+  for (auto& s : folders) {
+    if (at + 2 > d.size()) return false;
+    const size_t n = Rd16(d.data() + at);
+    if (at + 2 + n > d.size()) return false;
+    s.assign(reinterpret_cast<const char*>(d.data() + at + 2), n), at += 2 + n;
+  }
+  if (at + 4 > d.size()) return false;
+  const uint32_t n = Rd32(d.data() + at);
+  at += 4;
+  if (d.size() - at < size_t(n) * 8) return false;
+  for (uint32_t k = 0; k < n; ++k, at += 8) {
+    const uint32_t fi = Rd16(d.data() + at + 4);
+    if (fi >= folders.size()) return false;
+    refs.push_back({Rd32(d.data() + at), folders[fi], uint16_t(Rd16(d.data() + at + 6))});
+  }
+  return true;
+}
+
+// A stand-in for a mod's id in the file: its base superstar when that is a stock one, else nobody.
+uint16_t RefStub(const Mod& m) { return m.base && m.base < 322 && !ModOf(m.base) ? uint16_t(m.base) : uint16_t(kNobody); }
+
+void WriteRefs(const std::vector<Ref>& refs) {
+  const svrfmt::Bytes f = RefsBytes(refs);
+  if (f == g_refs_written) return;
+  std::error_code ec;
+  fs::create_directories(ModSavesDir(), ec);
+  const fs::path to = RefsFile(), part = fs::path(to).concat(".tmp"), bak = fs::path(to).concat(".bak");
+  if (FILE* o = std::fopen(part.string().c_str(), "wb")) {
+    const bool ok = std::fwrite(f.data(), 1, f.size(), o) == f.size();
+    std::fclose(o);
+    if (ok && fs::exists(to, ec)) fs::copy_file(to, bak, fs::copy_options::overwrite_existing, ec);  // (the last one)
+    if (ok) fs::rename(part, to, ec);
+    if (ok && !ec) {
+      g_refs_written = f;
+      REXLOG_INFO("[svr2011] per-mod saves: refs.bin written - {} field(s) name a mod", refs.size());
+      return;
+    }
+  }
+  REXLOG_WARN("[svr2011] per-mod saves: refs.bin could not be written");
+}
+
+// Around the save writer: the fields' mod ids out (saving: stand-ins in, refs.bin written), then back.
+void RefsForSave(uint8_t* base, bool saving) {
+  const uint32_t save = Rd32(base + 0x82E407B4);
+  if (!save) return;
+  if (!saving) {
+    for (const auto& [off, id] : g_refs_live) svrfmt::Wr16(base + save + off, uint16_t(id));
+    g_refs_live.clear();
+    return;
+  }
+  std::vector<Ref> refs;
+  for (const uint32_t off : IdFields()) {
+    const uint32_t id = Rd16(base + save + off);
+    const Mod* m = id < kNobody ? ModOf(id) : nullptr;
+    if (!m || m->temp) continue;  // (a fetched mod: OnlineTempForSave)
+    const uint16_t stub = RefStub(*m);
+    refs.push_back({off, m->folder, stub});
+    g_refs_live.emplace_back(off, uint16_t(id));
+    svrfmt::Wr16(base + save + off, stub);
+  }
+  WriteRefs(refs);
+}
+
+// After a load: each field still holding its stand-in gets its mod's id back (the mod installed).
+void RefsLoaded(uint8_t* base) {
+  const uint32_t save = Rd32(base + 0x82E407B4);
+  std::vector<Ref> refs;
+  if (!save || ModSavesDir().empty() || !ReadRefs(RefsFile(), refs)) return;
+  int back = 0, gone = 0, changed = 0;
+  for (const Ref& r : refs) {
+    const Mod* m = nullptr;
+    for (const auto& x : g_mods)
+      if (!x.temp && x.folder == r.folder) m = &x;
+    if (Rd16(base + save + r.off) != r.stub) {
+      ++changed;  // (the save was written without this refs.bin - another copy of SaveData.dat)
+      continue;
+    }
+    if (!m) {
+      ++gone;
+      continue;
+    }
+    svrfmt::Wr16(base + save + r.off, uint16_t(m->slot));
+    ++back;
+  }
+  REXLOG_INFO("[svr2011] per-mod saves: refs.bin - {} field(s) given their mod back, {} mod(s) not installed (stand-in "
+              "kept), {} field(s) no longer the stand-in",
+              back, gone, changed);
+}
 }  // namespace
 
 namespace svr2011 {
@@ -3756,6 +3942,12 @@ void PerModSavesForSave(uint8_t* base, bool saving) {
   if (saving && !g_live_while_saving.empty())
     REXLOG_INFO("[svr2011] per-mod saves: the save is built with {} mod slot(s) as stubs", g_live_while_saving.size());
   if (!saving) g_live_while_saving.clear();
+  RefsForSave(base, saving);  // (teams, titles, Universe cards and list: key refs)
+}
+
+// After a save is loaded (the sub_8257A218 hook): its fields' mods back from refs.bin - also once while folding back.
+void PerModSavesLoaded(uint8_t* base) {
+  if (g_mod_saves_on || g_mod_saves_fold) RefsLoaded(base);
 }
 
 }  // namespace svr2011

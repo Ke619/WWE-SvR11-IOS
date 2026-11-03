@@ -1,0 +1,46 @@
+package io.github.kaikoclanworth1.svr2011;
+
+import java.io.File;
+import java.util.ArrayList;
+import java.util.List;
+
+// The game's own REPORT A PROBLEM (src/report_page.cpp): its answers sent as the launcher's form sends them
+// (ReportForm.send - the zip, the match and its mods, the pictures), from the game's own thread (JNI). The receipt
+// goes into the same UserData/reports.json (Receipts), app "game".
+final class GameReport {
+    private GameReport() {}
+
+    // answers: problem, happens, what, before, contact. match / picture: a path or "". test: the game's test run (a
+    // server not on this phone refused, as ReportSend.refuses). Returns "ok\t<id>\t<seen before>" or "fail\t<why>".
+    static String send(String server, String gameFolder, String version, String[] answers, boolean withSave,
+                       boolean withMods, String match, String picture, boolean picturesLater, boolean test) {
+        try {
+            if (test) ReportSend.testRun = true;
+            File game = new File(gameFolder);
+            ReportSend.Answers a = new ReportSend.Answers();
+            a.app = "game";
+            a.version = version;
+            a.os = "Android " + android.os.Build.VERSION.RELEASE;
+            a.problem = answers[0];
+            a.happens = answers[1];
+            a.what = answers[2];
+            a.before = answers[3];
+            a.contact = answers[4];
+            File m = match == null || match.isEmpty() ? null : new File(match);
+            List<ReportSend.Mod> mods = new ArrayList<>();
+            if (m != null) {
+                mods = ReportSend.matchMods(game, m);
+                if (withMods) ReportSend.modsCheck(server, mods);
+            }
+            List<File> pics = new ArrayList<>();
+            if (picture != null && !picture.isEmpty()) pics.add(new File(picture));
+            File cache = new File(game, "Reports/.upload");
+            ReportSend.Result r = ReportForm.send(cache, server, game, a, withSave, m, mods, withMods, pics, null,
+                                                  picturesLater);
+            if (r.ok) return "ok\t" + r.id + "\t" + r.seenBefore;
+            return "fail\t" + (r.why == null || r.why.isEmpty() ? "No answer from the server." : r.why);
+        } catch (Throwable e) {
+            return "fail\t" + e;
+        }
+    }
+}

@@ -111,6 +111,7 @@ static void fill(void)
         ListView_InsertItem(s_c[R_LIST], &it);
         ListView_SetItemText(s_c[R_LIST], i, 1, (WCHAR *)(!strcmp(r->app, "modmaker") ? L"Mod Maker" :
                                                           !strcmp(r->app, "android") ? L"Android" :
+                                                          !strcmp(r->app, "game") ? L"In the game" :
                                                           r->from_account ? L"Another PC" : L"Launcher"));
         ListView_SetItemText(s_c[R_LIST], i, 2, problem);
         ListView_SetItemText(s_c[R_LIST], i, 3, what);

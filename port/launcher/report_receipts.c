@@ -154,6 +154,12 @@ static char *read_file(const WCHAR *path)
 int receipt_add(const WCHAR *game_dir, const char *app, const char *id, const char *secret, const char *problem,
                 const char *what)
 {
+    return receipt_add_ex(game_dir, app, id, secret, problem, what, 0);
+}
+
+int receipt_add_ex(const WCHAR *game_dir, const char *app, const char *id, const char *secret, const char *problem,
+                   const char *what, int pictures_later)
+{
     WCHAR path[MAX_PATH], tmp[MAX_PATH];
     char *old, date[24], short_what[200];
     const char *p, *obj, *end;
@@ -194,6 +200,7 @@ int receipt_add(const WCHAR *game_dir, const char *app, const char *id, const ch
     add_str(&b, "app", app, 0);
     add_str(&b, "problem", problem, 0);
     add_str(&b, "what", short_what, 0);
+    if (pictures_later) add_s(&b, ",\"pictures_later\":1");   /* (the launcher's Reports tab: "Add your pictures") */
     add_s(&b, "}\n]\n");
     if (b.bad) { free(b.p); return 0; }
     swprintf_s(tmp, MAX_PATH, L"%s.tmp", path);

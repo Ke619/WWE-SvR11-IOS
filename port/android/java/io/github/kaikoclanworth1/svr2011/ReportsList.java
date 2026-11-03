@@ -78,7 +78,8 @@ final class ReportsList {
             LinearLayout row = new LinearLayout(a);
             row.setOrientation(LinearLayout.VERTICAL);
             row.setPadding(0, a.dp(12), 0, a.dp(4));
-            String from = it.app.equals("modmaker") ? " (Mod Maker)" : it.app.equals("launcher") ? " (PC)" : "";
+            String from = it.app.equals("modmaker") ? " (Mod Maker)" : it.app.equals("launcher") ? " (PC)"
+                : it.app.equals("game") ? " (in the game)" : "";
             TextView title = a.text(it.date + " - " + it.problem + from, 15, LauncherActivity.kText);
             title.setTypeface(Typeface.DEFAULT_BOLD);
             row.addView(title);

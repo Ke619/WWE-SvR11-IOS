@@ -42,6 +42,23 @@ IP addresses are blanked in the logs (x.x.x.x).
   textures; textures the meshes name but the model lacks (drawn black): ...` for
   every model the 3D preview loads.
 
+## Report a problem inside the game (2.1.9)
+
+MY WWE -> OPTIONS -> REPORT A PROBLEM, and in a match the pause menu's REPORT A PROBLEM (a row above QUIT MATCH;
+not in online matches). `src/report_page.cpp`: the launcher's questions and rule ("what happened" needed), a
+screenshot of the game from before the menu (or "add pictures later in the launcher": the receipt gets
+`"pictures_later":1`), the match being played (from the menus: the last one) with its mods, the main save. Sent
+by the launcher's own code (`launcher/report_flow.c` - the zip, the match and mod parts, report.json, the
+pictures; the launcher uses it too), app `game`; on Android the app's `GameReport.java` -> `ReportForm.send`.
+The receipt goes into `<game>\UserData\reports.json` (the launcher's Reports tab: "In the game").
+
+Pause menu: the screen `sub_824271E8` makes (vtable 0x820183E0) gets a copy of QUIT MATCH's entry with the label
+0x0FA0B202 before it, its row count and the cursor's (+36 -> +28) one more; `sub_824068A8(screens, row)` opens
+row - 1 for the rows after ours, and A on ours never reaches the game (`ReportPagePad`, XamInputGetState).
+
+Test aids: `SVR2011_TEST_REPORT_TYPE=<file>` types its lines into the text being edited; test runs
+(`SVR2011_INPUT_FILE`) send only to a server on this PC (`SVR2011_ALLOW_LIVE=1` lifts it).
+
 ## Test aids
 
 - `SVR2011_TEST_MATCH_STATE=<s>`: the `match state` lines once, `<s>` seconds into

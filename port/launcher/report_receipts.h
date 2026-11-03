@@ -29,6 +29,10 @@ typedef struct {
 /* Keeps a sent report's receipt (newest last in the file). 1 on success. */
 int receipt_add(const WCHAR *game_dir, const char *app, const char *id, const char *secret, const char *problem,
                 const char *what);
+/* ... pictures_later: the player chose to add pictures later in the launcher ("pictures_later":1 on its line - the
+   Reports tab offers an edit with pictures; left out when 0). */
+int receipt_add_ex(const WCHAR *game_dir, const char *app, const char *id, const char *secret, const char *problem,
+                   const char *what, int pictures_later);
 
 /* The kept receipts, newest first; how many. */
 int receipts_load(const WCHAR *game_dir, ReportReceipt *out, int max);

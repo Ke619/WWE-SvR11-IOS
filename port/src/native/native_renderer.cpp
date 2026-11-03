@@ -887,6 +887,12 @@ float g_wide = 1.0f;
 float g_tall = 1.0f;
 std::atomic<float> g_fov_scale{1.0f};
 std::atomic<bool> g_match_scene{false};
+std::atomic<bool> g_capture_wanted{false};  // (RequestFrameCapture: the next shown frame into g_capture)
+std::atomic<int> g_capture_output{-1};      // (... or this frame image: the one shown before - previous)
+std::atomic<int> g_last_shown_output{-1};   // (the frame image last shown)
+std::mutex g_capture_mutex;
+std::vector<uint8_t> g_capture;  // (RGB)
+uint32_t g_capture_w = 0, g_capture_h = 0;
 // The last frame drew nothing in 3D (a pause menu, a loading or transition
 // screen): 2D art filling the screen - all of it goes in the 16:9 middle,
 // with black sides.
@@ -4512,6 +4518,22 @@ bool NativeActive() { return g_main && !g_failed && !g_suspended; }
 
 void SetMatchScene(bool in_match) { g_match_scene = in_match; }
 
+void RequestFrameCapture(bool previous) {
+  {
+    std::lock_guard lock(g_capture_mutex);
+    g_capture.clear();
+  }
+  g_capture_output = previous ? g_last_shown_output.load() : -1;
+  g_capture_wanted = true;
+}
+bool TakeFrameCapture(std::vector<uint8_t>& rgb, uint32_t& width, uint32_t& height) {
+  std::lock_guard lock(g_capture_mutex);
+  if (g_capture.empty()) return false;
+  rgb = std::move(g_capture), width = g_capture_w, height = g_capture_h;
+  g_capture.clear();
+  return true;
+}
+
 float CameraFovScale() { return g_fov_scale.load(std::memory_order_relaxed); }
 
 // a^-1 (4 x 4, Gauss-Jordan); false if singular.
@@ -5070,6 +5092,14 @@ void OnPresent(uint32_t front_buffer) {
   }();
   static uint32_t shot_request_poll = 0;
   std::string requested_file;
+  const bool capture = !r->hidden_frame && g_capture_wanted.exchange(false);  // (RequestFrameCapture)
+  if (capture) test_shot = true;
+  // (the frame shown before this one: its image is still in the ring - kOutputs - for a few frames)
+  const int capture_output = capture ? g_capture_output.exchange(-1) : -1;
+  plume::RenderTexture* shot_src = capture_output >= 0 && uint32_t(capture_output) != r->output_index
+                                       ? r->outputs[uint32_t(capture_output) % kOutputs].get()
+                                       : back;
+  if (!r->hidden_frame) g_last_shown_output = int(r->output_index);
   if (!test_shot && !shot_request.empty() && !r->hidden_frame && ++shot_request_poll % 15 == 0)
     if (FILE* f = std::fopen(shot_request.c_str(), "rb")) {
       char name[512] = {};
@@ -5088,14 +5118,14 @@ void OnPresent(uint32_t front_buffer) {
       const size_t dot = shot_file.rfind('.');
       shot_file.insert(dot == std::string::npos ? shot_file.size() : dot, "_" + std::to_string(frame_shots_taken));
     }
-    if (requested_file.empty()) ++frame_shots_taken;
+    if (requested_file.empty() && !capture) ++frame_shots_taken;
     shot = r->device->createBuffer(plume::RenderBufferDesc::ReadbackBuffer(uint64_t(shot_row) * g_out_h * 4));
     if (shot) {
-      Barrier(r, back, RenderTextureLayout::COPY_SOURCE);
+      Barrier(r, shot_src, RenderTextureLayout::COPY_SOURCE);
       list->copyTextureRegion(plume::RenderTextureCopyLocation::PlacedFootprint(
                                   shot.get(), RenderFormat::R8G8B8A8_UNORM, g_out_w, g_out_h, 1, shot_row),
-                              plume::RenderTextureCopyLocation::Subresource(back));
-      Barrier(r, back, RenderTextureLayout::SHADER_READ);
+                              plume::RenderTextureCopyLocation::Subresource(shot_src));
+      Barrier(r, shot_src, RenderTextureLayout::SHADER_READ);
     }
   }
 #if SVR2011_DEBUG_SUITE
@@ -5142,7 +5172,19 @@ void OnPresent(uint32_t front_buffer) {
     ReportDeviceRemoved(r);
     return;
   }
-  if (shot && test_shot && WaitForFrame(r, r->back_index, "test frame shot")) {
+  if (shot && capture && WaitForFrame(r, r->back_index, "frame capture")) {
+    if (const auto* px = static_cast<const uint8_t*>(shot->map())) {
+      std::vector<uint8_t> rgb(size_t(g_out_w) * g_out_h * 3);
+      for (uint32_t y = 0; y < g_out_h; ++y) {
+        const uint8_t* s = px + size_t(y) * shot_row * 4;
+        uint8_t* d = rgb.data() + size_t(y) * g_out_w * 3;
+        for (uint32_t x = 0; x < g_out_w; ++x) std::memcpy(d + size_t(x) * 3, s + size_t(x) * 4, 3);
+      }
+      shot->unmap();
+      std::lock_guard lock(g_capture_mutex);
+      g_capture = std::move(rgb), g_capture_w = g_out_w, g_capture_h = g_out_h;
+    }
+  } else if (shot && test_shot && WaitForFrame(r, r->back_index, "test frame shot")) {
     if (const auto* px = static_cast<const uint8_t*>(shot->map())) {
       if (FILE* f = std::fopen(shot_file.c_str(), "wb")) {  // (binary PPM, RGB)
         std::fprintf(f, "P6\n%u %u\n255\n", g_out_w, g_out_h);

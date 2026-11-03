@@ -75,6 +75,7 @@ static void setup_console_progress(int permille, const WCHAR *text);
 #include "roster_tab.h"
 #include "ui_theme.h"
 #include "report.h"
+#include "report_flow.h"
 #include "report_match.h"
 #include "report_send.h"
 #include "movie_maker.h"
@@ -3447,17 +3448,7 @@ static void up_setup(void);
 
 /* ── Report a problem: a recorded match and its mods (report_match.h) - shared by the window and --report-send ── */
 
-typedef struct {
-    ReportMatch match;       /* the match picked */
-    int has_match;
-    ReportMod mods[REPORT_MAX_MODS];  /* the mods it used */
-    int n_mods;
-    int checked;             /* the server said which it has */
-    uint64_t max_upload;     /* the server's limit for new mod bytes (0: not said) */
-    WCHAR check_why[200];    /* why the check didn't work, or the server's "no mods now" */
-    WCHAR match_zip[MAX_PATH];
-    WCHAR mod_zip[REPORT_MAX_MODS][MAX_PATH];
-} RepMatch;
+typedef ReportMatchSet RepMatch;   /* (report_flow.h) */
 
 static void rep_cli_progress(void *ctx, uint64_t sent, uint64_t total)
 {
@@ -3468,18 +3459,12 @@ static void rep_cli_progress(void *ctx, uint64_t sent, uint64_t total)
     last = pct;
 }
 
-#define REP_MOD_MAX (300ull << 20)   /* (the server's cap per mod and per report) */
+#define REP_MOD_MAX REPORT_MOD_MAX
 
 /* The mods the match used, hashed, and (online) which the server lacks. */
 static void rep_match_load(RepMatch *m, const WCHAR *server)
 {
-    int i;
-    m->n_mods = m->has_match ? report_match_mods(s_game_dir, m->match.dir, m->mods, REPORT_MAX_MODS) : 0;
-    m->checked = 0, m->max_upload = 0, m->check_why[0] = 0;
-    for (i = 0; i < m->n_mods; i++)
-        if (m->mods[i].size > REP_MOD_MAX) m->mods[i].send = 0;   /* (too big for the server) */
-    if (m->n_mods && server && server[0])
-        m->checked = report_mods_check(server, m->mods, m->n_mods, &m->max_upload, m->check_why, 200);
+    report_match_set_load(m, s_game_dir, server);
 }
 
 /* Bytes to send / already on the server (the tick on: the mods the server lacks, in the server's limit). */
@@ -3531,43 +3516,12 @@ static void rep_match_mods_text(const RepMatch *m, WCHAR *out, int n)
 /* The upload's match and mod parts into u: zips in <game>\Reports\.upload (rep_match_done deletes them). */
 static void rep_match_parts(RepMatch *m, int with_mods, ReportUpload *u, char *name_utf8, int name_n)
 {
-    WCHAR dir[MAX_PATH];
-    const uint64_t limit = m->max_upload ? m->max_upload : REP_MOD_MAX;
-    uint64_t total = 0;
-    int i;
-    if (!m->has_match) return;
-    swprintf_s(dir, MAX_PATH, L"%s\\Reports", s_game_dir);
-    CreateDirectoryW(dir, NULL);
-    wcscat_s(dir, MAX_PATH, L"\\.upload");
-    CreateDirectoryW(dir, NULL);
-    swprintf_s(m->match_zip, MAX_PATH, L"%s\\match.zip", dir);
-    if (report_zip_dir(m->match.dir, m->match_zip, "")) {
-        const WCHAR *name = wcsrchr(m->match.dir, L'\\');
-        WideCharToMultiByte(CP_UTF8, 0, name ? name + 1 : m->match.dir, -1, name_utf8, name_n, NULL, NULL);
-        u->match_zip = m->match_zip;
-        u->match_name = name_utf8;
-    }
-    u->mods = m->mods;
-    u->n_mods = m->n_mods;
-    for (i = 0; with_mods && i < m->n_mods; i++) {
-        ReportMod *d = &m->mods[i];
-        if (d->on_server || !d->hash[0] || !d->send || total + d->size > limit) continue;
-        swprintf_s(m->mod_zip[i], MAX_PATH, L"%s\\%S.zip", dir, d->hash);
-        if (report_zip_dir(d->folder, m->mod_zip[i], "")) {
-            u->mod_zips[i] = m->mod_zip[i];
-            total += d->size;
-        } else {
-            m->mod_zip[i][0] = 0;
-        }
-    }
+    report_match_set_parts(m, s_game_dir, with_mods, u, name_utf8, name_n);
 }
 
 static void rep_match_done(RepMatch *m)
 {
-    int i;
-    if (m->match_zip[0]) DeleteFileW(m->match_zip), m->match_zip[0] = 0;
-    for (i = 0; i < REPORT_MAX_MODS; i++)
-        if (m->mod_zip[i][0]) DeleteFileW(m->mod_zip[i]), m->mod_zip[i][0] = 0;
+    report_match_set_done(m);
 }
 
 /* What the result page / the CLI says about the match and mods after a send. */
@@ -3611,11 +3565,8 @@ static WCHAR s_rep_pics[REPORT_MAX_IMAGES][MAX_PATH];  /* the pictures to send *
 static int s_rep_npics;
 static ReportResult s_rep_result;
 static char s_rep_problem[120], s_rep_happens[40], s_rep_what[4096], s_rep_before[4096], s_rep_contact[200];
-static const WCHAR *const k_rep_kinds[] = { L"The game crashed (closed by itself)", L"The game froze or hung",
-                                            L"Graphics look wrong", L"Sound or music", L"Controller or keyboard",
-                                            L"Online", L"Mods", L"Saves or created content", L"The launcher",
-                                            L"Something else" };
-static const WCHAR *const k_rep_again[] = { L"Every time", L"Sometimes", L"It happened once" };
+#define k_rep_kinds report_kinds    /* (report_flow.c: the game's own form asks the same) */
+#define k_rep_again report_happens
 static int s_rep_done;            /* 1: done, -1: closed */
 static int s_rep_page;            /* 1: the questions, 2: where to post */
 static WCHAR s_rep_zip[MAX_PATH];

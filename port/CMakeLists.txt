@@ -77,6 +77,7 @@ set(SVR2011_SOURCES
     src/mystery_opponent.cpp
     src/backgrounds_page.cpp
     src/weapons_page.cpp
+    src/report_page.cpp
     src/weapon_mods.cpp
     src/cpu_difficulty.cpp
     src/crowd_fight.cpp
@@ -187,7 +188,7 @@ endif()
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
              "${CMAKE_CURRENT_SOURCE_DIR}/VERSION.txt" "${CMAKE_CURRENT_SOURCE_DIR}/BUILD_COMMIT.txt")
 # (online_files.cpp too: the online version gate compares it with the newest release)
-set_source_files_properties(src/svr2011_app.cpp src/online_files.cpp src/match_record.cpp PROPERTIES COMPILE_DEFINITIONS
+set_source_files_properties(src/svr2011_app.cpp src/online_files.cpp src/match_record.cpp src/report_page.cpp PROPERTIES COMPILE_DEFINITIONS
     "SVR2011_PORT_VERSION=\"${SVR2011_PORT_VERSION}\";SVR2011_BUILD_COMMIT=\"${SVR2011_BUILD_COMMIT}\"")
 
 # Windows only: XAudio2 audio, crash reports, PC music (XAudio2 + Media
@@ -328,7 +329,10 @@ if(WIN32 OR ANDROID)
 endif()
 if(WIN32)
     target_link_libraries(svr2011 PRIVATE xaudio2 ole32 winmm d3d12 d3d11 dxgi dxguid dbghelp ws2_32 iphlpapi winhttp
-        mfplat mfreadwrite mfuuid delayimp)
+        mfplat mfreadwrite mfuuid delayimp bcrypt)
+    # REPORT A PROBLEM inside the game (report_page.cpp): the launcher's report code, one copy.
+    target_sources(svr2011 PRIVATE launcher/report.c launcher/report_send.c launcher/report_receipts.c
+        launcher/report_match.c launcher/report_flow.c launcher/update_log.c)
     # d3d12.dll is loaded only when the game draws with Direct3D 12: Windows
     # without it (or GPUs without it, on Direct3D 11) still start the game.
     target_link_options(svr2011 PRIVATE -Wl,/DELAYLOAD:d3d12.dll)
@@ -397,7 +401,7 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/launcher/svr2011_launcher.c")
     # (Media Foundation only when used: Windows "N" without the Media Feature Pack)
     target_link_options(svr2011_modmaker PRIVATE -Wl,/DELAYLOAD:mfplat.dll -Wl,/DELAYLOAD:mfreadwrite.dll)
     set_target_properties(svr2011_modmaker PROPERTIES OUTPUT_NAME "SvR2011 Mod Maker")
-    add_executable(svr2011_launcher WIN32 launcher/svr2011_launcher.c launcher/move_warning.c launcher/apk_package.c launcher/report.c launcher/report_send.c launcher/update_log.c launcher/report_receipts.c launcher/reports_tab.c launcher/report_match.c launcher/stfs.c launcher/caw_import.c launcher/verify.c launcher/movie_maker.c launcher/bink_encode.c launcher/bink_decode.c launcher/updater.c launcher/release_check.c launcher/unzip.c launcher/mods_tab.c launcher/backgrounds.c launcher/music_tab.c launcher/roster_tab.c launcher/texpacks_tab.c launcher/ui_theme.c launcher/setup_tab.c launcher/discover_tab.c launcher/music_level.c launcher/launcher.rc src/utf8.manifest)
+    add_executable(svr2011_launcher WIN32 launcher/svr2011_launcher.c launcher/move_warning.c launcher/apk_package.c launcher/report.c launcher/report_send.c launcher/update_log.c launcher/report_receipts.c launcher/reports_tab.c launcher/report_match.c launcher/report_flow.c launcher/stfs.c launcher/caw_import.c launcher/verify.c launcher/movie_maker.c launcher/bink_encode.c launcher/bink_decode.c launcher/updater.c launcher/release_check.c launcher/unzip.c launcher/mods_tab.c launcher/backgrounds.c launcher/music_tab.c launcher/roster_tab.c launcher/texpacks_tab.c launcher/ui_theme.c launcher/setup_tab.c launcher/discover_tab.c launcher/music_level.c launcher/launcher.rc src/utf8.manifest)
     set_target_properties(svr2011_launcher PROPERTIES OUTPUT_NAME "SvR2011 Launcher")
     # The hybrid CRT: the VC++ part (vcruntime) built in, the Universal CRT from Windows (ucrtbase.dll /
     # api-ms-win-crt-*, part of Windows 10+; Windows 7/8.1 with update KB2999226). The launcher starts

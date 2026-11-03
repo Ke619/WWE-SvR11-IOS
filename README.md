@@ -148,8 +148,8 @@ Settings are saved in `svr2011.toml` in the game folder (the app's **Documents**
 | Online | ✅ Working |
 | Discord Status | ➖ Not part of this port. |
 | Built-in DISCOVERY Tab | ➖ Not part of this port. |
-| Paint Tool | ⚠️ Not available in the Launcher, Works in-game. |
-| Custom Main Menu Backgrounds | ⚠️ Not available in the Launcher, Can be added manually and setup in-game. |
+| Paint Tool | ⚠️ Not available in the Launcher yet, Works in-game. |
+| Custom Main Menu Backgrounds | ⚠️ Not available in the Launcher yet, Can be added manually and setup in-game. |
 | Mod Maker | ➖ Not part of this port. |
 ---
 

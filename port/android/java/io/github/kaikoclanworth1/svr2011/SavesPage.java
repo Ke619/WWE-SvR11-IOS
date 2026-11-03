@@ -55,6 +55,9 @@ final class SavesPage {
         Button delete = a_.button("Delete selected", LauncherActivity.kCard);
         delete.setOnClickListener(v -> deleteSelected());
         c.addView(a_.pair(importCaw, delete), a_.fullWidth(10));
+        Button clean = a_.button("Clean save of unused mods…", LauncherActivity.kCard);
+        clean.setOnClickListener(v -> cleanSave());
+        c.addView(clean, a_.fullWidth(10));
         TextView cawHelp = a_.text("Import Superstar: pick someone's Created Superstar files (.cas, from a PC or an "
             + "Xbox 360 save) - add their SaveData.dat too to keep each Superstar's details. Each goes into a free "
             + "slot, and its logos into free Paint Tool slots.", 12, LauncherActivity.kDim);
@@ -306,6 +309,85 @@ final class SavesPage {
                     result[0] = CawImport.run(FileOps.saves(), picked) + " (Your saves were backed up first.)";
                 } catch (IOException | OutOfMemoryError e) {
                     result[0] = "Importing failed: " + e.getMessage();
+                }
+            }, () -> {
+                a_.status(result[0]);
+                refresh();
+            });
+        });
+    }
+
+    // "Clean save of unused mods…": what the save keeps for superstar mods that aren't installed or are turned off
+    // (SaveCleaner), shown, then - after a backup of the saves - taken out.
+    void cleanSave() {
+        if (!a_.gameClosed()) return;
+        final File saves = FileOps.saves(), mods = new File(InstallActivity.gameFolder(), "Mods/Superstars");
+        final List<SaveCleaner.Item> items = new ArrayList<>();
+        final String[] failed = new String[1];
+        a_.status("Looking through the save…");
+        a_.background(() -> {
+            try {
+                items.addAll(SaveCleaner.scan(saves, mods));
+            } catch (SaveCleaner.Failure e) {
+                failed[0] = e.getMessage();
+            }
+        }, () -> {
+            if (failed[0] != null) {
+                a_.status(failed[0]);
+                return;
+            }
+            if (items.isEmpty()) {
+                a_.status("The save has nothing of mods that aren't installed or are turned off.");
+                return;
+            }
+            int off = 0;
+            StringBuilder s = new StringBuilder();
+            for (SaveCleaner.Item it : items)
+                if (it.off && off++ < 25) s.append("  ").append(it.name).append('\n');
+            if (off > 25) s.append("  … and ").append(off - 25).append(" more\n");
+            if (off == 0) {
+                confirmClean(items, false);
+                return;
+            }
+            android.app.AlertDialog.Builder b =
+                new android.app.AlertDialog.Builder(a_, android.app.AlertDialog.THEME_DEVICE_DEFAULT_DARK)
+                    .setTitle("Turned-off mods")
+                    .setMessage(off + " of these mods are installed but turned off:\n" + s
+                        + "\nTake their data out of the save too?")
+                    .setPositiveButton("Include them", (dl, w) -> confirmClean(items, true))
+                    .setNegativeButton("Cancel", null);
+            if (off < items.size()) b.setNeutralButton("Only uninstalled", (dl, w) -> confirmClean(items, false));
+            b.show();
+        });
+    }
+
+    void confirmClean(List<SaveCleaner.Item> items, boolean withOff) {
+        StringBuilder s = new StringBuilder("This removes data for mods that aren't installed or are turned off. If "
+            + "you turn them back on, their edits are gone. A backup is made first.\n\nTaken out:\n");
+        int shown = 0;
+        for (SaveCleaner.Item it : items) {
+            if (it.off && !withOff) continue;
+            if (shown++ >= 30) continue;
+            s.append("  ").append(it.name);
+            if (!it.folder.isEmpty() && !it.folder.equalsIgnoreCase(it.name)) s.append(" - ").append(it.folder);
+            s.append(it.off ? ", turned off" : "").append(" (").append(it.what()).append(")\n");
+        }
+        if (shown > 30) s.append("  … and ").append(shown - 30).append(" more\n");
+        if (shown == 0) return;
+        s.append('\n').append(shown).append(shown == 1 ? " mod" : " mods").append(". The game's own superstars, your "
+            + "Created Superstars and the mods that are on stay as they are.");
+        a_.confirm(s.toString(), "Clean", () -> {
+            final String[] result = new String[1];
+            a_.status("Cleaning…");
+            a_.background(() -> {
+                try {
+                    File dest = FileOps.backup(" (before cleaning)");
+                    if (dest == null) throw new IOException("the saves couldn't be backed up");
+                    int n = SaveCleaner.apply(FileOps.saves(), items, withOff);
+                    result[0] = "Took out " + n + (n == 1 ? " mod's" : " mods'") + " data. Backup: SaveBackups/"
+                        + dest.getName() + " (Restore backup… puts it back).";
+                } catch (SaveCleaner.Failure | IOException e) {
+                    result[0] = "Not cleaned: " + e.getMessage();
                 }
             }, () -> {
                 a_.status(result[0]);

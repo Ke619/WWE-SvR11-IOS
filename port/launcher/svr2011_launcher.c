@@ -158,7 +158,7 @@ enum {
     ID_DLC_DIR, ID_DLC_BROWSE, ID_DLC_INSTALL, ID_DLC_STATUS, ID_DLC_LIST,
     /* saves */
     ID_SV_LIST, ID_SV_BACKUP, ID_SV_RESTORE, ID_SV_BACKUPS, ID_SV_EXPORT, ID_SV_IMPORT, ID_SV_DELETE, ID_SV_OPEN,
-    ID_SV_STATUS, ID_SV_FOLDER, ID_SV_CHANGE, ID_SV_DEFAULT, ID_SV_PRESET, ID_SV_PRESET_NEW, ID_SV_IMPORT360, ID_SV_IMPORTCAW,
+    ID_SV_STATUS, ID_SV_FOLDER, ID_SV_CHANGE, ID_SV_DEFAULT, ID_SV_PRESET, ID_SV_PRESET_NEW, ID_SV_IMPORT360, ID_SV_IMPORTCAW, ID_SV_PERMOD,
     /* paint tool */
     ID_PT_GRID, ID_PT_EXPORT, ID_PT_IMPORT, ID_PT_DELETE, ID_PT_EXPORTALL, ID_PT_REFRESH, ID_PT_STATUS,
     ID_PT_PREV, ID_PT_NEXT, ID_PT_PAGE,
@@ -4465,6 +4465,9 @@ static void build_ui(void)
                               L"switch between them here, or bring your Xbox 360 save over into one. The game and "
                               L"this tab use the folder set here (saved in " GAME_TOML L").",
         SS_LEFT, X0, 472, 560, 52, 0);
+    /* per_mod_saves (experimental): the game's own key, written at once (the game reads it at its next start) */
+    add(TAB_SAVES, L"Button", L"Experimental: each superstar mod's save data in its own file (Saves\\.mods)",
+        BS_AUTOCHECKBOX | WS_TABSTOP, X0, 528, 560, 22, ID_SV_PERMOD);
 
     /* Paint Tool */
     add(TAB_PAINT, L"Static", L"The Paint Tool's logos: 10 pages of 20 (CREATE A SUPERSTAR > PAINT TOOL in the game; "
@@ -5651,6 +5654,11 @@ static void saves_folder_show(void)
         wcscpy_s(t, MAX_PATH + 64, L"Saves folder: (install the game first)");
     set_text(ID_SV_FOLDER, t);
     EnableWindow(ctl(ID_SV_DEFAULT), s[0] != 0);
+    {
+        char v[16];
+        CheckDlgButton(s_wnd, ID_SV_PERMOD, toml_get("per_mod_saves", v, sizeof v) && !strcmp(v, "true") ? BST_CHECKED
+                                                                                                           : BST_UNCHECKED);
+    }
     presets_fill();
 }
 
@@ -9041,6 +9049,19 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         case ID_SV_OPEN:     saves_open();         break;
         case ID_SV_CHANGE:   saves_change_folder(); break;
         case ID_SV_DEFAULT:  saves_set_folder(NULL); break;
+        case ID_SV_PERMOD: {
+            const int on = IsDlgButtonChecked(s_wnd, ID_SV_PERMOD) == BST_CHECKED;
+            if (!toml_set("per_mod_saves", on ? "true" : "false")) {
+                CheckDlgButton(s_wnd, ID_SV_PERMOD, on ? BST_UNCHECKED : BST_CHECKED);
+                saves_status(L"Couldn't write the setting (" GAME_TOML L").");
+            } else {
+                saves_status(on ? L"Per-mod save files: on at the game's next start. Your saves are backed up first; "
+                                  L"the next save moves the mods' data into Saves\\.mods."
+                                : L"Per-mod save files: off at the game's next start. The mods' data goes back into "
+                                  L"the main save at its next save; their files are kept.");
+            }
+            break;
+        }
         case ID_SV_PRESET_NEW: presets_new();    break;
         case ID_SV_IMPORT360:  saves_import_360(); break;
         case ID_SV_IMPORTCAW:  saves_import_caw(); break;

@@ -160,7 +160,7 @@ The recompiled game code is **generated on your machine from your own game files
 
 - A **GitHub account** with Actions, and a **private** repository. The build needs your generated game code, which must not be public.
 - A PC to run the ReXGlue code generator on your own **`default.xex`**.
-- The native renderer's shader pack. (Already bundled in the `.ipa`, Can also be obtained from the OG repository from the Windows/Android releases.)
+- The native renderer's shader pack. (Already bundled in the `.ipa` releases.)
 
 **Steps:**
 

@@ -125,8 +125,9 @@ gets mod data out of the main save.
 ## The save's mod ids (step 0, 3 Nov) and key refs (part 1)
 
 Found by dumping the in-memory save image during WWE Universe shows (test aid SVR2011_TEST_SAVE_DUMP) and diffing
-for u16 fields holding character ids (0-321, 0x200 = nobody). save = the image (*0x82E407B4; the file has a 0x1C
-header before it); P = save + 0x364B4 (Universe).
+for u16 fields holding character ids (0-321, 0x200 = nobody). save = the image (*0x82E407B4); in SaveData.dat
+block A (image < 0x3C158) is at image + 0x1C and block B (image >= 0x3C15C; its first 4 bytes aren't written) at
+image + 0x18; P = save + 0x364B4 (Universe).
 
 | Field | Where | Kept by |
 |---|---|---|
@@ -145,7 +146,7 @@ pictures after the image in SaveData.dat. 00SceneDat.scn = highlight reels.
 
 Key refs (per_mod_saves on): while the save is built every field above that holds a mod gets a stand-in - the mod's
 base superstar when that is a stock one, else 0x200 - and Saves\.mods\refs.bin keeps them:
-"SVRMREFS", u32 1, u32 CRC-32 of the rest, u16 folder count, folders (u16 length + bytes), u32 ref count, refs
+"SVRMREFS", u32 1, u32 CRC-32 of the rest, u16 folder count, folders (u16 byte count + UTF-8 bytes), u32 ref count, refs
 {u32 image offset, u16 folder index, u16 stand-in} (big-endian). The last one is kept as refs.bin.bak. After a load a
 field that still holds its stand-in gets its mod's id back, whatever id the mod has this run; a mod that's gone
 keeps the stand-in.

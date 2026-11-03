@@ -53,6 +53,16 @@ base's signs.
 start in guest memory. The match loader gets it instead of the file's.
 Nothing in Game Files changes.
 
+**Memory.** Each match load copies the whole bank twice into the match-load
+heap (heap 12; lr 821EA528), about 3.9 KB a sign: 637 signs made a 2,492 KB
+bank, 4.9 MB of copies. The game's heap 12 is 4.5 MB; the port makes it
+16 MB since 2.1.9 (`ring_rules.cpp`), and copies that don't fit still come
+from the fallback memory. So the limit on signs is the 400 pack ids above, not
+memory: at the most (the game's 437, 400 pack signs, 4 for each of 137
+superstar mods - about 5.4 MB) the copies and the match's own 3 MB fit. With
+4.5 MB (2.1.8), a heavy install's load ended "out of game memory" (report
+ca9157).
+
 ## Pictures
 
 The Mod Maker fits any picture, without stretching, onto a white 128 x 64

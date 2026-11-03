@@ -156,6 +156,15 @@ constexpr uint32_t kMatchLoadHeap = 12;
 // objects, and with all of them in the fallback (SVR2011_TEST_HEAP_FAIL=12@0) the match crashed in its update pass
 // (2.1.8 release test N1) - a heap that's full for small blocks ends with the out-of-game-memory notice as before.
 constexpr uint32_t kMatchLoadFallbackMin = 64 * 1024;
+// Heap 12 is made bigger instead (2.1.8 report ca9157: 39 packs, 117 superstar mods, 52 custom arenas - 2176 bytes
+// failed at lr 82392444, a match's motion object, with 150 MB of guest memory free). The game reserves one physical
+// block, ending at 0x0F000000, of the size in its request (0x0B600000, 182 MB: sub_8258ED50 -> sub_821581A8, which
+// steps down 64 KB while the reservation fails) and splits it top down into 54 heaps by the (heap, KB) table at
+// 0x82DAC2F8 (sub_8269AD08), heap 53 the rest. The block's request and heap 12's KB both grow by the same amount:
+// every other heap keeps its size, heaps 0-11 their addresses too. SVR2011_TEST_HEAP12_MB=<MB> (4.5 / 0: the game's).
+constexpr uint32_t kHeapSizes = 0x82DAC2F8, kGameHeap12Kb = 4608;  // (pairs, not one a heap: heap 12's is looked up)
+constexpr uint32_t kGameBlock = 0x0B600000;
+uint32_t g_heap12_extra = 0;  // (bytes the block and heap 12 grow by; 0 when the table isn't the game's)
 // The game's heaps (table at *0x82EC5F48, 36 bytes each: start, end).
 void LogHeapTable(const uint8_t* base) {
   const uint32_t table = Rd32(base + 0x82EC5F48);
@@ -334,6 +343,29 @@ REX_HOOK_RAW(sub_8269BA30) {
   }
 }
 
+// The heaps' block (heap 12 bigger, above): sub_821581A8(request, out) - request +20 0x10C00000 (the block ends
+// 0x1FC00000 - it), +24 the block's size; out +0 its start, +4 its size.
+REX_EXTERN(__imp__sub_821581A8);
+REX_HOOK_RAW(sub_821581A8) {
+  const uint32_t request = ctx.r3.u32, out = ctx.r4.u32;
+  const bool grow = g_heap12_extra && Rd32(base + request + 20) == 0x10C00000 && Rd32(base + request + 24) == kGameBlock;
+  if (grow) {
+    const uint32_t size = kGameBlock + g_heap12_extra;
+    base[request + 24] = uint8_t(size >> 24), base[request + 25] = uint8_t(size >> 16),
+    base[request + 26] = uint8_t(size >> 8), base[request + 27] = uint8_t(size);
+  }
+  __imp__sub_821581A8(ctx, base);
+  if (!grow) return;
+  const uint32_t start = Rd32(base + out), size = Rd32(base + out + 4);
+  if (size == kGameBlock + g_heap12_extra)
+    REXLOG_INFO("[svr2011] heap 12: the game's heap block {:08X}-{:08X} ({:.1f} MB, +{:.1f} for heap 12)", start,
+                start + size, size / 1048576.0, g_heap12_extra / 1048576.0);
+  else  // (the reservation stepped down: heap 53, the rest, is that much smaller)
+    REXLOG_WARN("[svr2011] heap 12: the game's heap block {:08X}-{:08X} is {:.1f} MB, not {:.1f} - heap 53 {:.1f} MB "
+                "smaller", start, start + size, size / 1048576.0, (kGameBlock + g_heap12_extra) / 1048576.0,
+                (kGameBlock + g_heap12_extra - size) / 1048576.0);
+}
+
 REX_EXTERN(__imp__sub_8219A508);
 REX_HOOK_RAW(sub_8219A508) {
   Apply(g_rules);  // (start-up code sets the rope height after install)
@@ -470,6 +502,25 @@ void InstallRingRules(rex::memory::Memory* memory) {
       if (c == ';') c = '\n';
     SetRingRules(s);
   }
+  // Heap 12 to 16 MB (its KB in the size table now, the block's request when the game makes it: sub_821581A8 below)
+  uint32_t kb = 16 * 1024;
+  if (const char* v = std::getenv("SVR2011_TEST_HEAP12_MB"); v && *v)
+    kb = std::max(uint32_t(std::atof(v) * 1024), kGameHeap12Kb);
+  uint8_t* b = memory->virtual_membase();
+  uint32_t heap12_kb = 0;
+  for (uint32_t i = 0; i < 54 && !heap12_kb; ++i)
+    if (Rd32(b + kHeapSizes + i * 8) == kMatchLoadHeap) heap12_kb = kHeapSizes + i * 8 + 4;
+  if (!heap12_kb || Rd32(b + heap12_kb) != kGameHeap12Kb) {
+    REXLOG_WARN("[svr2011] heap 12: the size table isn't the game's ({}) - left at its size",
+                heap12_kb ? Rd32(b + heap12_kb) : 0);
+  } else if (kb > kGameHeap12Kb) {
+    if (auto* heap = memory->LookupHeap(kHeapSizes))
+      heap->Protect(kHeapSizes & ~0xFFFu, 0x2000, rex::memory::kMemoryProtectRead | rex::memory::kMemoryProtectWrite);
+    b[heap12_kb] = uint8_t(kb >> 24), b[heap12_kb + 1] = uint8_t(kb >> 16), b[heap12_kb + 2] = uint8_t(kb >> 8),
+    b[heap12_kb + 3] = uint8_t(kb);
+    g_heap12_extra = (kb - kGameHeap12Kb) * 1024;
+  }
+  REXLOG_INFO("[svr2011] heap 12: {:.1f} MB (game's 4.5)", kb > kGameHeap12Kb && g_heap12_extra ? kb / 1024.0 : 4.5);
 }
 
 void SetRingRules(const std::string& manifest) {

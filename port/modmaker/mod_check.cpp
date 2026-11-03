@@ -1029,7 +1029,9 @@ std::vector<Problem> CheckInstalledSet() {
   int signs = 0;
   for (const auto& d : on_dirs("Signs"))
     for (const auto& e : fs::directory_iterator(d, ec)) signs += e.is_regular_file(ec) && PathStr(e.path().extension()) == ".dds";
-  if (signs > 400) p.push_back(Warning(std::to_string(signs) + " crowd signs are on: the game holds 400, so some never show."));
+  // (400: the sign packs' ids, 6001-9991 - crowd_signs.cpp; not memory: the match load's heap (16 MB since 2.1.9)
+  // takes the whole bank's two copies even at 400 pack signs plus 4 for each of 137 superstars)
+  if (signs > 400) p.push_back(Warning(std::to_string(signs) + " crowd signs are on in sign packs: the game has room for 400 of them, so the rest never show."));
   int rows = 0, plain = 0;
   for (const auto& d : on_dirs("Backstage")) (ReadManifest(d).Has("row") ? rows : plain) += 1;
   if (rows > 8) p.push_back(Warning(std::to_string(rows) + " new backstage areas are on: the menu holds 8, so the rest don't show."));

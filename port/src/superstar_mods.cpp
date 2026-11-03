@@ -38,6 +38,7 @@
 #include "startup_pump.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cstdint>
@@ -132,6 +133,9 @@ struct Mod {
   fs::path dir;       // its folder (Mods/Superstars/<folder>, or OnlineMods/Superstars/<folder>@<crc>)
   bool temp = false;  // fetched from a session's host for this run (OnlineMods): never in saves, Universe, Threads
   uint32_t base = 0, slot = 0;
+  // its key (Mods/Superstars/keys.txt, 400-999, never changes): its overlay files are named and their entries stamped
+  // with it, whatever id the mod holds - the id's model / render lookups are answered with the key's entries (KeyAlias)
+  uint32_t key = 0;
   std::string ch_guest, ssf_guest;  // the overlay files, as the game opens them
   std::vector<std::string> attire_guests;  // extra attires' pacs (manifest attire<N>=)
   uint32_t attires = 1;                    // attires it has (its pacs' EMD models)
@@ -379,6 +383,30 @@ std::vector<std::pair<std::string, uint32_t>> ReadSlots(const fs::path& file) {
       if (tab == std::string::npos) continue;
       const uint32_t id = uint32_t(std::atoi(l.c_str() + tab + 1));
       if (std::find(std::begin(kPool), std::end(kPool), id) != std::end(kPool)) out.push_back({l.substr(0, tab), id});
+    }
+    std::fclose(t);
+  }
+  return out;
+}
+
+// Each mod's key (Mods/Superstars/keys.txt: "<folder>\t<key>"): ids its overlay files are stamped with, outside
+// the game's (0-321) and under 1000 (a render's name is attire * 1000 + id, SSFA/%04d) - a mod can then hold any id,
+// or none, with its files mounted once.
+constexpr uint32_t kFirstKey = 400, kLastKey = 999;
+// A mod's own crowd signs: 10000 + key * 10 + 1..4 (as a character's, id * 10 + n - but the game's own signs and the
+// sign packs use 1-9991)
+constexpr uint32_t kModSignBase = 10000;
+std::vector<std::pair<std::string, uint32_t>> ReadKeys(const fs::path& file) {
+  std::vector<std::pair<std::string, uint32_t>> out;
+  if (FILE* t = std::fopen(file.string().c_str(), "rb")) {
+    char line[512];
+    while (std::fgets(line, sizeof line, t)) {
+      std::string l = line;
+      while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
+      const size_t tab = l.rfind('\t');
+      if (tab == std::string::npos) continue;
+      const uint32_t k = uint32_t(std::atoi(l.c_str() + tab + 1));
+      if (k >= kFirstKey && k <= kLastKey) out.push_back({l.substr(0, tab), k});
     }
     std::fclose(t);
   }
@@ -811,6 +839,22 @@ void LoadMods() {
   fs::create_directories(overlay, ec);
   auto slots = ReadSlots(dir / "slots.txt");
   bool slots_changed = false;
+  auto keys = ReadKeys(dir / "keys.txt");
+  bool keys_changed = false;
+  std::set<uint32_t> keys_taken;  // (this run's, the fetched mods' too)
+  for (const auto& k : keys) keys_taken.insert(k.second);
+  auto key_of = [&](const std::string& folder, bool temp) -> uint32_t {
+    if (!temp)
+      for (const auto& k : keys)
+        if (k.first == folder) return k.second;
+    for (uint32_t k = kFirstKey; k <= kLastKey; ++k) {
+      if (keys_taken.count(k)) continue;
+      keys_taken.insert(k);
+      if (!temp) keys.push_back({folder, k}), keys_changed = true;  // (a fetched mod's: this run only)
+      return k;
+    }
+    return 0;
+  };
   std::vector<std::string> left_out;  // (over the limit: Mods/Superstars/left_out.txt, for the launcher)
   auto slot_of = [&](const std::string& folder) -> uint32_t {
     for (const auto& s : slots)
@@ -983,11 +1027,17 @@ void LoadMods() {
       if (!temp) left_out.push_back(m.folder);
       continue;
     }
+    m.key = key_of(m.folder, temp);
+    if (!m.key) {
+      REXLOG_WARN("[svr2011] superstar mods: no key left for {} ({} at most) - left out", m.folder, kLastKey - kFirstKey + 1);
+      if (!temp) left_out.push_back(m.folder);
+      continue;
+    }
     char nm[32];
     uint32_t drop = 0;
     for (int a = 0; a < 4; ++a)
       if (!attires[a].empty() && fs::exists(f / attires[a], ec)) drop |= 1u << a;
-    std::snprintf(nm, sizeof nm, "ch%03u.pac", m.slot);
+    std::snprintf(nm, sizeof nm, "ch%03u.pac", m.key);
     if (!Current(ov / nm, {f / "ch.pac", f / "manifest.txt"})) {
       svrfmt::Bytes ch;
       if (!svrfmt::ReadFile((f / "ch.pac").string(), ch)) {
@@ -1003,7 +1053,7 @@ void LoadMods() {
         continue;
       }
       if (!notes.empty()) REXLOG_INFO("[svr2011] superstar mods: {}: vertex memory:{}", m.folder, notes);
-      if (!RenameModel(ch, m.slot, -1, 0, drop) || !svrfmt::WriteFile((ov / nm).string(), ch)) {
+      if (!RenameModel(ch, m.key, -1, 0, drop) || !svrfmt::WriteFile((ov / nm).string(), ch)) {
         REXLOG_WARN("[svr2011] superstar mods: {}: ch.pac is not a character model pac (EPK8 with EMD models)", m.folder);
         continue;
       }
@@ -1013,7 +1063,7 @@ void LoadMods() {
     for (int a = 0; a < 4; ++a) {
       if (!(drop >> a & 1)) continue;
       char an[32];
-      std::snprintf(an, sizeof an, "ch%03u_a%d.pac", m.slot, a + 1);
+      std::snprintf(an, sizeof an, "ch%03u_a%d.pac", m.key, a + 1);
       const fs::path src = f / attires[a];
       if (!Current(ov / an, {src, f / "manifest.txt"})) {
         svrfmt::Bytes d;
@@ -1023,7 +1073,7 @@ void LoadMods() {
                       m.folder, attires[a], notes);
           continue;
         }
-        if (d.empty() || !RenameModel(d, m.slot, 0, a) || !svrfmt::WriteFile((ov / an).string(), d)) {
+        if (d.empty() || !RenameModel(d, m.key, 0, a) || !svrfmt::WriteFile((ov / an).string(), d)) {
           REXLOG_WARN("[svr2011] superstar mods: {}: {} is not a character model pac", m.folder, attires[a]);
           continue;
         }
@@ -1037,25 +1087,25 @@ void LoadMods() {
       for (int a = 0; a < 4; ++a)
         if (drop >> a & 1) {
           char an[32];
-          std::snprintf(an, sizeof an, "ch%03u_a%d.pac", m.slot, a + 1);
+          std::snprintf(an, sizeof an, "ch%03u_a%d.pac", m.key, a + 1);
           pacs.push_back(ov / an);
         }
-      for (const auto& pp : pacs) mask |= AttireMask(pp, m.slot);
+      for (const auto& pp : pacs) mask |= AttireMask(pp, m.key);
       m.attires = 1;
       while (m.attires < 4 && (mask >> m.attires & 1)) ++m.attires;
     }
-    std::snprintf(nm, sizeof nm, "ssf%03u.pac", m.slot);
+    std::snprintf(nm, sizeof nm, "ssf%03u.pac", m.key);
     // (the renders depend on base=: rebuilt with the manifest)
     const std::vector<fs::path> render_srcs = {f / "manifest.txt", f / "render.dds", f / "render_small.dds",
                                                f / "render_full.dds"};
     if (Current(ov / nm, render_srcs) ||
-        (BuildRenders(ov / nm, m.base, m.slot, f, m.styled) && (MarkCurrent(ov / nm, render_srcs), true)))
+        (BuildRenders(ov / nm, m.base, m.key, f, m.styled) && (MarkCurrent(ov / nm, render_srcs), true)))
       m.ssf_guest = guest + nm;
     else
       REXLOG_WARN("[svr2011] superstar mods: {}: base {} has no select render (not a playable superstar)", m.folder,
                   m.base);
-    if (m.signs) svr2011::AddCharacterSigns(m.slot, m.sign_files);
-    REXLOG_INFO("[svr2011] superstar mods: {} as id {} (from {}){}", m.name, m.slot, m.base,
+    if (m.signs) svr2011::AddCharacterSigns(kModSignBase + m.key * 10, m.sign_files);
+    REXLOG_INFO("[svr2011] superstar mods: {} as id {} (from {}, key {}){}", m.name, m.slot, m.base, m.key,
                 temp ? " - fetched from the session's host, this run only" : "");
     m.fingerprint = Fingerprint(m);
     g_mods.push_back(std::move(m));
@@ -1069,6 +1119,22 @@ void LoadMods() {
       std::fclose(t);
     }
   }
+  {  // (the overlay files of before the keys - named and stamped with a pool id: nothing mounts them now)
+    for (const auto& e : fs::directory_iterator(overlay, ec)) {
+      const std::string n = e.path().filename().string();
+      unsigned id = 0;
+      char rest[32] = {};
+      if ((std::sscanf(n.c_str(), "ch%3u%31s", &id, rest) == 2 || std::sscanf(n.c_str(), "ssf%3u%31s", &id, rest) == 2) &&
+          id < kFirstKey && std::find(std::begin(kPool), std::end(kPool), id) != std::end(kPool) &&
+          (!std::strncmp(rest, ".pac", 4) || !std::strncmp(rest, "_a", 2)))
+        fs::remove(e.path(), ec);
+    }
+  }
+  if (keys_changed)
+    if (FILE* t = std::fopen((dir / "keys.txt").string().c_str(), "wb")) {
+      for (const auto& k : keys) std::fprintf(t, "%s\t%u\n", k.first.c_str(), k.second);
+      std::fclose(t);
+    }
   if (slots_changed) {
     if (FILE* t = std::fopen((dir / "slots.txt").string().c_str(), "wb")) {
       for (const auto& s : slots) std::fprintf(t, "%s\t%u\n", s.first.c_str(), s.second);
@@ -1409,7 +1475,7 @@ void Remember(uint8_t* base) {
 void SetSigns(uint8_t* sr, const uint8_t* br, const Mod& m) {
   for (uint32_t k = 0; k < 4; ++k) {
     if (m.signs) {
-      const uint32_t v = m.slot * 10 + 1 + k % m.signs;
+      const uint32_t v = kModSignBase + m.key * 10 + 1 + k % m.signs;
       sr[kSignIds + k * 2] = uint8_t(v >> 8), sr[kSignIds + k * 2 + 1] = uint8_t(v);
     } else {
       sr[kSignIds + k * 2] = br[kSignIds + k * 2], sr[kSignIds + k * 2 + 1] = br[kSignIds + k * 2 + 1];
@@ -2127,6 +2193,33 @@ REX_HOOK_RAW(sub_8244A128) {
 
 // Test aid: SVR2011_TEST_VFS_LOG=1 logs each virtual file lookup that finds
 // nothing (sub_826B87B0(vfs, "/TYPE/NAME", out)), once per name.
+// A mod superstar's model and select renders, asked for by the id it holds (EMD/%06d%02d: id, attire*10 + kind;
+// SSFA/B/C/%04d: attire*1000 + id; with or without a leading /): its overlay entries are stamped with its key
+// (Mod::key), so the name asked for becomes the key's - the guest copy of the new name, or 0.
+uint32_t g_key_names = 0;  // guest: 32 x 64 bytes, used in turn (lookups come from two threads)
+std::atomic<uint32_t> g_key_next{0};
+uint32_t KeyAlias(uint8_t* base, const char* n) {
+  if (g_mods.empty()) return 0;
+  const char* p = n[0] == '/' ? n + 1 : n;
+  char out[64];
+  unsigned v = 0, kind = 0;
+  const Mod* m = nullptr;
+  if (!std::strncmp(p, "EMD/", 4) && strnlen(p, 16) == 12 && std::sscanf(p + 4, "%6u%2u", &v, &kind) == 2) {
+    if (!(m = ModOf(v)) || m->key == v) return 0;
+    std::snprintf(out, sizeof out, "%.*sEMD/%06u%02u", int(p - n), n, m->key, kind);
+  } else if (p[0] == 'S' && p[1] == 'S' && p[2] == 'F' && p[3] >= 'A' && p[3] <= 'C' && p[4] == '/' &&
+             strnlen(p, 16) == 9 && std::sscanf(p + 5, "%4u", &v) == 1) {
+    if (!(m = ModOf(v % 1000)) || m->key == v % 1000) return 0;
+    std::snprintf(out, sizeof out, "%.*s%.5s%04u", int(p - n), n, p, v / 1000 * 1000 + m->key);
+  } else {
+    return 0;
+  }
+  if (!g_key_names && !(g_key_names = g_memory->SystemHeapAlloc(32 * 64, 0x10))) return 0;
+  const uint32_t at = g_key_names + (g_key_next++ % 32) * 64;
+  std::memcpy(base + at, out, std::strlen(out) + 1);
+  return at;
+}
+
 REX_EXTERN(__imp__sub_826B87B0);
 REX_HOOK_RAW(sub_826B87B0) {
   static const bool log = [] {
@@ -2149,6 +2242,8 @@ REX_HOOK_RAW(sub_826B87B0) {
       return;
     }
   }
+  // a superstar mod's model / renders: its key's entries (KeyAlias)
+  else if (const uint32_t key = KeyAlias(base, reinterpret_cast<const char*>(base + ctx.r4.u32))) ctx.r4.u64 = key;
   // Test aid: SVR2011_TEST_VFS_TRACE=<text> - every lookup whose name holds that text: the result and the
   // out record's first 16 bytes (which archive answered), once per name and result
   static const std::string trace = [] { const char* e = std::getenv("SVR2011_TEST_VFS_TRACE"); return std::string(e ? e : ""); }();

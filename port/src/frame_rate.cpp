@@ -29,6 +29,7 @@
 #include "match_diag.h"
 #include "free_cam.h"
 #include "thread_cpu.h"
+#include "fast_loads.h"
 #include "fast_start.h"
 #include "pad_icons.h"
 
@@ -524,6 +525,9 @@ REX_HOOK_RAW(sub_8269D768) {
   if (const int n = svr2011::dbg::SpeedTicks(); n && !g_lockstep) g_world_ticks = n, g_world_acc = 0;  // (dbg_speed)
 #endif
   if (const int n = svr2011::MatchReplayPasses(); n > 0) g_world_ticks = n, g_world_acc = 0;  // (a replay: as recorded)
+  // (a static loading / info screen: fast_loads.h)
+  if (const int n = svr2011::FastLoadsTicks(base); n > 1 && !g_lockstep && !g_in_match.load())
+    g_world_ticks = n, g_world_acc = 0;
   // 30 fps at 60 Hz (SetHalfFrames): while frames take two updates (a PC that
   // can't keep 60 Hz) every frame is shown - as 30 fps did before - and every
   // other one again once it keeps up (a running average of the updates).

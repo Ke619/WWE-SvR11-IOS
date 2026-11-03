@@ -31,6 +31,7 @@
  *                        --reports-edit <game folder> <server> <report id> <text> [<picture>...]   (a change)
  *                        --import-360 <360 save folder> <saves folder>   (Xbox 360 saves -> port saves)
  *                        --import-caw <saves folder> <file.cas>...   (Created Superstars + their logos)
+ *                        --clean-save <saves folder> <Mods\Superstars> [--with-off] [--apply]   (save cleaner)
  *                        --adb-install <game folder>   (Install to phone over USB, no window)
  *                        --setup-check <game folder>   (the Setup tab's rows, no window)
  *                        --setup-install <game folder> <python|ffmpeg|all> --yes   (its downloads, no window)
@@ -87,6 +88,7 @@ static void setup_console_progress(int permille, const WCHAR *text);
 #include "update_log.h"
 #include "stfs.h"
 #include "caw_import.h"
+#include "save_cleaner.h"
 #include "verify.h"
 
 #include <winhttp.h>
@@ -157,7 +159,7 @@ enum {
     /* dlc */
     ID_DLC_DIR, ID_DLC_BROWSE, ID_DLC_INSTALL, ID_DLC_STATUS, ID_DLC_LIST,
     /* saves */
-    ID_SV_LIST, ID_SV_BACKUP, ID_SV_RESTORE, ID_SV_BACKUPS, ID_SV_EXPORT, ID_SV_IMPORT, ID_SV_DELETE, ID_SV_OPEN,
+    ID_SV_LIST, ID_SV_BACKUP, ID_SV_RESTORE, ID_SV_BACKUPS, ID_SV_EXPORT, ID_SV_IMPORT, ID_SV_DELETE, ID_SV_OPEN, ID_SV_CLEAN,
     ID_SV_STATUS, ID_SV_FOLDER, ID_SV_CHANGE, ID_SV_DEFAULT, ID_SV_PRESET, ID_SV_PRESET_NEW, ID_SV_IMPORT360, ID_SV_IMPORTCAW,
     /* paint tool */
     ID_PT_GRID, ID_PT_EXPORT, ID_PT_IMPORT, ID_PT_DELETE, ID_PT_EXPORTALL, ID_PT_REFRESH, ID_PT_STATUS,
@@ -4452,7 +4454,9 @@ static void build_ui(void)
     add(TAB_SAVES, L"Button", L"Import Superstar\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 290, 312, 130, 30,
         ID_SV_IMPORTCAW);
     add(TAB_SAVES, L"Button", L"Delete selected", BS_PUSHBUTTON | WS_TABSTOP, X0 + 430, 312, 130, 30, ID_SV_DELETE);
-    add(TAB_SAVES, L"Static", L"", SS_LEFT | SS_NOPREFIX | SS_PATHELLIPSIS, X0, 350, 560, 36, ID_SV_STATUS);
+    add(TAB_SAVES, L"Button", L"Clean save of unused mods\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0, 350, 200, 30,
+        ID_SV_CLEAN);
+    add(TAB_SAVES, L"Static", L"", SS_LEFT | SS_NOPREFIX | SS_PATHELLIPSIS, X0 + 210, 350, 350, 36, ID_SV_STATUS);
     add(TAB_SAVES, L"Static", L"Save preset:", SS_LEFT, X0, 400, 84, 20, 0);
     add(TAB_SAVES, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 88, 396, 212, 240, ID_SV_PRESET);
     add(TAB_SAVES, L"Button", L"New\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 310, 394, 110, 30, ID_SV_PRESET_NEW);
@@ -5258,6 +5262,82 @@ static void saves_clear(const WCHAR *saves)
             shell_op(FO_DELETE, p, NULL, FOF_ALLOWUNDO);
     } while (FindNextFileW(f, &fd));
     FindClose(f);
+}
+
+/* "Clean save of unused mods...": what the save keeps for superstar mods that aren't installed or are turned off
+ * (save_cleaner.c), shown, then - after a backup of the whole Saves folder - taken out. */
+static void saves_clean(void)
+{
+    static ScItem items[SC_MAX];
+    static WCHAR t[16384];
+    WCHAR saves[MAX_PATH], mods[MAX_PATH], err[600] = L"", before[MAX_PATH];
+    int n, i, gone = 0, off = 0, with_off = 0, at = 0, shown = 0;
+    if (saves_locked() || !saves_dir(saves) || !join(mods, s_game_dir, L"Mods\\Superstars"))
+        return;
+    if ((n = save_clean_scan(saves, mods, items, err, 600)) < 0) {
+        MessageBoxW(s_wnd, err, WINDOW_TITLE, MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    for (i = 0; i < n; i++)
+        items[i].off ? off++ : gone++;
+    if (!n) {
+        MessageBoxW(s_wnd, L"The save has nothing of mods that aren't installed or are turned off.", WINDOW_TITLE,
+                    MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    if (off) {
+        at = swprintf_s(t, 16384, L"%d of these mods are installed but turned off:\n", off);
+        for (i = 0; i < n && at < 15000; i++)
+            if (items[i].off && shown++ < 25)
+                at += swprintf_s(t + at, 16384 - at, L"  %s\n", items[i].name);
+        if (shown > 25)
+            at += swprintf_s(t + at, 16384 - at, L"  ... and %d more\n", shown - 25);
+        swprintf_s(t + at, 16384 - at, L"\nTake their data out of the save too? (No: only the mods that aren't "
+                                       L"installed.)");
+        switch (MessageBoxW(s_wnd, t, WINDOW_TITLE, MB_YESNOCANCEL | MB_ICONQUESTION)) {
+        case IDYES: with_off = 1; break;
+        case IDNO: break;
+        default: return;
+        }
+        if (!gone && !with_off)
+            return;
+    }
+    at = swprintf_s(t, 16384, L"This removes data for mods that aren't installed or are turned off. If you turn them "
+                              L"back on, their edits are gone. A backup is made first.\n\nTaken out:\n");
+    shown = 0;
+    for (i = 0; i < n && at < 15000; i++) {
+        const ScItem *m = &items[i];
+        WCHAR what[160] = L"";
+        if (m->off && !with_off)
+            continue;
+        if (shown++ >= 30)
+            continue;
+        if (m->profile) wcscat_s(what, 160, L"superstar, moves, entrance, Threads");
+        if (m->universe) wcscat_s(what, 160, what[0] ? L", Universe" : L"Universe");
+        if (m->mod_save) wcscat_s(what, 160, what[0] ? L", its mod save" : L"its mod save");
+        if (!what[0]) wcscat_s(what, 160, L"a note of it");
+        at += swprintf_s(t + at, 16384 - at, L"  %s%s%s%s (%s)\n", m->name,
+                         m->folder[0] && _wcsicmp(m->folder, m->name) ? L" - " : L"",
+                         m->folder[0] && _wcsicmp(m->folder, m->name) ? m->folder : L"",
+                         m->off ? L", turned off" : L"", what);
+    }
+    if (shown > 30)
+        at += swprintf_s(t + at, 16384 - at, L"  ... and %d more\n", shown - 30);
+    swprintf_s(t + at, 16384 - at, L"\n%d mod%s. The game's own superstars, your Created Superstars and the mods "
+                                   L"that are on stay as they are.", shown, shown == 1 ? L"" : L"s");
+    if (MessageBoxW(s_wnd, t, WINDOW_TITLE, MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2) != IDOK)
+        return;
+    if (!saves_backup_to(L" (before cleaning)", before)) {
+        saves_status(L"Could not back up the saves; nothing was cleaned.");
+        return;
+    }
+    if ((n = save_clean_apply(saves, items, n, with_off, err, 600)) < 0) {
+        saves_status(L"Not cleaned: %s Your saves are backed up in %s.", err, before);
+        return;
+    }
+    saves_refresh();
+    saves_status(L"Took out %d mod%s' data. Backup: %s (Restore backup\x2026 puts it back).", n, n == 1 ? L"" : L"s",
+                 before);
 }
 
 static void saves_restore(void)
@@ -9038,6 +9118,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         case ID_SV_EXPORT:   saves_export();       break;
         case ID_SV_IMPORT:   saves_import();       break;
         case ID_SV_DELETE:   saves_delete();       break;
+        case ID_SV_CLEAN:    saves_clean();        break;
         case ID_SV_OPEN:     saves_open();         break;
         case ID_SV_CHANGE:   saves_change_folder(); break;
         case ID_SV_DEFAULT:  saves_set_folder(NULL); break;
@@ -9747,6 +9828,31 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         n = stfs_import_saves(argv[2], argv[3], &skipped);
         wprintf(L"imported %d, unreadable %d\n", n, skipped);
         return n ? 0 : 1;
+    }
+    if (argv && argc >= 4 && !wcscmp(argv[1], L"--clean-save")) {   /* <saves> <Mods\Superstars> [--with-off] [--apply] */
+        static ScItem items[SC_MAX];
+        WCHAR err[600] = L"";
+        int i, n, with_off = 0, apply = 0;
+        console_setup();
+        for (i = 4; i < argc; i++)
+            with_off |= !wcscmp(argv[i], L"--with-off"), apply |= !wcscmp(argv[i], L"--apply");
+        if ((n = save_clean_scan(argv[2], argv[3], items, err, 600)) < 0) {
+            wprintf(L"failed: %s\n", err);
+            return 1;
+        }
+        for (i = 0; i < n; i++)
+            wprintf(L"id %d\t%s\t%s\t%s%s%s%s%s\n", items[i].id, items[i].name, items[i].folder[0] ? items[i].folder : L"-",
+                    items[i].off ? L"off " : L"", items[i].profile ? L"profile " : L"", items[i].universe ? L"universe " : L"",
+                    items[i].mark ? L"mark " : L"", items[i].mod_save ? L"mod_save" : L"");
+        wprintf(L"%d mods\n", n);
+        if (!apply)
+            return 0;
+        n = save_clean_apply(argv[2], items, n, with_off, err, 600);
+        if (n < 0)
+            wprintf(L"failed: %s\n", err);
+        else
+            wprintf(L"cleaned %d\n", n);
+        return n < 0;
     }
     if (argv && argc >= 4 && !wcscmp(argv[1], L"--import-caw")) {   /* <saves folder> <file.cas>... */
         static WCHAR list[32768];

@@ -1475,6 +1475,58 @@ void TempFromSave(uint8_t* base) {
   }
 }
 
+// ---- The save cleaner's reference (the launcher's Saves tab, "Clean save of unused mods"; save_cleaner.c): each
+// mod id's placeholder record and profile as CHAR/DAT and CHAR/PRO load them - before this run loads a save, ids
+// no mod holds now - in <saves>/.universe/pool_placeholders.bin. A save whose record or profile at a mod id is none
+// of them holds a mod's data (one removed or turned off: its name, moves, entrance, Threads, edits); the launcher
+// writes the placeholder back. (DLC ids 59-69 have a version per DLC chEtc: each one seen is kept.)
+// The file: "SVRPOOL1", u32 record size, u32 profile size, u32 the records' and the profiles' offsets in
+// SaveData.dat, u32 count, then per version: u16 id, u16 index (little-endian), the record (its selectable byte
+// 0), the profile.
+bool g_save_loaded = false;  // (a save was loaded this run: the slots hold its data now, not the placeholders)
+std::map<uint32_t, std::vector<svrfmt::Bytes>> g_pool_blank;  // id -> versions (record + profile)
+
+void KeepPoolPlaceholders(uint8_t* base) {
+  if (g_save_loaded || g_save_file.empty()) return;
+  bool added = false;
+  for (uint32_t id : kPool) {
+    if (ModOf(id)) continue;
+    const uint32_t si = Rd16(base + kIdToIndex + id * 2);
+    if (si >= 512) continue;
+    const uint8_t* r = base + kRecords + si * kRecordSize;
+    if (base[0x82DB3AE0 + id] == 1 && !r[kFullName]) continue;  // (CHAR/DAT not loaded yet; an absent id: as it is)
+    svrfmt::Bytes b(r, r + kRecordSize);
+    b[kSelectable] = 0;
+    b.insert(b.end(), base + kProfiles + si * kProfileSize, base + kProfiles + (si + 1) * kProfileSize);
+    b.insert(b.begin(), {uint8_t(id), uint8_t(id >> 8), uint8_t(si), uint8_t(si >> 8)});
+    auto& v = g_pool_blank[id];
+    if (std::find(v.begin(), v.end(), b) != v.end()) continue;
+    v.push_back(std::move(b));
+    added = true;
+  }
+  if (!added) return;
+  auto u32 = [](std::string& s, uint32_t v) { s.append(reinterpret_cast<const char*>(&v), 4); };
+  std::string out = "SVRPOOL1";
+  u32(out, kRecordSize), u32(out, kProfileSize), u32(out, 0x1C), u32(out, 0x18 + 0x3C160);
+  uint32_t n = 0;
+  for (const auto& [id, v] : g_pool_blank) n += uint32_t(v.size());
+  u32(out, n);
+  for (const auto& [id, v] : g_pool_blank)
+    for (const auto& b : v) out.append(reinterpret_cast<const char*>(b.data()), b.size());
+  std::error_code ec;
+  const fs::path f = g_save_file.parent_path() / ".universe" / "pool_placeholders.bin";
+  fs::create_directories(f.parent_path(), ec);
+  const fs::path tmp = f.string() + ".tmp";
+  {
+    std::ofstream o(tmp, std::ios::binary | std::ios::trunc);
+    o.write(out.data(), std::streamsize(out.size()));
+    if (!o) return;
+  }
+  fs::rename(tmp, f, ec);
+  if (!ec) REXLOG_INFO("[svr2011] superstar mods: {} mod ids' placeholders ({} versions) for the save cleaner: {}",
+                       g_pool_blank.size(), n, f.string());
+}
+
 // Which mod each slot's profile in the save was made for (13, 2.1.6 hold): <saves>/.universe/mod_profiles.txt,
 // "<id><TAB><folder><TAB><fingerprint>" a line, written when the game writes its save. A slot whose mod is another
 // one now (its id given to a new mod - slots.txt) or the same one changed (an update: other moves, entrance, movie)
@@ -2894,6 +2946,7 @@ REX_HOOK_RAW(sub_82594C78) {
   const auto r3 = ctx.r3.u64;
   KeepBlankProfiles(base);
   RecordBlanks(base, before);
+  KeepPoolPlaceholders(base);  // (the save cleaner's reference: before ApplyRecords sets the mods)
   ApplyRecords(base);
   // test aid: SVR2011_TEST_PRO_LOG=1 - each mod slot's entrance after the load
   // (music, movie, entrance number; a placeholder reads 255 255 4000)
@@ -2925,6 +2978,7 @@ REX_HOOK_RAW(sub_8259CAA8) {
   const auto r3 = ctx.r3.u64;
   if (std::getenv("SVR2011_TEST_PRO_LOG")) REXLOG_INFO("[svr2011] superstar mods: DLC restore (sub_8259CAA8)");
   RecordBlanks(base, before);
+  KeepPoolPlaceholders(base);
   ApplyRecords(base);
   ctx.r3.u64 = r3;
 }
@@ -2949,6 +3003,7 @@ REX_HOOK_RAW(sub_82B89DC0) {
     if (std::getenv("SVR2011_TEST_PRO_LOG"))
       REXLOG_INFO("[svr2011] superstar mods: CHAR/PRO written without a load (a DLC's chEtc)");
     RecordBlanks(base, before);
+    KeepPoolPlaceholders(base);
     ApplyRecords(base);
   }
   RedoHandovers(base, false);  // (a handed-over slot's saved profile, if the loader wrote it by now)
@@ -2961,6 +3016,7 @@ REX_HOOK_RAW(sub_8259C9A8) {
 }
 REX_EXTERN(__imp__sub_8257A218);
 REX_HOOK_RAW(sub_8257A218) {
+  g_save_loaded = true;  // (KeepPoolPlaceholders: the slots hold the save's data from here)
   __imp__sub_8257A218(ctx, base);
   const auto r3 = ctx.r3.u64;
   TempFromSave(base);  // (the fetched mods' ids as this save has them: from its image, before they're written)

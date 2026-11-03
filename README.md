@@ -89,7 +89,8 @@ iPads and older iPhones haven't been tested.
 
 5. **Start the app and play.** The launcher's **Play** tab should say the game files and shaders were found. Press **PLAY**. The first launch creates the settings file.
 
-**Updating:** install the new IPA over the old one. Your saves are in the game folder inside the app.
+> [!CAUTION]
+**Updating:** Deleting the old version to install the latest release will also delete your game. to update simply install the new IPA **over** the old one. (Don't Uninstall)
 
 ---
 

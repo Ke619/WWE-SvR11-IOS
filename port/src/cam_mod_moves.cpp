@@ -7,6 +7,7 @@
 // move_packs.cpp's PatchWaze gives the packs' moves: svr2011::PackMove), +840 + list * 4 the
 // 26 lists CREATE A MOVE-SET's tabs show (counts at +944 + list * 2), filled by sub_82378A68 in
 // record order. A moveset keeps a u16 move id per slot (profile + 2 * slot, CAWs and superstars alike).
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -192,6 +193,20 @@ uint32_t MatchMove(uint8_t* base, uint32_t slot, uint32_t got) {
       REXLOG_INFO("[svr2011] cam mods: match asks slot {} (category {}) -> move {}", slot, kSlotCategory[slot], got & 0x7FFF);
     }
   }
+  // Test aid: SVR2011_TEST_SLOT_MOVE=<slot>[,<slot>...]:<id> - every person's move in those slots is that one, as if
+  // in the moveset (a pack's move started the game's own way - a CPU's finisher with SVR2011_TEST_MOMENTUM)
+  static const std::pair<std::vector<int>, int> slot_move = [] {
+    std::pair<std::vector<int>, int> r{{}, 0};
+    const char* v = std::getenv("SVR2011_TEST_SLOT_MOVE");
+    const char* colon = v ? std::strchr(v, ':') : nullptr;
+    if (!colon) return r;
+    r.second = std::atoi(colon + 1);
+    for (const char* p = v; p < colon; ++p)
+      if (p == v || p[-1] == ',') r.first.push_back(std::atoi(p));
+    return r;
+  }();
+  if (std::find(slot_move.first.begin(), slot_move.first.end(), int(slot)) != slot_move.first.end())
+    return (got & 0x8000) | uint32_t(slot_move.second);
   const auto& test = TestMissing();
   bool planted = false;
   if (test.first == int(slot) || (test.first == 999 && kSlotCategory[slot] < 128))

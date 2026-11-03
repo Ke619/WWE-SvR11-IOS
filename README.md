@@ -94,7 +94,7 @@ Tested on an **iPhone 15 Pro (Apple A17 Pro chip)**, running inside LiveContaine
 > [!NOTE]
 > You don't need to supply shaders. They ship inside the app and are copied into `Documents/native_shaders/` on start-up.
 
-5. **Start the app and play.** The launcher's **Play** tab should say the game files and shaders were found. Press **PLAY**. The first launch creates the settings file.
+4. **Start the app and play.** The launcher's **Play** tab should say the game files and shaders were found. Press **PLAY**. The first launch creates the settings file.
 
 > [!CAUTION]
 **Updating:** Deleting the old version to install the latest release will also delete your game. to update simply install the new IPA **over** the old one. (Don't Uninstall)

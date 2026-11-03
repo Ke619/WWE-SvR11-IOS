@@ -24,10 +24,16 @@
 namespace rex::memory {
 class Memory;
 }
+namespace rex::ui {
+class Window;
+}
 
 namespace svr2011 {
 
 void InstallPadIcons(rex::memory::Memory* memory);
+// The window's key presses: a button bound to several keys ("E,O") shows the
+// one the player pressed last in its keyboard prompts.
+void InstallPadIconsKeys(rex::ui::Window* window);
 
 // The taller picture for an icon page (the FNV-1a 64 of its base level as the
 // renderer converted it), or null: RGBA8, width x height.

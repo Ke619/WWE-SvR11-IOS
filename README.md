@@ -1,8 +1,9 @@
 <h1 align="center">WWE SmackDown vs. Raw 2011 — iOS Port</h1>
 
-
+<p align="center">
 ![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-Automated-blue?logo=githubactions)
 ![Platform](https://img.shields.io/badge/Platform-iOS-lightgrey?logo=apple)
+</p>
 
 <p align="center">
   <img src="Banner.png" width="350">

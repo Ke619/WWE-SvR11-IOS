@@ -170,12 +170,15 @@ The recompiled game code is **generated on your machine from your own game files
 > Check the original repository for more information on how to do this step.
 
    Never commit `default.xex`. The workflow stops if it finds one.
+   
 3. **Add the shader pack** as `shaders/`, and optionally a home-screen icon as `icon/icon.PNG` and a launcher logo as `icon/launcher_logo.png`.
+
 4. **Run the workflow:** Actions → **ios-port** → **Run workflow**. It:
    - fetches the ReXGlue SDK at `c94f5ebdcb3c9d1a460ca48e04f9758448f8d518` (its v0.10.0 release commit), plume at `d72379344dacd3dbf9f810f92ddc87e6de1845b1`, and the PC port's source;
    - applies the PC port's own patches, then the iOS changes in the table below;
    - builds the app for iOS arm64 (iOS 17.0, Release at `-O1`, with a compiler cache so later runs are faster);
    - assembles the `.app` (executable, `Frameworks/`, the Vulkan runtime with MoltenVK, shaders, `Info.plist`, icon), fixes the library paths, signs it ad hoc and zips an **unsigned IPA**.
+
 5. **Download** the `svr2011-unsigned-ipa` artifact (kept for 3 days) and install it with your sideloading tool, which re-signs it. If the build fails, the job summary lists the compile errors, and the `port-logs` artifact has the full logs.
 
 **What the build changes for iOS:**

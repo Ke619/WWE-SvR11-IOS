@@ -167,6 +167,8 @@ The recompiled game code is **generated on your machine from your own game files
 
 1. **Make a private repository** and add `ios-port.yml` from this repo to `.github/workflows/`.
 2. **Generate the game code** from your `default.xex`, on your own machine, and commit the result to the private repo as `generated/` (it contains `rexglue.cmake`, `default/sources.cmake`, `svr2011_pch.h` and the recompiled sources).
+
+>[!NOTE]
 > Check the original repository for more information on how to do this step.
 
 >[!CAUTION]

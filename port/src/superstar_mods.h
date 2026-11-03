@@ -37,6 +37,9 @@ void SetSuperstarModsSaves(const std::filesystem::path& saves);
 // The save being built (superstar_threads.cpp's sub_827235D8 hook): saving true puts back the fetched mods' ids as
 // the save had them, false (after the build) the mods again.
 void OnlineTempForSave(uint8_t* base, bool saving);
+// Per-mod save files (per_mod_saves): around the save writer - the mods' bytes to Saves\.mods\<folder>.dat and
+// their slots' stubs into the save (saving), then back.
+void PerModSavesForSave(uint8_t* base, bool saving);
 bool IsSuperstarMod(uint32_t id);
 // The installed mods' entrance numbers (manifest entrance= and attire<N>_entrance=, without the fetched ones): the
 // CREATE AN ENTRANCE rows "MOD: <name>" (cae_mod_motions.cpp). base: the manifest's base superstar - a mod on a game

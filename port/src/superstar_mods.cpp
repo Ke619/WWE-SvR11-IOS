@@ -59,6 +59,7 @@
 #include <rex/filesystem.h>
 #include <rex/filesystem/devices/host_path_device.h>
 #include <rex/filesystem/vfs.h>
+#include <rex/cvar.h>
 #include <rex/hook.h>
 #include <rex/logging.h>
 #include <rex/ppc.h>
@@ -80,6 +81,10 @@
 #include "util.h"
 
 namespace fs = std::filesystem;
+
+REXCVAR_DEFINE_BOOL(per_mod_saves, false, "Gameplay",
+                    "Experimental: each superstar mod's save data (record, moves, entrance) in Saves/.mods/<mod>.dat instead "
+                    "of SaveData.dat - an uninstalled mod leaves the save clean, a reinstalled one gets its data back");
 
 namespace {
 
@@ -158,6 +163,7 @@ struct Mod {
   // a superstar the game's sound banks still have (manifest announcer=<NAME>,
   // e.g. JEFFHARDY): the ring announcer says it with the game's own
   // RA_*_<NAME>_* clips, in the categories where the base says its own name
+  std::string version;  // (manifest version=)
   std::string announcer;
   // its hometown for the ring announcer (manifest hometown=<CITY>[,<STATE>]:
   // the game's own clips, RA_*_HTC_<CITY>_0 / RA_*_HTS_<STATE>_0, e.g.
@@ -937,6 +943,7 @@ void LoadMods() {
           }
         }
         if (l.rfind("moves=", 0) == 0 && l.size() > 6) moves = l.substr(6);
+        if (l.rfind("version=", 0) == 0) m.version = l.substr(8);  // (per-mod saves: written in its file)
       }
       std::fclose(t);
     }
@@ -1358,6 +1365,8 @@ struct Kept {
   svrfmt::Bytes record, profile;
 };
 std::vector<Kept> g_kept;
+void RecordStubs(uint8_t* base);     // (per-mod saves, below)
+void PutBackEntries(uint8_t* base);
 
 Kept& KeptFor(uint32_t slot) {
   for (auto& k : g_kept)
@@ -1720,6 +1729,7 @@ void ApplyRecords(uint8_t* base) {
     REXLOG_INFO("[svr2011] superstar mods: record {} -> id {} ({}; was \"{}\")", m.base, m.slot, m.name, was);
   }
   RedoHandovers(base, false);
+  PutBackEntries(base);
 }
 
 // `frame`: called once a frame (the watch counts down); else from a load or before a match.
@@ -2850,6 +2860,7 @@ REX_HOOK_RAW(sub_82B89E50) {
   Remember(base);
   __imp__sub_82B89E50(ctx, base);
   const auto r3 = ctx.r3.u64;
+  RecordStubs(base);  // (per-mod saves: each mod slot as the game loads it, before ApplyRecords)
   // Test aid: SVR2011_TEST_SLOT_HELD=<mod id> - once the slot has a kept record
   // (a later load: a save), it gets what a save from before a mod swap brings:
   // another mod's record name and a stock superstar's profile (id 100's).
@@ -3351,6 +3362,248 @@ REX_HOOK_RAW(sub_82589198) {
   __imp__sub_82589198(ctx, base);
 }
 
+// ---- Per-mod save files (per_mod_saves, experimental, off by default)
+// A mod superstar's save data - its slot's 260-byte record, 1056-byte profile and 40-byte entry (block B +0x3E648 +
+// index * 40; the other per-id looking tables of block A aren't per id: +0x2FE04 is 26,280 bytes, +0x364AC 8) -
+// lives in <saves>\.mods\<folder>.dat instead of SaveData.dat. At each save the game builds, every mod slot gets its
+// stub - the slot as the game loads it before any mod (the placeholder record, profile and entry) - and the mod's
+// own bytes go to its file; after the write they're put back. The save then holds no mod data: a mod uninstalled
+// leaves it clean, and a 2.1.8 game reads it as ever. At start each mod's file (its fingerprint matching - an
+// updated mod starts from its own defaults, as a stale profile does) seeds what the slot keeps (g_kept): a save's
+// stub there takes it back (ApplyRecords). The link to the save is mod_profiles.txt (slot, folder, fingerprint).
+// Turning it on: the save folder is backed up first (SaveBackups\per_mod_saves_<time>), the first save moves the
+// data out. Turning it off: the files still seed the slots once (.mods\.on is there), the next save folds them back.
+//
+// File (big-endian): "SVRMODSV", u32 1, u16 n + folder, u16 n + version, u32 fingerprint, u16 the id it held,
+// u32 the blocks' CRC-32, then blocks of u32 tag + u32 size + bytes: 'REC ' 260, 'PRO ' 1056, 'E40 ' 40. Unknown
+// tags are skipped.
+constexpr uint32_t kEntries40 = 0x82E7C918 + 0x3E648, kEntry40Size = 40;
+constexpr char kModSaveMagic[8] = {'S', 'V', 'R', 'M', 'O', 'D', 'S', 'V'};
+
+namespace {
+struct ModSave {
+  svrfmt::Bytes record, profile, entry;
+};
+std::map<uint32_t, svrfmt::Bytes> g_stub_record, g_stub_entry;  // slot -> as the game loaded it, before any mod
+std::map<uint32_t, svrfmt::Bytes> g_saved_entry;                // slot -> the .dat's 40-byte entry, to put back
+std::map<uint32_t, ModSave> g_live_while_saving;                // slot -> the mod's bytes while the save is written
+std::map<std::string, svrfmt::Bytes> g_mod_save_written;         // folder -> the file's bytes last written
+bool g_mod_saves_on = false, g_mod_saves_fold = false;
+
+fs::path ModSavesDir() { return g_save_file.empty() ? fs::path() : g_save_file.parent_path() / ".mods"; }  // (a dot folder: the saves layer takes any other entry in Saves for a save package - a "Mods" folder crashed the game)
+
+uint32_t Crc32(const uint8_t* p, size_t n) {
+  uint32_t c = 0xFFFFFFFFu;
+  for (size_t i = 0; i < n; ++i) {
+    c ^= p[i];
+    for (int k = 0; k < 8; ++k) c = c >> 1 ^ (0xEDB88320u & (0u - (c & 1)));
+  }
+  return ~c;
+}
+
+void Put32(svrfmt::Bytes& o, uint32_t v) {
+  for (int s = 24; s >= 0; s -= 8) o.push_back(uint8_t(v >> s));
+}
+void PutStr(svrfmt::Bytes& o, const std::string& s) {
+  o.push_back(uint8_t(s.size() >> 8)), o.push_back(uint8_t(s.size()));
+  o.insert(o.end(), s.begin(), s.end());
+}
+
+svrfmt::Bytes ModSaveFile(const Mod& m, const ModSave& s) {
+  svrfmt::Bytes blocks;
+  for (const auto& [tag, data] : {std::pair<uint32_t, const svrfmt::Bytes*>{0x52454320, &s.record},
+                                  {0x50524F20, &s.profile}, {0x45343020, &s.entry}})
+    if (!data->empty()) Put32(blocks, tag), Put32(blocks, uint32_t(data->size())), blocks.insert(blocks.end(), data->begin(), data->end());
+  svrfmt::Bytes o(kModSaveMagic, kModSaveMagic + 8);
+  Put32(o, 1);
+  PutStr(o, m.folder);
+  PutStr(o, m.version);
+  Put32(o, Fingerprint(m));
+  o.push_back(uint8_t(m.slot >> 8)), o.push_back(uint8_t(m.slot));
+  Put32(o, Crc32(blocks.data(), blocks.size()));
+  o.insert(o.end(), blocks.begin(), blocks.end());
+  return o;
+}
+
+// A mod's file read back: false when it's missing, damaged, another mod's or made for another version (fingerprint).
+bool ReadModSave(const Mod& m, ModSave& s) {
+  svrfmt::Bytes d;
+  if (!svrfmt::ReadFile((ModSavesDir() / (m.folder + ".dat")).string(), d) || d.size() < 22 ||
+      std::memcmp(d.data(), kModSaveMagic, 8) || Rd32(d.data() + 8) != 1)
+    return false;
+  size_t at = 12;
+  auto str = [&](std::string& out) {
+    if (at + 2 > d.size()) return false;
+    const size_t n = Rd16(d.data() + at);
+    if (at + 2 + n > d.size()) return false;
+    out.assign(reinterpret_cast<const char*>(d.data() + at + 2), n), at += 2 + n;
+    return true;
+  };
+  std::string folder, version;
+  if (!str(folder) || !str(version) || at + 10 > d.size() || folder != m.folder) return false;
+  const uint32_t fingerprint = Rd32(d.data() + at), crc = Rd32(d.data() + at + 6);
+  at += 10;
+  if (Crc32(d.data() + at, d.size() - at) != crc) {
+    REXLOG_WARN("[svr2011] per-mod saves: {}.dat is damaged - its defaults instead", m.folder);
+    return false;
+  }
+  if (fingerprint != Fingerprint(m)) {
+    REXLOG_INFO("[svr2011] per-mod saves: {}.dat was made for another version of the mod - its defaults instead",
+                m.folder);
+    return false;
+  }
+  while (at + 8 <= d.size()) {
+    const uint32_t tag = Rd32(d.data() + at), n = Rd32(d.data() + at + 4);
+    if (at + 8 + n > d.size()) break;
+    const svrfmt::Bytes b(d.data() + at + 8, d.data() + at + 8 + n);
+    if (tag == 0x52454320 && n == kRecordSize) s.record = b;
+    else if (tag == 0x50524F20 && n == kProfileSize) s.profile = b;
+    else if (tag == 0x45343020 && n == kEntry40Size) s.entry = b;
+    at += 8 + n;
+  }
+  g_mod_save_written[m.folder] = std::move(d);
+  return !s.record.empty() && !s.profile.empty();
+}
+
+void WriteModSave(const Mod& m, const ModSave& s) {
+  const svrfmt::Bytes f = ModSaveFile(m, s);
+  if (const auto it = g_mod_save_written.find(m.folder); it != g_mod_save_written.end() && it->second == f) return;
+  std::error_code ec;
+  fs::create_directories(ModSavesDir(), ec);
+  const fs::path to = ModSavesDir() / (m.folder + ".dat"), part = fs::path(to).concat(".tmp");
+  if (FILE* o = std::fopen(part.string().c_str(), "wb")) {
+    const bool ok = std::fwrite(f.data(), 1, f.size(), o) == f.size();
+    std::fclose(o);
+    if (ok) fs::rename(part, to, ec);
+    if (ok && !ec) {
+      g_mod_save_written[m.folder] = f;
+      REXLOG_INFO("[svr2011] per-mod saves: {} (id {}) written to .mods\\{}.dat", m.name, m.slot, m.folder);
+      return;
+    }
+  }
+  REXLOG_WARN("[svr2011] per-mod saves: {}.dat could not be written", m.folder);
+}
+
+// The slots' stubs: the record and entry as the game's first CHAR/DAT load leaves them (before ApplyRecords), the
+// profile CHAR/PRO's placeholder (g_blank).
+void RecordStubs(uint8_t* base) {
+  for (const auto& m : g_mods) {
+    const uint32_t si = Rd16(base + kIdToIndex + m.slot * 2);
+    if (si >= 512 || g_stub_record.count(m.slot)) continue;
+    const uint8_t* sr = base + kRecords + si * kRecordSize;
+    if (!std::strncmp(reinterpret_cast<const char*>(sr + kFullName), m.name.c_str(), kNameLen - 1)) continue;
+    g_stub_record[m.slot].assign(sr, sr + kRecordSize);
+    const uint8_t* se = base + kEntries40 + si * kEntry40Size;
+    g_stub_entry[m.slot].assign(se, se + kEntry40Size);
+  }
+}
+
+// At start: the option, the backup when it was just turned on, and the files seeding the slots.
+void StartModSaves() {
+  const fs::path dir = ModSavesDir();
+  if (dir.empty()) return;
+  std::error_code ec;
+  const fs::path on_mark = dir / ".on";
+  const bool was_on = fs::exists(on_mark, ec);
+  g_mod_saves_on = REXCVAR_GET(per_mod_saves);
+  // Test aid: SVR2011_TEST_PER_MOD_SAVES=0 / 1 overrides the setting.
+  if (const char* v = std::getenv("SVR2011_TEST_PER_MOD_SAVES"); v && *v) g_mod_saves_on = *v == '1';
+  if (g_mod_saves_on && !was_on) {
+    // (turned on: the saves backed up first - the first save then moves the mods' data out)
+    const auto stamp = std::chrono::duration_cast<std::chrono::seconds>(
+                           std::chrono::system_clock::now().time_since_epoch()).count();
+    const fs::path backup = g_game / "SaveBackups" / fmt::format("per_mod_saves_{}", stamp);
+    fs::create_directories(backup, ec);
+    for (const auto& e : fs::directory_iterator(g_save_file.parent_path(), ec))
+      if (e.is_regular_file(ec)) fs::copy_file(e.path(), backup / e.path().filename(), fs::copy_options::overwrite_existing, ec);
+    fs::create_directories(dir, ec);
+    if (FILE* f = std::fopen(on_mark.string().c_str(), "wb")) std::fclose(f);
+    REXLOG_INFO("[svr2011] per-mod saves: turned on - saves backed up to {}; the next save moves the mods' data out",
+                backup.string());
+  }
+  g_mod_saves_fold = !g_mod_saves_on && was_on;
+  if (!g_mod_saves_on && !g_mod_saves_fold) return;
+  int seeded = 0;
+  for (const auto& m : g_mods) {
+    if (m.temp) continue;
+    ModSave s;
+    if (!ReadModSave(m, s)) continue;
+    Kept& k = KeptFor(m.slot);
+    k.record = s.record, k.profile = s.profile;
+    if (!s.entry.empty()) g_saved_entry[m.slot] = s.entry;
+    ++seeded;
+  }
+  REXLOG_INFO("[svr2011] per-mod saves: {}{} mod file(s) read", g_mod_saves_on ? "on - " : "turned off - folding back; ",
+              seeded);
+}
+
+// The 40-byte entries from the files: once the slot holds the mod's record again (its stub's entry still there).
+void PutBackEntries(uint8_t* base) {
+  for (auto it = g_saved_entry.begin(); it != g_saved_entry.end();) {
+    const Mod* m = ModOf(it->first);
+    const uint32_t si = m ? Rd16(base + kIdToIndex + m->slot * 2) : 512;
+    const uint8_t* sr = si < 512 ? base + kRecords + si * kRecordSize : nullptr;
+    if (!sr || std::strncmp(reinterpret_cast<const char*>(sr + kFullName), m->name.c_str(), kNameLen - 1)) {
+      ++it;
+      continue;
+    }
+    std::memcpy(base + kEntries40 + si * kEntry40Size, it->second.data(), kEntry40Size);
+    it = g_saved_entry.erase(it);
+  }
+}
+}  // namespace
+
+namespace svr2011 {
+
+// Around the save writer (superstar_threads.cpp's sub_827235D8 hook): the mods' bytes out to their files and the
+// stubs in (saving), then back (after).
+void PerModSavesForSave(uint8_t* base, bool saving) {
+  if (!g_mod_saves_on) {
+    if (!saving && g_mod_saves_fold) {  // (turned off: this save holds the mods' data again)
+      std::error_code ec;
+      fs::remove(ModSavesDir() / ".on", ec);
+      g_mod_saves_fold = false;
+      REXLOG_INFO("[svr2011] per-mod saves: off - the mods' data is back in the save (their files kept)");
+    }
+    return;
+  }
+  for (const auto& m : g_mods) {
+    if (m.temp) continue;  // (a fetched mod: OnlineTempForSave)
+    const uint32_t si = Rd16(base + kIdToIndex + m.slot * 2);
+    const auto sr_stub = g_stub_record.find(m.slot);
+    if (si >= 512 || sr_stub == g_stub_record.end()) continue;
+    const svrfmt::Bytes* sp_stub = nullptr;
+    for (const auto& b : g_blank)
+      if (b.first == m.slot) {
+        sp_stub = &b.second;
+        break;
+      }
+    if (!sp_stub) continue;
+    uint8_t* sr = base + kRecords + si * kRecordSize;
+    uint8_t* sp = base + kProfiles + si * kProfileSize;
+    uint8_t* se = base + kEntries40 + si * kEntry40Size;
+    if (saving) {
+      if (std::strncmp(reinterpret_cast<const char*>(sr + kFullName), m.name.c_str(), kNameLen - 1)) continue;
+      ModSave s{svrfmt::Bytes(sr, sr + kRecordSize), svrfmt::Bytes(sp, sp + kProfileSize),
+                svrfmt::Bytes(se, se + kEntry40Size)};
+      WriteModSave(m, s);
+      std::memcpy(sr, sr_stub->second.data(), kRecordSize);
+      std::memcpy(sp, sp_stub->data(), kProfileSize);
+      if (const auto e = g_stub_entry.find(m.slot); e != g_stub_entry.end()) std::memcpy(se, e->second.data(), kEntry40Size);
+      g_live_while_saving[m.slot] = std::move(s);
+    } else if (const auto it = g_live_while_saving.find(m.slot); it != g_live_while_saving.end()) {
+      std::memcpy(sr, it->second.record.data(), kRecordSize);
+      std::memcpy(sp, it->second.profile.data(), kProfileSize);
+      std::memcpy(se, it->second.entry.data(), kEntry40Size);
+    }
+  }
+  if (saving && !g_live_while_saving.empty())
+    REXLOG_INFO("[svr2011] per-mod saves: the save is built with {} mod slot(s) as stubs", g_live_while_saving.size());
+  if (!saving) g_live_while_saving.clear();
+}
+
+}  // namespace svr2011
+
 namespace svr2011 {
 
 void CopySuperstarMovies(const std::filesystem::path& movies) {
@@ -3405,6 +3658,7 @@ void InstallSuperstarMods(rex::memory::Memory* memory, rex::filesystem::VirtualF
     }).detach();
   g_game = rex::filesystem::GetExecutableFolder();
   LoadMods();
+  StartModSaves();
   LoadAttireMods();
   // the attires' COS pairs and names (string ids kAttireNameIds + mod * 4 + attire)
   uint8_t* b = memory->virtual_membase();

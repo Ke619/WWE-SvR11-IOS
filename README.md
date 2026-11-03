@@ -10,7 +10,7 @@ This is an unofficial iOS port of the 2010 Xbox 360 game *WWE SmackDown vs. Raw 
 <br>
 
 <p align="center">
-  <img src="Art.jpeg" width="700">
+  <img src="Art.png" width="700">
 </p>
 
 > [!IMPORTANT]

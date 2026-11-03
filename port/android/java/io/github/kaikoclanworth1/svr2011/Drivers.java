@@ -303,6 +303,11 @@ final class Drivers {
         settings_.setInt("native_scene_height", 0);  // (an in-game 900P / 1080P would win over it)
         if (on) settings_.setString("native_texture_quality", "low");
         settings_.setBool("native_shadows", !on);  // (no real-time shadows: fewer draws)
+        // 30 frames a second unless the player chose: on the Galaxy A51 (Mali-G72) the 60 setting
+        // gave 33 fps at 45-50/60 game speed with 30-65 ms swings, the 30 setting a steady 29.4 at
+        // 57/60 (the game's logic thread is the limit at half resolution, not the GPU). The
+        // launcher's Frame rate choice (Display) keeps whatever the player picks.
+        if (on && settings_.getString("frame_rate", "").isEmpty()) settings_.setInt("frame_rate", 30);
     }
 
     // Before the game starts on a Mali GPU: the warning (each time, until the

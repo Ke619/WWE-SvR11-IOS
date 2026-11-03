@@ -160,7 +160,7 @@ enum {
     ID_DLC_DIR, ID_DLC_BROWSE, ID_DLC_INSTALL, ID_DLC_STATUS, ID_DLC_LIST,
     /* saves */
     ID_SV_LIST, ID_SV_BACKUP, ID_SV_RESTORE, ID_SV_BACKUPS, ID_SV_EXPORT, ID_SV_IMPORT, ID_SV_DELETE, ID_SV_OPEN, ID_SV_CLEAN,
-    ID_SV_STATUS, ID_SV_FOLDER, ID_SV_CHANGE, ID_SV_DEFAULT, ID_SV_PRESET, ID_SV_PRESET_NEW, ID_SV_IMPORT360, ID_SV_IMPORTCAW, ID_SV_PERMOD,
+    ID_SV_STATUS, ID_SV_FOLDER, ID_SV_CHANGE, ID_SV_DEFAULT, ID_SV_PRESET, ID_SV_PRESET_NEW, ID_SV_IMPORT360, ID_SV_IMPORTCAW, ID_SV_PERMOD, ID_SV_BIGROSTER,
     /* paint tool */
     ID_PT_GRID, ID_PT_EXPORT, ID_PT_IMPORT, ID_PT_DELETE, ID_PT_EXPORTALL, ID_PT_REFRESH, ID_PT_STATUS,
     ID_PT_PREV, ID_PT_NEXT, ID_PT_PAGE,
@@ -374,6 +374,10 @@ static int render_index(int max_scale, double res, int height)
 }
 
 static int S(int v) { return MulDiv(v, s_dpi, 96); }
+/* big_roster (Saves tab): the option's tooltip and the warning before it is turned on */
+#define BIG_ROSTER_WARNING L"Experimental - still being worked on. More mod superstars is not finished. Turning it on " \
+    L"may corrupt your save or even damage your game install. Back up your Saves folder first. Turn it on anyway?"
+static int big_roster_confirm(const WCHAR *capture_file);
 
 /* ── small helpers ─────────────────────────────────────────────────────── */
 
@@ -4139,6 +4143,103 @@ static void report_problem(void)
     report_window(1, NULL);
 }
 
+/* big_roster's warning: a window of its own (so --capture can draw it), Turn on / Cancel (the default). Returns 1
+   for Turn on. capture_file: drawn off-screen, saved as a BMP and closed (--capture saves <file> --big-roster-warning). */
+static int s_br_done;
+static LRESULT CALLBACK br_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
+{
+    if (m == WM_COMMAND && (LOWORD(wp) == IDOK || LOWORD(wp) == IDCANCEL)) {
+        s_br_done = LOWORD(wp) == IDOK ? 1 : -1;
+        DestroyWindow(w);
+        return 0;
+    }
+    if (m == WM_CLOSE) {
+        s_br_done = -1;
+        DestroyWindow(w);
+        return 0;
+    }
+    return DefWindowProcW(w, m, wp, lp);
+}
+static int big_roster_confirm(const WCHAR *capture_file)
+{
+    static int registered;
+    WNDCLASSW wc;
+    RECT r = { 0, 0, 0, 0 }, pr;
+    HWND w, c;
+    MSG msg;
+    int quit = 0, k;
+    if (!registered) {
+        ZeroMemory(&wc, sizeof wc);
+        wc.lpfnWndProc = br_proc;
+        wc.hInstance = s_inst;
+        wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+        wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+        wc.hIcon = s_icon;
+        wc.lpszClassName = L"SvR2011BigRoster";
+        RegisterClassW(&wc);
+        registered = 1;
+    }
+    r.right = S(460);
+    r.bottom = S(170);
+    AdjustWindowRectEx(&r, WS_CAPTION | WS_SYSMENU, FALSE, WS_EX_DLGMODALFRAME);
+    GetWindowRect(s_wnd, &pr);
+    w = CreateWindowExW(WS_EX_DLGMODALFRAME, L"SvR2011BigRoster", L"\xD83E\xDDEA Experimental",
+                        WS_POPUP | WS_CAPTION | WS_SYSMENU,
+                        capture_file ? -8000 : pr.left + (pr.right - pr.left - (r.right - r.left)) / 2,
+                        capture_file ? -8000 : pr.top + (pr.bottom - pr.top - (r.bottom - r.top)) / 2,
+                        r.right - r.left, r.bottom - r.top, s_wnd, NULL, s_inst, NULL);
+    if (!w)
+        return 0;
+    c = CreateWindowExW(0, L"Static", NULL, WS_CHILD | WS_VISIBLE | SS_ICON, S(16), S(18), S(32), S(32), w, NULL,
+                        s_inst, NULL);
+    if (c) SendMessageW(c, STM_SETICON, (WPARAM)LoadIconW(NULL, IDI_WARNING), 0);
+    c = CreateWindowExW(0, L"Static", BIG_ROSTER_WARNING, WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOPREFIX, S(62), S(16),
+                        S(384), S(96), w, NULL, s_inst, NULL);
+    if (c) SendMessageW(c, WM_SETFONT, (WPARAM)s_font, TRUE);
+    c = CreateWindowExW(0, L"Button", L"Turn on", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, S(246),
+                        S(124), S(100), S(30), w, (HMENU)(INT_PTR)IDOK, s_inst, NULL);
+    if (c) SendMessageW(c, WM_SETFONT, (WPARAM)s_font, TRUE);
+    c = CreateWindowExW(0, L"Button", L"Cancel", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, S(354),
+                        S(124), S(92), S(30), w, (HMENU)(INT_PTR)IDCANCEL, s_inst, NULL);
+    if (c) SendMessageW(c, WM_SETFONT, (WPARAM)s_font, TRUE);
+    s_br_done = 0;
+    if (capture_file) {
+        ShowWindow(w, SW_SHOWNOACTIVATE);
+        UpdateWindow(w);
+        for (k = 0; k < 20; k++) {
+            while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+            Sleep(15);
+        }
+        capture_wnd(w, capture_file);
+        DestroyWindow(w);
+        return 0;
+    }
+    EnableWindow(s_wnd, FALSE);
+    ShowWindow(w, SW_SHOW);
+    SetFocus(GetDlgItem(w, IDCANCEL));
+    while (!s_br_done) {
+        if (GetMessageW(&msg, NULL, 0, 0) <= 0) {
+            quit = 1;
+            break;
+        }
+        if (!IsDialogMessageW(w, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+    EnableWindow(s_wnd, TRUE);
+    SetForegroundWindow(s_wnd);
+    if (quit) {
+        if (IsWindow(w))
+            DestroyWindow(w);
+        PostQuitMessage(0);
+    }
+    return s_br_done == 1;
+}
+
 static void build_ui(void)
 {
     TCITEMW ti;
@@ -4472,6 +4573,24 @@ static void build_ui(void)
     /* per_mod_saves (experimental): the game's own key, written at once (the game reads it at its next start) */
     add(TAB_SAVES, L"Button", L"Experimental: each superstar mod's save data in its own file (Saves\\.mods)",
         BS_AUTOCHECKBOX | WS_TABSTOP, X0, 528, 560, 22, ID_SV_PERMOD);
+    /* big_roster (experimental): the same; turning it on asks first (big_roster_confirm) */
+    {
+        HWND c = add(TAB_SAVES, L"Button", L"\xD83E\xDDEA Experimental: more superstar mods at once (big roster)",
+                     BS_AUTOCHECKBOX | WS_TABSTOP, X0, 554, 560, 22, ID_SV_BIGROSTER);
+        HWND tt = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL, WS_POPUP | TTS_ALWAYSTIP, CW_USEDEFAULT,
+                                  CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, s_wnd, NULL, s_inst, NULL);
+        if (c && tt) {
+            TTTOOLINFOW ti;
+            ZeroMemory(&ti, sizeof ti);
+            ti.cbSize = sizeof ti;
+            ti.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+            ti.hwnd = s_wnd;
+            ti.uId = (UINT_PTR)c;
+            ti.lpszText = (WCHAR *)BIG_ROSTER_WARNING;
+            SendMessageW(tt, TTM_SETMAXTIPWIDTH, 0, S(420));
+            SendMessageW(tt, TTM_ADDTOOLW, 0, (LPARAM)&ti);
+        }
+    }
 
     /* Paint Tool */
     add(TAB_PAINT, L"Static", L"The Paint Tool's logos: 10 pages of 20 (CREATE A SUPERSTAR > PAINT TOOL in the game; "
@@ -5739,6 +5858,8 @@ static void saves_folder_show(void)
         char v[16];
         CheckDlgButton(s_wnd, ID_SV_PERMOD, toml_get("per_mod_saves", v, sizeof v) && !strcmp(v, "true") ? BST_CHECKED
                                                                                                            : BST_UNCHECKED);
+        CheckDlgButton(s_wnd, ID_SV_BIGROSTER,
+                       toml_get("big_roster", v, sizeof v) && !strcmp(v, "true") ? BST_CHECKED : BST_UNCHECKED);
     }
     presets_fill();
 }
@@ -9144,6 +9265,22 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             }
             break;
         }
+        case ID_SV_BIGROSTER: {
+            const int on = IsDlgButtonChecked(s_wnd, ID_SV_BIGROSTER) == BST_CHECKED;
+            if (on && !big_roster_confirm(NULL)) {  /* (ticked on: on only with Turn on) */
+                CheckDlgButton(s_wnd, ID_SV_BIGROSTER, BST_UNCHECKED);
+                saves_status(L"More superstar mods at once: left off.");
+                break;
+            }
+            if (!toml_set("big_roster", on ? "true" : "false")) {
+                CheckDlgButton(s_wnd, ID_SV_BIGROSTER, on ? BST_UNCHECKED : BST_CHECKED);
+                saves_status(L"Couldn't write the setting (" GAME_TOML L").");
+            } else {
+                saves_status(on ? L"More superstar mods at once: on at the game's next start (experimental)."
+                                : L"More superstar mods at once: off at the game's next start.");
+            }
+            break;
+        }
         case ID_SV_PRESET_NEW: presets_new();    break;
         case ID_SV_IMPORT360:  saves_import_360(); break;
         case ID_SV_IMPORTCAW:  saves_import_caw(); break;
@@ -10064,6 +10201,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         /* ... --report-window <1|2>: Report a problem's window (questions / where to post) is captured instead. */
         if (argc >= 6 && !wcscmp(argv[4], L"--report-window"))
             capture_report = _wtoi(argv[5]);
+        /* ... --big-roster-warning: the big roster's Turn on / Cancel warning is captured instead. */
+        if (argc >= 5 && !wcscmp(argv[4], L"--big-roster-warning"))
+            capture_report = -1;
         /* ... --bundled-start: the start's bundled-mod install runs as without --capture (after the window shows,
            on a worker); <file>.during.png is taken while it runs, <file>.times.txt says when the window showed and
            when the install was done (ms from the start), and the capture waits for it (2 minutes at most). */
@@ -10340,7 +10480,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
                 fclose(f);
             }
         }
-        if (capture_report)
+        if (capture_report < 0)
+            big_roster_confirm(capture_file);
+        else if (capture_report)
             report_window(capture_report, capture_file);
         else
             capture(capture_file);

@@ -222,6 +222,10 @@ int receipts_load(const WCHAR *game_dir, ReportReceipt *out, int max)
         field(obj, end, "app", r->app, sizeof r->app);
         field(obj, end, "problem", r->problem, sizeof r->problem);
         field(obj, end, "what", r->what, sizeof r->what);
+        {
+            char v[8];
+            r->pictures_later = field(obj, end, "pictures_later", v, sizeof v) && (!strcmp(v, "1") || !strcmp(v, "true"));
+        }
         if (r->id[0] && r->secret[0]) n++;
     }
     free(d);
@@ -354,6 +358,8 @@ int receipts_status(const WCHAR *server, const char *token, ReportReceipt *items
             field(obj, end, "version", r->version, sizeof r->version);
             field(obj, end, "question", r->question, sizeof r->question);
             r->replies = field(obj, end, "replies", v, sizeof v) ? atoi(v) : 0;
+            r->edits = field(obj, end, "edits", v, sizeof v) ? atoi(v) : 0;
+            r->pictures = field(obj, end, "pictures", v, sizeof v) ? atoi(v) : 0;
         }
         ok = 1;
     } else {
@@ -371,32 +377,31 @@ static const char *image_type(const unsigned char *d, size_t n)
     return NULL;
 }
 
-int receipt_reply(const WCHAR *server, const char *token, const ReportReceipt *r, const char *text,
-                  const WCHAR *const *images, int n_images, WCHAR *why, int why_n)
+/* A form POST to <server><path> (an answer, a change): the JSON part "report" (freed here) and the pictures
+   image0.. (max of them). 1 when it went out (*status, *answer malloc'd); 0 and why when it couldn't. */
+static int post_form(const WCHAR *server, const WCHAR *path, const char *token, Buf *json, const WCHAR *const *images,
+                     int n_images, int max, DWORD *status, char **answer, WCHAR *why, int why_n)
 {
     static const char bound[] = "----svr2011reply7f3a90";
-    Buf json = { 0 }, b = { 0 };
-    DWORD status = 0;
-    char *answer = NULL, head[300];
-    int i, ok;
+    Buf b = { 0 };
+    char head[300], guard_path[80];
+    int i;
     why[0] = 0;
-    if (!server || !server[0]) { wcscpy_s(why, why_n, L"No online server is set."); return 0; }
-    if (s_guard && s_guard(server, "/api/reports/reply")) {
+    *status = 0, *answer = NULL;
+    WideCharToMultiByte(CP_UTF8, 0, path, -1, guard_path, sizeof guard_path, NULL, NULL);
+    if (!server || !server[0]) { free(json->p); wcscpy_s(why, why_n, L"No online server is set."); return 0; }
+    if (s_guard && s_guard(server, guard_path)) {
+        free(json->p);
         wcscpy_s(why, why_n, L"Test run: not a server on this PC (SVR2011_ALLOW_LIVE=1 lets it through).");
         return 0;
     }
-    add_s(&json, "{");
-    add_str(&json, "id", r->id, 1);
-    add_str(&json, "secret", r->secret, 0);
-    add_str(&json, "text", text, 0);
-    add_s(&json, "}");
     snprintf(head, sizeof head, "--%s\r\nContent-Disposition: form-data; name=\"report\"\r\nContent-Type: "
                                 "application/json; charset=utf-8\r\n\r\n", bound);
     add_s(&b, head);
-    add(&b, json.p ? json.p : "{}", json.n);
+    add(&b, json->p ? json->p : "{}", json->p ? json->n : 2);
     add_s(&b, "\r\n");
-    free(json.p);
-    for (i = 0; i < n_images && i < RECEIPT_MAX_IMAGES; i++) {
+    free(json->p);
+    for (i = 0; i < n_images && i < max; i++) {
         FILE *f = _wfsopen(images[i], L"rb", _SH_DENYNO);
         unsigned char *d;
         long len;
@@ -431,12 +436,62 @@ int receipt_reply(const WCHAR *server, const char *token, const ReportReceipt *r
     add_s(&b, head);
     if (b.bad) { free(b.p); wcscpy_s(why, why_n, L"Not enough memory."); return 0; }
     snprintf(head, sizeof head, "multipart/form-data; boundary=%s", bound);
-    post(server, L"/api/reports/reply", head, b.p, b.n, token, &status, &answer);
+    post(server, path, head, b.p, b.n, token, status, answer);
     free(b.p);
+    return 1;
+}
+
+int receipt_reply(const WCHAR *server, const char *token, const ReportReceipt *r, const char *text,
+                  const WCHAR *const *images, int n_images, WCHAR *why, int why_n)
+{
+    Buf json = { 0 };
+    DWORD status = 0;
+    char *answer = NULL;
+    int ok;
+    add_s(&json, "{");
+    add_str(&json, "id", r->id, 1);
+    add_str(&json, "secret", r->secret, 0);
+    add_str(&json, "text", text, 0);
+    add_s(&json, "}");
+    if (!post_form(server, L"/api/reports/reply", token, &json, images, n_images, RECEIPT_MAX_IMAGES, &status, &answer,
+                   why, why_n))
+        return 0;
     ok = status == 200;
     if (!ok) refused(status, answer, why, why_n);
     free(answer);
     return ok;
+}
+
+int receipt_edit(const WCHAR *server, const char *token, const ReportReceipt *r, const char *what,
+                 const WCHAR *const *images, int n_images, int *pictures, WCHAR *why, int why_n)
+{
+    Buf json = { 0 };
+    DWORD status = 0;
+    char *answer = NULL, v[16];
+    int ok;
+    add_s(&json, "{");
+    add_str(&json, "id", r->id, 1);
+    add_str(&json, "secret", r->secret, 0);
+    add_str(&json, "what", what, 0);
+    add_s(&json, "}");
+    if (!post_form(server, L"/api/reports/edit", token, &json, images, n_images, RECEIPT_MAX_EDIT_IMAGES, &status,
+                   &answer, why, why_n))
+        return 0;
+    ok = status == 200;
+    if (ok && pictures && answer && field(answer, answer + strlen(answer), "pictures", v, sizeof v)) *pictures = atoi(v);
+    if (!ok) refused(status, answer, why, why_n);
+    free(answer);
+    return ok;
+}
+
+int receipt_editable(const ReportReceipt *r)
+{
+    return strcmp(r->state, "done") && strcmp(r->state, "duplicate") && strcmp(r->state, "unknown");
+}
+
+int receipt_wants_pictures(const ReportReceipt *r)
+{
+    return r->pictures_later && !r->pictures && receipt_editable(r);
 }
 
 void receipt_state_text(const ReportReceipt *r, WCHAR *badge, int badge_n, WCHAR *line, int line_n)

@@ -2,7 +2,8 @@
    A send's answer carries a receipt (the report's id and a secret, server/reports.py): kept in
    <game>\UserData\reports.json - one report a line, shared by the launcher, the Mod Maker and the Android app -
    with the date, the problem and a short "what happened". The launcher's Reports tab asks the server for their
-   state with them (POST /api/reports/status) and sends an answer to a question (POST /api/reports/reply).
+   state with them (POST /api/reports/status), sends an answer to a question (POST /api/reports/reply) and the
+   player's changes to a report (POST /api/reports/edit: more text, pictures - 5 a report in all).
    Plain C: the launcher and the Mod Maker build it. */
 #pragma once
 
@@ -12,17 +13,19 @@
 extern "C" {
 #endif
 
-enum { RECEIPTS_MAX = 200, RECEIPT_MAX_IMAGES = 3 };
+enum { RECEIPTS_MAX = 200, RECEIPT_MAX_IMAGES = 3, RECEIPT_MAX_EDIT_IMAGES = 5 };
 
 typedef struct {
     /* kept on this PC */
     char id[40], secret[80], date[24], app[16], problem[120], what[200];
+    int pictures_later;      /* the game's form sent it without pictures, "add them later in the launcher" */
     /* the server's answer ("" until asked) */
     char state[16];          /* received / looking / fixed / needs_info / replied / done / duplicate / unknown */
     char note[1000];         /* fixed: how (reports.py mark --fixed) */
     char version[24];        /* fixed: the update it's in */
     char question[1000];     /* needs_info / replied: our question */
     int replies;             /* the player's answers so far */
+    int edits, pictures;     /* the player's changes so far; the pictures it has (sent + added) */
     int from_account;        /* sent from another PC, listed by the signed-in account (no secret here) */
 } ReportReceipt;
 
@@ -46,6 +49,18 @@ int receipts_status(const WCHAR *server, const char *token, ReportReceipt *items
    took it; 0 and why (its words) when not. */
 int receipt_reply(const WCHAR *server, const char *token, const ReportReceipt *r, const char *text,
                   const WCHAR *const *images, int n_images, WCHAR *why, int why_n);
+
+/* The player's changes to a report it sent (until it's done or a duplicate): text to add to what happened (UTF-8,
+   may be ""), and up to 5 pictures - the report's 5 at most with the ones it has. *pictures: how many it has now.
+   1 when the server took it; 0 and why (its words) when not. */
+int receipt_edit(const WCHAR *server, const char *token, const ReportReceipt *r, const char *what,
+                 const WCHAR *const *images, int n_images, int *pictures, WCHAR *why, int why_n);
+
+/* 1 when the report can still be changed: not done, a duplicate or unknown to the server. */
+int receipt_editable(const ReportReceipt *r);
+
+/* 1 when it waits for pictures: sent from the game with "add pictures later", none added yet. */
+int receipt_wants_pictures(const ReportReceipt *r);
 
 /* The player's words for its state: a short badge ("Fixed") and the line under it ("Fixed - in the next update
    (2.1.9): <note>", "We need more information: <question>"). */

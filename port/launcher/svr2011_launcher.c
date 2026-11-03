@@ -28,6 +28,7 @@
  *                        --report-send <game folder> <answers file>   (Report a problem: zip + send to the server, no window)
  *                        --reports-status <game folder> <server>   (the Reports tab's list and states, no window)
  *                        --reports-reply <game folder> <server> <report id> <text> [<picture>...]   (an answer)
+ *                        --reports-edit <game folder> <server> <report id> <text> [<picture>...]   (a change)
  *                        --import-360 <360 save folder> <saves folder>   (Xbox 360 saves -> port saves)
  *                        --import-caw <saves folder> <file.cas>...   (Created Superstars + their logos)
  *                        --adb-install <game folder>   (Install to phone over USB, no window)
@@ -9748,7 +9749,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     }
     /* --reports-status <game folder> <server> / --reports-reply <game folder> <server> <id> <text> [<picture>...]:
        the Reports tab's asks (report_receipts.h), no window (tests: a server on this PC only). */
-    if (argv && argc >= 4 && (!wcscmp(argv[1], L"--reports-status") || (!wcscmp(argv[1], L"--reports-reply") && argc >= 6))) {
+    if (argv && argc >= 4 && (!wcscmp(argv[1], L"--reports-status") ||
+                              ((!wcscmp(argv[1], L"--reports-reply") || !wcscmp(argv[1], L"--reports-edit")) && argc >= 6))) {
         static ReportReceipt items[RECEIPTS_MAX];
         WCHAR why[300], badge[60], line[1400];
         int n, i, ok;
@@ -9756,16 +9758,23 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         s_test_run = 1;
         receipts_set_guard(test_run_refuses_url);
         n = receipts_load(argv[2], items, RECEIPTS_MAX);
-        if (!wcscmp(argv[1], L"--reports-reply")) {
+        if (!wcscmp(argv[1], L"--reports-reply") || !wcscmp(argv[1], L"--reports-edit")) {
+            const int edit = !wcscmp(argv[1], L"--reports-edit");
             char id[40], text[8192];
-            const WCHAR *pics[RECEIPT_MAX_IMAGES];
-            int k = 0;
+            const WCHAR *pics[RECEIPT_MAX_EDIT_IMAGES];
+            int k = 0, pictures = -1;
             WideCharToMultiByte(CP_UTF8, 0, argv[4], -1, id, sizeof id, NULL, NULL);
             WideCharToMultiByte(CP_UTF8, 0, argv[5], -1, text, sizeof text, NULL, NULL);
-            for (i = 6; i < argc && k < RECEIPT_MAX_IMAGES; i++) pics[k++] = argv[i];
+            for (i = 6; i < argc && k < (edit ? RECEIPT_MAX_EDIT_IMAGES : RECEIPT_MAX_IMAGES); i++) pics[k++] = argv[i];
             for (i = 0; i < n && strcmp(items[i].id, id); i++)
                 ;
             if (i == n) { wprintf(L"not sent: no receipt for %s\n", argv[4]); return 1; }
+            if (edit) {
+                ok = receipt_edit(argv[3], NULL, &items[i], text, pics, k, &pictures, why, 300);
+                if (ok) wprintf(L"change saved (%d pictures now)\n", pictures);
+                else wprintf(L"not saved: %s\n", why);
+                return ok ? 0 : 1;
+            }
             ok = receipt_reply(argv[3], NULL, &items[i], text, pics, k, why, 300);
             wprintf(ok ? L"answer sent\n" : L"not sent: %s\n", why);
             return ok ? 0 : 1;
@@ -9775,7 +9784,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         wprintf(L"%d report(s)\n", n);
         for (i = 0; i < n; i++) {
             receipt_state_text(&items[i], badge, 60, line, 1400);
-            wprintf(L"%S  %S  %S  [%s]  %s\n", items[i].id, items[i].app, items[i].date, badge, line);
+            if (receipt_wants_pictures(&items[i])) wcscpy_s(badge, 60, L"Add your pictures");
+            wprintf(L"%S  %S  %S  [%s]  %s  (edits %d, pictures %d)\n", items[i].id, items[i].app, items[i].date, badge,
+                    line, items[i].edits, items[i].pictures);
         }
         return 0;
     }
@@ -10158,6 +10169,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
             int n = 0;
             const char *pick = getenv("SVR2011_REPORTS_PICK");
             if (pick) reports_test_pick(atoi(pick));
+            if (pick && getenv("SVR2011_REPORTS_EDIT")) reports_test_edit();   /* (its change box open) */
             reports_test_state(&n, line, 400);
             swprintf_s(log, MAX_PATH, L"%s.reports.txt", capture_file);
             if (!_wfopen_s(&f, log, L"w, ccs=UTF-8") && f) {

@@ -1,7 +1,8 @@
 /* WWE SmackDown vs. Raw 2011 PC launcher - the Reports tab (reports_tab.c): the reports this game folder sent
    (Report a problem here, in the Mod Maker or on Android: their receipts, report_receipts.h) and what became of
    them - received, being looked at, fixed for the next update, or a question for the player, who can answer it
-   here. Asked when the tab opens. */
+   here. A report can be changed here until it's done or a duplicate (text to add, pictures). Asked when the tab
+   opens. */
 #pragma once
 
 #include <windows.h>
@@ -26,4 +27,6 @@ int reports_message(UINT m, WPARAM wp, LPARAM lp);
    NULL). A row selected (its line, the answer box); the list, each with its state's words, into f. */
 int reports_test_state(int *n, WCHAR *line, size_t line_n);
 void reports_test_pick(int row);
+/* The selected row's change box opened (SVR2011_REPORTS_EDIT). */
+void reports_test_edit(void);
 void reports_test_dump(FILE *f);

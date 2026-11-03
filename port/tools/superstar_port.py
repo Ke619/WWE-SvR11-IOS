@@ -112,7 +112,13 @@ class BadInput(Exception):
     pass
 
 
-def missing(rel):
+def missing(rel, src=None):
+    """a needed file isn't in the game files: a folder that isn't a whole disc (no default.xex / SYSTEM.CNF) is often
+    DLC (2.1.8 report 20261103-040523-d343a2) - what to pick instead"""
+    if src and os.path.isdir(src) and not any(os.path.isfile(os.path.join(src, f)) for f in ('default.xex', 'SYSTEM.CNF')):
+        return ('the folder has no %s: it isn\'t a whole game (DLC, or part of a disc?). DLC superstars can\'t be read '
+                'from the DLC alone - use the game\'s disc image or its whole extracted folder (with default.xex); a DLC '
+                'superstar\'s model can come in on its own as One file: its pac/ch/chNNN.pac' % rel)
     return 'the game files have no %s (an incomplete extract? use the whole disc folder or the ISO)' % rel
 
 
@@ -255,7 +261,7 @@ class Src:
         """get(rel), or a plain BadInput naming the missing file (an incomplete extract)"""
         p = self.get(rel)
         if p is None:
-            raise BadInput(missing(rel))
+            raise BadInput(missing(rel, self.folder))
         return p
 
     def get_dir(self, rel, pred=lambda n: True):

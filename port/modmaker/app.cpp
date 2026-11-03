@@ -281,14 +281,68 @@ const COMDLG_FILTERSPEC kModFilter[1] = {{L"SvR2011 mod (*.svrmod)", L"*.svrmod"
 const COMDLG_FILTERSPEC kProjectFilter[1] = {{L"Mod Maker project (*.svrproj)", L"*.svrproj"}};
 const COMDLG_FILTERSPEC kOpenFilter[1] = {{L"Projects and mods (*.svrproj, *.svrmod)", L"*.svrproj;*.svrmod"}};
 
+namespace {
+std::wstring g_test_pick;  // --test-pick
+
+// A hidden test can't answer a dialog (it would hang): skipped, or --test-pick's answer.
+std::wstring BehindPick(const char* what, const wchar_t* title, const std::wstring& start) {
+  Log("(test: a " + std::string(what) + " dialog was skipped: " + Utf8(title) + (start.empty() ? "" : " - it opens in " + Utf8(start)) +
+      (g_test_pick.empty() ? "" : " - answered " + Utf8(g_test_pick)) + ")");
+  return std::exchange(g_test_pick, std::wstring());
+}
+
+// The dialog opens at `start`: a folder (a folder picker: in its parent, the folder picked) or a file's folder.
+void StartAt(IFileDialog* dlg, const std::wstring& start, bool folder_picker) {
+  std::error_code ec;
+  if (start.empty() || !fs::exists(start, ec)) return;
+  fs::path in = fs::path(start);
+  const bool dir = fs::is_directory(in, ec);
+  if (!dir || folder_picker) in = in.parent_path();
+  IShellItem* item = nullptr;
+  if (!in.empty() && SUCCEEDED(SHCreateItemFromParsingName(in.c_str(), nullptr, IID_PPV_ARGS(&item)))) {
+    dlg->SetFolder(item);
+    item->Release();
+  }
+  if (dir && folder_picker) dlg->SetFileName(fs::path(start).filename().c_str());
+}
+}  // namespace
+
+void TestPick(const std::wstring& path) { g_test_pick = path; }
+
+std::wstring OtherGameStart(const std::string& game) {
+  std::error_code ec;
+  const auto at = [&](const std::string& key) -> std::wstring {
+    for (const auto& [k, p] : g_settings.other_game)
+      if (k == key && fs::exists(p, ec)) return p;
+    return {};
+  };
+  if (!game.empty())
+    if (std::wstring p = at(game); !p.empty()) return p;
+  if (std::wstring p = at(""); !p.empty()) return p;
+  if (!game.empty())
+    if (std::wstring p = disc_list::PathFor(game); !p.empty()) return p;
+  return {};
+}
+
+void OtherGamePicked(const std::wstring& path, const std::string& game) {
+  if (path.empty()) return;
+  auto& v = g_settings.other_game;
+  const auto keep = [&](const std::string& key) {
+    v.erase(std::remove_if(v.begin(), v.end(), [&](const auto& e) { return e.first == key; }), v.end());
+    v.push_back({key, path});
+  };
+  keep("");
+  std::error_code ec;
+  const disc_list::Game* g = game.empty() && fs::is_directory(path, ec) ? disc_list::GameById(disc_list::Identify(path)) : nullptr;
+  if (!game.empty() || g) keep(game.empty() ? g->key : game);
+  SaveSettings();
+}
+
 std::wstring PickFile(bool save, const wchar_t* title, const COMDLG_FILTERSPEC* spec, UINT nspec,
-                      const wchar_t* def_ext, const wchar_t* def_name) {
+                      const wchar_t* def_ext, const wchar_t* def_name, const std::wstring& start) {
   IFileDialog* dlg = nullptr;
   std::wstring out;
-  if (g_behind) {  // (a hidden test can't answer a dialog: it would hang)
-    Log("(test: a file dialog was skipped: " + Utf8(title) + ")");
-    return out;
-  }
+  if (g_behind) return BehindPick("file", title, start);
   if (FAILED(CoCreateInstance(save ? CLSID_FileSaveDialog : CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
                               IID_PPV_ARGS(&dlg))))
     return out;
@@ -296,6 +350,7 @@ std::wstring PickFile(bool save, const wchar_t* title, const COMDLG_FILTERSPEC* 
   if (nspec) dlg->SetFileTypes(nspec, spec);
   if (def_ext) dlg->SetDefaultExtension(def_ext);
   if (def_name) dlg->SetFileName(def_name);
+  StartAt(dlg, start, false);
   IShellItem* item = nullptr;
   PWSTR path = nullptr;
   if (SUCCEEDED(dlg->Show(g_wnd)) && SUCCEEDED(dlg->GetResult(&item)) &&
@@ -336,18 +391,16 @@ std::vector<std::wstring> PickFiles(const wchar_t* title, const COMDLG_FILTERSPE
   return out;
 }
 
-std::wstring PickFolder(const wchar_t* title) {
+std::wstring PickFolder(const wchar_t* title, const std::wstring& start) {
   IFileOpenDialog* dlg = nullptr;
   std::wstring out;
-  if (g_behind) {  // (a hidden test can't answer a dialog: it would hang)
-    Log("(test: a folder dialog was skipped: " + Utf8(title) + ")");
-    return out;
-  }
+  if (g_behind) return BehindPick("folder", title, start);
   if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) return out;
   DWORD opt = 0;
   dlg->GetOptions(&opt);
   dlg->SetOptions(opt | FOS_PICKFOLDERS);
   dlg->SetTitle(title);
+  StartAt(dlg, start, true);
   IShellItem* item = nullptr;
   PWSTR path = nullptr;
   if (SUCCEEDED(dlg->Show(g_wnd)) && SUCCEEDED(dlg->GetResult(&item)) &&
@@ -2058,6 +2111,10 @@ void LoadSettings() {
   g_settings.discs_seeded = Value(t, "discs_seeded") == "1";
   g_settings.keep_bik = Value(t, "keep_bik") == "1";
   g_settings.moves_warning_off = Value(t, "moves_warning_off") == "1";
+  for (const auto& d : Values(t, "other_game")) {  // <game key or "">|<path>
+    const size_t a = d.find('|');
+    if (a != std::string::npos) g_settings.other_game.push_back({d.substr(0, a), Wide(d.substr(a + 1))});
+  }
 }
 
 }  // namespace
@@ -2075,6 +2132,7 @@ void SaveSettings() {
   if (g_settings.discs_seeded) t += "discs_seeded=1\n";
   if (g_settings.keep_bik) t += "keep_bik=1\n";
   if (g_settings.moves_warning_off) t += "moves_warning_off=1\n";
+  for (const auto& [k, p] : g_settings.other_game) t += "other_game=" + k + "|" + Utf8(p) + "\n";
   WriteFile(PathStr(SettingsDir() / L"settings.txt"), Bytes(t.begin(), t.end()));
 }
 
@@ -2195,14 +2253,15 @@ void SourceCards(const char* file) {
   if (file[0]) {
     if (simple::Card("src_file", "One file", file, lone, w, h)) {
       static const COMDLG_FILTERSPEC kPac[1] = {{L"A game file (*.pac)", L"*.pac"}};
-      const std::wstring f = PickFile(false, L"One file from another game", kPac, 1);
-      if (!f.empty()) port_page::SetSource(f);
+      const std::wstring f = PickFile(false, L"One file from another game", kPac, 1, nullptr, nullptr, OtherGameStart());
+      if (!f.empty()) OtherGamePicked(f), port_page::SetSource(f);
     }
     ImGui::SameLine(0, 8 * g_scale);
   }
   if (simple::Card("src_folder", "A folder of game files", "the game's files you copied off a disc", folder, w, h)) {
-    const std::wstring f = PickFolder(L"A folder with the game's files (the one holding its pac folder)");
-    if (!f.empty()) port_page::SetSource(f);
+    const std::wstring f = PickFolder(L"A folder with the game's files (the one holding its pac folder)", OtherGameStart());
+    if (const std::string why = disc_list::NotGameFiles(f); !why.empty()) Status(why), Log("port: " + Utf8(f) + " - " + why);
+    else if (!f.empty()) OtherGamePicked(f), port_page::SetSource(f);
   }
   ImGui::Spacing();
   ImGui::TextDisabled("Or one of your game discs:");
@@ -3185,6 +3244,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--vs-test") && more) arena_page::SetVsTest(Utf8(argv[++i]));
     else if (!wcscmp(argv[i], L"--project") && more) project = argv[++i];
     else if (!wcscmp(argv[i], L"--behind")) behind = true, g_behind = true;
+    else if (!wcscmp(argv[i], L"--test-pick") && more) TestPick(argv[++i]);
     else if (!wcscmp(argv[i], L"--test-report") && more) session::TestReport(Utf8(argv[++i]));
     else if (!wcscmp(argv[i], L"--test-report-send") && more) session::TestReportSend(Utf8(argv[++i]));  // <answers file>  // <what happened>: Report a problem, no window, then quit
     else if (!wcscmp(argv[i], L"--watch-strip") && more) anims_page::TestStrip(argv[++i]);

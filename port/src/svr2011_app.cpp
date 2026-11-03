@@ -719,7 +719,7 @@ void Svr2011App::OnPostLoadXexImage() {
                      "frame_rate full_speed unlock_30fps "
                      "process_priority"},
         {"effects", "depth_of_field motion_blur soft_filter"},
-        {"gameplay", "replays managers_tile mixed_gender_matches caw_logos_anywhere unlock_everything user_language"},
+        {"gameplay", "replays managers_tile mixed_gender_matches caw_logos_anywhere unlock_everything user_language per_mod_saves"},
         {"input", "input_backend mnk_mode touch_controls touch_auto_layout vibration device_vibration"},
         {"audio", "audio_backend audio_mute"},
         {"online", "online_enabled online_server"},
@@ -902,6 +902,7 @@ void Svr2011App::OnPostLoadXexImage() {
   // PC keyboard typing in the game's on-screen keyboard (keyboard_typing.h).
   svr2011::InstallKeyboardTyping(window());
   svr2011::InstallFreeCam(window());  // (F5-F8: free_cam.h)
+  svr2011::InstallPadIconsKeys(window());
   // 10 pages of Paint Tool logos (paint_pages.h).
   svr2011::InstallPaintPages(runtime()->memory(),
                              static_cast<rex::input::InputSystem*>(runtime()->input_system()), g_saves);

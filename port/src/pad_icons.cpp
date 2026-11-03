@@ -51,8 +51,11 @@
 #include <rex/logging.h>
 #include <rex/ppc.h>
 #include <rex/system/xmemory.h>
+#include <rex/ui/keybinds.h>
+#include <rex/ui/window.h>
 
 #include "generated/default/svr2011_init.h"
+#include "keyboard_typing.h"
 #include "pad_types.h"
 #include "../modmaker/svrfmt/bytes.h"
 
@@ -89,8 +92,10 @@ Kind CurrentKind(bool) {
 }
 
 // ---------------------------------------------------------------------------
-// Keyboard: the key each button is bound to (the SDK's keybind_* settings,
-// the first of each), shown as its keycap.
+// Keyboard: the key each button is bound to (the SDK's keybind_* settings),
+// shown as its keycap. A button bound to more than one key ("E,O") shows the
+// one the player pressed last for it, the first until then (report 73e6ba:
+// the right hand's O reverses, the prompt said E).
 
 struct ButtonBind {
   uint32_t code;
@@ -117,17 +122,37 @@ const ButtonBind kBinds[] = {
     {0xE037, "keybind_dpad_up"},
 };
 
-std::string FirstKey(const char* setting) {
+// A setting's keys, trimmed ("Q,I" -> Q, I).
+std::vector<std::string> BoundKeys(const char* setting) {
   std::string v;
   try {
     v = rex::cvar::Query<std::string>(setting);
   } catch (...) {
     return {};
   }
-  v = v.substr(0, v.find(','));
-  while (!v.empty() && v.back() == ' ') v.pop_back();
-  while (!v.empty() && v.front() == ' ') v.erase(0, 1);
-  return v;
+  std::vector<std::string> keys;
+  std::stringstream ss(v);
+  for (std::string k; std::getline(ss, k, ',');) {
+    while (!k.empty() && k.back() == ' ') k.pop_back();
+    while (!k.empty() && k.front() == ' ') k.erase(0, 1);
+    if (!k.empty()) keys.push_back(k);
+  }
+  return keys;
+}
+
+// setting -> the one of its keys the player pressed last (the window's key presses, PadIconsKeyDown)
+std::mutex g_pressed_mutex;
+std::map<std::string, std::string> g_pressed;
+
+std::string ShownKey(const char* setting) {
+  const std::vector<std::string> keys = BoundKeys(setting);
+  if (keys.empty()) return {};
+  if (keys.size() > 1) {
+    std::lock_guard lock(g_pressed_mutex);
+    if (auto it = g_pressed.find(setting); it != g_pressed.end())
+      if (std::find(keys.begin(), keys.end(), it->second) != keys.end()) return it->second;
+  }
+  return keys[0];
 }
 
 // code -> key name (the keycap's), and a version bumped when they change
@@ -142,7 +167,7 @@ void CheckBinds() {
   if (now - g_keys_checked < std::chrono::seconds(1)) return;
   g_keys_checked = now;
   auto stick = [](const char* up, const char* left, const char* down, const char* right, const char* special) {
-    const std::string u = FirstKey(up), l = FirstKey(left), d = FirstKey(down), r = FirstKey(right);
+    const std::string u = ShownKey(up), l = ShownKey(left), d = ShownKey(down), r = ShownKey(right);
     if (u == "W" && l == "A" && d == "S" && r == "D") return std::string("WASD");
     if (u == "Up" && l == "Left" && d == "Down" && r == "Right") return std::string("ARROWS");
     return u.empty() ? std::string(special) : u;
@@ -154,7 +179,7 @@ void CheckBinds() {
                                          "keybind_lstick_right", "WASD")
                  : s == "rstick" ? stick("keybind_rstick_up", "keybind_rstick_left", "keybind_rstick_down",
                                          "keybind_rstick_right", "ARROWS")
-                                 : FirstKey(b.setting);
+                                 : ShownKey(b.setting);
   }
   std::lock_guard lock(g_keys_mutex);
   if (keys != g_keys) {
@@ -162,6 +187,62 @@ void CheckBinds() {
     ++g_keys_version;
   }
 }
+
+// A key went down: for each button bound to several keys, the one this is (its Shift+/Ctrl+/Alt+ held; a bare
+// "Shift" is a key of its own), remembered. The prompts follow at the next CheckBinds.
+void PadIconsKeyDown(rex::ui::VirtualKey vk, bool shift, bool ctrl, bool alt) {
+  static const std::vector<const char*> settings = [] {
+    std::vector<const char*> v;
+    auto add = [&](const char* s) {
+      if (std::strncmp(s, "keybind_", 8) == 0 &&
+          std::find_if(v.begin(), v.end(), [&](const char* t) { return std::strcmp(s, t) == 0; }) == v.end())
+        v.push_back(s);
+    };
+    for (const ButtonBind& b : kBinds) add(b.setting);
+    for (const char* s : {"keybind_lstick_up", "keybind_lstick_down", "keybind_lstick_left", "keybind_lstick_right",
+                          "keybind_rstick_up", "keybind_rstick_down", "keybind_rstick_left", "keybind_rstick_right"})
+      add(s);
+    return v;
+  }();
+  for (const char* setting : settings) {
+    const std::vector<std::string> keys = BoundKeys(setting);
+    if (keys.size() < 2) continue;
+    const std::string* best = nullptr;
+    int best_mods = -1;
+    for (const std::string& k : keys) {
+      std::string_view name(k);
+      bool want_shift = false, want_ctrl = false, want_alt = false;
+      for (size_t plus; (plus = name.find('+')) != std::string_view::npos && plus > 0;) {
+        const std::string_view head = name.substr(0, plus);
+        if (head == "Shift") want_shift = true;
+        else if (head == "Ctrl" || head == "Control") want_ctrl = true;
+        else if (head == "Alt") want_alt = true;
+        else break;
+        name.remove_prefix(plus + 1);
+      }
+      if (rex::ui::ParseVirtualKey(name == "Ctrl" ? std::string_view("Control") : name) != vk) continue;
+      if ((want_shift && !shift) || (want_ctrl && !ctrl) || (want_alt && !alt)) continue;
+      const int mods = int(want_shift) + int(want_ctrl) + int(want_alt);
+      if (mods > best_mods) best = &k, best_mods = mods;
+    }
+    if (!best) continue;
+    std::lock_guard lock(g_pressed_mutex);
+    std::string& was = g_pressed[setting];
+    if (was != *best) {
+      REXLOG_INFO("[svr2011] pad icons: {} pressed as {} - its prompts show that key", setting, *best);
+      was = *best;
+    }
+  }
+}
+
+// The window's key presses, after the game's own keyboard (typing a name: not a button) and the free camera.
+class KeysListener final : public rex::ui::WindowInputListener {
+ public:
+  void OnKeyDown(rex::ui::KeyEvent& e) override {
+    if (e.prev_state() || GameKeyboardOpen()) return;  // (held down: already seen)
+    PadIconsKeyDown(e.virtual_key(), e.is_shift_pressed(), e.is_ctrl_pressed(), e.is_alt_pressed());
+  }
+};
 
 // ---------------------------------------------------------------------------
 // Fonts.
@@ -474,6 +555,29 @@ uint32_t MakeCopy(uint32_t object, const Sprite& sp, const std::vector<uint8_t>&
 }
 
 }  // namespace
+
+void InstallPadIconsKeys(rex::ui::Window* window) {
+  if (!window) return;
+  // (test aid: SVR2011_TEST_PAD_KEYS=O,Shift+Up - those keys pressed, as the window would send them)
+  if (const char* v = std::getenv("SVR2011_TEST_PAD_KEYS")) {
+    std::stringstream ss(v);
+    for (std::string k; std::getline(ss, k, ',');) {
+      std::string_view name(k);
+      bool shift = false, ctrl = false, alt = false;
+      for (size_t plus; (plus = name.find('+')) != std::string_view::npos && plus > 0;) {
+        const std::string_view head = name.substr(0, plus);
+        if (head == "Shift") shift = true;
+        else if (head == "Ctrl") ctrl = true;
+        else if (head == "Alt") alt = true;
+        else break;
+        name.remove_prefix(plus + 1);
+      }
+      PadIconsKeyDown(rex::ui::ParseVirtualKey(name), shift, ctrl, alt);
+    }
+  }
+  static KeysListener listener;
+  window->app_context().CallInUIThread([window] { window->AddInputListener(&listener, 995); });
+}
 
 void InstallPadIcons(rex::memory::Memory* memory) {
   g_memory = memory;

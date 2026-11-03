@@ -118,7 +118,7 @@ Open **My WWE → Options → Graphics** in the game. It has two tabs (**LB / RB
 
 **Renderer.** The iOS build uses the **Native** renderer only (Vulkan through MoltenVK). There's no Emulated fallback, as there is on the PC.
 
-Settings are saved in `svr2011.toml` in the game folder (the app's **Documents**). The launcher's **Settings** tab edits the same file.
+Settings are saved in `svr2011.toml` in the game folder (the app's **Documents**).
 
 ---
 

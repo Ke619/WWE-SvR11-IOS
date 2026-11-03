@@ -133,6 +133,96 @@ def reply(url, rid, secret, text, images=(), ip=None):
             return e.code, {}
 
 
+def edit(url, rid, secret, what="", before="", contact="", images=(), ip=None):
+    parts = [("report", json.dumps({"id": rid, "secret": secret, "what": what, "before": before,
+                                    "contact": contact}).encode(), "application/json")]
+    parts += [("image%d" % n, img, "image/png") for n, img in enumerate(images)]
+    body, ctype = multipart(parts)
+    headers = {"Content-Type": ctype, "X-Forwarded-For": ip or "10.8.%d.%d" % (secrets.randbelow(250),
+                                                                               secrets.randbelow(250))}
+    r = urllib.request.Request(url + "/api/reports/edit", data=body, method="POST", headers=headers)
+    try:
+        with urllib.request.urlopen(r, timeout=60) as f:
+            return f.status, json.loads(f.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.loads(e.read() or b"{}")
+        except ValueError:
+            return e.code, {}
+
+
+def flagged_word(url):
+    """A word the server's saved name list flags (found through the dashboard's tester), or None."""
+    for line in json.loads(get(url, "/api/admin/names")[1] or b"{}").get("words", [])[:40]:
+        w = "".join(ch for ch in str(line).lower() if "a" <= ch <= "z")
+        if len(w) >= 4 and not post_json(url, "/api/admin/names/test", {"text": w})[1].get("passes", True):
+            return w
+    return None
+
+
+def edits(url, node_data, r1, r2):
+    """The sender's "Edit / add pictures": POST /api/reports/edit - more text, a new contact, pictures (5 in all),
+    kept as a history beside the report as it was sent; closed reports refuse it."""
+    def state(r):
+        return (post_json(url, "/api/reports/status", {"reports": [{"id": r["id"], "secret": r["secret"]}]})[1]
+                .get("reports") or [{}])[0]
+    one = state(r1)
+    check("status: no edits, its 2 pictures, editable (%s)" % one,
+          one.get("edits") == 0 and one.get("pictures") == 2 and one.get("editable") is True)
+    st, d = edit(url, r1["id"], "wrong", what="more")
+    check("edit: a wrong secret -> 404", st == 404)
+    st, d = edit(url, r1["id"], r1["secret"])
+    check("edit: nothing to add -> 400 (%s)" % d.get("error"), st == 400)
+    st, d = edit(url, r1["id"], r1["secret"], what="It also happens in the Cell.", before="I had changed the arena.",
+                 contact="discord: tester", images=[png(), png(5, 4)])
+    check("edit: text, contact and 2 pictures -> 200, 4 pictures now (%s)" % d,
+          st == 200 and d.get("ok") and d.get("edits") == 1 and d.get("pictures") == 4)
+    st, d = edit(url, r1["id"], r1["secret"], images=[png(), png()])
+    check("edit: 2 more pictures would make 6 -> 409 (%s)" % d.get("error"), st == 409 and "5 pictures" in d.get("error", ""))
+    st, d = edit(url, r1["id"], r1["secret"], images=[png(6, 2)])
+    check("edit: the 5th picture -> 200 (%s)" % d, st == 200 and d.get("edits") == 2 and d.get("pictures") == 5)
+    folder = os.path.join(node_data, "reports", reports._day(r1["id"]), r1["id"])
+    log = [json.loads(l) for l in open(os.path.join(folder, "edits.jsonl"), encoding="utf-8")]
+    check("edits.jsonl: both changes, their pictures on disk (%s)" % [sorted(e) for e in log],
+          len(log) == 2 and log[0]["what"] == "It also happens in the Cell." and log[0]["before"] == "I had changed the arena."
+          and log[0]["contact"] == "discord: tester" and log[0]["images"] == ["edit0_0.png", "edit0_1.png"]
+          and log[1]["images"] == ["edit1_0.png"] and "what" not in log[1]
+          and all(os.path.isfile(os.path.join(folder, n)) for n in ("edit0_0.png", "edit0_1.png", "edit1_0.png")))
+    rec = json.load(open(os.path.join(folder, "report.json"), encoding="utf-8"))
+    check("report.json: as it was sent", rec["what"] == "It closed when I pressed Play." and len(rec["images"]) == 2)
+    one = state(r1)
+    check("status: 2 edits, 5 pictures (%s)" % one, one.get("edits") == 2 and one.get("pictures") == 5)
+    rows = json.loads(get(url, "/api/admin/reports")[1])["reports"]
+    row = next((x for x in rows if x["id"] == r1["id"]), {})
+    check("the dashboard's list: edits 2 and when (%s %s)" % (row.get("edits"), row.get("edited")),
+          row.get("edits") == 2 and len(row.get("edited", "")) == 19)
+    st, body = get(url, "/api/admin/report/%s/edits.jsonl" % r1["id"])
+    check("the dashboard reads the changes", st == 200 and b"in the Cell" in body)
+    st, body = get(url, "/api/admin/report/%s/edit0_1.png" % r1["id"])
+    check("the dashboard shows an added picture", st == 200 and body == png(5, 4))
+    import subprocess
+    cli = [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "reports.py"), "--data", node_data]
+    out = subprocess.run(cli + ["show", r1["id"]], capture_output=True, text=True).stdout
+    check("reports.py show: the edits", "edit 1 (" in out and "It also happens in the Cell." in out
+          and "edit1_0.png" in out and "discord: tester" in out)
+    out = subprocess.run(cli + ["list"], capture_output=True, text=True).stdout
+    check("reports.py list: + 2 edit(s)", any(l.startswith(r1["id"]) and "+ 2 edit(s)" in l for l in out.splitlines()))
+    bad = flagged_word(url)
+    if bad:
+        st, d = edit(url, r1["id"], r1["secret"], before="you are a %s" % bad)
+        check("edit: the name filter refuses a flagged word (%s)" % d.get("error"), st == 400)
+    # closed: done (and duplicate) refuse changes; open again, they take them
+    mark(url, r1["id"], "done")
+    st, d = edit(url, r1["id"], r1["secret"], what="once more")
+    check("edit: done -> 409 (%s)" % d.get("error"), st == 409)
+    check("status: done, not editable", state(r1).get("editable") is False)
+    mark(url, r1["id"], "looking")
+    # rate limit: 5 changes in 10 minutes from one address
+    ip = "10.252.%d.%d" % (secrets.randbelow(250), secrets.randbelow(250))
+    codes = [edit(url, r2["id"], r2["secret"], what="note %d" % n, ip=ip)[0] for n in range(6)]
+    check("edit: 5 from one address, the 6th 429 (%s)" % codes, codes == [200] * 5 + [429])
+
+
 def mark(url, rid, status, fix=None):
     return post_json(url, "/api/admin/report/%s/mark" % rid, {"status": status, "fix": fix})
 
@@ -156,7 +246,8 @@ def receipts(url, node_data, r1, r2, ver):
     one = rows.get(r1["id"], {})
     check("status: only the public fields (%s)" % sorted(one),
           set(one) <= {"id", "state", "received", "app", "problem", "what", "note", "version", "question", "date",
-                       "replies", "from_account"} and "contact" not in one and "signature" not in one)
+                       "replies", "from_account", "edits", "pictures", "editable"}
+          and "contact" not in one and "signature" not in one)
     st, d = post_json(url, "/api/reports/status", {"reports": "nope"})
     check("status: not a list -> 400", st == 400)
     # a reply before any question: refused
@@ -321,6 +412,7 @@ def main():
     index = [json.loads(l) for l in open(os.path.join(a.node_data, "reports", "index.jsonl"), encoding="utf-8")]
     mine = [x for x in index if x.get("version") == ver]
     receipts(url, a.node_data, r1, r2, ver)
+    edits(url, a.node_data, r1, r2)
     check("index.jsonl: a line for each accepted report (%d)" % len(mine), len(mine) == 12)
 
     # the dashboard's routes

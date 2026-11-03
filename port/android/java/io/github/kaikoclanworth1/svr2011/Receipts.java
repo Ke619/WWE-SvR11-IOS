@@ -2,9 +2,10 @@
 // them, as the PC's (launcher/report_receipts.c): a send's receipt (the
 // report's id and secret) kept in <game>/UserData/reports.json - one report a
 // line, the same file the PC launcher and Mod Maker keep - then their state
-// asked from the server (POST /api/reports/status) and an answer to our
-// question sent (POST /api/reports/reply). Plain Java (no android.*): it runs
-// on the PC too, against a test server.
+// asked from the server (POST /api/reports/status), an answer to our
+// question sent (POST /api/reports/reply) and the player's changes to a report
+// (POST /api/reports/edit: text to add, pictures - 5 a report in all). Plain
+// Java (no android.*): it runs on the PC too, against a test server.
 package io.github.kaikoclanworth1.svr2011;
 
 import java.io.File;
@@ -22,14 +23,16 @@ import java.util.List;
 import java.util.Locale;
 
 final class Receipts {
-    static final int kMax = 200, kMaxImages = 3;
+    static final int kMax = 200, kMaxImages = 3, kMaxEditImages = 5;
 
     static final class Item {
         // kept on the phone
         String id = "", secret = "", date = "", app = "", problem = "", what = "";
+        boolean picturesLater;  // the game's form sent it without pictures, "add them later"
         // the server's answer ("" until asked)
         String state = "", note = "", version = "", question = "";
         int replies;
+        int edits, pictures;  // the player's changes so far; the pictures it has (sent + added)
         boolean fromAccount;  // sent from another device, listed by the signed-in account
     }
 
@@ -90,6 +93,8 @@ final class Receipts {
                 it.app = field(obj, "app");
                 it.problem = field(obj, "problem");
                 it.what = field(obj, "what");
+                String later = field(obj, "pictures_later");
+                it.picturesLater = later.equals("1") || later.equals("true");
                 if (!it.id.isEmpty() && !it.secret.isEmpty()) out.add(it);
             }
         } catch (IOException ignored) {
@@ -145,32 +150,77 @@ final class Receipts {
             it.note = field(obj, "note");
             it.version = field(obj, "version");
             it.question = field(obj, "question");
-            try {
-                it.replies = Integer.parseInt(field(obj, "replies"));
-            } catch (NumberFormatException e) {
-                it.replies = 0;
-            }
+            it.replies = number(field(obj, "replies"));
+            it.edits = number(field(obj, "edits"));
+            it.pictures = number(field(obj, "pictures"));
         }
         return null;
+    }
+
+    static int number(String s) {
+        try {
+            return Integer.parseInt(s);
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    // True while the report can be changed: not done, a duplicate or unknown to the server.
+    static boolean editable(Item it) {
+        return !it.state.isEmpty() && !it.state.equals("done") && !it.state.equals("duplicate")
+            && !it.state.equals("unknown");
+    }
+
+    // True while it waits for pictures: sent from the game with "add pictures later", none added yet.
+    static boolean wantsPictures(Item it) {
+        return it.picturesLater && it.pictures == 0 && editable(it);
     }
 
     // The player's answer to our question (text, up to 3 pictures). Returns why
     // it wasn't taken, or null when it was.
     static String reply(String server, String token, Item it, String text, List<File> images) {
+        StringBuilder j = new StringBuilder("{");
+        ReportSend.str(j, "id", it.id);
+        ReportSend.str(j, "secret", it.secret);
+        ReportSend.str(j, "text", text);
+        String[] answer = new String[1];
+        return form(server, token, "/api/reports/reply", j.append('}').toString(), images, kMaxImages, answer);
+    }
+
+    // The player's change to a report it sent (until it's done or a duplicate):
+    // text to add to what happened ("" allowed) and pictures - 5 a report in all,
+    // the server counts the sent ones. Returns why it wasn't taken, or null when
+    // it was (it.edits / it.pictures updated).
+    static String edit(String server, String token, Item it, String what, List<File> images) {
+        StringBuilder j = new StringBuilder("{");
+        ReportSend.str(j, "id", it.id);
+        ReportSend.str(j, "secret", it.secret);
+        ReportSend.str(j, "what", what);
+        String[] answer = new String[1];
+        String why = form(server, token, "/api/reports/edit", j.append('}').toString(), images, kMaxEditImages, answer);
+        if (why == null) {
+            it.edits++;
+            String n = ReportSend.jsonValue(answer[0], "pictures");
+            if (!n.isEmpty()) it.pictures = number(n);
+        }
+        return why;
+    }
+
+    // A form POST (an answer, a change): the JSON part "report" and the pictures
+    // image0.. (max of them). Returns why it wasn't taken, or null (the answer's
+    // text in answer[0]).
+    static String form(String server, String token, String path, String json, List<File> images, int max,
+                       String[] answer) {
+        answer[0] = "";
         if (server == null || server.isEmpty()) return "No online server is set.";
         String refused = ReportSend.refuses(server);
         if (refused != null) return refused;
         String bound = "----svr2011reply7f3a90";
         java.io.ByteArrayOutputStream body = new java.io.ByteArrayOutputStream();
         try {
-            StringBuilder j = new StringBuilder("{");
-            ReportSend.str(j, "id", it.id);
-            ReportSend.str(j, "secret", it.secret);
-            ReportSend.str(j, "text", text);
-            j.append('}');
             body.write(("--" + bound + "\r\nContent-Disposition: form-data; name=\"report\"\r\nContent-Type: "
-                + "application/json; charset=utf-8\r\n\r\n" + j + "\r\n").getBytes(StandardCharsets.UTF_8));
-            for (int i = 0; images != null && i < images.size() && i < kMaxImages; i++) {
+                + "application/json; charset=utf-8\r\n\r\n" + json + "\r\n").getBytes(StandardCharsets.UTF_8));
+            for (int i = 0; images != null && i < images.size() && i < max; i++) {
                 File f = images.get(i);
                 String no = ReportSend.imageRefused(f);
                 if (no != null) return no;
@@ -185,9 +235,7 @@ final class Receipts {
         } catch (IOException e) {
             return "A picture can't be read.";
         }
-        String[] answer = new String[1];
-        int status = post(server, "/api/reports/reply", "multipart/form-data; boundary=" + bound, body.toByteArray(),
-            token, answer);
+        int status = post(server, path, "multipart/form-data; boundary=" + bound, body.toByteArray(), token, answer);
         return status == 200 ? null : why(status, answer[0]);
     }
 

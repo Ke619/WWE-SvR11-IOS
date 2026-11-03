@@ -33,7 +33,7 @@ Tested on an **iPhone 15 Pro (Apple A17 Pro chip)**, running inside LiveContaine
 - Saves are plain files in the game folder.
 - On the iPhone's wide screen, matches and entrances fill the whole screen.
 
-iPads and older iPhones haven't been tested.
+> iPads and older iPhones haven't been tested.
 
 <p align="center">
   <img src="Screenshots/IMG_9299.png" width="400">

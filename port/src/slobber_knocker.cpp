@@ -280,9 +280,29 @@ REX_HOOK_RAW(sub_82245618) {
 // (fatal-4-way, Fold) the pair's +20 was NULL once one had been eliminated:
 // a read of guest 0xA0C over and over, then a hang. A pair missing a
 // character takes the zeroing path.
+// Called from the update below (sub_8280CFD0) after its own pick of the people the CPU looks at - +8, +12 and +20,
+// each read through right after (their +444, +446 ...). In a ROYAL RUMBLE the pick could find nobody once the
+// opponent was thrown out (all three NULL: an access violation at the +444 read - 2 of 3 heavy 15-man rumbles on
+// PC, 3 Nov, main too): the empty ones become the character himself and stay so - more of the CPU's code reads +20
+// after the update in the same frame (sub_82811D58 -> sub_827F6C20, a read of guest 0x538 when it was put back to
+// NULL) - until the next update's guard below finds someone in the ring for +20.
+namespace {
+thread_local uint32_t t_update_pair = 0;  // (inside sub_8280CFD0 for this pair)
+thread_local bool t_stand_in = false;    // (+8 / +12 / +20 given the character this update: logged)
+constexpr uint32_t kLooksAt[] = {8, 12, 20};
+}  // namespace
 REX_EXTERN(__imp__sub_828061E8);
 REX_HOOK_RAW(sub_828061E8) {
   const uint32_t pair = ctx.r3.u32;
+  // Test aid SVR2011_TEST_PAIR_NULL=<s>: once, that many seconds into a match, the update's pick comes out empty
+  // (+8, +12, +20 NULL) as in the rumble - with SVR2011_TEST_PAIR_OLD=1 the old way, which crashes
+  static const int null_at = [] { const char* v = std::getenv("SVR2011_TEST_PAIR_NULL"); return v ? std::atoi(v) : -1; }();
+  if (static bool done = false; null_at >= 0 && !done && pair && pair == t_update_pair && Rd32(base + pair + 20) &&
+                                int32_t(Rd32(base + 0x82E3CD0C)) > null_at * 60) {
+    done = true;
+    for (const uint32_t off : kLooksAt) Wr32(base + pair + off, 0);
+    REXLOG_INFO("match types: test - the update's pick of {:08X} emptied", Rd32(base + pair));
+  }
   if (pair && (!Rd32(base + pair) || !Rd32(base + pair + 20))) {
     Wr32(base + pair + 656, 0);
     Wr32(base + pair + 660, 0);
@@ -290,6 +310,9 @@ REX_HOOK_RAW(sub_828061E8) {
     if (++count <= 10 || count % 1000 == 0)
       REXLOG_INFO("match types: a character pair missing one ({:08X} / {:08X}) - skipped ({} times)",
                   Rd32(base + pair), Rd32(base + pair + 20), count);
+    if (const uint32_t self = Rd32(base + pair); self && pair == t_update_pair && !std::getenv("SVR2011_TEST_PAIR_OLD"))
+      for (int i = 0; i < 3; ++i)
+        if (!Rd32(base + pair + kLooksAt[i])) Wr32(base + pair + kLooksAt[i], self), t_stand_in = true;
     return;
   }
   __imp__sub_828061E8(ctx, base);
@@ -358,7 +381,8 @@ REX_HOOK_RAW(sub_8280CFD0) {
     if (pair && Rd32(base + pair + 20)) pairs.insert(pair);
     had = pair && pairs.count(pair) && !old_way;
   }
-  if (self && !Rd32(base + pair + 20) && Rd32(base + self + kTeam) < 30 &&
+  // (+20 the character himself: the stand-in above - someone else as soon as there's one)
+  if (const uint32_t on = Rd32(base + pair + 20); self && (!on || on == self) && Rd32(base + self + kTeam) < 30 &&
       (had || int32_t(Rd32(base + 0x82E3CD0C)) > 300)) {
     const uint32_t other = valid_other();
     static int count = 0;
@@ -368,7 +392,16 @@ REX_HOOK_RAW(sub_8280CFD0) {
     if (!other) return;
     Wr32(base + pair + 20, other);
   }
+  t_update_pair = pair, t_stand_in = false;
   __imp__sub_8280CFD0(ctx, base);
+  t_update_pair = 0;
+  if (t_stand_in) {
+    static int count = 0;
+    if (++count <= 10 || count % 1000 == 0)
+      REXLOG_INFO("match types: a CPU's update found nobody to look at ({:08X}) - itself until there's someone ({} times)",
+                  self, count);
+    t_stand_in = false;
+  }
   if (self) {  // (research aid: the stuck-wrestler log's AI target - match_types.h AiTargetOf)
     std::lock_guard lock(g_targets_mutex);
     g_targets[self] = Rd32(base + pair + 20);

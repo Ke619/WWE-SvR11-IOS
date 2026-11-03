@@ -121,3 +121,31 @@ Riskiest:
 
 A possible first step: the 00mods.dat split alone, which keeps 137 slots but
 gets mod data out of the main save.
+
+## The save's mod ids (step 0, 3 Nov) and key refs (part 1)
+
+Found by dumping the in-memory save image during WWE Universe shows (test aid SVR2011_TEST_SAVE_DUMP) and diffing
+for u16 fields holding character ids (0-321, 0x200 = nobody). save = the image (*0x82E407B4; the file has a 0x1C
+header before it); P = save + 0x364B4 (Universe).
+
+| Field | Where | Kept by |
+|---|---|---|
+| Records, profiles, 40 B entries | save + 0, + 0x3C160, + 0x7A7A0 | per-mod files (.mods\<folder>.dat) |
+| Teams / stables (70 x 270, members u16 at +2..+10) | save + 0xF5C8 | refs.bin |
+| Title holders (14 x 2 u16) | save + 0x7CD70 | refs.bin |
+| Universe cards (88 B: 16 B header, 6 people x 12 B, id at +0) | P + 14942 .. P + 20808 | refs.bin |
+| Universe list (240 x 12 B, ids at +0 and +2) | P + 20808 | refs.bin |
+| Universe entries / rivalries | P + 16, P + 3616 | by place (Universe side table) |
+| Universe id cursor (walks the ids between shows) | P + 0x5C92 | left as is (a position) |
+| A 26168 B block (match setup state?; ids at +0x2B02, +0x2EB8, +0x652A..) | save + 0x2FE54 | open |
+| Story Designer stories | not found yet | open |
+
+Not ids: save + 0x29054 (130 x 216, Create-a-Finisher), the CAW area, block B after the titles (flags), the DDS
+pictures after the image in SaveData.dat. 00SceneDat.scn = highlight reels.
+
+Key refs (per_mod_saves on): while the save is built every field above that holds a mod gets a stand-in - the mod's
+base superstar when that is a stock one, else 0x200 - and Saves\.mods\refs.bin keeps them:
+"SVRMREFS", u32 1, u32 CRC-32 of the rest, u16 folder count, folders (u16 length + bytes), u32 ref count, refs
+{u32 image offset, u16 folder index, u16 stand-in} (big-endian). The last one is kept as refs.bin.bak. After a load a
+field that still holds its stand-in gets its mod's id back, whatever id the mod has this run; a mod that's gone
+keeps the stand-in.

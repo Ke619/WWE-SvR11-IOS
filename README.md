@@ -2,7 +2,6 @@
 
 
 ![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-Automated-blue?logo=githubactions)
-
 ![Platform](https://img.shields.io/badge/Platform-iOS-lightgrey?logo=apple)
 
 <p align="center">

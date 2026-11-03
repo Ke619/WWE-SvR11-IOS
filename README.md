@@ -39,10 +39,10 @@ iPads and older iPhones haven't been tested.
   <img src="Screenshots/IMG_9299.png" width="400">
 </p>
 
-<p align="center">
-  <img src="Screenshots/IMG_9294.png" width="200" />
-  <img src="Screenshots/IMG_9251.png" width="200" />
-</p>
+<div align="center">
+  <img src="Screenshots/IMG_9294.png" width="48%" />
+  <img src="Screenshots/IMG_9251.png" width="48%" />
+</div>
 
 
 ---

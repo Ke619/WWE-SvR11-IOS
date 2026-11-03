@@ -306,11 +306,13 @@ int save_clean_scan(const WCHAR *saves, const WCHAR *mods, ScItem *items, WCHAR 
     swprintf_s(p, MAX_PATH, L"%s\\.universe\\mod_profiles.txt", saves);
     read_id_folders(p, 1, marks);
     for (id = 1; id < 512; id++) {
-        const WCHAR *folder = slots[id][0] ? slots[id] : marks[id];
+        /* (whose data the save holds there: mod_profiles.txt, written with each save - slots.txt is where the game
+         * puts a mod next; ids can change hands between starts) */
+        const WCHAR *folder = marks[id][0] ? marks[id] : slots[id];
         int st, leftover, marked;
         ScItem *it;
-        if (slots[id][0] && mod_state(mods, slots[id]) == 2)
-            continue;  /* (a mod that's on holds it) */
+        if ((slots[id][0] && mod_state(mods, slots[id]) == 2) || (marks[id][0] && mod_state(mods, marks[id]) == 2))
+            continue;  /* (a mod that's on holds it, or gets it at the next start: the game hands the slot over) */
         leftover = d->ids[id].n && !is_placeholder(d, id);
         marked = marks[id][0] != 0;
         if (!leftover && !marked)

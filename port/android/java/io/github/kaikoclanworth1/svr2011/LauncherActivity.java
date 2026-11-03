@@ -680,6 +680,9 @@ public class LauncherActivity extends Activity {
         choice(display, "Performance corner", "Where the performance numbers sit", "perf_overlay_corner",
                new String[] {"Top left", "Top right", "Bottom left", "Bottom right"}, new String[] {"0", "1", "2", "3"}, false, "0");
         toggle(display, "VSync", "No tearing; waits for the screen's refresh", "vsync", true);
+        // (frame_rate.cpp: 30 = two world updates a frame, full speed; Mali mode picks 30 unless the player chose)
+        choice(display, "Frame rate", "60: smooth when the phone keeps up; 30: steadier on slow phones (Mali)",
+               "frame_rate", new String[] {"60", "30"}, new String[] {"60", "30"}, false, "60");
         // (no Renderer choice: the game draws only natively; an old "off" becomes "main")
         if ("off".equals(settings_.getString("native_renderer", "main"))) {
             settings_.setString("native_renderer", "main");

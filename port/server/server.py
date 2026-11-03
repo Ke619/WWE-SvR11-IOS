@@ -2245,6 +2245,74 @@ class Service:
         gs.log("reports: %s answered (%d chars, %d pictures)" % (meta.get("id"), len(text), len(images)))
         return web.json_response({"ok": True})
 
+    async def api_report_edit(self, request):
+        """multipart: report (JSON {id, secret, what, before, contact}), image0-image4 (optional) -> {ok, edits,
+        pictures} / {ok: false, error}: the sender adds to a report it sent - more of what happened / before, a new
+        contact, pictures (5 a report in all) - until it's done or a duplicate. Kept as an edit history beside the
+        report (reports.edit). Rate-limited as reports, through the name filter."""
+        def no(status, why):
+            return web.json_response({"ok": False, "error": why}, status=status)
+        if (request.content_length or 0) > reports.MAX_IMAGES * reports.MAX_IMAGE + (1 << 20):
+            return no(413, "The change is too large (pictures: %d MB each)." % (reports.MAX_IMAGE >> 20))
+        meta, images = None, {}
+        try:
+            reader = await request.multipart()
+            while True:
+                part = await reader.next()
+                if part is None:
+                    break
+                name = part.name or ""
+                cap = (64 << 10 if name in ("report", "report.json") else
+                       reports.MAX_IMAGE if re.fullmatch(r"image[0-%d]" % (reports.MAX_IMAGES - 1), name) else 0)
+                if not cap:
+                    await part.release()
+                    continue
+                data = bytearray()
+                while True:
+                    chunk = await part.read_chunk(1 << 16)
+                    if not chunk:
+                        break
+                    data += chunk
+                    if len(data) > cap:
+                        return no(413, "%s is too large." % name)
+                if name in ("report", "report.json"):
+                    try:
+                        meta = json.loads(bytes(data).decode("utf-8-sig"))
+                    except ValueError:
+                        return no(400, "report: not valid JSON")
+                else:
+                    images[int(name[5:])] = bytes(data)
+        except (ValueError, AssertionError, KeyError):
+            return no(400, "Send it as multipart/form-data.")
+        if not isinstance(meta, dict):
+            return no(400, "No report part.")
+        what, before = (str(meta.get(k) or "").replace("\r\n", "\n").strip()[:reports.MAX_EDIT_TEXT]
+                        for k in ("what", "before"))
+        contact = str(meta.get("contact") or "").replace("\n", " ").strip()[:200]
+        if not (what or before or contact or images):
+            return no(400, "Write what to add, or add a picture.")
+        for n, img in sorted(images.items()):
+            if not reports.image_ext(img):
+                return no(400, "image%d: only PNG, JPEG or WebP pictures." % n)
+        if any(t and self.names.check(t) for t in (what, before, contact)):
+            return no(400, "Your text has a word that isn't allowed - please write it without it.")
+        ip = self.client_ip(request)
+        account = self.raw_account(request)
+        if self.report_throttled(["edit:" + ip] + (["edit-acc:%d" % account["id"]] if account else [])):
+            return no(429, "Too many changes from here - try again later.")
+        try:
+            ok, result = await asyncio.get_running_loop().run_in_executor(
+                None, lambda: self.reports.edit(str(meta.get("id") or ""), meta.get("secret"), what, before, contact,
+                                                [images[n] for n in sorted(images)],
+                                                account["name"] if account else None))
+        except Exception:
+            return no(503, "The report store didn't answer - try again later.")
+        if not ok:
+            return no(404 if result == "No such report." else 409, result)
+        gs.log("reports: %s edited (%d + %d chars, %d pictures%s)" % (meta.get("id"), len(what), len(before),
+                                                                     len(images), ", contact" if contact else ""))
+        return web.json_response({"ok": True, "edits": result.get("edits", 0), "pictures": result.get("pictures", 0)})
+
     @admin_only
     async def admin_reports(self, request):
         try:
@@ -3087,6 +3155,7 @@ class Service:
         app.router.add_post(b + "/api/reports/mods/check", self.api_report_mods_check)
         app.router.add_post(b + "/api/reports/status", self.api_report_status)
         app.router.add_post(b + "/api/reports/reply", self.api_report_reply)
+        app.router.add_post(b + "/api/reports/edit", self.api_report_edit)
         self.relay.routes(app, b)
         app.router.add_get("/__health", self.health)
         app.router.add_get(b + "/api/storage/wanted", self.api_storage_wanted)  # (the storage node's watchdog)

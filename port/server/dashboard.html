@@ -1115,6 +1115,44 @@ td.acts { text-align: right; white-space: nowrap; }
       reportFile(r, 'replies.jsonl') + '" target="_blank" rel="noopener">' + r.replies + ' answer' + (r.replies === 1 ? '' : 's') +
       '</a> (pictures: reply&lt;n&gt;_&lt;k&gt; files of the report)' : '') + '</td></tr>';
   }
+  // (the sender's changes - "Edit / add pictures" in their Reports tab: edits.jsonl, read when the row shows)
+  var editCache = {};
+  function editRow(r) {
+    if (!r.edits) return '';
+    return '<tr class="sub"><td></td><td colspan="5"><b>Edited ' + r.edits + ' time' + (r.edits === 1 ? '' : 's') +
+      ' (last ' + esc(r.edited || '') + '):</b> <span class="rp-edits" data-id="' + esc(r.id) + '" data-n="' + r.edits +
+      '">loading\u2026</span></td></tr>';
+  }
+  function editHtml(r, list) {
+    return list.map(function (e, n) {
+      var parts = [];
+      if (e.what) parts.push('<b>What happened +</b> ' + esc(e.what));
+      if (e.before) parts.push('<b>Before +</b> ' + esc(e.before));
+      if (e.contact) parts.push('<b>Contact:</b> ' + esc(e.contact));
+      var pics = (e.images || []).map(function (name) {
+        return '<a href="' + reportFile(r, name) + '" target="_blank" rel="noopener"><img class="thumb" loading="lazy" alt="' +
+          esc(name) + '" src="' + reportFile(r, name) + '" style="height:48px;max-width:96px;object-fit:cover;margin-right:4px;border-radius:3px"></a>';
+      }).join('');
+      return '<div style="margin-top:4px"><span class="note">' + (n + 1) + '. ' + esc(e.date || '') + '</span> ' +
+        parts.join(' &middot; ') + (pics ? '<div>' + pics + '</div>' : '') + '</div>';
+    }).join('');
+  }
+  function loadEdits() {
+    Array.prototype.forEach.call(document.querySelectorAll('.rp-edits'), function (box) {
+      var id = box.getAttribute('data-id'), key = id + '/' + box.getAttribute('data-n');
+      var r = reportRows.filter(function (x) { return x.id === id; })[0];
+      if (!r) return;
+      if (editCache[key]) { box.innerHTML = editHtml(r, editCache[key]); return; }
+      fetch(reportFile(r, 'edits.jsonl'), {credentials: 'same-origin'}).then(function (res) {
+        if (!res.ok) throw new Error(res.status);
+        return res.text();
+      }).then(function (text) {
+        var list = text.split('\n').filter(function (l) { return l.trim(); }).map(function (l) { return JSON.parse(l); });
+        editCache[key] = list;
+        box.innerHTML = editHtml(r, list);
+      }).catch(function () { box.textContent = 'could not read the changes'; });
+    });
+  }
   function renderReports() {
     var f = el('f-rp').value.toLowerCase(), open = el('rp-open').checked;
     var rows = reportRows.filter(function (r) {
@@ -1141,6 +1179,7 @@ td.acts { text-align: right; white-space: nowrap; }
           }).join('');
           return '<tr><td title="' + esc(r.received) + '">' + ago(r.received_at) + (r.status ? ' <span class="tag' +
             (r.status === 'replied' ? ' bad' : ' on') + '">' + esc(r.status === 'needs_info' ? 'asked' : r.status) + '</span>' : '') +
+            (r.edits ? ' <span class="tag bad" title="the player changed it after sending - see the row below">edited</span>' : '') +
             '</td><td>' + esc(r.platform || '') + '</td><td>' + esc(r.happens || '') + '</td><td>' + esc(r.what || '') +
             (r.account ? ' <span class="note">(' + esc(r.account) + ')</span>' : '') +
             (r.updater ? '<br><span class="note" title="the last result in logs/updater.log">Updater: ' + esc(r.updater) + '</span>' : '') +
@@ -1154,9 +1193,10 @@ td.acts { text-align: right; white-space: nowrap; }
               '<button class="btn" data-rp="' + esc(r.id) + '" data-s="done">Done</button>' +
               '<button class="btn" data-rp="' + esc(r.id) + '" data-s="duplicate">Duplicate</button>' : '') +
             (r.status ? '<button class="btn" data-rp="' + esc(r.id) + '" data-s="">Reopen</button>' : '') +
-            '</td></tr>' + infoRow(r) + matchRow(r);
+            '</td></tr>' + infoRow(r) + editRow(r) + matchRow(r);
         }).join('') + '</tbody></table></div>';
     }).join('') : '<p class="empty">No reports' + (open && reportRows.length ? ' left open' : '') + '.</p>';
+    loadEdits();
   }
   // "Fixed while you were away": reports marked fixed (reports.py mark ... --fixed), newest fix first
   function fixedShown() {

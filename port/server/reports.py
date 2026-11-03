@@ -55,6 +55,9 @@ MAX_STATUS_IDS = 100          # receipts asked about in one status call
 MAX_REPLY = 2000              # a player's answer's text
 MAX_REPLY_IMAGES = 3
 MAX_REPLIES = 5               # answers kept for one report
+MAX_EDITS = 10                # a sender's changes kept for one report ("Edit / add pictures")
+MAX_EDIT_TEXT = 4000          # what one change adds to "what happened" or "before"
+CLOSED = ("done", "duplicate")  # reports their senders can't change any more
 # (the player's words for each state - the launcher / Mod Maker / Android lists show these)
 STATES = {"": "received", "looking": "looking", "fixed": "fixed", "needs_info": "needs_info", "replied": "replied",
           "done": "done", "duplicate": "duplicate"}
@@ -393,6 +396,7 @@ class LocalReports:
         os.makedirs(self.dir, exist_ok=True)
         self.index_path = os.path.join(self.dir, "index.jsonl")
         self.status_path = os.path.join(self.dir, "status.json")
+        self.edits_path = os.path.join(self.dir, "edits.json")  # (id -> {n, date, pictures}: the senders' changes)
         self.lock = threading.Lock()
         self.mods_dir = os.path.join(self.dir, "mods")
         os.makedirs(self.mods_dir, exist_ok=True)
@@ -415,6 +419,19 @@ class LocalReports:
                 return json.load(f)
         except (FileNotFoundError, ValueError):
             return {}
+
+    def _edits(self):
+        try:
+            with open(self.edits_path, encoding="utf-8") as f:
+                return json.load(f)
+        except (FileNotFoundError, ValueError):
+            return {}
+
+    def _write_edits(self, edits):
+        tmp = self.edits_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(edits, f, indent=1, ensure_ascii=False)
+        os.replace(tmp, self.edits_path)
 
     def add(self, meta, zip_bytes, images, match_bytes=b""):
         """meta: clean_meta's (its "mods": clean_mods', each marked stored here or not); images: [bytes] (checked);
@@ -464,10 +481,12 @@ class LocalReports:
     def list(self, limit=500):
         """The newest reports first (index lines + their dashboard marks + their signature's count)."""
         with self.lock:
-            rows, marks, counts = self._rows(), self._status(), dict(self.counts)
+            rows, marks, counts, edits = self._rows(), self._status(), dict(self.counts), self._edits()
         rows = rows[-limit:][::-1]
         for r in rows:
             r.pop("secret_hash", None)
+            if r["id"] in edits:  # (the sender changed it: how often, the last time - edits.jsonl has them)
+                r["edits"], r["edited"] = edits[r["id"]].get("n", 0), edits[r["id"]].get("date", "")
             r["status"], detail = _mark_of(marks.get(r["id"]))
             if detail and r["status"] == "fixed":
                 r["fix"] = detail
@@ -485,11 +504,22 @@ class LocalReports:
         except (OSError, ValueError):
             return []
 
-    def _public(self, row, mark):
-        """A report's public state for its sender: never its logs, zip, pictures, contact or signature."""
+    def _edit_log(self, rid):
+        try:
+            with open(os.path.join(self.dir, _day(rid), rid, "edits.jsonl"), encoding="utf-8") as f:
+                return [json.loads(l) for l in f if l.strip()]
+        except (OSError, ValueError):
+            return []
+
+    def _public(self, row, mark, edit=None):
+        """A report's public state for its sender: never its logs, zip, pictures, contact or signature. edit: its
+        edits.json entry (how many changes, pictures added) - pictures: how many it has, editable: not closed."""
         status, detail = _mark_of(mark)
+        edit = edit or {}
         out = {"id": row["id"], "state": STATES.get(status, "received"), "received": row.get("received", ""),
-               "app": row.get("app", ""), "problem": row.get("problem", ""), "what": (row.get("what") or "")[:160]}
+               "app": row.get("app", ""), "problem": row.get("problem", ""), "what": (row.get("what") or "")[:160],
+               "edits": edit.get("n", 0), "pictures": len(row.get("images") or []) + edit.get("pictures", 0),
+               "editable": status not in CLOSED}
         if status == "fixed" and detail:
             out.update(note=detail.get("note", ""), version=detail.get("version", ""), date=detail.get("date", ""))
         elif status in ("needs_info", "replied") and detail:
@@ -503,7 +533,7 @@ class LocalReports:
         matches ({id, state: unknown} for the rest), then the account's other reports (from_account)."""
         with self.lock:
             rows = {r.get("id"): r for r in self._rows()}
-            marks = self._status()
+            marks, edits = self._status(), self._edits()
         out, seen = [], set()
         for rc in (receipts if isinstance(receipts, list) else [])[:MAX_STATUS_IDS]:
             if not isinstance(rc, dict):
@@ -517,11 +547,11 @@ class LocalReports:
                     row["secret_hash"], secret_hash(rc.get("secret"))):
                 out.append({"id": rid[:40], "state": "unknown"})
                 continue
-            out.append(self._public(row, marks.get(rid)))
+            out.append(self._public(row, marks.get(rid), edits.get(rid)))
         if account:
             for rid, row in rows.items():
                 if rid not in seen and row.get("account") == account:
-                    out.append(dict(self._public(row, marks.get(rid)), from_account=True))
+                    out.append(dict(self._public(row, marks.get(rid), edits.get(rid)), from_account=True))
         return out
 
     def reply(self, rid, secret, text, images, account=None):
@@ -554,10 +584,68 @@ class LocalReports:
             self._write_status(marks)
         return True, ""
 
+    def edit(self, rid, secret, what="", before="", contact="", images=(), account=None):
+        """The sender changes a report it sent (the launcher's / app's "Edit / add pictures", until it's done or a
+        duplicate): more of what happened / before, a new contact, pictures (MAX_IMAGES in all, the sent ones
+        counted). Kept as a history in edits.jsonl (+ editN_K pictures); the report stays as it was sent ->
+        (True, {edits, pictures}) or (False, why)."""
+        what, before = (str(x or "").replace("\r\n", "\n").strip()[:MAX_EDIT_TEXT] for x in (what, before))
+        contact = str(contact or "").replace("\n", " ").strip()[:200]
+        images = list(images or [])
+        with self.lock:
+            row = next((r for r in self._rows() if r.get("id") == rid), None) if _valid_id(rid) else None
+            ok = bool(row and row.get("secret_hash") and secrets.compare_digest(row["secret_hash"], secret_hash(secret)))
+            if not ok and not (row and account and row.get("account") == account):
+                return False, "No such report."
+            status, _ = _mark_of(self._status().get(rid))
+            if status in CLOSED:
+                return False, "This report is closed - it can't be changed now."
+            if not (what or before or contact or images):
+                return False, "Nothing to add."
+            edits = self._edits()
+            prev = edits.get(rid, {})
+            n = prev.get("n", 0)
+            if n >= MAX_EDITS:
+                return False, "This report has all the changes it can take - post on our Discord instead."
+            have = len(row.get("images") or []) + prev.get("pictures", 0)
+            if have + len(images) > MAX_IMAGES:
+                return False, ("A report can have %d pictures - this one has %d already." % (MAX_IMAGES, have))
+            folder = os.path.join(self.dir, _day(rid), rid)
+            names = []
+            for k, img in enumerate(images):
+                name = "edit%d_%d.%s" % (n, k, image_ext(img))
+                with open(os.path.join(folder, name), "wb") as f:
+                    f.write(img)
+                names.append(name)
+            date = time.strftime("%Y-%m-%d %H:%M:%S")
+            entry = {"date": date, "images": names}
+            entry.update({k: v for k, v in (("what", what), ("before", before), ("contact", contact)) if v})
+            with open(os.path.join(folder, "edits.jsonl"), "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            edits[rid] = {"n": n + 1, "date": date, "pictures": prev.get("pictures", 0) + len(names)}
+            self._write_edits(edits)
+        return True, {"edits": n + 1, "pictures": have + len(names)}
+
+    def show(self, rid):
+        """One report for reports.py show: report.json's fields (no secret hash), its mark, the answers, the edits."""
+        try:
+            with open(os.path.join(self.dir, _day(rid), rid, "report.json"), encoding="utf-8") as f:
+                rec = json.load(f)
+        except (OSError, ValueError):
+            return None
+        rec.pop("secret_hash", None)
+        with self.lock:
+            rec["status"], detail = _mark_of(self._status().get(rid))
+        if detail:
+            rec["fix" if rec["status"] == "fixed" else "info"] = detail
+        rec["replies"], rec["edits"] = self._replies(rid), self._edit_log(rid)
+        return rec
+
     def file(self, rid, name):
-        """One of a report's files (report.json, report.zip, imageN.ext) -> bytes or None."""
+        """One of a report's files (report.json, report.zip, imageN.ext, the answers, the edits) -> bytes or None."""
         if not _valid_id(rid) or not re.fullmatch(r"(report|match)\.zip|report\.json|image[0-4]\.(png|jpg|webp)|"
-                                                  r"replies\.jsonl|reply\d_\d\.(png|jpg|webp)", name or ""):
+                                                  r"replies\.jsonl|reply\d_\d\.(png|jpg|webp)|"
+                                                  r"edits\.jsonl|edit\d+_\d\.(png|jpg|webp)", name or ""):
             return None
         try:
             with open(os.path.join(self.dir, _day(rid), rid, name), "rb") as f:
@@ -753,6 +841,9 @@ class LocalReports:
             marks = self._status()
             if marks.pop(rid, None) is not None:
                 self._write_status(marks)
+            edits = self._edits()
+            if edits.pop(rid, None) is not None:
+                self._write_edits(edits)
             self.counts = {}
             for r in keep:
                 self.counts[r.get("signature", "")] = self.counts.get(r.get("signature", ""), 0) + 1
@@ -826,6 +917,13 @@ class RemoteReports:
         with self._req("POST", "/reports/reply", body, "application/zip") as f:
             d = json.loads(f.read())
         return bool(d.get("ok")), d.get("why", "")
+
+    def edit(self, rid, secret, what="", before="", contact="", images=(), account=None):
+        body = pack({"id": rid, "secret": secret, "what": what, "before": before, "contact": contact,
+                     "account": account}, b"", list(images or []))
+        with self._req("POST", "/reports/edit", body, "application/zip") as f:
+            d = json.loads(f.read())
+        return bool(d.get("ok")), (d.get("result") or {}) if d.get("ok") else d.get("why", "")
 
     def mod_usage(self):
         with self._req("GET", "/reports/mods/usage") as f:
@@ -1039,9 +1137,22 @@ def node_routes(app, folder, key_ok, mod_quota=MOD_QUOTA):
             meta.get("account"))
         return web.json_response({"ok": ok, "why": why})
 
+    async def edit(request):
+        if not key_ok(request):
+            return web.Response(status=403)
+        try:
+            meta, _, images, _ = unpack(await request.read())
+        except Exception:
+            return web.json_response({"ok": False, "why": "bad body"}, status=400)
+        ok, result = await asyncio.get_running_loop().run_in_executor(
+            None, lambda: reports.edit(str(meta.get("id", "")), meta.get("secret"), meta.get("what", ""),
+                                       meta.get("before", ""), meta.get("contact", ""), images, meta.get("account")))
+        return web.json_response({"ok": True, "result": result} if ok else {"ok": False, "why": result})
+
     app.router.add_post("/reports/mods/check", mods_check)
     app.router.add_post("/reports/status", status)
     app.router.add_post("/reports/reply", reply)
+    app.router.add_post("/reports/edit", edit)
     app.router.add_get("/reports/mods/usage", mods_usage)
     app.router.add_post("/reports/mods/{hash}", mod_put)
     app.router.add_get("/reports/mods/{hash}", mod_get)
@@ -1061,6 +1172,7 @@ def main():
         python reports.py --data <data folder> mark <id | signature> --looking | --done | --duplicate | --reopen
         python reports.py --data <data folder> delete <report id>
         python reports.py --data <data folder> list [--fixed]
+        python reports.py --data <data folder> show <report id>   (its fields, the answers, the sender's edits)
         python reports.py --data <data folder> resign [--write]   (every report signed again: before / after)
     A signature marks every report with it (the dashboard's groups). The dashboard shows the fixed ones under
     "Fixed while you were away". The players see the state in their launcher's Reports tab: received, looking,
@@ -1086,6 +1198,8 @@ def main():
     d.add_argument("id")
     ls = sub.add_parser("list")
     ls.add_argument("--fixed", action="store_true", help="only the fixed ones")
+    sh = sub.add_parser("show")
+    sh.add_argument("id")
     rs = sub.add_parser("resign")
     rs.add_argument("--write", action="store_true", help="keep the new signatures (else only shown)")
     a = ap.parse_args()
@@ -1106,6 +1220,22 @@ def main():
             print("%s  %s -> %s%s\n    was: %s\n    now: %s" % (rid, old, new, "" if old != new else " (same)",
                                                               old_line[:150], new_line[:150]))
         print("written" if a.write else "(shown only: --write keeps them)")
+    elif a.cmd == "show":
+        rec = store.show(a.id)
+        if rec is None:
+            raise SystemExit("No report %s." % a.id)
+        for k in ("id", "received", "app", "version", "platform", "problem", "happens", "what", "before", "contact",
+                  "images", "status", "fix", "info"):
+            if rec.get(k):
+                print("%-9s %s" % (k + ":", rec[k]))
+        for n, r in enumerate(rec["replies"]):
+            print("answer %d (%s): %s%s" % (n + 1, r.get("date"), r.get("text", ""),
+                                            "  [%s]" % ", ".join(r["images"]) if r.get("images") else ""))
+        for n, e in enumerate(rec["edits"]):
+            print("edit %d (%s):" % (n + 1, e.get("date")))
+            for k in ("what", "before", "contact", "images"):
+                if e.get(k):
+                    print("    %-8s %s" % (k + ":", ", ".join(e[k]) if k == "images" else e[k]))
     elif a.cmd == "delete":
         if not store.delete(a.id):
             raise SystemExit("No report %s." % a.id)
@@ -1115,10 +1245,12 @@ def main():
             if a.fixed and r["status"] != "fixed":
                 continue
             fix, info = r.get("fix"), r.get("info")
-            print("%s  %-10s %s %s  %s%s%s" % (r["id"], r["status"] or "open", r.get("app"), r.get("version"),
-                                              r.get("problem"), "  -> %s (%s, %s)" % (fix["note"], fix["commit"],
-                                                                                      fix["version"]) if fix else "",
-                                              "  ? %s (%d answer(s))" % (info["question"], r["replies"]) if info else ""))
+            print("%s  %-10s %s %s  %s%s%s%s" % (r["id"], r["status"] or "open", r.get("app"), r.get("version"),
+                                                r.get("problem"), "  -> %s (%s, %s)" % (fix["note"], fix["commit"],
+                                                                                        fix["version"]) if fix else "",
+                                                "  ? %s (%d answer(s))" % (info["question"], r["replies"]) if info else "",
+                                                "  + %d edit(s), last %s" % (r["edits"], r["edited"]) if r.get("edits")
+                                                else ""))
 
 
 if __name__ == "__main__":

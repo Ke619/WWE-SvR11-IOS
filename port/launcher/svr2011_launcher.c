@@ -5318,6 +5318,7 @@ static void saves_clean(void)
         if (m->profile) wcscat_s(what, 160, L"superstar, moves, entrance, Threads");
         if (m->universe) wcscat_s(what, 160, what[0] ? L", Universe" : L"Universe");
         if (m->mod_save) wcscat_s(what, 160, what[0] ? L", its mod save" : L"its mod save");
+        if (m->refs) wcscat_s(what, 160, what[0] ? L", teams / titles / Universe cards" : L"teams / titles / Universe cards");
         if (!what[0]) wcscat_s(what, 160, L"a note of it");
         at += swprintf_s(t + at, 16384 - at, L"  %s%s%s%s (%s)\n", m->name,
                          m->folder[0] && _wcsicmp(m->folder, m->name) ? L" - " : L"",
@@ -9862,9 +9863,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
             return 1;
         }
         for (i = 0; i < n; i++)
-            wprintf(L"id %d\t%s\t%s\t%s%s%s%s%s\n", items[i].id, items[i].name, items[i].folder[0] ? items[i].folder : L"-",
-                    items[i].off ? L"off " : L"", items[i].profile ? L"profile " : L"", items[i].universe ? L"universe " : L"",
-                    items[i].mark ? L"mark " : L"", items[i].mod_save ? L"mod_save" : L"");
+            wprintf(L"id %d\t%s\t%s\t%s%s%s%s%s refs %d\n", items[i].id, items[i].name,
+                    items[i].folder[0] ? items[i].folder : L"-", items[i].off ? L"off " : L"",
+                    items[i].profile ? L"profile " : L"", items[i].universe ? L"universe " : L"",
+                    items[i].mark ? L"mark " : L"", items[i].mod_save ? L"mod_save" : L"", items[i].refs);
         wprintf(L"%d mods\n", n);
         if (!apply)
             return 0;

@@ -11,7 +11,9 @@
  * The game's superstars, Created Superstars (their own ids and .cas files) and the mods that are on aren't
  * touched. With them goes each id's 40-byte entry (block B +0x3E648). The per-mod saves (per_mod_saves:
  * Saves\.mods\<folder>.dat, superstar_mods.cpp) leave the slots as placeholders - nothing to clean there; a mod
- * taken out loses its file as a whole, unread (the backup has it); .mods\.on stays. */
+ * taken out loses its file as a whole, unread (the backup has it); .mods\.on stays. Its refs go from .mods\refs.bin
+ * (and refs.bin.bak): the save's teams, title holders and Universe cards hold a stand-in, never rewritten here - a
+ * field without a ref keeps it, as for a mod that's gone. */
 #include "save_cleaner.h"
 
 #include <stdint.h>
@@ -69,7 +71,76 @@ static int write_all(const WCHAR *path, const void *data, size_t size, int creat
 
 static uint32_t le32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
 
+static uint32_t be32(const uint8_t *p) { return (uint32_t)p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
+
 static int exists(const WCHAR *path) { return GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES; }
+
+static uint32_t crc32_of(const uint8_t *p, size_t n)
+{
+    uint32_t c = 0xFFFFFFFFu;
+    int k;
+    while (n--)
+        for (c ^= *p++, k = 0; k < 8; k++)
+            c = c >> 1 ^ (0xEDB88320u & (0u - (c & 1)));
+    return ~c;
+}
+
+/* Saves\.mods\refs.bin (superstar_mods.cpp key refs): "SVRMREFS", u32 1, u32 CRC-32 of the rest, u16 folder count,
+ * folders (u16 byte count + UTF-8), u32 ref count, refs {u32 save image offset, u16 folder index, u16 stand-in};
+ * big-endian. */
+typedef struct {
+    const uint8_t *d;
+    size_t n, refs_at;
+    int folders;
+    size_t *at;   /* each folder's u16 length */
+    int *count;   /* each folder's refs */
+    uint32_t refs;
+} Refs;
+
+static void refs_free(Refs *r)
+{
+    free(r->at);
+    free(r->count);
+}
+
+static int refs_read(const uint8_t *d, size_t n, Refs *r)
+{
+    size_t at = 18;
+    uint32_t k;
+    int i;
+    ZeroMemory(r, sizeof *r);
+    if (!d || n < 18 || memcmp(d, "SVRMREFS", 8) || be32(d + 8) != 1 || crc32_of(d + 16, n - 16) != be32(d + 12))
+        return 0;
+    r->d = d, r->n = n, r->folders = d[16] << 8 | d[17];
+    r->at = calloc((size_t)r->folders + 1, sizeof(size_t));
+    r->count = calloc((size_t)r->folders + 1, sizeof(int));
+    if (!r->at || !r->count)
+        return refs_free(r), 0;
+    for (i = 0; i < r->folders; i++) {
+        if (at + 2 > n || at + 2 + (size_t)(d[at] << 8 | d[at + 1]) > n)
+            return refs_free(r), 0;
+        r->at[i] = at;
+        at += 2 + (size_t)(d[at] << 8 | d[at + 1]);
+    }
+    if (at + 4 > n || (n - at - 4) / 8 < (r->refs = be32(d + at)))
+        return refs_free(r), 0;
+    r->refs_at = at + 4;
+    for (k = 0; k < r->refs; k++) {
+        const int fi = d[r->refs_at + k * 8 + 4] << 8 | d[r->refs_at + k * 8 + 5];
+        if (fi >= r->folders)
+            return refs_free(r), 0;
+        r->count[fi]++;
+    }
+    return 1;
+}
+
+static void refs_folder(const Refs *r, int i, WCHAR *out)
+{
+    const size_t at = r->at[i];
+    const int k = MultiByteToWideChar(CP_UTF8, 0, (const char *)r->d + at + 2, r->d[at] << 8 | r->d[at + 1], out,
+                                      MAX_PATH - 1);
+    out[k > 0 ? k : 0] = 0;
+}
 
 /* The folder's state in Mods\Superstars: 2 installed and on, 1 installed and off, 0 not there. */
 static int mod_state(const WCHAR *mods, const WCHAR *folder)
@@ -357,6 +428,29 @@ int save_clean_scan(const WCHAR *saves, const WCHAR *mods, ScItem *items, WCHAR 
             FindClose(f);
         }
     }
+    {   /* Saves\.mods\refs.bin: the folders its fields name */
+        size_t size;
+        uint8_t *b;
+        Refs r;
+        int i;
+        swprintf_s(p, MAX_PATH, L"%s\\.mods\\refs.bin", saves);
+        if ((b = read_all(p, &size)) && refs_read(b, size, &r)) {
+            for (i = 0; i < r.folders; i++) {
+                WCHAR folder[MAX_PATH];
+                ScItem *it;
+                int st;
+                refs_folder(&r, i, folder);
+                if (!r.count[i] || (st = mod_state(mods, folder)) == 2 || !(it = item_for(items, &n, 0, folder)))
+                    continue;
+                it->refs += r.count[i];
+                it->off = st == 1;
+                if (!it->name[0])
+                    wcscpy_s(it->name, 40, folder);
+            }
+            refs_free(&r);
+        }
+        free(b);
+    }
     data_free(d);
     free(d);
     return n;
@@ -489,6 +583,67 @@ int save_clean_apply(const WCHAR *saves, const ScItem *items, int n, int with_of
             continue;
         swprintf_s(p, MAX_PATH, L"%s\\.mods\\%s.dat", saves, items[i].folder);
         DeleteFileW(p);
+    }
+    /* Saves\.mods\refs.bin and refs.bin.bak: the others' refs (each file on its own; none left = an empty one) */
+    {
+        static const WCHAR *const files[] = {L"refs.bin", L"refs.bin.bak"};
+        int f;
+        for (f = 0; ok && f < 2; f++) {
+            size_t size;
+            uint8_t *b, *out = NULL;
+            int *to = NULL;
+            Refs r;
+            swprintf_s(p, MAX_PATH, L"%s\\.mods\\%s", saves, files[f]);
+            if ((b = read_all(p, &size)) && refs_read(b, size, &r)) {
+                int kept = 0, drop = 0;
+                to = malloc(((size_t)r.folders + 1) * sizeof(int));
+                out = malloc(size);
+                for (i = 0; to && i < r.folders; i++) {
+                    WCHAR folder[MAX_PATH];
+                    refs_folder(&r, i, folder);
+                    to[i] = taken(items, n, with_off, 0, folder) ? -1 : kept++;
+                    drop |= to[i] < 0;
+                }
+                if (to && out && drop) {
+                    size_t on = 18;
+                    uint32_t k, nr = 0;
+                    memcpy(out, "SVRMREFS\0\0\0\1", 12);
+                    out[16] = (uint8_t)(kept >> 8), out[17] = (uint8_t)kept;
+                    for (i = 0; i < r.folders; i++)
+                        if (to[i] >= 0) {
+                            const size_t sz = 2 + (size_t)(b[r.at[i]] << 8 | b[r.at[i] + 1]);
+                            memcpy(out + on, b + r.at[i], sz);
+                            on += sz;
+                        }
+                    on += 4;
+                    for (k = 0; k < r.refs; k++) {
+                        const uint8_t *e = b + r.refs_at + k * 8;
+                        const int t = to[e[4] << 8 | e[5]];
+                        if (t < 0)
+                            continue;
+                        memcpy(out + on, e, 8);
+                        out[on + 4] = (uint8_t)(t >> 8), out[on + 5] = (uint8_t)t;
+                        on += 8, nr++;
+                    }
+                    {
+                        uint8_t *c = out + on - 8 * (size_t)nr - 4;
+                        uint32_t crc;
+                        c[0] = (uint8_t)(nr >> 24), c[1] = (uint8_t)(nr >> 16), c[2] = (uint8_t)(nr >> 8), c[3] = (uint8_t)nr;
+                        crc = crc32_of(out + 16, on - 16);
+                        out[12] = (uint8_t)(crc >> 24), out[13] = (uint8_t)(crc >> 16);
+                        out[14] = (uint8_t)(crc >> 8), out[15] = (uint8_t)crc;
+                    }
+                    if (!write_all(p, out, on, 1)) {
+                        swprintf_s(err, err_n, L".mods\\%s couldn't be written.", files[f]);
+                        ok = 0;
+                    }
+                }
+                refs_free(&r);
+            }
+            free(to);
+            free(out);
+            free(b);
+        }
     }
     for (i = 0; i < n; i++)
         done += !items[i].off || with_off;

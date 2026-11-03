@@ -80,6 +80,7 @@
 #include "native/guest_d3d.h"
 #include "native/textures.h"
 #include "free_cam.h"
+#include "gpu_probe.h"
 #include "../util.h"
 #if SVR2011_DEBUG_SUITE
 #include "debug_suite/debug_suite.h"
@@ -832,6 +833,9 @@ bool g_main = false;
 // times the guest's pixels (the emulator's resolution_scale setting); sizes the
 // game sees and computes with stay the guest's.
 uint32_t g_scale = 1;
+// [svr2011] The render scale's ceiling after memory ran out (OutOfVideoMemory): a step lower each time a target or
+// the frame images can't be made above 1x.
+uint32_t g_memory_scale_cap = UINT32_MAX;
 // native_scale_effects off: only the main scene's targets (and their resolves
 // and the frame images) are scaled; the effect buffers (the 1120 x 1120 shadow
 // map, reflections, glow and blur chains) keep the guest's size.
@@ -1438,17 +1442,46 @@ bool CreatePipelineLayout(Renderer* r) {
   return r->texture_sets[0] && r->texture_sets[1] && r->texture_sets[2] && r->sampler_set;
 }
 
+// A target that can't be made is asked for again at each draw: the first 16 logged, then every 1000th (the GT 710
+// report's log would have been all of them - the start rotated away).
+bool TargetFailureLogged() {
+  static std::atomic<uint64_t> n{0};
+  const uint64_t i = n++;
+  return i < 16 || i % 1000 == 0;
+}
+
+// createTexture, with a C++ out-of-memory as no texture: Direct3D 11 fills a new target from a buffer of zeros
+// (plume) - a 2.1.8 report (GeForce GT 710, the PC's memory full) crashed there making a 2x depth target.
+// (test: SVR2011_TEST_TEXTURE_LIMIT=<pixels> - a target or frame image bigger fails as out of memory)
+std::unique_ptr<plume::RenderTexture> TryCreateTexture(Renderer* r, const plume::RenderTextureDesc& d) {
+  static const uint64_t test_limit = uint64_t(EnvInt("SVR2011_TEST_TEXTURE_LIMIT", 0));
+  if (test_limit && uint64_t(d.width) * d.height > test_limit) {
+    if (TargetFailureLogged()) REXLOG_WARN("native renderer: test texture limit - {}x{} not made", d.width, d.height);
+    return nullptr;
+  }
+  try {
+    return r->device->createTexture(d);
+  } catch (const std::bad_alloc&) {
+    REXLOG_ERROR("native renderer: out of memory making a {}x{} texture", d.width, d.height);
+    return nullptr;
+  }
+}
+
+void OutOfVideoMemory(Renderer* r, const char* what);
+
 // The frame images, g_out_w x g_out_h, handed to the emulator's presentation
 // (committed, so the reference the presentation holds keeps one alive).
+// False (out of memory): none are left - BeginFrame draws nothing until they're made.
 bool CreateOutputs(Renderer* r) {
   for (uint32_t i = 0; i < kOutputs; ++i) {
     plume::RenderTextureDesc d = plume::RenderTextureDesc::Texture2D(
         g_out_w, g_out_h, 1, RenderFormat::R8G8B8A8_UNORM, plume::RenderTextureFlag::RENDER_TARGET);
     d.committed = true;
     r->output_framebuffers[i].reset();
-    r->outputs[i] = r->device->createTexture(d);
+    r->outputs[i] = TryCreateTexture(r, d);
     if (!r->outputs[i]) {
-      REXLOG_ERROR("native renderer: could not create the frame images");
+      REXLOG_ERROR("native renderer: could not create the frame images ({}x{})", g_out_w, g_out_h);
+      for (uint32_t j = 0; j < kOutputs; ++j) r->output_framebuffers[j].reset(), r->outputs[j].reset();
       return false;
     }
     r->outputs[i]->setName(fmt::format("frame image {}", i));
@@ -1459,7 +1492,7 @@ bool CreateOutputs(Renderer* r) {
   r->fsr_framebuffer.reset();
   r->fsr_view.reset();
   // (FSR 2 writes it too: a storage texture where there is compute - not Direct3D 11)
-  r->fsr_image = r->device->createTexture(plume::RenderTextureDesc::Texture2D(
+  r->fsr_image = TryCreateTexture(r, plume::RenderTextureDesc::Texture2D(
       g_out_w, g_out_h, 1, RenderFormat::R8G8B8A8_UNORM,
       plume::RenderTextureFlag::RENDER_TARGET |
           (SlotTables() ? 0u : plume::RenderTextureFlag::STORAGE | plume::RenderTextureFlag::UNORDERED_ACCESS)));
@@ -1486,6 +1519,7 @@ bool CreateOutputs(Renderer* r) {
 
 void ReportDeviceRemoved(Renderer* r);
 void StartPrebuildingPipelines(Renderer* r);
+uint64_t VideoMemoryBytes();
 
 bool Initialize() {
   if (!g_memory) {
@@ -1526,6 +1560,15 @@ bool Initialize() {
     return false;
   }
   REXLOG_INFO("native renderer: GPU {}", r->device->getDescription().name);
+#if defined(_WIN32)
+  {  // (for reports: what a GPU that runs out of memory had)
+    MEMORYSTATUSEX m = {sizeof(m)};
+    GlobalMemoryStatusEx(&m);
+    REXLOG_INFO("native renderer: video memory {} MB; system memory {} MB free of {} MB, page file {} MB free of {} MB",
+                VideoMemoryBytes() >> 20, m.ullAvailPhys >> 20, m.ullTotalPhys >> 20, m.ullAvailPageFile >> 20,
+                m.ullTotalPageFile >> 20);
+  }
+#endif
   backend::LoadPipelineCache(r->device.get(), PipelineCacheFile());
   if (g_debug_solid) g_debug_ps = ReadShader("debug_solid.ps");
   r->queue = r->device->createCommandQueue(plume::RenderCommandListType::DIRECT);
@@ -1621,12 +1664,27 @@ bool Initialize() {
   return true;
 }
 
+// The device lost: in the first minute on the API gpu_backend "any" picked (a 2.1.8 report: GeForce GT 710, driver
+// 456.71, Direct3D 12 removed - DXGI_ERROR_DRIVER_INTERNAL_ERROR - before the first frame, every start), the next
+// start uses the next one (gpu_probe.h), and the message says so.
+std::string DeviceLostReason(Renderer* r) {
+  std::string reason = "the GPU stopped (device lost)";
+  if (r->frames < 3600) {
+    if (const std::string next = svr2011::AvoidPickedGraphicsApi(fmt::format("device lost at frame {}", r->frames));
+        !next.empty()) {
+      reason += " - restart the game: it will use " + next + " on this GPU; updating the graphics driver can also help";
+      REXLOG_WARN("native renderer: the next start uses {} (gpu_backend any)", next);
+    }
+  }
+  return reason;
+}
+
 // The GPU faulted (device removed): logs why (and the faulting allocation,
 // when the driver tells) and turns the native renderer off for the rest of
 // the run.
 void ReportDeviceRemoved(Renderer* r) {
   backend::ReportDeviceLost(r->device.get());
-  Fail("the GPU stopped (device lost)");
+  Fail(DeviceLostReason(r).c_str());
 }
 
 // Waits (CPU) for frame slot `slot`'s last submission. A GPU that stops
@@ -1645,7 +1703,7 @@ bool WaitForFrame(Renderer* r, uint32_t slot, const char* what) {
   REXLOG_ERROR("native renderer: GPU did not finish ({}) in {} ms{}", what, kGpuTimeoutMs,
                lost ? " - device lost" : "");
   if (lost) backend::ReportDeviceLost(r->device.get());
-  Fail(lost ? "the GPU stopped (device lost)" : "the GPU stopped answering");
+  Fail(lost ? DeviceLostReason(r).c_str() : "the GPU stopped answering");
   // Releases the emulator's waits for the frames in flight (each slot's).
   for (auto& fence : r->fences) backend::ReleaseFence(fence.get());
   return false;
@@ -1764,6 +1822,7 @@ uint32_t FitRenderScale(uint32_t s, float wide, float tall, const char*& why) {
   float side = kMaxTargetSide;
   if (const uint32_t gpu_side = backend::VulkanMaxImageSide()) side = std::min(side, float(gpu_side));
   while (s > 1 && (tw * float(s) > side || th * float(s) > side)) --s, why = "the GPU's texture size limit";
+  if (s > g_memory_scale_cap) s = g_memory_scale_cap, why = "video memory full";
 #if defined(__ANDROID__)
   constexpr uint32_t kMemoryFrom = 1, kShare = 4;
 #else
@@ -1773,6 +1832,25 @@ uint32_t FitRenderScale(uint32_t s, float wide, float tall, const char*& why) {
     while (s > kMemoryFrom && uint64_t(tw * float(s)) * uint64_t(th * float(s)) * kBytesPerScenePixel > vram / kShare)
       --s, why = "video memory";
   return s;
+}
+
+// A target or the frame images couldn't be made (out of memory - a 2.1.8 report, GeForce GT 710: the 2x targets of
+// a 1366x768 window, then a crash): above 1x the next frame lowers the render scale a step and makes them again; the
+// frame images at 1x: nothing can be shown - the message says why instead of a crash.
+void OutOfVideoMemory(Renderer* r, const char* what) {
+  if (g_failed) return;
+  if (g_scale > 1) {
+    if (g_memory_scale_cap < g_scale) return;  // (lowered already: the next frame)
+    g_memory_scale_cap = g_scale - 1;
+    REXLOG_WARN("native renderer: {} could not be made at render scale {}x (out of memory; video memory {} MB) - "
+                "lowered to {}x", what, g_scale, VideoMemoryBytes() >> 20, g_memory_scale_cap);
+    return;
+  }
+  if (std::strcmp(what, "the frame images") != 0) return;  // (a target at 1x: its draws skipped, as before)
+  Fail(fmt::format("not enough memory for the frame images on {} ({} MB video memory) - close other programs, play "
+                   "in a smaller window, set texture quality to low or update the graphics driver",
+                   r->device->getDescription().name, VideoMemoryBytes() >> 20)
+           .c_str());
 }
 
 void ApplyOutputSettings(Renderer* r) {
@@ -1904,7 +1982,7 @@ void ApplyOutputSettings(Renderer* r) {
 #endif
   const bool res_changed = std::fabs(res - g_res) > 0.001f;
   if (scale == g_scale && effects == g_scale_effects && out_w == g_out_w && out_h == g_out_h &&
-      !wide_changed && !res_changed) {
+      !wide_changed && !res_changed && r->outputs[0]) {
     return;
   }
 
@@ -1926,10 +2004,10 @@ void ApplyOutputSettings(Renderer* r) {
     SetCameraAspect(kAspect16x9 * wide / tall);
     g_fov_scale = tall;
   }
-  if (out_w != g_out_w || out_h != g_out_h) {
+  if (out_w != g_out_w || out_h != g_out_h || !r->outputs[0]) {
     g_out_w = out_w;
     g_out_h = out_h;
-    CreateOutputs(r);
+    if (!CreateOutputs(r)) OutOfVideoMemory(r, "the frame images");
   }
   r->list_state = {};
   if (fit_why)
@@ -1973,7 +2051,7 @@ bool BeginFrame(Renderer* r) {
   if (r->frame_open) return true;
   if (g_main) ApplyTextureQuality(r);
   if (g_main) ApplyOutputSettings(r);
-  if (g_failed) return false;
+  if (g_failed || !r->outputs[0]) return false;  // (no frame images: out of memory - made again at the next frame)
   r->back_index = uint32_t(r->frames % kFrames);
   r->output_index = uint32_t(r->frames % kOutputs);
   r->frame_begin = std::chrono::steady_clock::now();
@@ -2216,9 +2294,10 @@ ColorTarget* GetColorTarget(Renderer* r, uint32_t base, uint32_t pitch, uint32_t
   d.committed = true;
   const plume::RenderClearValue cv = plume::RenderClearValue::Color(plume::RenderColor(0, 0, 0, 0), f.rtv);
   d.optimizedClearValue = &cv;
-  std::shared_ptr<plume::RenderTexture> resource = r->device->createTexture(d);
+  std::shared_ptr<plume::RenderTexture> resource = TryCreateTexture(r, d);
   if (!resource) {
-    REXLOG_ERROR("native renderer: could not create a render target");
+    if (TargetFailureLogged()) REXLOG_ERROR("native renderer: could not create a render target ({}x{})", host_w, host_h);
+    OutOfVideoMemory(r, "a render target");
     return nullptr;
   }
   ColorTarget& t = r->color_targets[key];
@@ -2255,9 +2334,10 @@ DepthTarget* GetDepthTarget(Renderer* r, uint32_t base, uint32_t pitch, uint32_t
   const plume::RenderClearValue cv =
       plume::RenderClearValue::Depth(plume::RenderDepth(1.0f), backend::DepthFormat());
   d.optimizedClearValue = &cv;
-  std::shared_ptr<plume::RenderTexture> resource = r->device->createTexture(d);
+  std::shared_ptr<plume::RenderTexture> resource = TryCreateTexture(r, d);
   if (!resource) {
-    REXLOG_ERROR("native renderer: could not create a depth target");
+    if (TargetFailureLogged()) REXLOG_ERROR("native renderer: could not create a depth target ({}x{})", host_w, host_h);
+    OutOfVideoMemory(r, "a depth target");
     return nullptr;
   }
   DepthTarget& t = r->depth_targets[key];
@@ -5168,7 +5248,9 @@ void OnPresent(uint32_t front_buffer) {
     r->queue->executeCommandLists(submit, r->fences[r->back_index].get());
   }
   r->submitted[r->back_index] = true;
-  if (backend::DeviceLost(r->device.get())) {
+  // (test: SVR2011_TEST_DEVICE_LOST_AT=<frame> - the device taken as lost there)
+  static const uint64_t test_lost = uint64_t(EnvInt("SVR2011_TEST_DEVICE_LOST_AT", 0));
+  if (backend::DeviceLost(r->device.get()) || (test_lost && r->frames == test_lost)) {
     ReportDeviceRemoved(r);
     return;
   }

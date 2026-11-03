@@ -19,9 +19,6 @@ This is an unofficial iOS port of the 2010 Xbox 360 game *WWE SmackDown vs. Raw 
 > [!NOTE]
 > **This is a fork of the original port for Windows/Linux/Android.** The game-side work (the recompilation, the native renderer, the saves, the menus and most features) is KaikoClanworth1's. This fork adds the iOS layer: the memory fixes, the Apple build, the app and the touch setup. See [Credits](#credits). For anything the two ports share, the [original README](https://github.com/KaikoClanworth1/wwe-svr2011-pc#readme) is the full reference.
 
-> [!IMPORTANT]
-> This port will perform better with the increased memory limit entitlement. More information can be found here: (iRAM Repository)[https://github.com/NexSideloading/iRAM-Plus]
-
 ---
 
 ## Status
@@ -33,7 +30,11 @@ Tested on an **iPhone 15 Pro (Apple A17 Pro chip)**, running inside LiveContaine
 - Menus, All gamemodes, Entrances all work, at 60 fps in testing.
 - On the iPhone's wide screen, matches and entrances fill the whole screen.
 
+> [!NOTE]
 > iPads and older iPhones haven't been tested.
+
+> [!IMPORTANT]
+> This port will perform better with the increased memory limit entitlement. More information on how to set it up can be found here: [iRAM Repository](https://github.com/NexSideloading/iRAM-Plus)
 
 <p align="center">
   <img src="Screenshots/IMG_9299.png" width="400">

@@ -5,6 +5,13 @@ docs/MOVE_PACKS.md).
     py moves_port.py games
     py moves_port.py list    --game <id> --src <ISO or extract folder> [--pac11 <2011 pac>]
     py moves_port.py convert --game <id> --src <...> --item <move id> --out <dir> [options]
+    py moves_port.py renumber --mod <installed mod or move pack folder> [--pac11 <2011 pac>] [--mods <Mods>]
+                     [--dry 1]
+            an installed mod's moves on ids of 16000 and up (older ports) moved to free records (free_ids) below
+            their banks' last ids: the game leaves such a body motion out of MOT/BM00 (move_packs.cpp) and the
+            move played as nothing - the wrestler slid off and froze (report a745b2, Sin Cara's 30073). pack.txt,
+            the motions' follow-ups (op 49), the moves list(s) and the manifest's version change; a backup zip of
+            the files before goes into tools/work/renumber_backup. --dry 1: the plan only.
 
 stdout is only JSON; logs go to stderr, with progress lines `progress <0-100> <text>`.
 Exit 0 ok, 2 bad input, 3 failed.
@@ -1059,6 +1066,206 @@ class Game11:
         return free[h % len(free)], 'a free record picked by the name (%d free; --id to choose)' % len(free)
 
 
+# --------------------------------------------------------------------------- renumber
+
+def read_lines(path):
+    """(lines without their ends, crlf)"""
+    raw = open(path, 'rb').read()
+    return raw.decode('utf-8').replace('\r\n', '\n').split('\n'), b'\r\n' in raw
+
+
+def write_lines(path, lines, crlf):
+    text = '\n'.join(lines)
+    open(path, 'wb').write((text.replace('\n', '\r\n') if crlf else text).encode('utf-8'))
+
+
+def pack_defines(lines):
+    """the move ids a pack.txt's lines give: {id: dict(paths, ymbs, name)} - motion, waze, wazecopy, wazename"""
+    out = {}
+    blank = lambda: dict(paths=set(), ymbs=False, name='')   # noqa: E731
+    for l in lines:
+        f = l.split()
+        if len(f) < 2 or f[0].startswith('#'):
+            continue
+        if f[0] == 'motion' and len(f) >= 8 and f[3].isdigit():
+            d = out.setdefault(int(f[3]), blank())
+            d['paths'].add(f[2])
+            d['ymbs'] |= len(f) >= 9 and len(f[8]) == 40   # (a 20-byte YMBs header: a streamed motion)
+        elif f[0] in ('waze', 'wazecopy') and f[1].isdigit():
+            out.setdefault(int(f[1]), blank())
+        elif f[0] == 'wazename' and f[1].isdigit() and len(f) >= 3:
+            out.setdefault(int(f[1]), blank())['name'] = l.split(None, 2)[2].strip()
+    return out
+
+
+def pack_dir(mod):
+    for d in (os.path.join(mod, 'moves'), mod):
+        if os.path.isfile(os.path.join(d, 'pack.txt')):
+            return d
+    raise BadInput('no moves/pack.txt or pack.txt in %s' % mod)
+
+
+def manifest_get(mod, key, default=''):
+    try:
+        for l in read_lines(os.path.join(mod, 'manifest.txt'))[0]:
+            if l.startswith(key + '='):
+                return l[len(key) + 1:].strip()
+    except OSError:
+        pass
+    return default
+
+
+def renumber(a):
+    """renumber --mod: see the top of the file. -> the report"""
+    import svr10_moves as SM
+    mod = os.path.abspath(a['mod'])
+    pdir = pack_dir(mod)
+    lines, crlf = read_lines(os.path.join(pdir, 'pack.txt'))
+    defs = pack_defines(lines)
+    g11 = Game11(a['pac11'], a.get('work') or os.path.join(HERE, 'work', 'renumber'))
+    mods_root = os.path.abspath(a.get('mods') or os.path.join(os.path.dirname(os.path.abspath(a['pac11'])), 'Mods'))
+    # the ids every other installed pack gives (a new id must be none of them)
+    taken, others = set(defs), []
+    for root, dirs, files in os.walk(mods_root):
+        dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ('PacOverlay', 'SuperstarOverlay')]
+        if 'pack.txt' in files and os.path.abspath(root) != pdir:
+            taken |= set(pack_defines(read_lines(os.path.join(root, 'pack.txt'))[0]))
+    tops = {}
+    for path, (kind, keys, size) in g11.idx.items():
+        if keys:
+            tops[path] = max(k[0] for k in keys)
+    pmap, kept, rows = {}, [], []
+    for old in sorted(i for i in defs if i >= 16000 and i not in g11.moved):   # (a 2011 motion's own id: the game's)
+        d = defs[old]
+        t = [tops[p] for p in d['paths'] if p in tops]
+        limit = min([15999] + [x - 1 for x in t])   # (id_limit for a mod: its banks' last ids)
+        near = 9000 if d['ymbs'] else None          # (a streamed motion: the 9000s, where the game's are)
+        free = g11.free_ids(limit, taken | set(pmap.values()), near)
+        name = d['name'] or (g11.waze.get(old, (None, ''))[1] if old in g11.waze else '')
+        if not free:
+            kept.append(dict(old=old, name=name, why='no free record below %d' % (limit + 1)))
+            continue
+        same = [i for i in free if name and norm(g11.waze[i][1]) == norm(name)]
+        new = same[0] if same else free[zlib.crc32(('%s %d' % (name, old)).encode('utf-8')) % len(free)]
+        pmap[old] = new
+        rows.append(dict(old=old, new=new, name=name, limit=limit))
+    rep = dict(ok=True, mod=mod, renumbered=rows, kept=kept, changed=[], backup=None, dry=bool(a.get('dry')))
+    if not pmap or a.get('dry'):
+        return rep
+    m = lambda i: pmap.get(i, i)   # noqa: E731
+
+    def num(tok):
+        return str(m(int(tok))) if tok.isdigit() else tok
+    # pack.txt
+    new_lines, motion_files = [], {}
+    for l in lines:
+        f = l.split(' ')
+        if l.startswith('# svr2011 move pack: moves'):
+            head, ids = l.split('moves', 1)
+            l = head + 'moves' + ' '.join(num(x) for x in ids.split(' '))
+        elif f[0] == 'motion' and len(f) >= 8:
+            if f[3].isdigit() and f[5].isdigit() and int(f[5]) < 50:   # (y 50+ tracks don't read as this layout)
+                motion_files[f[7]] = f[2].startswith('MOTP')
+            f[3] = num(f[3])
+            l = ' '.join(f)
+        elif f[0] in ('waze', 'wazename') and len(f) >= 2:
+            f[1] = num(f[1])
+            l = ' '.join(f)
+        elif f[0] == 'wazecopy' and len(f) >= 3:
+            f[1], f[2] = num(f[1]), num(f[2])
+            l = ' '.join(f)
+        elif f[0] in ('exh', 'evt', 'mbd') and len(f) >= 3 and len(f[2]) >= 4:
+            rid = struct.unpack('<H', bytes.fromhex(f[2][:4]))[0]
+            if rid in pmap:
+                f[2] = struct.pack('<H', pmap[rid]).hex() + f[2][4:]
+                l = ' '.join(f)
+        new_lines.append(l)
+    # the motions' follow-ups (the last op 49) naming a renumbered move
+    T = SM.tree_get(SM.entry_get(g11.groups('m.pac'), *SM.path_split('MVMT/CORN/f')[:2]),
+                    SM.path_split('MVMT/CORN/f')[2])[0x10:0x110]
+    fixed_files = {}
+    for fn, motp in sorted(motion_files.items()):
+        fp = os.path.join(pdir, fn)
+        try:
+            data = open(fp, 'rb').read()
+            at, tgt = SM.end_chain(data, T, motp)
+        except (OSError, ValueError, IndexError):
+            continue
+        if at is not None and tgt in pmap:
+            b = bytearray(data)
+            struct.pack_into('<H', b, at, pmap[tgt])
+            fixed_files[fp] = bytes(b)
+    # the moves lists naming them: this mod's, and for a move pack every installed superstar mod's
+    lists = [os.path.join(mod, manifest_get(mod, 'moves', 'moves.txt'))]
+    if pdir == mod:
+        stars = os.path.join(mods_root, 'Superstars')
+        for d in sorted(os.listdir(stars)) if os.path.isdir(stars) else []:
+            sd = os.path.join(stars, d)
+            if os.path.isdir(sd) and not os.path.isfile(os.path.join(sd, 'moves', 'pack.txt')):
+                lists.append(os.path.join(sd, manifest_get(sd, 'moves', 'moves.txt')))
+    list_edits = {}
+    for lp in lists:
+        if not os.path.isfile(lp):
+            continue
+        ls, lcrlf = read_lines(lp)
+        out = []
+        for l in ls:
+            k, eq, v = l.partition('=')
+            out.append(k + '=' + num(v.strip()) if eq and v.strip().isdigit() and int(v.strip()) in pmap else l)
+        if out != ls:
+            list_edits[lp] = (out, lcrlf)
+    # backup, then write
+    import zipfile
+    changed = ([os.path.join(pdir, 'pack.txt'), os.path.join(mod, 'manifest.txt')] + list(fixed_files) + list(list_edits) +
+               [os.path.join(os.path.dirname(lp), 'manifest.txt') for lp in list_edits if os.path.dirname(lp) != mod])
+    bdir = os.path.join(HERE, 'work', 'renumber_backup')
+    os.makedirs(bdir, exist_ok=True)
+    bzip = os.path.join(bdir, '%s_%s.zip' % (os.path.basename(mod), time.strftime('%Y%m%d-%H%M%S')))
+    with zipfile.ZipFile(bzip, 'w', zipfile.ZIP_DEFLATED) as z:
+        for fp in changed:
+            if os.path.isfile(fp):
+                z.write(fp, os.path.relpath(fp, mods_root) if fp.startswith(mods_root) else os.path.basename(fp))
+    write_lines(os.path.join(pdir, 'pack.txt'), new_lines, crlf)
+    for fp, data in fixed_files.items():
+        open(fp, 'wb').write(data)
+    for lp, (out, lcrlf) in list_edits.items():
+        write_lines(lp, out, lcrlf)
+    # the manifests: a new version (lobbies and the launcher see the mod changed) and renumbered=<old>><new> - a save
+    # made with the old version holds the old ids, the game puts the new ones in (superstar_mods.cpp)
+    for md in sorted({mod} | {os.path.dirname(lp) for lp in list_edits}):
+        mp = os.path.join(md, 'manifest.txt')
+        if not os.path.isfile(mp):
+            continue
+        man, mcrlf = read_lines(mp)
+        was, at = {}, None
+        for i, l in enumerate(man):
+            if l.startswith('renumbered='):
+                at = i
+                for t in l[11:].split():
+                    o, _, n = t.partition('>')
+                    if o.isdigit() and n.isdigit():
+                        was[int(o)] = int(n)
+        was = {o: pmap.get(n, n) for o, n in was.items()}   # (renumbered again: the old ids go to the newest)
+        was.update(pmap)
+        line = 'renumbered=' + ' '.join('%d>%d' % kv for kv in sorted(was.items()))
+        if at is None:
+            while man and man[-1] == '':
+                man.pop()
+            man += [line, '']
+        else:
+            man[at] = line
+        if md == mod:
+            for i, l in enumerate(man):
+                if l.startswith('version='):   # (its last number one up: 1.2 -> 1.3, 1.3.1 -> 1.3.2)
+                    v = re.match(r'(.*?)(\d+)(\D*)$', l[8:].strip())
+                    if v:
+                        man[i] = 'version=%s%d%s' % (v[1], int(v[2]) + 1, v[3])
+        write_lines(mp, man, mcrlf)
+    rep.update(changed=[os.path.relpath(fp, mod) if fp.startswith(mod) else fp for fp in changed if os.path.isfile(fp)],
+               backup=bzip)
+    return rep
+
+
 # --------------------------------------------------------------------------- convert
 
 def start_gap(k0, k1):
@@ -1869,6 +2076,10 @@ def main(argv):
     try:
         if cmd == 'games':
             res = GAMES
+        elif cmd == 'renumber':
+            if not a.get('mod'):
+                raise BadInput('renumber needs --mod <installed mod folder>')
+            res = renumber(a)
         elif cmd in ('list', 'convert'):
             if a.get('game') not in {g['id'] for g in GAMES}:
                 raise BadInput('unknown --game %r (see games)' % a.get('game'))

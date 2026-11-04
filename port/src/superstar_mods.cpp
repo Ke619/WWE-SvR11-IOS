@@ -178,6 +178,10 @@ struct Mod {
   // its own moves over the base's (manifest moves=<file>: lines "0xOFF=id",
   // a byte offset in the profile's move block, 0..0x1BF, and a move id)
   std::vector<std::pair<uint16_t, uint16_t>> moves;
+  // the ids moves_port.py renumber moved its moves from (manifest renumbered=<old>><new> ...): a save made with the
+  // older version holds the old ids - such a slot gets the new id (an old id of 16000 and up can be a 2011 record
+  // with bits but no motions, which counts as usable: the save's move would play as nothing)
+  std::map<uint16_t, uint16_t> renumbered;
   int entrance = -1;            // entrance number (manifest entrance=; profile +0x1C0 +0x14..+0x18)
   int attire_entrance[4] = {-1, -1, -1, -1};  // per attire (manifest attire<N>_entrance=; EntranceForAttire)
   int victory = -1;  // its victory scene when it wins a singles match (manifest victory=; VictoryOfWinner)
@@ -943,6 +947,14 @@ void LoadMods() {
         if (l.rfind("song=", 0) == 0) song = l.substr(5);
         if (l.rfind("theme_gain=", 0) == 0) song_gain = std::clamp(float(std::atof(l.c_str() + 11)), -20.0f, 6.0f);
         if (l.rfind("call_gain=", 0) == 0) m.call_gain = std::clamp(float(std::atof(l.c_str() + 10)), -20.0f, 12.0f);
+        if (l.rfind("renumbered=", 0) == 0) {
+          std::istringstream in(l.substr(11));
+          for (std::string t; in >> t;)
+            if (const size_t g = t.find('>'); g != std::string::npos) {
+              const int from = std::atoi(t.c_str()), to = std::atoi(t.c_str() + g + 1);
+              if (from > 0 && from < 0x8000 && to > 0 && to < 0x8000) m.renumbered[uint16_t(from)] = uint16_t(to);
+            }
+        }
         if (l.rfind("movie=", 0) == 0) movie = l.substr(6);
         if (l.rfind("voice=", 0) == 0 && l.size() > 6) m.voice = f / l.substr(6);
         if (l.rfind("loading=", 0) == 0 && l.size() > 8) m.loading = f / l.substr(8);
@@ -3381,7 +3393,33 @@ void CheckModProfiles(uint8_t* base) {
     if (si >= 512 || bi >= 512) continue;
     uint8_t* sp = base + svr2011::RosterEntry(kProfiles, kProfileSize, si);
     const uint8_t* bp = base + svr2011::RosterEntry(kProfiles, kProfileSize, bi);
-    std::string fixed, repaired;
+    // test aid: SVR2011_TEST_SAVED_MOVE=<folder>,<0xOFF>,<id> - that mod's slot holds the id, as a save made with
+    // an older version of the mod would (moves_port.py renumber: a save holding the old id)
+    if (const char* t = std::getenv("SVR2011_TEST_SAVED_MOVE")) {
+      const std::string v = t;
+      const size_t c1 = v.find(','), c2 = c1 == std::string::npos ? c1 : v.find(',', c1 + 1);
+      if (c2 != std::string::npos && v.substr(0, c1) == m.folder) {
+        const uint32_t off = uint32_t(std::strtoul(v.c_str() + c1 + 1, nullptr, 0));
+        const uint16_t id = uint16_t(std::strtoul(v.c_str() + c2 + 1, nullptr, 0));
+        if (off + 1u < kEntrance) {
+          sp[off] = uint8_t(id >> 8), sp[off + 1] = uint8_t(id);
+          REXLOG_INFO("[svr2011] superstar mods: test: {} slot 0x{:03X} holds {}", m.folder, off, id);
+        }
+      }
+    }
+    std::string fixed, repaired, moved;
+    if (!m.renumbered.empty())  // (a save of the mod's older version: its old ids, in any slot - an edited move-set too)
+      for (uint32_t off = 0; off + 1 < kEntrance; off += 2) {
+        const uint16_t raw = Rd16(sp + off);
+        const auto r = m.renumbered.find(uint16_t(raw & 0x7FFF));
+        if (r == m.renumbered.end() || MoveUsable(r->second) != 1) continue;
+        const uint16_t v = uint16_t((raw & 0x8000) | r->second);
+        sp[off] = uint8_t(v >> 8), sp[off + 1] = uint8_t(v);
+        moved += fmt::format(" 0x{:03X}={}->{}", off, r->first, r->second);
+      }
+    if (!moved.empty())
+      REXLOG_WARN("[svr2011] superstar mods: {}: saved moves on the ids the mod had before (renumbered), its new ids put "
+                  "in:{}", m.folder, moved);
     for (const auto& [off, id] : m.moves) {
       if (off + 1u >= kEntrance) continue;
       const uint16_t cur = uint16_t(Rd16(sp + off) & 0x7FFF);

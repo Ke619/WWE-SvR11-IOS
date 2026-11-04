@@ -206,6 +206,30 @@ std::function<void()> Reinstall(const fs::path& dir) {
 }
 
 // pack.txt without the lines whose animation file isn't in the folder (the game then plays the base's for those).
+// Moves on ids of 16000 and up (older ports): moves_port.py renumber moves them to free records below the banks'
+// last ids, in the mod itself (pack.txt, the follow-ups, the moves list, the version), so the ids stay put. The game
+// leaves such a move's body motion out and keeps the base's move instead (move_packs.cpp; report a745b2).
+std::function<void()> RenumberMoves(const fs::path& mod) {
+  return [mod] {
+    const fs::path game = fs::path(g_game);
+    Status("Moving " + PathStr(mod.filename()) + "'s moves to ids the game plays ...");
+    const bool started = RunToolJson(L"moves_port.py", {L"renumber", L"--mod", mod.wstring(), L"--pac11", (game / L"pac").wstring(),
+                                                         L"--mods", (game / L"Mods").wstring()},
+                                     [mod](int code, const std::string& out) {
+                                       size_t n = 0;
+                                       for (size_t at = out.find("\"new\":"); at != std::string::npos; at = out.find("\"new\":", at + 1)) ++n;
+                                       const bool kept = out.find("\"kept\": [{") != std::string::npos ||
+                                                         out.find("\"kept\":[{") != std::string::npos;
+                                       if (code != 0) Status("The moves couldn't be moved (see the log): nothing was changed.");
+                                       else Status(std::to_string(n) + " move" + (n == 1 ? " is" : "s are") + " on new ids" +
+                                                   (kept ? " - some had no free id left and stay off (see the log)" : "") +
+                                                   ". The game picks them up at its next start.");
+                                       FixChanged();
+                                     });
+    if (!started) Status("The move tool couldn't start (see the Mod Maker tools).");
+  };
+}
+
 std::function<void()> DropBrokenMoves(const fs::path& pack) {
   return [pack] {
     Bytes b;
@@ -411,6 +435,7 @@ void CheckPackTxt(const fs::path& dir, const fs::path& mod, const std::string& w
   std::string line;
   int n = 0, missing = 0, bad = 0;
   std::string first_missing, fatal;
+  std::set<int> high_motion, own;  // (motion ids of 16000 and up / the moves the pack gives itself)
   auto is_hex = [](const std::string& s, size_t len) { return s.size() == len && std::all_of(s.begin(), s.end(), [](char c) { return std::isxdigit(uint8_t(c)); }); };
   while (std::getline(in, line)) {
     ++n;
@@ -424,16 +449,20 @@ void CheckPackTxt(const fs::path& dir, const fs::path& mod, const std::string& w
       if (t.size() < 8) { ++bad; continue; }
       if (!Exists(dir / fs::u8path(t[7]))) { if (!missing++) first_missing = t[7]; }
       if (!g_game.empty() && !Exists(pacdir / fs::u8path(t[1]))) fatal = t[1];
+      if (const int id = std::atoi(t[3].c_str()); id >= 16000) high_motion.insert(id);
     } else if (kind == "pacentry") {
       if (t.size() < 5 || t[3].size() > 8 || Ext(t[1]) != ".pac" || t[1].find("..") != std::string::npos) { ++bad; continue; }
       if (!Exists(dir / fs::u8path(t[4]))) { if (!missing++) first_missing = t[4]; }
       if (!g_game.empty() && !Exists(pacdir / fs::u8path(t[1]))) fatal = t[1];
     } else if (kind == "waze") {
       if (t.size() < 3 || !is_hex(t[2], 32)) ++bad;
+      else own.insert(std::atoi(t[1].c_str()));
     } else if (kind == "wazecopy") {
       if (t.size() < 3 || std::atoi(t[1].c_str()) == 0 || t[1] == t[2]) ++bad;
+      else own.insert(std::atoi(t[1].c_str()));
     } else if (kind == "wazename") {
       if (t.size() < 3) ++bad;
+      else own.insert(std::atoi(t[1].c_str()));
     } else if (kind == "exh") {
       if (t.size() < 3 || !is_hex(t[2], 72)) ++bad;
     } else if (kind == "evt") {
@@ -455,6 +484,20 @@ void CheckPackTxt(const fs::path& dir, const fs::path& mod, const std::string& w
                     .With("Remove the broken moves", DropBrokenMoves(dir), "the broken moves are taken out"));
   }
   if (bad) p.push_back(Warning(who + ": " + std::to_string(bad) + " line" + (bad == 1 ? " is" : "s are") + " damaged and skipped.").With(kOpen, OpenIt(mod)));
+  {  // (moves past 16000: installed mods only - the fix changes the mod in the game's Mods folder)
+    std::string ids;
+    int past = 0;
+    for (int id : high_motion)
+      if (own.count(id)) ids += (past++ ? ", " : "") + std::to_string(id);
+    std::error_code ec2;
+    const fs::path mods = fs::absolute(fs::path(g_game) / L"Mods", ec2), at = fs::absolute(mod, ec2);
+    if (past && !g_game.empty() && PathStr(at).rfind(PathStr(mods), 0) == 0)
+      p.push_back(Warning(who + ": " + std::to_string(past) + " move" + (past == 1 ? " is" : "s are") + " on an id past 16000 (" + ids +
+                              ") - the game can't play " + (past == 1 ? "it" : "them") + ", so the base's move is used instead.",
+                          "The fix moves them to free ids the game plays, in the mod itself (a copy of the old files is kept "
+                          "in the Mod Maker tools' work\\renumber_backup folder).")
+                      .With("Move them to ids the game plays", RenumberMoves(mod), "the moves are being moved"));
+  }
   uintmax_t size = 0;
   std::error_code ec;
   for (const auto& e : fs::recursive_directory_iterator(dir, ec))
@@ -468,7 +511,7 @@ void CheckSuperstar(const fs::path& dir, std::vector<Problem>& p) {
   const Manifest m = ReadManifest(dir);
   ManifestBasics(dir, m, "superstar", p);
   TrailingSpaces(dir, m, p);
-  UnknownKeys(dir, m, {"short", "base", "song", "music", "theme_gain", "theme_gain_auto", "movie", "voice", "call_gain", "loading", "style", "ratings", "call", "hometown", "announcer", "height", "pose",
+  UnknownKeys(dir, m, {"short", "base", "song", "music", "theme_gain", "theme_gain_auto", "movie", "voice", "call_gain", "renumbered", "loading", "style", "ratings", "call", "hometown", "announcer", "height", "pose",
                        "entrance", "victory", "abilities", "moves", "pack", "game_look", "cae"},
               {"attire"}, p);
   const std::string name = Trim(m.Get("name"));

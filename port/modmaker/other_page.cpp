@@ -460,7 +460,7 @@ void UseArenaFile(const std::wstring& file, const std::string& name, const std::
 void TestConvertW13(const std::wstring& file, int host) {
   g_w13_file = file;
   g_w13_host = host;
-  std::snprintf(g_w13_name, sizeof g_w13_name, "W13 test");
+  std::snprintf(g_w13_name, sizeof g_w13_name, "WWE 13 arena");
   Wwe13Options opt = g_w13;
   const std::string name = g_w13_name;
   RunInBackground([file, host, opt, name] {

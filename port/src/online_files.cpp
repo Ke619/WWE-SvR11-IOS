@@ -637,6 +637,92 @@ uint64_t GameplayModSetHash() {
   return h;
 }
 
+const std::string& DlcSet() {
+  static const std::string set = [] {
+    std::vector<std::string> lines;
+    const fs::path title = UserDataFolder() / "0000000000000000" / "5451085D";
+    std::error_code ec;
+    for (const auto& pkg : fs::directory_iterator(title / "00000002", ec)) {
+      if (!pkg.is_directory(ec)) continue;
+      // (its game files: names and sizes, the pac folder's - movies, sounds and the catalog don't play)
+      std::vector<std::pair<std::string, uint64_t>> files;
+      for (const auto& f : fs::recursive_directory_iterator(pkg.path() / "pac", ec)) {
+        if (!f.is_regular_file(ec)) continue;
+        std::string rel = fs::relative(f.path(), pkg.path(), ec).generic_string();
+        std::transform(rel.begin(), rel.end(), rel.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+        if (rel.rfind("pac/string", 0) == 0) continue;  // (PatchOnlineStrings: the wording)
+        files.push_back({rel, uint64_t(f.file_size(ec))});
+      }
+      if (files.empty()) continue;  // (a catalog only: Fan Axxess)
+      std::sort(files.begin(), files.end());
+      uint64_t h = 0xCBF29CE484222325ull;
+      for (const auto& [name, size] : files) {
+        for (unsigned char ch : name) h = (h ^ ch) * 0x100000001B3ull;
+        for (int i = 0; i < 8; ++i) h = (h ^ uint8_t(size >> (8 * i))) * 0x100000001B3ull;
+      }
+      // (its name: the content header's, UTF-16BE at 8 - "WWE SmackDown vs. Raw 2011 - Vol02" -> "DLC Vol02")
+      std::string name;
+      {
+        std::ifstream in(title / "Headers" / "00000002" / (pkg.path().filename().string() + ".header"), std::ios::binary);
+        std::vector<uint8_t> d((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        for (size_t i = 8; i + 1 < d.size() && i < 8 + 256; i += 2) {
+          const uint16_t c = uint16_t(d[i] << 8 | d[i + 1]);
+          if (!c) break;
+          name += c >= 0x20 && c < 0x7F ? char(c) : c == 0x2013 || c == 0x2014 ? '-' : '?';
+        }
+      }
+      for (const char* game : {"WWE SmackDown vs. Raw 2011", "WWE SmackDown vs Raw 2011"})
+        if (name.rfind(game, 0) == 0) name = name.substr(std::strlen(game));
+      while (!name.empty() && (name.front() == ' ' || name.front() == '-' || name.front() == ':')) name.erase(0, 1);
+      while (!name.empty() && name.back() == ' ') name.pop_back();
+      if (name.empty()) name = pkg.path().filename().string().substr(0, 12);
+      if (name.rfind("DLC", 0) != 0) name = "DLC " + name;
+      char hex[24];
+      std::snprintf(hex, sizeof(hex), "%016llX", static_cast<unsigned long long>(h));
+      lines.push_back(std::string("DLC\t") + hex + "\t-\t" + hex + "\t" + name);
+    }
+    std::sort(lines.begin(), lines.end());
+    std::string out;
+    for (const std::string& l : lines) out += l + "\n";
+    REXLOG_INFO("online: DLC packages with game files: {}", out.empty() ? std::string("none") : "\n" + out);
+    return out;
+  }();
+  // (test aid: SVR2011_TEST_DLC_SET=none | "<fingerprint>|<name>,..." - this game's set instead: two test games
+  // share one user data's DLC)
+  if (const char* v = std::getenv("SVR2011_TEST_DLC_SET"); v && *v) {
+    static const std::string test = [v] {
+      std::vector<std::string> lines;
+      std::stringstream ss(std::string(v) == "none" ? std::string() : std::string(v));
+      for (std::string item; std::getline(ss, item, ',');) {
+        const size_t bar = item.find('|');
+        if (bar == std::string::npos) continue;
+        lines.push_back("DLC\t" + item.substr(0, bar) + "\t-\t" + item.substr(0, bar) + "\t" + item.substr(bar + 1));
+      }
+      std::sort(lines.begin(), lines.end());
+      std::string out;
+      for (const std::string& l : lines) out += l + "\n";
+      REXLOG_INFO("online: DLC packages (test aid SVR2011_TEST_DLC_SET): {}", out.empty() ? std::string("none") : "\n" + out);
+      return out;
+    }();
+    return test;
+  }
+  return set;
+}
+
+std::string DlcDifference(const std::string& mine, const std::string& theirs) {
+  const auto a = ParseSet(mine), b = ParseSet(theirs);
+  std::vector<std::string> parts;
+  for (const auto& [key, l] : b)
+    if (!a.count(key)) parts.push_back("they have " + l.name + ", you don't");
+  for (const auto& [key, l] : a)
+    if (!b.count(key)) parts.push_back("you have " + l.name + ", they don't");
+  if (parts.empty()) return "";
+  std::string out = "Your downloadable content doesn't match: ";
+  for (size_t i = 0; i < parts.size() && i < 2; ++i) out += (i ? "; " : "") + parts[i];
+  if (parts.size() > 2) out += "; and " + std::to_string(parts.size() - 2) + " more";
+  return out + ".";
+}
+
 std::string ModSetDifference(const std::string& mine, const std::string& theirs, bool superstars) {
   auto a = ParseSet(mine), b = ParseSet(theirs);
   if (!superstars) {  // (checked in the lobby: online_mods.h)

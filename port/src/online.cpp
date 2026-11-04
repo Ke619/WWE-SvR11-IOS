@@ -389,7 +389,7 @@ uint32_t OnlineString(uint32_t id) {
     const std::string why = P2PHiddenReason(&sessions);
     if (why.empty()) return 0;
     // (the game's own wording - its C67E / C67C messages - then the details)
-    const bool mods = why.rfind("Your mods", 0) == 0;
+    const bool mods = why.rfind("Your mods", 0) == 0 || why.rfind("Your downloadable content", 0) == 0;
     const std::string head = mods ? "Unable to join the session due to a difference in downloadable content."
                                   : "Unable to join the session due to a difference in game versions.";
     if (id == kNoSessionsId)

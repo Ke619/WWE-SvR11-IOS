@@ -1434,7 +1434,7 @@ void FillRandomSlots(uint8_t* base, uint32_t match, uint32_t count, uint8_t team
   const uint32_t picked[2] = {Rd32(slot[0] + 8) / 100, Rd32(slot[1] + 8) / 100};  // (+8: what the people are built from)
   auto record = [&](uint32_t id) -> const uint8_t* {
     if (id >= 1000) return nullptr;
-    const uint32_t index = Rd16(base + kIdToIndex + id * 2);
+    const uint32_t index = svr2011::RosterIndex(base, id);
     if (index >= 1000) return nullptr;
     const uint8_t* rec = base + svr2011::RosterEntry(kRecords, kRecordSize, index);
     return Rd16(rec + kOwnId) == id ? rec : nullptr;

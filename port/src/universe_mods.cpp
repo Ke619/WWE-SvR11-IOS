@@ -36,8 +36,8 @@ namespace {
 namespace fs = std::filesystem;
 
 constexpr uint32_t kSavePtr = 0x82E407B4, kUniverse = 0x364B4, kEntries = 16, kRivalry = 3616, kEntrySize = 24;
-// (326: the mod slots, superstar_mods.cpp - 137 pool ids + big_roster's 323-511)
-constexpr uint32_t kPlaces = 150, kMax = 326, kRow = kPlaces + kMax;
+// (317: the mod slots, superstar_mods.cpp - 137 pool ids + big_roster's 323-502)
+constexpr uint32_t kPlaces = 150, kMax = 317, kRow = kPlaces + kMax;
 
 rex::memory::Memory* g_memory = nullptr;
 fs::path g_file;            // Saves\.universe\mods.bin

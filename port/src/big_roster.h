@@ -13,6 +13,9 @@ namespace svr2011 {
 constexpr uint32_t kStockIndices = 242, kMaxIndices = 512, kMaxIds = 512;
 // Ids a mod can take past the game's 0-321 (322 is the game's "nobody"; 512 its "no index").
 constexpr uint32_t kFirstHighId = 323;
+// The last: 180 of them - with the 137 pool ids, 317 mods, as many as the select screen's mods list holds (322
+// places, 5 of them the managers').
+constexpr uint32_t kLastHighId = 502;
 
 void InstallBigRoster(rex::memory::Memory* memory);
 bool BigRosterOn();

@@ -384,7 +384,7 @@ std::vector<std::pair<std::string, uint32_t>> ReadSlots(const fs::path& file) {
       if (tab == std::string::npos) continue;
       const uint32_t id = uint32_t(std::atoi(l.c_str() + tab + 1));
       if (std::find(std::begin(kPool), std::end(kPool), id) != std::end(kPool) ||
-          (svr2011::BigRosterOn() && id >= svr2011::kFirstHighId && id < svr2011::kMaxIds))  // (big_roster: past 322)
+          (svr2011::BigRosterOn() && id >= svr2011::kFirstHighId && id <= svr2011::kLastHighId))  // (big_roster: past 322)
         out.push_back({l.substr(0, tab), id});
     }
     std::fclose(t);
@@ -872,7 +872,7 @@ void LoadMods() {
     }
     // (big_roster: the pool taken - ids past the game's 322, entries past its 242)
     if (svr2011::BigRosterOn())
-      for (uint32_t id = svr2011::kFirstHighId; id < svr2011::kMaxIds; ++id) {
+      for (uint32_t id = svr2011::kFirstHighId; id <= svr2011::kLastHighId; ++id) {
         bool taken = false;
         for (const auto& s : slots) taken |= s.second == id;
         if (taken) continue;

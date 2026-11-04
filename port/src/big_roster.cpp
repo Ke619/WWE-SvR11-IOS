@@ -262,7 +262,7 @@ uint32_t RosterIndex(const uint8_t* base, uint32_t id) {
 }
 
 uint32_t BigRosterGiveIndex(uint8_t* base, uint32_t id, uint32_t like) {
-  if (!g_on || id < kFirstHighId || id >= kMaxIds || g_count >= kMaxIndices) return 512;
+  if (!g_on || id < kFirstHighId || id > kLastHighId || g_count >= kMaxIndices) return 512;
   if (g_hi_index[id - 322] != 512) return g_hi_index[id - 322];
   const uint32_t to = g_count++, from = like < 322 ? Rd16(base + kIdToIndex + like * 2) : 512;
   g_hi_index[id - 322] = uint16_t(to);

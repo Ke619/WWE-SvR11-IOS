@@ -7,6 +7,7 @@
  * from the server (POST /api/reports/status, asked when the tab opens and on Refresh); the selected one's line
  * under the list ("Sure - we plan to add this: ...", "No, not planned: ...", "Done in 2.1.10: ..."). */
 #include "suggestions_tab.h"
+#include "report_urls.h"
 
 #include <commctrl.h>
 #include <commdlg.h>
@@ -204,6 +205,12 @@ static void send_idea(void)
     if (!j->server[0]) { free(j); status(L"No online server is set (Online tab)."); return; }
     WideCharToMultiByte(CP_UTF8, 0, title, -1, j->title, sizeof j->title, NULL, NULL);
     WideCharToMultiByte(CP_UTF8, 0, text, -1, j->text, sizeof j->text, NULL, NULL);
+    if (report_text_has_url(j->title) || report_text_has_url(j->text)) {
+        SetFocus(s_c[report_text_has_url(j->title) ? S_TITLE : S_TEXT]);
+        free(j);
+        status(SUGGEST_NO_URLS_W);
+        return;
+    }
     memcpy(j->pics, s_pics, sizeof s_pics);
     j->npics = s_npics;
     busy(1);

@@ -123,6 +123,8 @@ tr.match .modl { display: inline-block; margin: 2px 10px 2px 0; white-space: now
 .filter { background: var(--panel); border: 1px solid var(--line); color: var(--text); border-radius: 7px;
           padding: 5px 10px; font: inherit; font-size: 13px; min-width: 0; }
 input.filter { width: 220px; max-width: 100%; }
+.who { background: none; border: 0; padding: 0; font: inherit; color: var(--accent); cursor: pointer; text-align: left;
+  text-decoration: underline dotted; }
 
 /* tables */
 .scroll { max-height: 560px; overflow: auto; border: 1px solid var(--line); border-radius: 10px;
@@ -1103,7 +1105,7 @@ td.acts { text-align: right; white-space: nowrap; }
       return '<span class="modl">' + (x.stored ? '<a href="api/admin/report-mod/' + x.hash + '?name=' + encodeURIComponent(x.id || x.name || 'mod') +
         '" title="' + esc(x.hash) + '">' + label + '</a>' : '<span title="not sent: ' + esc(x.hash) + '">' + label + ' <span class="tag">not sent</span></span>') + '</span>';
     }).join('');
-    return '<tr class="match"><td colspan="6">' + line.join('') +
+    return '<tr class="match"><td colspan="7">' + line.join('') +
       (mods.length ? '<div><b>Mods (' + mods.length + '):</b> ' + modList + '</div>' : '') +
       (acts ? '<div style="margin-top:6px">' + acts + '</div>' : '') + '</td></tr>';
   }
@@ -1121,7 +1123,7 @@ td.acts { text-align: right; white-space: nowrap; }
   function rpOpen(r) { return !r.status || r.status === 'looking' || r.status === 'needs_info' || r.status === 'replied'; }
   function infoRow(r) {
     if (!r.info) return '';
-    return '<tr class="sub"><td></td><td colspan="5"><b>' + (r.status === 'replied' ? 'Answered' : 'Asked') + ' (' +
+    return '<tr class="sub"><td></td><td colspan="6"><b>' + (r.status === 'replied' ? 'Answered' : 'Asked') + ' (' +
       esc(r.info.date || '') + '):</b> ' + esc(r.info.question || '') + (r.replies ? ' &middot; <a href="' +
       reportFile(r, 'replies.jsonl') + '" target="_blank" rel="noopener">' + r.replies + ' answer' + (r.replies === 1 ? '' : 's') +
       '</a> (pictures: reply&lt;n&gt;_&lt;k&gt; files of the report)' : '') + '</td></tr>';
@@ -1130,7 +1132,7 @@ td.acts { text-align: right; white-space: nowrap; }
   var editCache = {};
   function editRow(r) {
     if (!r.edits) return '';
-    return '<tr class="sub"><td></td><td colspan="5"><b>Edited ' + r.edits + ' time' + (r.edits === 1 ? '' : 's') +
+    return '<tr class="sub"><td></td><td colspan="6"><b>Edited ' + r.edits + ' time' + (r.edits === 1 ? '' : 's') +
       ' (last ' + esc(r.edited || '') + '):</b> <span class="rp-edits" data-id="' + esc(r.id) + '" data-n="' + r.edits +
       '">loading\u2026</span></td></tr>';
   }
@@ -1167,13 +1169,39 @@ td.acts { text-align: right; white-space: nowrap; }
   // ---- suggestions (reports of kind "suggestion": reports.py) - answered Sure / No / Done in <version>
   var sugRows = [];
   var SG_ANSWER = {planned: 'Sure', not_planned: 'No, not planned', fixed: 'Done'};
+  // Who sent it: the online account, else the contact they wrote, else anonymous. A name lists that person's reports.
+  var whoFilter = '';
+  function isWho(r) { return !whoFilter || (r.who || '').toLowerCase() === whoFilter.toLowerCase(); }
+  function whoCell(r) {
+    var w = r.who || 'anonymous';
+    if (w === 'anonymous') return '<span class="note">anonymous</span>';
+    return '<button class="who" data-who="' + esc(w) + '" title="' + (r.account ? 'their online account' : 'the contact they wrote') +
+      ' - click to list what this person sent">' + esc(w) + '</button>' +
+      (r.account && r.contact && r.contact !== r.account ? '<br><span class="note">' + esc(r.contact) + '</span>' : '');
+  }
+  function whoBar() {
+    if (!whoFilter) return '';
+    var n = reportRows.filter(isWho).length, s = sugRows.filter(isWho).length;
+    return '<p class="note">Showing what <b>' + esc(whoFilter) + '</b> sent: ' + n + ' report' + (n === 1 ? '' : 's') + ', ' + s +
+      ' suggestion' + (s === 1 ? '' : 's') + '. <button class="btn" data-who="">Show everyone</button></p>';
+  }
+  function whoClick(e) {
+    var b = e.target.closest('[data-who]');
+    if (!b) return;
+    whoFilter = b.dataset.who;
+    renderFixed();
+    renderReports();
+    renderSuggestions();
+  }
+  el('p-reports').addEventListener('click', whoClick);
+  el('p-suggestions').addEventListener('click', whoClick);
   function renderSuggestions() {
     var f = el('f-sg').value.toLowerCase(), open = el('sg-open').checked;
     var rows = sugRows.filter(function (r) {
-      return (!open || !r.status) && (!f || [r.problem, r.what, r.account, r.app, r.version].join(' ').toLowerCase().indexOf(f) >= 0);
+      return isWho(r) && (whoFilter || !open || !r.status) && (!f || [r.problem, r.what, r.who, r.app, r.version].join(' ').toLowerCase().indexOf(f) >= 0);
     });
     if (reportError) { el('suggestions').innerHTML = '<p class="empty">' + esc(reportError) + '</p>'; return; }
-    el('suggestions').innerHTML = rows.length ? '<div class="scroll"><table><thead><tr><th>Received</th><th>Idea</th>' +
+    el('suggestions').innerHTML = whoBar() + (rows.length ? '<div class="scroll"><table><thead><tr><th>Received</th><th>Idea</th>' +
       '<th>From</th><th>Pictures</th><th>Answer</th><th></th></tr></thead><tbody>' + rows.map(function (r) {
         var x = r.fix || {}, pics = (r.images || []).map(function (n) {
           return '<a href="' + reportFile(r, n) + '" target="_blank" rel="noopener"><img class="thumb" loading="lazy" alt="' + esc(n) +
@@ -1184,7 +1212,7 @@ td.acts { text-align: right; white-space: nowrap; }
           (x.note ? '<br><span class="note">' + esc(x.note) + '</span>' : '') : '<span class="note">not answered</span>';
         return '<tr><td title="' + esc(r.received) + '">' + ago(r.received_at) + (r.count > 1 ? ' <span class="tag bad" title="the ' +
           'same title sent before">' + r.count + '&times;</span>' : '') + '</td><td><strong>' + esc(r.problem) + '</strong><br>' +
-          esc(r.what || '') + '</td><td>' + esc(r.account || '') + ' <span class="note">' + esc(r.app || '') + ' ' +
+          esc(r.what || '') + '</td><td>' + whoCell(r) + ' <span class="note">' + esc(r.app || '') + ' ' +
           esc(r.version || '') + '</span></td><td>' + pics + '</td><td>' + answer + '</td><td class="acts">' +
           '<a class="btn" href="' + reportFile(r, 'report.json') + '" target="_blank" rel="noopener">Details</a>' +
           '<button class="btn" data-sg="' + esc(r.id) + '" data-s="planned" title="the player sees: Sure (planned)">Sure…</button>' +
@@ -1192,7 +1220,7 @@ td.acts { text-align: right; white-space: nowrap; }
           '<button class="btn" data-sg="' + esc(r.id) + '" data-s="fixed" title="the player sees: Done in &lt;version&gt;">Done in…</button>' +
           (r.status ? '<button class="btn" data-sg="' + esc(r.id) + '" data-s="">Reopen</button>' : '') +
           '<button class="btn danger" data-sgdel="' + esc(r.id) + '">Delete</button></td></tr>';
-      }).join('') + '</tbody></table></div>' : '<p class="empty">No suggestions' + (open && sugRows.length ? ' left unanswered' : '') + '.</p>';
+      }).join('') + '</tbody></table></div>' : '<p class="empty">No suggestions' + (open && sugRows.length ? ' left unanswered' : '') + '.</p>');
   }
   el('suggestions').addEventListener('click', function (e) {
     var d = e.target.closest('[data-sgdel]');
@@ -1231,7 +1259,7 @@ td.acts { text-align: right; white-space: nowrap; }
   function renderReports() {
     var f = el('f-rp').value.toLowerCase(), open = el('rp-open').checked;
     var rows = reportRows.filter(function (r) {
-      return (!open || rpOpen(r)) && (!f || [r.app, r.version, r.problem, r.what, r.signature, r.signature_line, r.platform]
+      return isWho(r) && (whoFilter || !open || rpOpen(r)) && (!f || [r.app, r.version, r.problem, r.what, r.who, r.signature, r.signature_line, r.platform]
         .join(' ').toLowerCase().indexOf(f) >= 0);
     });
     var groups = [], by = {};
@@ -1241,12 +1269,12 @@ td.acts { text-align: right; white-space: nowrap; }
       g.rows.push(r);
     });
     if (reportError) { el('reports').innerHTML = '<p class="empty">' + esc(reportError) + '</p>'; return; }
-    el('reports').innerHTML = groups.length ? groups.map(function (g) {
+    el('reports').innerHTML = whoBar() + (groups.length ? groups.map(function (g) {
       var a = g.rows[0];
       return '<h3>' + esc(a.problem) + ' <span class="tag">' + esc(a.app) + ' ' + esc(a.version) + '</span> <span class="tag' +
         (a.count > 1 ? ' bad' : '') + '">' + a.count + ' report' + (a.count === 1 ? '' : 's') + '</span> <span class="id" title="signature">' +
         esc(g.sig) + '</span></h3>' + (a.signature_line ? '<p class="note"><code>' + esc(a.signature_line) + '</code></p>' : '') +
-        '<div class="scroll"><table><thead><tr><th>Received</th><th>Platform</th><th>Happens</th><th>What happened</th><th>Pictures</th><th></th></tr></thead><tbody>' +
+        '<div class="scroll"><table><thead><tr><th>Received</th><th>From</th><th>Platform</th><th>Happens</th><th>What happened</th><th>Pictures</th><th></th></tr></thead><tbody>' +
         g.rows.map(function (r) {
           var pics = (r.images || []).map(function (n) {
             return '<a href="' + reportFile(r, n) + '" target="_blank" rel="noopener"><img class="thumb" loading="lazy" alt="' + esc(n) +
@@ -1255,8 +1283,7 @@ td.acts { text-align: right; white-space: nowrap; }
           return '<tr><td title="' + esc(r.received) + '">' + ago(r.received_at) + (r.status ? ' <span class="tag' +
             (r.status === 'replied' ? ' bad' : ' on') + '">' + esc(r.status === 'needs_info' ? 'asked' : r.status) + '</span>' : '') +
             (r.edits ? ' <span class="tag bad" title="the player changed it after sending - see the row below">edited</span>' : '') +
-            '</td><td>' + esc(r.platform || '') + '</td><td>' + esc(r.happens || '') + '</td><td>' + esc(r.what || '') +
-            (r.account ? ' <span class="note">(' + esc(r.account) + ')</span>' : '') +
+            '</td><td>' + whoCell(r) + '</td><td>' + esc(r.platform || '') + '</td><td>' + esc(r.happens || '') + '</td><td>' + esc(r.what || '') +
             (r.updater ? '<br><span class="note" title="the last result in logs/updater.log">Updater: ' + esc(r.updater) + '</span>' : '') +
             '</td><td>' + pics + '</td><td class="acts">' +
             '<a class="btn" href="' + reportFile(r, 'report.json') + '" target="_blank" rel="noopener">Details</a>' +
@@ -1270,14 +1297,14 @@ td.acts { text-align: right; white-space: nowrap; }
             (r.status ? '<button class="btn" data-rp="' + esc(r.id) + '" data-s="">Reopen</button>' : '') +
             '</td></tr>' + infoRow(r) + editRow(r) + matchRow(r);
         }).join('') + '</tbody></table></div>';
-    }).join('') : '<p class="empty">No reports' + (open && reportRows.length ? ' left open' : '') + '.</p>';
+    }).join('') : '<p class="empty">No reports' + (open && reportRows.length ? ' left open' : '') + '.</p>');
     loadEdits();
   }
   // "Fixed while you were away": reports marked fixed (reports.py mark ... --fixed), newest fix first
   function fixedShown() {
     var f = el('f-rp').value.toLowerCase();
     return reportRows.filter(function (r) {
-      return r.status === 'fixed' && (!f || [r.app, r.version, r.problem, r.what, r.fix && r.fix.note, r.fix && r.fix.version]
+      return r.status === 'fixed' && isWho(r) && (!f || [r.app, r.version, r.problem, r.what, r.fix && r.fix.note, r.fix && r.fix.version]
         .join(' ').toLowerCase().indexOf(f) >= 0);
     }).sort(function (a, b) {
       return ((b.fix && b.fix.date) || '').localeCompare((a.fix && a.fix.date) || '') || b.received_at - a.received_at;

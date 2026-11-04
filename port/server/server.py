@@ -2228,6 +2228,8 @@ class Service:
         for n, img in sorted(images.items()):
             if not reports.image_ext(img):
                 return no(400, "image%d: only PNG, JPEG or WebP pictures." % n)
+        if reports.has_url(text):
+            return no(400, reports.url_refusal())
         if text and self.names.check(text):
             return no(400, "Your answer has a word that isn't allowed - please write it without it.")
         ip = self.client_ip(request)
@@ -2294,6 +2296,8 @@ class Service:
         for n, img in sorted(images.items()):
             if not reports.image_ext(img):
                 return no(400, "image%d: only PNG, JPEG or WebP pictures." % n)
+        if any(reports.has_url(t) for t in (what, before, contact)):
+            return no(400, reports.url_refusal())
         if any(t and self.names.check(t) for t in (what, before, contact)):
             return no(400, "Your text has a word that isn't allowed - please write it without it.")
         ip = self.client_ip(request)

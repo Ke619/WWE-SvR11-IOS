@@ -197,6 +197,12 @@ final class ReportsList {
                 error.setVisibility(View.VISIBLE);
                 return;
             }
+            if (ReportSend.hasUrl(t)) {
+                error.setTextColor(LauncherActivity.kRed);
+                error.setText(ReportSend.kNoUrls);
+                error.setVisibility(View.VISIBLE);
+                return;
+            }
             b.setEnabled(false);
             addPics.setEnabled(false);
             error.setTextColor(LauncherActivity.kDim);
@@ -248,6 +254,12 @@ final class ReportsList {
             String t = text.getText().toString().trim();
             if (t.isEmpty()) {
                 error.setText("Write your answer first.");
+                error.setVisibility(View.VISIBLE);
+                return;
+            }
+            if (ReportSend.hasUrl(t)) {
+                error.setTextColor(LauncherActivity.kRed);
+                error.setText(ReportSend.kNoUrls);
                 error.setVisibility(View.VISIBLE);
                 return;
             }

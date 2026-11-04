@@ -64,6 +64,7 @@
 #include <wchar.h>
 
 #include "apk_package.h"
+#include "report_urls.h"
 #include "mods_tab.h"
 #include "report_receipts.h"
 #include "reports_tab.h"
@@ -3965,6 +3966,12 @@ static LRESULT CALLBACK rep_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             if (!rep_describe(w, utf8, sizeof utf8)) {
                 SetDlgItemTextW(w, REP_STATUS, L"Please say what happened first.");
                 SetFocus(GetDlgItem(w, REP_WHAT));
+                return 0;
+            }
+            if (report_text_has_url(s_rep_what) || report_text_has_url(s_rep_before) || report_text_has_url(s_rep_contact)) {
+                SetDlgItemTextW(w, REP_STATUS, REPORT_NO_URLS_W);
+                SetFocus(GetDlgItem(w, report_text_has_url(s_rep_what) ? REP_WHAT
+                                       : report_text_has_url(s_rep_before) ? REP_BEFORE : REP_CONTACT));
                 return 0;
             }
             /* (the match goes as its own part: not in the zip; a try again makes it again) */

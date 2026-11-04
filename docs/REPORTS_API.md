@@ -68,6 +68,21 @@ add pictures...", `--reports-edit`) and Android's My reports send it; reports wa
 The players' words: "Received", "We're looking at this one now.", "Fixed - in the next update (2.1.9): <note>",
 "We need more information: <question>", "Thanks - we have your answer to: <question>", "Done", "Already reported".
 
+## No web addresses in players' text (2.1.10+)
+
+A report's problem, happens, what, before and contact, a report edit's what, before and contact, and an answer to a
+question are refused with `400` "Please dont add urls to bug reports" ("... to suggestions" for a suggestion) when they
+hold a web address. The rule is `reports.has_url`; `launcher/report_urls.h` and `ReportSend.hasUrl` (Android) repeat it so
+the forms can say so first, and `test_reports.py` has the test lists. It counts a scheme (`ab://`), `www.<something>` and
+a bare domain, which is a word ending in a web ending from `URL_ENDINGS` (`URL_WITH_PATH` ones only with a `/` after them,
+plus the short-link names in `URL_SITES`). File names, versions, paths, e-mail addresses and "game.Net" (a missing space) don't count.
+
+## Who sent a report
+
+`reports.py list` and the dashboard's admin list give each row `who`: the online account, else the contact (with the
+sender's last change), else `anonymous`, and `contact`. `reports.py list --who NAME` lists one person's; on the dashboard
+a name in the From column does. Neither goes out in the receipts' status answer.
+
 ## The match folder and its mods (2.1.6+)
 
 A report can carry the game's match folder (`logs\matches\<date>_<people>\`: match.json, inputs.bin, box.txt,

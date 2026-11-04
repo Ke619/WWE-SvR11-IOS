@@ -114,6 +114,52 @@ def image_ext(data):
     return None
 
 
+# -- no web addresses in what players write ---------------------------------------------------------------------
+# The rule (launcher/report_urls.h and the app's ReportSend.hasUrl are the same, with the same test list as
+# test_reports.py): a scheme (two letters or more before ://), www.<something>, or a bare domain: a word of letters,
+# digits, dots and dashes that ends in a web address's ending. Endings that are also file types (mp4, zip, mov, py,
+# pac, dat...) or short words a missing space makes (game.It, juego.de) are not on the list, so a file name, a version
+# or a path never counts; nor does an e-mail address (name@gmail.com: a contact). Endings that are only a web address
+# when a path follows (site.app/x, not foo.app) are URL_WITH_PATH.
+URL_ENDINGS = ("com", "net", "org", "gg", "io", "tv", "xyz", "co", "uk", "ru", "eu", "nz", "br", "au", "biz")
+URL_WITH_PATH = ("app", "dev", "site", "online", "link", "live", "club", "shop", "store", "top", "me", "be", "to",
+                 "info", "fun", "cc", "ly", "gl", "gd")
+URL_SITES = ("youtu.be", "t.me", "wa.me", "discord.me", "bit.ly", "goo.gl", "is.gd")
+_URL_SCHEME = re.compile(r"[A-Za-z]{2}://")
+_URL_WORD = re.compile(r"[A-Za-z0-9.\-]+")
+
+
+def has_url(text):
+    """Does a player's text have a web address in it?"""
+    if not text:
+        return False
+    if _URL_SCHEME.search(text):
+        return True
+    for m in _URL_WORD.finditer(text):
+        word = m.group().rstrip(".-")
+        before = text[m.start() - 1] if m.start() else ""
+        after = text[m.start() + len(word)] if m.start() + len(word) < len(text) else ""
+        if before in ("@", "/", "\\", "_") or after in ("@", "_", "\\"):
+            continue  # (an e-mail address; a folder's file)
+        if "." not in word or ".." in word or word[0] == ".":
+            continue
+        low = word.lower()
+        if low.startswith("www."):
+            return True
+        tail = word.rsplit(".", 1)[1]
+        if tail != tail.lower() and tail != tail.upper():
+            continue  # (a missing space before a new sentence: "the game.Net play")
+        tail = tail.lower()
+        if tail in URL_ENDINGS or low in URL_SITES or (after == "/" and tail in URL_WITH_PATH):
+            return True
+    return False
+
+
+def url_refusal(kind="report"):
+    """What a player sees when their text has a web address in it."""
+    return "Please dont add urls to " + ("suggestions" if kind == "suggestion" else "bug reports")
+
+
 def clean_meta(raw):
     """The client's report.json -> (the fields kept, None) or (None, why it's refused)."""
     if not isinstance(raw, dict):
@@ -133,6 +179,8 @@ def clean_meta(raw):
         return None, "kind must be one of: " + ", ".join(KINDS)
     if meta["app"] not in APPS:
         return None, "app must be one of: " + ", ".join(APPS)
+    if any(has_url(meta.get(k, "")) for k in ("problem", "happens", "what", "before", "contact")):
+        return None, url_refusal(meta["kind"])
     if not meta.get("version") or not meta.get("problem"):
         return None, ("A version and a title are needed." if meta["kind"] == "suggestion" else
                       "A version and a problem are needed.")
@@ -416,6 +464,7 @@ class LocalReports:
         self.status_path = os.path.join(self.dir, "status.json")
         self.edits_path = os.path.join(self.dir, "edits.json")  # (id -> {n, date, pictures}: the senders' changes)
         self.lock = threading.Lock()
+        self.contacts = {}  # (id -> its contact, the sender's last change included: reports from before the index had it)
         self.mods_dir = os.path.join(self.dir, "mods")
         os.makedirs(self.mods_dir, exist_ok=True)
         self.mod_quota = MOD_QUOTA
@@ -489,6 +538,7 @@ class LocalReports:
                                            "images", "account", "match", "match_size", "secret_hash", "kind")}
             row["mods"] = [{k: m[k] for k in ("hash", "name", "type", "id", "size", "stored")} for m in mods]
             row["what"] = meta.get("what", "")[:200]
+            row["contact"] = meta.get("contact", "")
             if meta.get("updater"):
                 row["updater"] = meta["updater"][:300]  # (the updater's last result: the dashboard's What column)
             with open(self.index_path, "a", encoding="utf-8") as f:
@@ -512,8 +562,28 @@ class LocalReports:
             elif detail:
                 r["info"] = detail
             r["count"] = counts.get(r.get("signature", ""), 1)
+            r["contact"] = self._contact(r)
+            r["who"] = r.get("account") or r["contact"] or "anonymous"  # (the dashboard's and reports.py list's From)
             r["replies"] = len(self._replies(r["id"])) if r["status"] in ("needs_info", "replied") else 0
         return rows
+
+    def _contact(self, row):
+        """A report's contact as it is now: what it was sent with, or the sender's last change."""
+        rid = row["id"]
+        contact = self.contacts.get(rid)
+        if contact is None:
+            contact = row.get("contact")
+            if contact is None:  # (from before the index had it)
+                try:
+                    with open(os.path.join(self.dir, _day(rid), rid, "report.json"), encoding="utf-8") as f:
+                        contact = json.load(f).get("contact", "")
+                except (OSError, ValueError):
+                    contact = ""
+            if row.get("edits"):
+                for e in self._edit_log(rid):
+                    contact = e.get("contact") or contact
+            self.contacts[rid] = contact
+        return contact
 
     # (the players' side: receipts)
     def _replies(self, rid):
@@ -642,6 +712,7 @@ class LocalReports:
             entry.update({k: v for k, v in (("what", what), ("before", before), ("contact", contact)) if v})
             with open(os.path.join(folder, "edits.jsonl"), "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            self.contacts.pop(rid, None)
             edits[rid] = {"n": n + 1, "date": date, "pictures": prev.get("pictures", 0) + len(names)}
             self._write_edits(edits)
         return True, {"edits": n + 1, "pictures": have + len(names)}
@@ -1193,7 +1264,7 @@ def main():
         python reports.py --data <data folder> delete <report id>
         python reports.py --data <data folder> mark <suggestion id> --planned ["a note"] | --not-planned ["a note"]
                           | --fixed "a note" --version 2.1.10   (a suggestion: Sure / No, not planned / Done in)
-        python reports.py --data <data folder> list [--fixed] [--kind report | suggestion]
+        python reports.py --data <data folder> list [--fixed] [--kind report | suggestion] [--who NAME]
         python reports.py --data <data folder> show <report id>   (its fields, the answers, the sender's edits)
         python reports.py --data <data folder> resign [--write]   (every report signed again: before / after)
     A signature marks every report with it (the dashboard's groups). The dashboard shows the fixed ones under
@@ -1223,6 +1294,7 @@ def main():
     ls = sub.add_parser("list")
     ls.add_argument("--fixed", action="store_true", help="only the fixed ones")
     ls.add_argument("--kind", choices=KINDS, help="only reports or only suggestions")
+    ls.add_argument("--who", help="only this person's (the From column: an account name, a contact, anonymous)")
     sh = sub.add_parser("show")
     sh.add_argument("id")
     rs = sub.add_parser("resign")
@@ -1252,8 +1324,8 @@ def main():
         rec = store.show(a.id)
         if rec is None:
             raise SystemExit("No report %s." % a.id)
-        for k in ("id", "kind", "received", "app", "version", "platform", "problem", "happens", "what", "before",
-                  "contact", "images", "status", "fix", "info"):
+        for k in ("id", "kind", "received", "app", "version", "platform", "account", "problem", "happens", "what",
+                  "before", "contact", "images", "status", "fix", "info"):
             if rec.get(k):
                 print("%-9s %s" % (k + ":", rec[k]))
         for n, r in enumerate(rec["replies"]):
@@ -1274,8 +1346,10 @@ def main():
                 continue
             if a.kind and r.get("kind", "report") != a.kind:
                 continue
+            if a.who and r["who"].lower() != a.who.lower():
+                continue
             fix, info = r.get("fix"), r.get("info")
-            print("%s  %-10s %s %s  %s%s%s%s" % (r["id"], r["status"] or "open", r.get("app"), r.get("version"),
+            print("%s  %-10s %-20s %s %s  %s%s%s%s" % (r["id"], r["status"] or "open", r["who"], r.get("app"), r.get("version"),
                                                 r.get("problem"), "  -> %s%s" % (fix["note"], " (%s)" % ", ".join(
                                                     x for x in (fix["commit"], fix["version"]) if x)
                                                     if fix["commit"] or fix["version"] else "") if fix else "",

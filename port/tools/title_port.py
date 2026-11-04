@@ -2,7 +2,7 @@
 
     py tools/title_port.py titles
     py tools/title_port.py make --game <SvR 2011 game folder or ISO> --title <key> --out <dir> [--name <name>]
-        [--short <name>] [--champion <name>] [--picture <png>] [--art <png>] [--set <belt texture>=<picture> ...] [--id <folder>] [--svrmod]
+        [--short <name>] [--champion <name>] [--picture <png>] [--art <png>] [--set <belt texture>=<picture> ...] [--id <folder>] [--author <name>] [--version <v>] [--svrmod]
 
 titles lists the keys (IC, US, WWE, WHC, WWE_TAG, WORLD_TAG, ECW, DIVAS, WOMENS, HARDCORE, CRUISER, MILLION, WCW)
 with their names, belt textures (data/belt_weapon_textures.json) and menu pictures (data/title_pictures.json).
@@ -27,6 +27,9 @@ import reskin_port  # noqa: E402
 KEYS = ['IC', 'US', 'WWE', 'WHC', 'WWE_TAG', 'WORLD_TAG', 'ECW', 'DIVAS', 'WOMENS', 'HARDCORE', 'CRUISER', 'MILLION', 'WCW']
 
 
+NAMES = {'WCW': 'WCW Championship'}  # (no belt table)
+
+
 class BadInput(Exception):
     pass
 
@@ -42,7 +45,14 @@ def titles():
     out = []
     for k in KEYS:
         b = belts.get(k, {})
-        out.append({'key': k, 'name': b.get('name', k), 'belt_textures': [t['name'] for t in b.get('textures', [])],
+        used = {}
+        for o in belts.values():
+            if o['key'] != k:
+                for t in o['textures']:
+                    used[t['hash16']] = True
+        out.append({'key': k, 'name': b.get('name', NAMES.get(k, k)), 'belt_textures': [t['name'] for t in b.get('textures', [])],
+                    'belt': [{'name': t['name'], 'width': t['width'], 'height': t['height'], 'shared': t['hash16'] in used}
+                             for t in b.get('textures', [])],
                     'pictures': [{x: p[x] for x in ('name', 'owner', 'width', 'height')} for p in pics.get(k, [])],
                     'art': [{x: p[x] for x in ('name', 'owner')} for p in pictures('art').get(k, [])]})
     return out
@@ -105,7 +115,9 @@ def make(a):
         lines.append('champion=' + a.champion)
     if a.short:
         lines.append('short=' + a.short)
-    lines += ['made_with=Port tools (title_port)', 'version=1.0']
+    if a.author:
+        lines.append('author=' + a.author)
+    lines += ['made_with=' + (a.made_with or 'Port tools (title_port)'), 'version=' + (a.version or '1.0')]
     with open(os.path.join(mod, 'manifest.txt'), 'w', encoding='utf-8', newline='\n') as f:
         f.write('\n'.join(lines) + '\n')
     rep = {'ok': True, 'out': mod, 'opens': 'title', 'warnings': warnings, 'dropped': [], 'notes': notes}
@@ -138,6 +150,9 @@ def main(argv):
     p.add_argument('--art')
     p.add_argument('--set', action='append', default=[])
     p.add_argument('--id')
+    p.add_argument('--author')
+    p.add_argument('--version')
+    p.add_argument('--made-with')
     p.add_argument('--svrmod', action='store_true')
     try:
         a = ap.parse_args(argv)

@@ -36,7 +36,7 @@ if ($WithModMaker) {
                      # the Port page's converters (Mod Maker 3 contract) and what they import / read
                      "superstar_port.py", "abilities_port.py", "ratings_port.py", "ps2_records.py", "ps2_moves.py", "prop_bones.py", "prop_bones_stock.json", "svr08_char.py", "entrance_port.py", "ymks.py", "svr08_entrance.py",
                      "hctp_entrance.py", "hctp_motion.py", "svr10_entrance.py", "wwe13_entrance.py", "w13_retarget.py",
-                     "w13_skeletons.py", "yanm_decode.py", "belt_port.py", "weapon_port.py", "reskin_port.py",
+                     "w13_skeletons.py", "yanm_decode.py", "belt_port.py", "weapon_port.py", "reskin_port.py", "title_port.py",
                      "moves_port.py", "dlc_move_ids.json", "ymbs.py", "ymbs_retarget.py", "attire_port.py", "pro_slots.json", "announcer_calls.json", "bink2_convert.py",
                      "wwe13_pack.py", "arena_tool.py", "arena_names.py",  # (imports checked transitively: arena_port needs these; arena_names since the named arena lists)
                      "ps2_entrance.py", "sym_entrance.py", "svr06_entrance.py", "jbi_entrance.py",  # (entrance_port: PS2 discs, SYM, SvR 2006, JBI)

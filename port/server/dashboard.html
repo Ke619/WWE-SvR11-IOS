@@ -223,6 +223,7 @@ td.acts { text-align: right; white-space: nowrap; }
     <button role="tab" id="tab-discovery" aria-controls="p-discovery">Discovery <span class="count" id="n-discovery"></span></button>
     <button role="tab" id="tab-names" aria-controls="p-names">Names <span class="count" id="n-names"></span></button>
     <button role="tab" id="tab-reports" aria-controls="p-reports">Reports <span class="count" id="n-reports"></span></button>
+    <button role="tab" id="tab-suggestions" aria-controls="p-suggestions">Suggestions <span class="count" id="n-sug"></span></button>
     <button role="tab" id="tab-settings" aria-controls="p-settings">Settings</button>
     <button role="tab" id="tab-logs" aria-controls="p-logs">Logs</button>
   </nav>
@@ -416,6 +417,16 @@ td.acts { text-align: right; white-space: nowrap; }
     <div id="reports"><span class="empty">Loading&hellip;</span></div>
   </section>
 
+  <section role="tabpanel" id="p-suggestions" aria-labelledby="tab-suggestions" tabindex="0" hidden>
+    <h2>Suggestions <span class="spacer"></span>
+      <label class="note"><input type="checkbox" id="sg-open" checked> Hide answered</label>
+      <input class="filter" id="f-sg" placeholder="Filter" aria-label="Filter suggestions"></h2>
+    <p class="intro">Ideas sent from the launcher's Suggestions tab and Android's My suggestions. The player sees your answer
+      there: Sure (planned), No (not planned), or Done in a version - each with an optional short note.
+      (<code>reports.py mark &lt;id&gt; --planned / --not-planned / --fixed ... --version</code> does the same.)</p>
+    <div id="suggestions"><span class="empty">Loading&hellip;</span></div>
+  </section>
+
   <section role="tabpanel" id="p-settings" aria-labelledby="tab-settings" tabindex="0" hidden>
     <h2>Settings</h2>
     <div class="set" id="settings"><span class="empty">Loading&hellip;</span></div>
@@ -537,7 +548,7 @@ td.acts { text-align: right; white-space: nowrap; }
     else if (name === 'cc') loadUploads();
     else if (name === 'discovery') loadMods();
     else if (name === 'names') { loadNames(); loadFlagged(); }
-    else if (name === 'reports') loadReports();
+    else if (name === 'reports' || name === 'suggestions') loadReports();
     else if (name === 'settings') { if (!settingsList.length) settings(); }
     else if (name === 'logs') log();
   }
@@ -1153,6 +1164,70 @@ td.acts { text-align: right; white-space: nowrap; }
       }).catch(function () { box.textContent = 'could not read the changes'; });
     });
   }
+  // ---- suggestions (reports of kind "suggestion": reports.py) - answered Sure / No / Done in <version>
+  var sugRows = [];
+  var SG_ANSWER = {planned: 'Sure', not_planned: 'No, not planned', fixed: 'Done'};
+  function renderSuggestions() {
+    var f = el('f-sg').value.toLowerCase(), open = el('sg-open').checked;
+    var rows = sugRows.filter(function (r) {
+      return (!open || !r.status) && (!f || [r.problem, r.what, r.account, r.app, r.version].join(' ').toLowerCase().indexOf(f) >= 0);
+    });
+    if (reportError) { el('suggestions').innerHTML = '<p class="empty">' + esc(reportError) + '</p>'; return; }
+    el('suggestions').innerHTML = rows.length ? '<div class="scroll"><table><thead><tr><th>Received</th><th>Idea</th>' +
+      '<th>From</th><th>Pictures</th><th>Answer</th><th></th></tr></thead><tbody>' + rows.map(function (r) {
+        var x = r.fix || {}, pics = (r.images || []).map(function (n) {
+          return '<a href="' + reportFile(r, n) + '" target="_blank" rel="noopener"><img class="thumb" loading="lazy" alt="' + esc(n) +
+            '" src="' + reportFile(r, n) + '" style="height:48px;max-width:96px;object-fit:cover;margin-right:4px;border-radius:3px"></a>';
+        }).join('');
+        var answer = r.status ? '<span class="tag on">' + esc(SG_ANSWER[r.status] || r.status) +
+          (r.status === 'fixed' && x.version ? ' in ' + esc(x.version) : '') + '</span>' +
+          (x.note ? '<br><span class="note">' + esc(x.note) + '</span>' : '') : '<span class="note">not answered</span>';
+        return '<tr><td title="' + esc(r.received) + '">' + ago(r.received_at) + (r.count > 1 ? ' <span class="tag bad" title="the ' +
+          'same title sent before">' + r.count + '&times;</span>' : '') + '</td><td><strong>' + esc(r.problem) + '</strong><br>' +
+          esc(r.what || '') + '</td><td>' + esc(r.account || '') + ' <span class="note">' + esc(r.app || '') + ' ' +
+          esc(r.version || '') + '</span></td><td>' + pics + '</td><td>' + answer + '</td><td class="acts">' +
+          '<a class="btn" href="' + reportFile(r, 'report.json') + '" target="_blank" rel="noopener">Details</a>' +
+          '<button class="btn" data-sg="' + esc(r.id) + '" data-s="planned" title="the player sees: Sure (planned)">Sure…</button>' +
+          '<button class="btn" data-sg="' + esc(r.id) + '" data-s="not_planned" title="the player sees: No, not planned">No…</button>' +
+          '<button class="btn" data-sg="' + esc(r.id) + '" data-s="fixed" title="the player sees: Done in &lt;version&gt;">Done in…</button>' +
+          (r.status ? '<button class="btn" data-sg="' + esc(r.id) + '" data-s="">Reopen</button>' : '') +
+          '<button class="btn danger" data-sgdel="' + esc(r.id) + '">Delete</button></td></tr>';
+      }).join('') + '</tbody></table></div>' : '<p class="empty">No suggestions' + (open && sugRows.length ? ' left unanswered' : '') + '.</p>';
+  }
+  el('suggestions').addEventListener('click', function (e) {
+    var d = e.target.closest('[data-sgdel]');
+    if (d) {   // (asks in place: a second click within 5 s deletes)
+      if (!d.dataset.armed) {
+        d.dataset.armed = '1'; d.textContent = 'Delete for good?';
+        setTimeout(function () { if (d.isConnected && d.dataset.armed) { delete d.dataset.armed; d.textContent = 'Delete'; } }, 5000);
+        return;
+      }
+      d.disabled = true;
+      deleteReports([d.getAttribute('data-sgdel')]);
+      return;
+    }
+    var b = e.target.closest('[data-sg]');
+    if (!b) return;
+    var status = b.getAttribute('data-s'), body = {status: status};
+    if (status === 'fixed') {
+      var v = window.prompt('Done in which version? (the player sees "Done in <version>")');
+      if (!v || !v.trim()) return;
+      var n1 = window.prompt('A short note for the player (optional):', '');
+      if (n1 === null) return;
+      body.fix = {version: v.trim(), note: n1.trim()};
+    } else if (status) {
+      var n2 = window.prompt('A short note for the player (optional) - they see "' + SG_ANSWER[status] + '" and this:', '');
+      if (n2 === null) return;
+      body.fix = {note: n2.trim()};
+    }
+    b.disabled = true;
+    api('api/admin/report/' + encodeURIComponent(b.getAttribute('data-sg')) + '/mark', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+    }).then(loadReports).catch(function () { b.disabled = false; });
+  });
+  el('f-sg').addEventListener('input', renderSuggestions);
+  el('sg-open').addEventListener('change', renderSuggestions);
+
   function renderReports() {
     var f = el('f-rp').value.toLowerCase(), open = el('rp-open').checked;
     var rows = reportRows.filter(function (r) {
@@ -1252,7 +1327,12 @@ td.acts { text-align: right; white-space: nowrap; }
   });
   function loadReports() {
     return api('api/admin/reports').then(function (d) {
-      reportRows = d.reports || []; reportError = ''; modStore = d.mod_store || null; renderModStore();
+      var all = d.reports || [];
+      reportRows = all.filter(function (r) { return r.kind !== 'suggestion'; });
+      sugRows = all.filter(function (r) { return r.kind === 'suggestion'; });
+      reportError = ''; modStore = d.mod_store || null; renderModStore();
+      el('n-sug').textContent = sugRows.filter(function (r) { return !r.status; }).length || '';
+      if (current === 'suggestions') renderSuggestions();
       el('n-reports').textContent = reportRows.filter(function (r) { return !r.status || r.status === 'replied'; }).length || '';
       if (current === 'reports') { renderFixed(); renderReports(); }
     }).catch(function (e) { reportError = 'The reports could not be loaded (' + e.message + ').'; if (current === 'reports') renderReports(); });
@@ -1453,7 +1533,7 @@ td.acts { text-align: right; white-space: nowrap; }
     else if (current === 'matches') leaderboard();
     else if (current === 'cc') loadUploads();
     else if (current === 'discovery') loadMods();
-    else if (current === 'reports') loadReports();
+    else if (current === 'reports' || current === 'suggestions') loadReports();
   }, 30000);
 })();
 </script>

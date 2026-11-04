@@ -22,6 +22,11 @@ a zip of its folder (an .svrmod) named by its CONTENT hash: SHA-256 over the fol
 lower-cased relative path ('/'), each file as path (UTF-8, lower case), a 0 byte, its size (8 bytes little-endian)
 and its bytes - the same folder gives the same hash however it was zipped. The server checks the hash on arrival.
 
+Suggestions (the launcher's Suggestions tab, Android's My suggestions): a report with kind "suggestion" - its
+problem is the idea's title, its what the idea; no zip. Same receipts, rate limit and storage. Their answers:
+planned ("Sure"), not_planned ("No, not planned"), each with an optional note, or fixed with a version ("Done in
+<version>"). The dashboard's Suggestions panel lists them; its Reports panel doesn't.
+
 Duplicates: a signature from app + version + problem + the first crash / error line in the zip's logs, made
 general (times, addresses, thread ids and other numbers taken out); the client's own hint stands in when the
 zip has none. seen_before = the reports before this one with the same signature.
@@ -47,8 +52,11 @@ MAX_MOD = 300 << 20          # one mod
 MAX_NEW_MOD_BYTES = 300 << 20  # the mods sent with one report
 MAX_MODS = 64                # mods listed in one report
 MOD_QUOTA = 20 << 30         # every report's mods together (the node's --report-mod-quota-gb)
-FIELDS = ("format", "app", "version", "platform", "os", "problem", "happens", "what", "before", "contact", "updater")
-STATUSES = ("", "done", "duplicate", "fixed", "looking", "needs_info", "replied")
+FIELDS = ("format", "app", "version", "platform", "os", "problem", "happens", "what", "before", "contact", "updater",
+          "kind")
+KINDS = ("report", "suggestion")
+STATUSES = ("", "done", "duplicate", "fixed", "looking", "needs_info", "replied", "planned", "not_planned")
+NOTE_STATUSES = ("fixed", "planned", "not_planned")  # (marks whose details are FIX_FIELDS: a note, a version...)
 FIX_FIELDS = {"note": 1000, "commit": 40, "version": 20, "date": 10}
 INFO_FIELDS = {"question": 1000, "date": 10}
 MAX_STATUS_IDS = 100          # receipts asked about in one status call
@@ -60,7 +68,7 @@ MAX_EDIT_TEXT = 4000          # what one change adds to "what happened" or "befo
 CLOSED = ("done", "duplicate")  # reports their senders can't change any more
 # (the player's words for each state - the launcher / Mod Maker / Android lists show these)
 STATES = {"": "received", "looking": "looking", "fixed": "fixed", "needs_info": "needs_info", "replied": "replied",
-          "done": "done", "duplicate": "duplicate"}
+          "done": "done", "duplicate": "duplicate", "planned": "planned", "not_planned": "not_planned"}
 
 
 def secret_hash(secret):
@@ -120,10 +128,14 @@ def clean_meta(raw):
             continue
         meta[k] = str(v).replace("\r\n", "\n").strip()[:TEXT_CAP.get(k, 200)]
     meta["app"] = meta.get("app", "").lower()
+    meta["kind"] = meta.get("kind", "report").lower() or "report"
+    if meta["kind"] not in KINDS:
+        return None, "kind must be one of: " + ", ".join(KINDS)
     if meta["app"] not in APPS:
         return None, "app must be one of: " + ", ".join(APPS)
     if not meta.get("version") or not meta.get("problem"):
-        return None, "A version and a problem are needed."
+        return None, ("A version and a title are needed." if meta["kind"] == "suggestion" else
+                      "A version and a problem are needed.")
     hint = str(raw.get("signature") or "").strip()[:300]
     if hint:
         meta["client_signature"] = hint
@@ -265,7 +277,13 @@ def first_error_line(zip_bytes, app=""):
 
 def signature(meta, zip_bytes, match_bytes=b""):
     """(signature, the line it was made from). No line from the session: the client's hint (when it's a useful
-    one), else the problem with the match's rule and arena mod (the match folder), else the problem alone."""
+    one), else the problem with the match's rule and arena mod (the match folder), else the problem alone.
+    A suggestion: its title alone (normalised) - the same idea sent again counts as seen before, different ones
+    don't (no logs: app + version would make them all one)."""
+    if meta.get("kind") == "suggestion":
+        line = "suggestion: " + meta["problem"]
+        key = "suggestion|" + normalise(meta["problem"].lower())
+        return hashlib.sha1(key.encode("utf-8")).hexdigest()[:16], line
     line = first_error_line(zip_bytes, meta["app"])
     if not line and _useful(meta.get("client_signature", "")):
         line = meta.get("client_signature", "")
@@ -468,7 +486,7 @@ class LocalReports:
                 json.dump(rec, f, indent=2, ensure_ascii=False)
             row = {k: rec.get(k) for k in ("id", "received", "received_at", "app", "version", "platform", "problem",
                                            "happens", "signature", "signature_line", "seen_before", "zip_size",
-                                           "images", "account", "match", "match_size", "secret_hash")}
+                                           "images", "account", "match", "match_size", "secret_hash", "kind")}
             row["mods"] = [{k: m[k] for k in ("hash", "name", "type", "id", "size", "stored")} for m in mods]
             row["what"] = meta.get("what", "")[:200]
             if meta.get("updater"):
@@ -488,7 +506,8 @@ class LocalReports:
             if r["id"] in edits:  # (the sender changed it: how often, the last time - edits.jsonl has them)
                 r["edits"], r["edited"] = edits[r["id"]].get("n", 0), edits[r["id"]].get("date", "")
             r["status"], detail = _mark_of(marks.get(r["id"]))
-            if detail and r["status"] == "fixed":
+            r["kind"] = r.get("kind") or "report"
+            if detail and r["status"] in NOTE_STATUSES:
                 r["fix"] = detail
             elif detail:
                 r["info"] = detail
@@ -517,10 +536,11 @@ class LocalReports:
         status, detail = _mark_of(mark)
         edit = edit or {}
         out = {"id": row["id"], "state": STATES.get(status, "received"), "received": row.get("received", ""),
+               "kind": row.get("kind") or "report",
                "app": row.get("app", ""), "problem": row.get("problem", ""), "what": (row.get("what") or "")[:160],
                "edits": edit.get("n", 0), "pictures": len(row.get("images") or []) + edit.get("pictures", 0),
                "editable": status not in CLOSED}
-        if status == "fixed" and detail:
+        if status in NOTE_STATUSES and detail:
             out.update(note=detail.get("note", ""), version=detail.get("version", ""), date=detail.get("date", ""))
         elif status in ("needs_info", "replied") and detail:
             out.update(question=detail.get("question", ""), date=detail.get("date", ""))
@@ -637,7 +657,7 @@ class LocalReports:
         with self.lock:
             rec["status"], detail = _mark_of(self._status().get(rid))
         if detail:
-            rec["fix" if rec["status"] == "fixed" else "info"] = detail
+            rec["fix" if rec["status"] in NOTE_STATUSES else "info"] = detail
         rec["replies"], rec["edits"] = self._replies(rid), self._edit_log(rid)
         return rec
 
@@ -752,7 +772,7 @@ class LocalReports:
 
     def mark(self, rid, status, fix=None):
         """One report: done / duplicate / looking / fixed (fix: {note, commit, version, date}) / needs_info (fix:
-        {question}) / '' (open again)."""
+        {question}) / planned / not_planned (a suggestion's answer; fix: {note}) / '' (open again)."""
         return bool(self.mark_many(rid, status, fix))
 
     def mark_many(self, target, status, fix=None):
@@ -761,7 +781,7 @@ class LocalReports:
             return []
         if status == "needs_info" and not clean_info(fix)["question"]:
             return []
-        value = (dict(clean_fix(fix), status="fixed") if status == "fixed" else
+        value = (dict(clean_fix(fix), status=status) if status in NOTE_STATUSES else
                  dict(clean_info(fix), status="needs_info") if status == "needs_info" else status)
         with self.lock:
             if _valid_id(target):
@@ -796,7 +816,7 @@ class LocalReports:
                 continue
             read = lambda n: open(os.path.join(folder, n), "rb").read() if os.path.exists(os.path.join(folder, n)) else b""
             meta = {"app": rec.get("app", ""), "version": rec.get("version", ""), "problem": rec.get("problem", ""),
-                    "client_signature": rec.get("client_signature", "")}
+                    "client_signature": rec.get("client_signature", ""), "kind": rec.get("kind", "report")}
             sig, line = signature(meta, read("report.zip"), read("match.zip"))
             out.append((rid, rec.get("signature", ""), sig, rec.get("signature_line", ""), line))
             if write:
@@ -1171,7 +1191,9 @@ def main():
         python reports.py --data <data folder> mark <id | signature> --needs-info "the question for the player"
         python reports.py --data <data folder> mark <id | signature> --looking | --done | --duplicate | --reopen
         python reports.py --data <data folder> delete <report id>
-        python reports.py --data <data folder> list [--fixed]
+        python reports.py --data <data folder> mark <suggestion id> --planned ["a note"] | --not-planned ["a note"]
+                          | --fixed "a note" --version 2.1.10   (a suggestion: Sure / No, not planned / Done in)
+        python reports.py --data <data folder> list [--fixed] [--kind report | suggestion]
         python reports.py --data <data folder> show <report id>   (its fields, the answers, the sender's edits)
         python reports.py --data <data folder> resign [--write]   (every report signed again: before / after)
     A signature marks every report with it (the dashboard's groups). The dashboard shows the fixed ones under
@@ -1191,6 +1213,8 @@ def main():
     how.add_argument("--done", action="store_true")
     how.add_argument("--duplicate", action="store_true")
     how.add_argument("--reopen", action="store_true")
+    how.add_argument("--planned", metavar="NOTE", nargs="?", const="", help="a suggestion: Sure (planned)")
+    how.add_argument("--not-planned", metavar="NOTE", nargs="?", const="", help="a suggestion: No, not planned")
     m.add_argument("--commit", default="")
     m.add_argument("--version", default="", help="the version the fix ships in, e.g. 2.1.6")
     m.add_argument("--date", default="", help="YYYY-MM-DD (default: today)")
@@ -1198,6 +1222,7 @@ def main():
     d.add_argument("id")
     ls = sub.add_parser("list")
     ls.add_argument("--fixed", action="store_true", help="only the fixed ones")
+    ls.add_argument("--kind", choices=KINDS, help="only reports or only suggestions")
     sh = sub.add_parser("show")
     sh.add_argument("id")
     rs = sub.add_parser("resign")
@@ -1208,8 +1233,11 @@ def main():
     store = LocalReports(a.data)
     if a.cmd == "mark":
         status = ("fixed" if a.fixed is not None else "needs_info" if a.needs_info is not None else
+                  "planned" if a.planned is not None else "not_planned" if a.not_planned is not None else
                   "looking" if a.looking else "done" if a.done else "duplicate" if a.duplicate else "")
         fix = ({"note": a.fixed, "commit": a.commit, "version": a.version, "date": a.date} if status == "fixed" else
+               {"note": a.planned if status == "planned" else a.not_planned, "date": a.date}
+               if status in ("planned", "not_planned") else
                {"question": a.needs_info, "date": a.date} if status == "needs_info" else None)
         ids = store.mark_many(a.target, status, fix)
         if not ids:
@@ -1224,8 +1252,8 @@ def main():
         rec = store.show(a.id)
         if rec is None:
             raise SystemExit("No report %s." % a.id)
-        for k in ("id", "received", "app", "version", "platform", "problem", "happens", "what", "before", "contact",
-                  "images", "status", "fix", "info"):
+        for k in ("id", "kind", "received", "app", "version", "platform", "problem", "happens", "what", "before",
+                  "contact", "images", "status", "fix", "info"):
             if rec.get(k):
                 print("%-9s %s" % (k + ":", rec[k]))
         for n, r in enumerate(rec["replies"]):
@@ -1244,10 +1272,13 @@ def main():
         for r in store.list(5000):
             if a.fixed and r["status"] != "fixed":
                 continue
+            if a.kind and r.get("kind", "report") != a.kind:
+                continue
             fix, info = r.get("fix"), r.get("info")
             print("%s  %-10s %s %s  %s%s%s%s" % (r["id"], r["status"] or "open", r.get("app"), r.get("version"),
-                                                r.get("problem"), "  -> %s (%s, %s)" % (fix["note"], fix["commit"],
-                                                                                        fix["version"]) if fix else "",
+                                                r.get("problem"), "  -> %s%s" % (fix["note"], " (%s)" % ", ".join(
+                                                    x for x in (fix["commit"], fix["version"]) if x)
+                                                    if fix["commit"] or fix["version"] else "") if fix else "",
                                                 "  ? %s (%d answer(s))" % (info["question"], r["replies"]) if info else "",
                                                 "  + %d edit(s), last %s" % (r["edits"], r["edited"]) if r.get("edits")
                                                 else ""))

@@ -2009,8 +2009,9 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs, const fs::path& d
   std::vector<fs::path> dirs;
   // (attire mods replacing an attire the game's pac has: generated packs, a pacentry line each)
   PrepareAttirePacks(game);
+  // (title mods: their belt models, pacentry lines into evt\evtobj.pac - title_mods.h)
   std::vector<fs::path> roots = {game / "Mods" / "Superstars", game / "Mods" / "Moves",
-                                 game / "Mods" / "SuperstarOverlay" / "attirepacks"};
+                                 game / "Mods" / "SuperstarOverlay" / "attirepacks", game / "Mods" / "Titles"};
   // (test aid SVR2011_TEST_PACKS=<folder>: the packs from <folder>/Superstars/*/moves and <folder>/Moves/* only -
   // a big merge timed without the player's mods; the overlay is still Mods/PacOverlay)
   if (const char* v = std::getenv("SVR2011_TEST_PACKS"); v && *v) {

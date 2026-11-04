@@ -32,6 +32,7 @@
 #define STBI_ONLY_PNG
 #define STBI_NO_STDIO
 #include "stb_image.h"
+#include "../title_mods.h"
 #include "../util.h"
 
 #ifdef _WIN32
@@ -655,6 +656,20 @@ void Start() {
       }
     }
     uint32_t used = 0;
+    // (title mods' textures\ first: a championship's belt and pictures - title_mods.h - as packs that are always on)
+    for (const fs::path& dir : svr2011::TitleModTextureFolders()) {
+      std::error_code ec;
+      uint32_t n = 0;
+      for (fs::recursive_directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+        if (!it->is_regular_file(ec)) continue;
+        const std::string ext = Lower(it->path().extension().string());
+        uint64_t h;
+        if ((ext == ".png" || ext == ".dds") && HashOfStem(it->path().stem().string(), &h) &&
+            g_files.emplace(h, it->path()).second)
+          ++n;
+      }
+      REXLOG_INFO("texture packs: title mod \"{}\": {} textures", dir.parent_path().filename().string(), n);
+    }
     for (const std::string& pack : packs) {
       const fs::path dir = g_game / "Texture Packs" / fs::u8path(pack);
       std::error_code ec;

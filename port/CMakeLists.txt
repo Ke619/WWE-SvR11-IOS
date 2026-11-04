@@ -78,6 +78,7 @@ set(SVR2011_SOURCES
     src/backgrounds_page.cpp
     src/weapons_page.cpp
     src/report_page.cpp
+    src/title_mods.cpp
     src/weapon_mods.cpp
     src/cpu_difficulty.cpp
     src/crowd_fight.cpp

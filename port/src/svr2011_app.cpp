@@ -39,6 +39,7 @@
 #include "backgrounds_page.h"
 #include "report_page.h"
 #include "weapons_page.h"
+#include "title_mods.h"
 #include "weapon_mods.h"
 #include "caw_logos.h"
 #include "paint_pages.h"
@@ -982,6 +983,7 @@ void Svr2011App::OnPostLoadXexImage() {
   svr2011::KeepWindowAlive();
   svr2011::InstallArenaMods(runtime()->memory(), runtime()->file_system());
   svr2011::KeepWindowAlive();
+  svr2011::InstallTitleMods(runtime()->memory());  // (championships' names, belts, pictures: title_mods.h)
   // Ring Kit: rope heights and rules from a custom arena's manifest (ring_rules.h).
   svr2011::InstallRingRules(runtime()->memory());
   svr2011::InstallCawLimits(runtime()->memory());  // (the CAW editor's part heap fallback: caw_limits.h)

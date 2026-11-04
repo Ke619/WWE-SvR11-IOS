@@ -48,6 +48,7 @@ constexpr uint32_t kManagers[] = {147, 186, 251, 296, 274};
 constexpr uint32_t kScreen = 272, kPlayer = 284, kCol = 88, kRow = 72;
 constexpr uint32_t kListIndex = 5228, kListMode = 28916;
 constexpr uint32_t kLists = 8116, kListSize = 2580, kManagerList = 7, kMasterList = 6;
+constexpr uint32_t kListIds = 322;  // (a list's room: count, 322 ids, 322 flags)
 constexpr uint32_t kTileKindRandom = 4;
 
 using svrfmt::Rd32, svrfmt::Wr32;
@@ -61,6 +62,7 @@ void FillManagers(uint8_t* base, uint32_t list) {
     ++n;
   }
   for (uint32_t id : svr2011::SuperstarModIds()) {  // (arenas branch: superstar mods, superstar_mods.cpp)
+    if (n >= kListIds) break;  // (the list's room: big_roster can have more mods than that)
     Wr32(base, list + 4 + n * 4, id);
     Wr32(base, list + 4 + 1288 + n * 4, 1);
     ++n;

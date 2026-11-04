@@ -107,6 +107,7 @@ set(SVR2011_SOURCES
     src/frame_rate.cpp
     src/roster.cpp
     src/story_designer.cpp
+    src/story_mods.cpp
     src/title_belts.cpp
     src/text_guard.cpp
     src/big_roster.cpp

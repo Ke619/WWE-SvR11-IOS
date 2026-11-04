@@ -33,6 +33,7 @@
 #include "p2p.h"
 #include "match_box.h"
 #include "superstar_threads.h"
+#include "story_mods.h"
 #include "universe_mods.h"
 #include "universe_welcome.h"
 #include "move_packs.h"
@@ -3337,6 +3338,7 @@ void CheckModProfiles(uint8_t* base) {
   }
   UniverseModsTick(base);  // (the game wrote its save: the mods' Universe side table beside it)
   MarksTick(base);  // (and which mod each slot's saved profile is: mod_profiles.txt)
+  svr2011::StoryModsTick();  // (Story Designer's stories that name a mod: story_mods.cpp)
   UniverseTeamsTick(base);  // (Universe's teams and stables made / changed / dissolved: logged)
   UniverseWelcomeTick(base);  // (the Universe welcome accepted: kept as seen in the save file at once)
   std::lock_guard lock(g_slots_mutex);
@@ -4189,6 +4191,12 @@ uint32_t SuperstarModBase(uint32_t id) {
   const Mod* m = ModOf(id);
   return m ? m->base : 0;
 }
+uint32_t SuperstarModIdOf(const std::string& folder) {
+  for (const auto& m : g_mods)
+    if (!m.temp && m.folder == folder) return m.slot;
+  return 0;
+}
+fs::path SuperstarModsSavesDir() { return g_save_file.empty() ? fs::path() : g_save_file.parent_path(); }
 
 void AddOverlayMount(const std::string& file) { g_extra_mounts.push_back("smods:\\" + file); }
 

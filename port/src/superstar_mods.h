@@ -65,6 +65,10 @@ void SuperstarModHandovers(uint8_t* base);
 void CheckModProfiles(uint8_t* base);
 // A mod's base character id (its manifest's base=), else 0.
 uint32_t SuperstarModBase(uint32_t id);
+// The id of the installed mod in folder (Mods/Superstars/<folder>; not a fetched one), else 0.
+uint32_t SuperstarModIdOf(const std::string& folder);
+// The saves folder SetSuperstarModsSaves was given ("" before).
+std::filesystem::path SuperstarModsSavesDir();
 // The game's text for string id (menu_hooks.cpp's lookup): a mod's attire
 // names, else 0.
 uint32_t SuperstarModString(uint32_t id);

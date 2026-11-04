@@ -327,12 +327,9 @@ LONG CALLBACK HwWatchHandler(EXCEPTION_POINTERS* e) {
   return EXCEPTION_CONTINUE_EXECUTION;
 }
 
-void HwWatchStart(uint8_t* base) {
+void HwWatchAt(uint8_t* base, uint32_t guest) {
   static std::once_flag once;
-  std::call_once(once, [base] {
-    const char* v = std::getenv("SVR2011_TEST_HW_WATCH");
-    const uint32_t guest = v ? uint32_t(std::strtoul(v, nullptr, 16)) : 0u;
-    if (!guest) return;
+  std::call_once(once, [base, guest] {
     g_hw_watch = base + guest;
     AddVectoredExceptionHandler(1, HwWatchHandler);
     REXLOG_INFO("frame rate: hw watch on guest {:08X} (host {:X})", guest, uintptr_t(g_hw_watch));
@@ -369,7 +366,13 @@ void HwWatchStart(uint8_t* base) {
     }).detach();
   });
 }
+
+void HwWatchStart(uint8_t* base) {
+  const char* v = std::getenv("SVR2011_TEST_HW_WATCH");
+  if (const uint32_t guest = v ? uint32_t(std::strtoul(v, nullptr, 16)) : 0u) HwWatchAt(base, guest);
+}
 #else
+void HwWatchAt(uint8_t*, uint32_t) {}
 void HwWatchStart(uint8_t*) {}
 #endif
 
@@ -537,6 +540,8 @@ void TestMatchTime(uint8_t* base) {
 }
 
 }  // namespace
+
+void svr2011::HwWatchOn(uint8_t* base, uint32_t guest) { HwWatchAt(base, guest); }
 
 // The world update, once a frame of the game's loop: how many 60 Hz ticks
 // this frame runs (at least one).

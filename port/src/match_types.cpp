@@ -15,6 +15,7 @@
 #include "big_roster.h"
 #include "match_diag.h"
 #include "match_types.h"
+#include "frame_rate.h"
 #include "mystery_opponent.h"
 #include "no_mods.h"
 #include "pad_types.h"
@@ -1039,6 +1040,21 @@ void CpuStallNet(const PPCContext& saved, uint8_t* base, uint32_t c) {
 // character *(state +280). After it: a CPU alone on the roof long enough
 // climbs down (above, g_roof_alone_since) - as if it pressed the action button
 // towards the nearest edge.
+// Test aid: SVR2011_TEST_FOLLOW_LOG=1 - a motion event's jump to a paired motion (ops 49 / 50: sub_821D4B50, r4 = the
+// event, r3 + 36 the fighter): the event's bytes and where they are, the fighter's motion and frame.
+REX_EXTERN(__imp__sub_821D4B50);
+REX_HOOK_RAW(sub_821D4B50) {
+  static const bool follow_log = std::getenv("SVR2011_TEST_FOLLOW_LOG") != nullptr;
+  if (follow_log) {
+    const uint32_t ev = ctx.r4.u32, ch = Rd32(base + ctx.r3.u32 + 36);
+    std::string bytes;
+    for (int i = -24; i < 12; ++i) bytes += (i == 0 ? " [" : i == 4 ? " ] " : " ") + fmt::format("{:02X}", base[ev + i]);
+    REXLOG_INFO("follow: event at {:08X}:{} - fighter {:08X} person {} motion {} frame bits {:08X}", ev, bytes, ch,
+                ch ? Rd32(base + ch + 1156) : 0, ch ? Rd32(base + ch + 212) : 0, ch ? Rd32(base + ch + 24) : 0);
+  }
+  __imp__sub_821D4B50(ctx, base);
+}
+
 REX_EXTERN(__imp__sub_82292D50);
 REX_HOOK_RAW(sub_82292D50) {
   const uint32_t c = Rd32(base + ctx.r3.u32 + 280);
@@ -2139,6 +2155,16 @@ REX_HOOK_RAW(sub_82216C58) {
   // Test aid: SVR2011_TEST_MOTION_LOG=1 - each fighter's motion (+212) when
   // it changes, with the person, the match frame, where he is (+288) and his
   // area (+444: 0 the ring, 1 outside).
+  // SVR2011_TEST_HW_WATCH_MOTION=<person>,<motion> - once that person is in that motion, the hardware write watch
+  // (frame_rate.cpp) on his motion word: who starts the motion after it (a ported move's 5873 -> 23231, 7017d6).
+  static const std::pair<int, int> watch_motion = [] {
+    int p = -1, m = 0;
+    if (const char* v = std::getenv("SVR2011_TEST_HW_WATCH_MOTION")) std::sscanf(v, "%d,%d", &p, &m);
+    return std::make_pair(p, m);
+  }();
+  if (watch_motion.first >= 0 && fighter && int(Rd32(base + fighter + 1156)) == watch_motion.first &&
+      int(Rd32(base + fighter + 212)) == watch_motion.second)
+    svr2011::HwWatchOn(base, fighter + 212);
   static const bool motion_log = std::getenv("SVR2011_TEST_MOTION_LOG") != nullptr;
   if (motion_log && fighter) {
     static uint32_t last_motion[16] = {};

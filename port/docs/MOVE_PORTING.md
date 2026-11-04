@@ -46,6 +46,16 @@ page (`port/docs/MOVE_MODDING.md`).
   (a player's 2K17 Blue Thunder Bomb, Sami Zayn). A move ported with 2.1.5 or older from these games has to be
   ported again.
 
+### 2.3b No empty records in a motion
+
+A keyframe motion's record is `0x60 + u16 size` or `0x60 + size`. The game has no size check: an empty record (`60 00 00`,
+a key whose only events were dropped) makes it read what follows as that key's record, so pose bytes run as events - no
+stock track has one (0 of 24746). Sabu's Springboard DDT 3 ended early at key 111, where `36 BF 5A` read as a jump to
+motion 23231, which no bank has, and both wrestlers stayed in it (report 7017d6). `ymks.build_stream` writes a one-key
+skip instead; `move_packs` does the same to a pack's keyframe motions when it merges (`DropEmptyRecords`, movepacks 15),
+so existing mods need no new port. Test aids: `SVR2011_TEST_HW_WATCH_MOTION=<person>,<motion>` (who writes the next
+motion), `SVR2011_TEST_FOLLOW_LOG=1` (a jump event's bytes and address).
+
 ### 2.4 Ids
 
 - **Below every template bank's last id.** A bank's directory is sorted and ends at its highest id (16000 in

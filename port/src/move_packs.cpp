@@ -91,7 +91,7 @@ namespace {
 namespace fs = std::filesystem;
 using svrfmt::Bytes;
 
-constexpr const char* kFormat = "movepacks 14";  // (14: record names cut on a UTF-8 character, bad bytes as '?' - a broken name froze the text draw; 13: pack motions going on to a motion nobody has get the game's own follow-up - every install merged again once; 12: new pacentry names keep the others' places, propfallback; 11: BATS / BATH INIT get the records themselves, not WAZA's tables - a DLC's differ; 2: banks whose sentinel points past the data; 3: WAZE category counts; 4: YMBs banks, record names; 6: WAZA records in id order; 7: of two packs' copies of a motion the first read is used; 8: pacentry lines; 9: YMBs motions appended after the stock ones; 10: pacentry into EPAC pacs (prtcls.pac pyro))
+constexpr const char* kFormat = "movepacks 15";  // (15: a keyframe motion's empty records dropped, DropEmptyRecords; 14: record names cut on a UTF-8 character, bad bytes as '?' - a broken name froze the text draw; 13: pack motions going on to a motion nobody has get the game's own follow-up - every install merged again once; 12: new pacentry names keep the others' places, propfallback; 11: BATS / BATH INIT get the records themselves, not WAZA's tables - a DLC's differ; 2: banks whose sentinel points past the data; 3: WAZE category counts; 4: YMBs banks, record names; 6: WAZA records in id order; 7: of two packs' copies of a motion the first read is used; 8: pacentry lines; 9: YMBs motions appended after the stock ones; 10: pacentry into EPAC pacs (prtcls.pac pyro))
 std::string g_folder;  // PacListFolder
 constexpr const char* kPropPac = "evt\\evtobj.pac";  // (entrance props: SOBJ <id>)
 
@@ -183,6 +183,41 @@ void ReadAhead() {
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
   }
   for (auto& t : threads) t.join();
+}
+
+// A keyframe motion's stream: b < 0x60 skips b keys, 0x60 + u16 size or 0x60 + size (one byte) is one key's record.
+// The game has no size check on a record: an empty one (60 00 00 - a ported move's key whose only events were dropped;
+// no stock motion has one) makes it read what follows as that key's record, pose bytes as events. Sabu's Springboard
+// DDT 3: at key 111 the bytes 36 BF 5A became a jump to motion 23231, which no bank has - both wrestlers stayed in it
+// for the rest of the match (reports 20261104-191220-7017d6). An empty record becomes a one-key skip: the same timing.
+// A stream that doesn't parse stays as it is.
+void DropEmptyRecords(Bytes& d) {
+  std::vector<size_t> empties;
+  for (size_t p = 0; p < d.size();) {
+    const uint8_t b = d[p];
+    if (b < 0x60) {
+      ++p;
+    } else if (b > 0x60) {
+      p += 1 + size_t(b - 0x60);
+    } else {
+      if (p + 3 > d.size()) return;
+      const size_t size = d[p + 1] | size_t(d[p + 2]) << 8;
+      if (!size) empties.push_back(p);
+      p += 3 + size;
+    }
+    if (p > d.size()) return;
+  }
+  if (empties.empty()) return;
+  Bytes out;
+  out.reserve(d.size());
+  size_t from = 0;
+  for (const size_t at : empties) {
+    out.insert(out.end(), d.begin() + from, d.begin() + at);
+    out.push_back(1);
+    from = at + 3;
+  }
+  out.insert(out.end(), d.begin() + from, d.end());
+  d = std::move(out);
 }
 
 bool ReadMotion(const fs::path& p, Bytes& out) {
@@ -288,6 +323,7 @@ void ReadPack(const fs::path& dir, Packs& p, std::string& stamp, bool data = tru
           ++n;
           continue;
         }
+        if (m.hdr.empty()) DropEmptyRecords(m.data);  // (a 20-byte header: a YMBs motion, another format)
       }
       std::string key = parts[0];
       key.resize(4, ' ');

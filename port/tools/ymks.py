@@ -205,7 +205,9 @@ def build_stream(st):
         else:
             r = it[1]
             lng = it[2] if len(it) > 2 else len(r) > 0x9f
-            if lng or len(r) == 0:
+            if len(r) == 0:   # (never an empty record, 60 00 00: the game has no size check and reads what follows as
+                out.append(1)  # this key's record - pose bytes as events, reports 7017d6. A one-key skip: the same timing)
+            elif lng:
                 out += bytes([0x60]) + struct.pack('<H', len(r))
             else:
                 assert len(r) <= 0x9f

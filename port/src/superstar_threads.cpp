@@ -335,7 +335,7 @@ void LogThreadsSlots(const uint8_t* base) {
   last = std::chrono::steady_clock::now();
   std::string s;
   for (uint32_t id = 0; id < 512; ++id) {
-    const uint32_t si = uint32_t(base[kIdToIndex + id * 2] << 8 | base[kIdToIndex + id * 2 + 1]);
+    const uint32_t si = svr2011::RosterIndex(base, id);
     if (si >= 512) continue;
     std::string names;
     for (uint32_t k = 0; k < kSlots; ++k) {
@@ -373,7 +373,7 @@ REX_HOOK_RAW(sub_827235D8) {
     std::lock_guard lock(g_mutex);
     std::error_code ec;
     for (const auto& m : g_mods) {
-      const uint32_t si = uint32_t(base[kIdToIndex + m.slot * 2] << 8 | base[kIdToIndex + m.slot * 2 + 1]);
+      const uint32_t si = svr2011::RosterIndex(base, m.slot);
       if (si >= 512) continue;
       const uint8_t* s = base + svr2011::RosterEntry(kProfiles, kProfileSize, si) + kSlotsAt;
       std::vector<uint8_t> now(s, s + kSlotsSize);

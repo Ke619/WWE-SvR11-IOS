@@ -92,7 +92,7 @@ int64_t NowMs() {
 
 const uint8_t* Record(uint8_t* base, uint32_t id) {
   if (id == 0 || id >= 1000) return nullptr;
-  const uint32_t index = Rd16(base + kIdToIndex + id * 2);
+  const uint32_t index = svr2011::RosterIndex(base, id);
   if (index >= 1000) return nullptr;
   const uint8_t* rec = base + svr2011::RosterEntry(kRecords, kRecordSize, index);
   return Rd16(rec + kOwnId) == id ? rec : nullptr;

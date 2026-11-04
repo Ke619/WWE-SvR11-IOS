@@ -255,6 +255,25 @@ uint32_t RosterEntry(uint32_t start, uint32_t stride, uint32_t index) {
   return uint32_t(int64_t(start + index * stride) + Shift(start, stride));
 }
 
+uint32_t RosterIndex(const uint8_t* base, uint32_t id) {
+  if (id < 322) return Rd16(base + kIdToIndex + id * 2);
+  if (g_on && id < kMaxIds) return g_hi_index[id - 322];
+  return 512;
+}
+
+uint32_t BigRosterGiveIndex(uint8_t* base, uint32_t id, uint32_t like) {
+  if (!g_on || id < kFirstHighId || id > kLastHighId || g_count >= kMaxIndices) return 512;
+  if (g_hi_index[id - 322] != 512) return g_hi_index[id - 322];
+  const uint32_t to = g_count++, from = like < 322 ? Rd16(base + kIdToIndex + like * 2) : 512;
+  g_hi_index[id - 322] = uint16_t(to);
+  g_ext_id[to - kStockIndices] = uint16_t(id);
+  // (its entries start as its base's: the mod's own data goes over them as a pool id's does)
+  if (from < kStockIndices)
+    for (const auto& [start, size] : {std::pair{kRecords, kRecordSize}, {kProfiles, kProfileSize}, {kEntries, kEntrySize}})
+      std::memcpy(base + RosterEntry(start, size, to), base + start + from * size, size);
+  return to;
+}
+
 void BigRosterTestMove(uint8_t* base, const uint32_t* ids, int count) {
   if (!g_on) return;
   const char* env = std::getenv("SVR2011_TEST_HIGH_INDEX");
@@ -272,11 +291,12 @@ void BigRosterTestMove(uint8_t* base, const uint32_t* ids, int count) {
   for (int k = 0; k < n; ++k) {
     const uint32_t id = ids[k];
     if (id >= 322) continue;
-    const uint32_t from = Rd16(base + kIdToIndex + id * 2), to = kStockIndices + uint32_t(k);
+    const uint32_t from = Rd16(base + kIdToIndex + id * 2), to = g_count;
+    if (to >= kMaxIndices) break;
     base[kIdToIndex + id * 2] = uint8_t(to >> 8);
     base[kIdToIndex + id * 2 + 1] = uint8_t(to);
-    g_count = std::max(g_count, to + 1);
-    g_ext_id[k] = uint16_t(id);
+    g_count = to + 1;
+    g_ext_id[to - kStockIndices] = uint16_t(id);
     for (const auto& [start, size] : {std::pair{kRecords, kRecordSize}, {kProfiles, kProfileSize}, {kEntries, kEntrySize}})
       std::memcpy(base + RosterEntry(start, size, to), base + start + from * size, size);
     REXLOG_INFO("[svr2011] big roster: test aid - id {} index {} -> {}", id, from, to);

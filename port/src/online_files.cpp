@@ -4,6 +4,7 @@
 #include "../modmaker/svrfmt/mod_travel.h"
 #include "mod_transfer.h"
 #include "no_mods.h"
+#include "big_roster.h"
 
 #include <algorithm>
 #include <atomic>
@@ -546,6 +547,12 @@ std::string ModsOnlineMessage() {
       }
       return out + line;
     }
+  }
+  // (big_roster: mods past the game's ids 0-321 - online doesn't know them yet: no online while it's on)
+  if (svr2011::BigRosterOn()) {
+    static std::atomic<bool> told{false};
+    if (!told.exchange(true)) REXLOG_WARN("online: matches off - big_roster is on (more superstar mods at once)");
+    return "More superstar mods at once (experimental) is on.\nTurn it off in the launcher's Saves tab to play online.";
   }
   const auto& mods = ActiveMatchMods();
   const int server = g_mods_server.load();

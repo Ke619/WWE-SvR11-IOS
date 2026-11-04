@@ -3549,6 +3549,54 @@ REX_HOOK_RAW(sub_828B7078) {
   __imp__sub_828B7078(ctx, base);
 }
 
+// A superstar's kind (sub_828B78C0(id): 1 a stock one 100-321, 2 an added one - the DLC flag +257 -, 3 a Created
+// Superstar 0-49, 0 none): its record is read for ids under 322 only, so a mod on big roster's ids 323-511 was
+// "none". Online that left its lobby slot waiting for good - the stored superstar block makes the slot ready (state 8)
+// for kinds 1-3 only (sub_828A6008), so a lobby with such a pick never started - and its pictures were never asked for.
+// A mod is an added one wherever its id is.
+REX_EXTERN(__imp__sub_828B78C0);
+REX_HOOK_RAW(sub_828B78C0) {
+  if (ctx.r3.u32 >= 322 && ctx.r3.u32 < svr2011::kMaxIds && ModOf(ctx.r3.u32)) {
+    ctx.r3.u64 = 2;
+    return;
+  }
+  __imp__sub_828B78C0(ctx, base);
+}
+
+// A match slot from a lobby's person (sub_828BA250(L, slot, id, team, attire, kind, r9) - the online hand-off's
+// sub_828BB290): ids from 322 empty the slot (sub_8257C1E0), so an online match with big roster's ids 323-511 had
+// nobody in it. For such a mod the slot is filled as for any other id: +16 the pick (sub_828B8190(id, attire, r9)),
+// +20 the kind (2: the record's +21), the team's bytes.
+REX_EXTERN(__imp__sub_828BA250);
+REX_HOOK_RAW(sub_828BA250) {
+  const uint32_t L = ctx.r3.u32, slot = ctx.r4.u32, id = ctx.r5.u32, team = ctx.r6.u32, kind = ctx.r8.u32;
+  if (id < 322 || id >= svr2011::kMaxIds || !ModOf(id)) {
+    __imp__sub_828BA250(ctx, base);
+    return;
+  }
+  const uint32_t si = svr2011::RosterIndex(base, id);
+  if (si >= 512) {
+    __imp__sub_828BA250(ctx, base);
+    return;
+  }
+  PPCContext c = ctx;
+  c.r3.u64 = id, c.r4.u64 = ctx.r7.u32, c.r5.u64 = ctx.r9.u32;
+  sub_828B8190(c, base);
+  Wr32(base + slot + 16, c.r3.u32);
+  base[slot + 20] = kind == 2 ? base[svr2011::RosterEntry(kRecords, kRecordSize, si) + 21] : uint8_t(kind);
+  if (int32_t(team) != -1) {
+    base[slot + 4] = uint8_t(team), base[slot + 12] = 0;
+    base[slot + 0] = base[L + team + 130], base[slot + 1] = base[L + team + 136];
+    base[slot + 2] = base[L + 113], base[slot + 3] = base[L + team + 114];
+  } else {
+    base[slot + 0] = 0, base[slot + 12] = 1, base[slot + 1] = 0, base[slot + 2] = 2, base[slot + 3] = 0;
+  }
+  static std::atomic<int> told{0};
+  if (told.fetch_add(1) < 12)
+    REXLOG_INFO("[svr2011] superstar mods: match slot for id {} (past 321): pick {} (the game's empties those)", id,
+                c.r3.u32);
+}
+
 REX_EXTERN(__imp__sub_825B75A8);
 REX_HOOK_RAW(sub_825B75A8) {  // (id, need owned) -> in Universe
   if (ModOf(ctx.r3.u32) && !svr2011::UniverseModIn(ctx.r3.u32)) {  // (a mod past the side table's room)

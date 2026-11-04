@@ -1872,8 +1872,15 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs, const fs::path& d
   std::vector<fs::path> dirs;
   // (attire mods replacing an attire the game's pac has: generated packs, a pacentry line each)
   PrepareAttirePacks(game);
-  for (const fs::path& root : {game / "Mods" / "Superstars", game / "Mods" / "Moves",
-                               game / "Mods" / "SuperstarOverlay" / "attirepacks"})
+  std::vector<fs::path> roots = {game / "Mods" / "Superstars", game / "Mods" / "Moves",
+                                 game / "Mods" / "SuperstarOverlay" / "attirepacks"};
+  // (test aid SVR2011_TEST_PACKS=<folder>: the packs from <folder>/Superstars/*/moves and <folder>/Moves/* only -
+  // a big merge timed without the player's mods; the overlay is still Mods/PacOverlay)
+  if (const char* v = std::getenv("SVR2011_TEST_PACKS"); v && *v) {
+    roots = {fs::u8path(v) / "Superstars", fs::u8path(v) / "Moves"};
+    REXLOG_INFO("[svr2011] move packs: test packs from {}", v);
+  }
+  for (const fs::path& root : roots)
     for (const auto& e : fs::directory_iterator(root, ec)) {
       if (!e.is_directory() || fs::exists(e.path() / "disabled", ec)) continue;
       const fs::path d = root.filename() == "Superstars" ? e.path() / "moves" : e.path();
@@ -1998,8 +2005,8 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs, const fs::path& d
   REXLOG_INFO("[svr2011] move packs: merging {} packs ({} items) into {} (lists read in {} ms) ...", dirs.size(),
               packs.count, overlay.string(), stamp_ms);
   // (the player sees why the picture is still black - Android: a note over it, startup_pump.h; report b7f723)
-  svr2011::StartupNote("Preparing your mods (" + std::to_string(dirs.size()) +
-                       " move packs) - after a mod change this can take a few minutes. Please wait, don't close the game.");
+  // (short: a toast shows 2 lines - the Fold cut the longer text after "after a mod ...")
+  svr2011::StartupNote("Preparing your mods (" + std::to_string(dirs.size()) + " move packs) - please wait");
   struct NoteEnd {
     ~NoteEnd() { svr2011::StartupNote(""); }
   } note_end;

@@ -56,7 +56,7 @@ public static class SvrTestWin {
 
 # ---- options
 $o = @{ p = @{}; exe = "release"; backend = ""; mods = "none"; perf = ""; loglevel = "info"; name = ""; keep = $false; args = @()
-        attire = ""; arena = ""; rule = ""; entrances = $false; shot = @(); every = ""; until = ""; quit = ""; userdata = ""; target = ""; state = @(); fast = ""; boot = $false; cpu = ""; fresh = $false; slot = "" }
+        attire = ""; arena = ""; rule = ""; entrances = $false; shot = @(); every = ""; until = ""; quit = ""; userdata = ""; target = ""; state = @(); fast = ""; boot = $false; cpu = ""; fresh = $false; slot = ""; slots = "" }
 for ($i = 0; $i -lt $Rest.Count; $i++) {
     $a = $Rest[$i]; $v = if ($i + 1 -lt $Rest.Count) { $Rest[$i + 1] } else { "" }
     switch -regex ($a) {
@@ -78,6 +78,7 @@ for ($i = 0; $i -lt $Rest.Count; $i++) {
         '^--backend$' { $o.backend = $v; $i++; continue }
         '^--mods$' { $o.mods = $v; $i++; continue }
         '^--userdata$' { $o.userdata = $v; $i++; continue }
+        '^--slots$' { $o.slots = $v; $i++; continue }
         '^--slot$' { $o.slot = $v; $i++; continue }  # (a game folder of its own: runs\svrtest\game<n> - runs side by side)
         '^--perf$' { $o.perf = $v; $i++; continue }
         '^--log-level$' { $o.loglevel = $v; $i++; continue }
@@ -166,6 +167,11 @@ if ($o.mods -and $o.mods -ne "none") {
         New-Item -ItemType Directory -Force (Join-Path $game "Mods\$kind") | Out-Null
         Copy-Item -Recurse $m (Join-Path $game "Mods\$kind\$(Split-Path $m -Leaf)")
     }
+}
+# --slots <file>: its superstar mods' ids (Mods\Superstars\slots.txt, "<folder><TAB><id>" a line) - e.g. a mod on a DLC id
+if ($o.slots) {
+    New-Item -ItemType Directory -Force (Join-Path $game "Mods\Superstars") | Out-Null
+    Copy-Item $o.slots (Join-Path $game "Mods\Superstars\slots.txt")
 }
 # (prepare: only the game folder, for svrtest_lan.ps1 - its last output line)
 if ($Command -eq "prepare") { $game; exit 0 }

@@ -549,7 +549,8 @@ std::string ModsOnlineMessage() {
     }
   }
   // (big_roster: mods past the game's ids 0-321 - online doesn't know them yet: no online while it's on)
-  if (svr2011::BigRosterOn()) {
+  // (test aid SVR2011_TEST_BIG_ONLINE=1: not blocked - part 5's online tests)
+  if (svr2011::BigRosterOn() && !std::getenv("SVR2011_TEST_BIG_ONLINE")) {
     static std::atomic<bool> told{false};
     if (!told.exchange(true)) REXLOG_WARN("online: matches off - big_roster is on (more superstar mods at once)");
     return "More superstar mods at once (experimental) is on.\nTurn it off in the launcher's Saves tab to play online.";

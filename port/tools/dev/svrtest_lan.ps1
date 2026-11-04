@@ -2,7 +2,7 @@
 # docs/DEBUG_SUITE_PLAN.md 5). For us only: tools\dev is never packaged.
 #
 #   svrtest.ps1 lan --p1 EDGE --p2 KANE [--arena 1] [--rule 3C] [--attire 1,1] [--mods <folder>,...]
-#                   [--pad1 <steps file>] [--pad2 <steps file>] [--clock 600,1200,1800] [--play 30s] [--name lan1]
+#                   [--pad1 <steps file>] [--pad2 <steps file>] [--clock 600,1200,1800] [--play 30s] [--name lan1] [--arg <game option>]
 #
 # What it does: svrtest's private game folder (svrtest.ps1 prepare, the dbg exe); its own test server (a copy of
 # runs\ent_srv's accounts, a free port 8460-8499) and private copies of the two test players' user data and
@@ -25,12 +25,13 @@ $tools = Split-Path $PSScriptRoot -Parent
 $port = Split-Path $tools -Parent
 . (Join-Path $tools "test_guard.ps1")
 
-$o = @{ p = @{}; arena = ""; rule = ""; attire = ""; mods = "none"; pad1 = ""; pad2 = ""; clock = "600,1200,1800"; play = "30s"; name = "lan" }
+$o = @{ p = @{}; arena = ""; rule = ""; attire = ""; mods = "none"; pad1 = ""; pad2 = ""; clock = "600,1200,1800"; play = "30s"; name = "lan"; args = @(); picks1 = ""; picks2 = "" }
 for ($i = 0; $i -lt $Rest.Count; $i++) {
     $a = $Rest[$i]; $v = if ($i + 1 -lt $Rest.Count) { $Rest[$i + 1] } else { "" }
     switch -regex ($a) {
         '^--p([1-6])$' { $o.p[[int]$Matches[1]] = $v; $i++; continue }
-        '^--(arena|rule|attire|mods|pad1|pad2|clock|play|name)$' { $o[$Matches[1]] = $v; $i++; continue }
+        '^--arg$' { $o.args += $v; $i++; continue }  # (a game option for both games, e.g. --arg --big_roster=true)
+        '^--(arena|rule|attire|mods|pad1|pad2|clock|play|name|picks1|picks2)$' { $o[$Matches[1]] = $v; $i++; continue }
         default { throw "svrtest lan: unknown option $a" }
     }
 }
@@ -40,7 +41,10 @@ function Seconds([string]$t) {
     throw "svrtest lan: a time is 5s, 1500ms or a number, not $t"
 }
 $people = @(1..6 | Where-Object { $o.p[$_] } | ForEach-Object { $o.p[$_] })
-if ($people.Count -lt 2) { throw "svrtest lan: --p1 and --p2 at least" }
+# (--p1 none: no people set - the lobby's own picks play, e.g. made by --picks1 / --picks2 step files that replace the
+# default A presses)
+$lobbyPicks = $o.p[1] -eq "none"
+if (-not $lobbyPicks -and $people.Count -lt 2) { throw "svrtest lan: --p1 and --p2 at least (or --p1 none)" }
 
 # ---- guards: the player's game, room for two test games (test_guard's limit, all chats)
 Assert-NoPlayerGame -Games 2
@@ -104,11 +108,11 @@ function Start-Side([string]$side, [string[]]$extra) {
     $env:SVR2011_NATIVE_WINDOW_POS = "-2600,0"
     $spec = "people=$($people -join ',') arena=$(if ($o.arena) { $o.arena } else { 1 })"
     if ($o.attire) { $spec += " attires=$($o.attire)" }
-    $env:SVR2011_TEST_MATCH = $spec
+    $env:SVR2011_TEST_MATCH = if ($lobbyPicks) { $null } else { $spec }
     $env:SVR2011_TEST_RULE = if ($o.rule) { $(if ($o.rule -match '^\d+$' -and $o.rule.Length -lt 3) { "{0:X2}" -f [int]$o.rule } else { $o.rule -replace '^0x', '' }) } else { $null }
     $gameArgs = @("--log_file=`"$(Join-Path $out "$side.log")`"", "--log_level=info", "--audio_mute=true", "--fullscreen=false",
               "--mnk_mode=false", "--p2p_port_mapping=false", "--p2p_relay=false", "--dbg_boot=online",
-              "--dbg_state_clock=$($o.clock)", "--dbg_out=`"$(Join-Path $out $side)`"") + $extra
+              "--dbg_state_clock=$($o.clock)", "--dbg_out=`"$(Join-Path $out $side)`"") + $o.args + $extra
     Use-SvrTestServer -GameDir $game -GameArgs $gameArgs | Out-Null
     $procs[$side] = Start-Process $exe -WorkingDirectory $game -ArgumentList $gameArgs -PassThru -WindowStyle Minimized
     Set-SvrTestPriority $procs[$side]
@@ -133,12 +137,12 @@ try {
     $timings.joined_s = Since
     Start-Sleep 12
     # picks: the host 1P, the joiner 2P (its cursor one to the right); A on both until the match starts
-    In "host" @("press A 200", "wait 4000", "press A 200", "wait 3000", "press A 200", "wait 3000", "press A 200")
-    In "join" @("press RIGHT 200", "wait 2000", "press A 200", "wait 4000", "press RIGHT 200", "wait 1500", "press A 200", "wait 3000", "press A 200", "wait 3000", "press A 200")
+    if ($o.picks1) { In "host" @(Get-Content $o.picks1) } else { In "host" @("press A 200", "wait 4000", "press A 200", "wait 3000", "press A 200", "wait 3000", "press A 200") }
+    if ($o.picks2) { In "join" @(Get-Content $o.picks2) } else { In "join" @("press RIGHT 200", "wait 2000", "press A 200", "wait 4000", "press RIGHT 200", "wait 1500", "press A 200", "wait 3000", "press A 200", "wait 3000", "press A 200") }
     $until = (Get-Date).AddSeconds(180)
     while ((Get-Date) -lt $until -and -not (LogHas "host" "svr2011\] match starts")) {
         if ($procs.host.HasExited -or $procs.join.HasExited) { throw "a game exited before the match" }
-        In "host" @("press A 200"); In "join" @("press A 200"); Start-Sleep 4
+        if (-not $o.picks1) { In "host" @("press A 200") }; if (-not $o.picks2) { In "join" @("press A 200") }; Start-Sleep 4
     }
     if (-not (LogHas "host" "svr2011\] match starts")) { throw "no match started" }
     $timings.match_s = Since

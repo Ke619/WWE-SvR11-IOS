@@ -26,8 +26,8 @@
 // scales to the size and gives NV12) on a thread per open movie, a frame
 // ahead. Where it can't decode (no H.264: a Windows "N" edition, Proton on
 // the Steam Deck) RegisterHdMovie says no and the fallback .bik plays.
-// Android: the NDK's MediaExtractor + MediaCodec into an image reader (the
-// phone's own decoder), scaled to the frame size on the movie's thread; no
+// Android: the NDK's MediaExtractor + MediaCodec (the phone's own decoder),
+// its output buffers scaled to the frame size on the movie's thread; no
 // decoder for it on the phone: the fallback .bik.
 //
 // Test aid: SVR2011_TEST_HD_MOVIES=1 logs the decoders.
@@ -76,8 +76,6 @@ using Microsoft::WRL::ComPtr;
 #include <fcntl.h>
 #include <sys/resource.h>
 #include <unistd.h>
-#include <media/NdkImage.h>
-#include <media/NdkImageReader.h>
 #include <media/NdkMediaCodec.h>
 #include <media/NdkMediaExtractor.h>
 #endif
@@ -499,9 +497,8 @@ class Decoder : public DecoderBase {
 
 #elif defined(__ANDROID__)
 
-// Android: the NDK's MediaExtractor + MediaCodec into an image reader (the
-// phone's own decoder, its planes in whatever layout), scaled here to the
-// frame size.
+// Android: the NDK's MediaExtractor + MediaCodec (the phone's own decoder),
+// scaled here to the frame size.
 
 // The mp4's video track.
 struct Track {
@@ -554,40 +551,91 @@ bool Probe(const fs::path& mp4, double* seconds, uint32_t* sw, uint32_t* sh) {
   return true;
 }
 
+// The decoder's own output buffers, asked for as semi-planar (NV12), else
+// planar (I420), the planes `stride` bytes a row and `slice` rows apart. (Not
+// a surface into an image reader: on the Galaxy Z Fold7 that gave no picture
+// at all - every mod's tron black; and not "flexible": its buffers then say
+// only that - no telling NV12 from I420.)
+constexpr int32_t kColourPlanar = 19, kColourPackedPlanar = 20, kColourSemiPlanar = 21,
+                  kColourPackedSemiPlanar = 39, kColourQcom32m = 0x7FA30C04,  // (Qualcomm's NV12, 128 / 32 aligned)
+    kColourFlexible = 0x7F420888;
+
 class Decoder : public DecoderBase {
  public:
   explicit Decoder(HdMovie movie) : DecoderBase(std::move(movie)) { Start(); }
   ~Decoder() override { Stop(); }
 
  private:
+  // The output buffers' layout (the decoder's output format).
+  struct Layout {
+    int32_t w = 0, h = 0;          // (the picture: the crop's size)
+    int32_t left = 0, top = 0;     // (its corner in the buffer)
+    int32_t stride = 0, slice = 0;
+    int32_t colour = 0;
+    bool semi = false, known = false;
+  };
+
+  Layout ReadLayout(AMediaFormat* f) const {
+    Layout l;
+    int32_t bw = 0, bh = 0;
+    AMediaFormat_getInt32(f, AMEDIAFORMAT_KEY_WIDTH, &bw);
+    AMediaFormat_getInt32(f, AMEDIAFORMAT_KEY_HEIGHT, &bh);
+    AMediaFormat_getInt32(f, AMEDIAFORMAT_KEY_STRIDE, &l.stride);
+    AMediaFormat_getInt32(f, AMEDIAFORMAT_KEY_SLICE_HEIGHT, &l.slice);
+    AMediaFormat_getInt32(f, AMEDIAFORMAT_KEY_COLOR_FORMAT, &l.colour);
+    if (l.stride < bw) l.stride = bw;
+    if (l.slice < bh) l.slice = bh;
+    l.w = bw, l.h = bh;
+    int32_t cl = 0, ct = 0, cr = 0, cb = 0;
+    if (AMediaFormat_getRect(f, AMEDIAFORMAT_KEY_DISPLAY_CROP, &cl, &ct, &cr, &cb) && cr >= cl && cb >= ct &&
+        cr < l.stride && cb < l.slice)
+      l.left = cl & ~1, l.top = ct & ~1, l.w = cr - cl + 1, l.h = cb - ct + 1;
+    // (a decoder that still says only "flexible": the layout it took when asked)
+    const int32_t c = l.colour == kColourFlexible ? asked_ : l.colour;
+    l.semi = c == kColourSemiPlanar || c == kColourPackedSemiPlanar || c == kColourQcom32m;
+    l.known = l.w > 0 && l.h > 0 && (l.semi || c == kColourPlanar || c == kColourPackedPlanar);
+    return l;
+  }
+
+  int32_t asked_ = kColourFlexible;  // (the colour format the decoder took)
+
   void Run() override {
     setpriority(PRIO_PROCESS, 0, 10);  // (this thread: below the game's own)
     Track t;
-    AImageReader* images = nullptr;
-    ANativeWindow* window = nullptr;
     AMediaCodec* codec = nullptr;
-    bool ok = OpenTrack(movie_.mp4, &t) &&
-              AImageReader_new(t.w, t.h, AIMAGE_FORMAT_YUV_420_888, 4, &images) == AMEDIA_OK &&
-              AImageReader_getWindow(images, &window) == AMEDIA_OK;
+    bool ok = OpenTrack(movie_.mp4, &t);
     if (ok) {
       codec = AMediaCodec_createDecoderByType(t.mime);
-      ok = codec && AMediaCodec_configure(codec, t.format, window, nullptr, 0) == AMEDIA_OK &&
-           AMediaCodec_start(codec) == AMEDIA_OK;
+      ok = false;
+      for (const int32_t colour : {kColourSemiPlanar, kColourPlanar, kColourFlexible}) {
+        if (!codec) break;
+        AMediaFormat_setInt32(t.format, AMEDIAFORMAT_KEY_COLOR_FORMAT, colour);
+        if (AMediaCodec_configure(codec, t.format, nullptr, nullptr, 0) == AMEDIA_OK) {
+          asked_ = colour;
+          ok = AMediaCodec_start(codec) == AMEDIA_OK;
+          break;
+        }
+        // (refused: a fresh decoder for the next ask - a failed configure can leave it unusable)
+        AMediaCodec_delete(codec);
+        codec = AMediaCodec_createDecoderByType(t.mime);
+      }
     }
     if (!ok) {
       REXLOG_WARN("[svr2011] hd movies: can't decode {}", movie_.mp4.string());
     } else {
       if (LogOn())
         REXLOG_INFO("[svr2011] hd movies: decoding {} ({}x{}) at {}x{} (MediaCodec)", movie_.mp4.string(), t.w, t.h, w_, h_);
-      Decode(t, codec, images);
+      Decode(t, codec);
       AMediaCodec_stop(codec);
     }
     if (codec) AMediaCodec_delete(codec);
-    if (images) AImageReader_delete(images);
   }
 
-  void Decode(Track& t, AMediaCodec* codec, AImageReader* images) {
+  void Decode(Track& t, AMediaCodec* codec) {
     constexpr int64_t kWaitUs = 2000;
+    const auto opened = std::chrono::steady_clock::now();
+    Layout layout;
+    bool have_layout = false, pictured = false, told = false;
     double last = -1;
     bool input_done = false, ended = false;
     while (!stop_) {
@@ -620,59 +668,83 @@ class Decoder : public DecoderBase {
       }
       AMediaCodecBufferInfo info;
       const ssize_t out = AMediaCodec_dequeueOutputBuffer(codec, &info, kWaitUs);
+      if (out == AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED || (out >= 0 && !have_layout)) {
+        AMediaFormat* f = AMediaCodec_getOutputFormat(codec);
+        if (f) {
+          layout = ReadLayout(f);
+          AMediaFormat_delete(f);
+          have_layout = true;
+          if (LogOn() || !layout.known)
+            REXLOG_INFO("[svr2011] hd movies: {}: the decoder gives {}x{} (crop at {},{}), stride {}, {} rows, colour 0x{:X} (asked {}){}",
+                        movie_.mp4.filename().string(), layout.w, layout.h, layout.left, layout.top, layout.stride,
+                        layout.slice, uint32_t(layout.colour), asked_, layout.known ? "" : " - a layout not read here: black");
+        }
+      }
       if (out < 0) continue;
       const bool eos = (info.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM) != 0;
-      const bool picture = info.size > 0;
-      AMediaCodec_releaseOutputBuffer(codec, size_t(out), picture);  // (to the image reader)
-      if (eos) ended = true;  // (the end: the last frame stays until the game loops or closes)
-      if (!picture) continue;
-      AImage* image = nullptr;
-      for (int k = 0; k < 200; ++k) {  // (the picture arrives a moment later)
-        if (AImageReader_acquireNextImage(images, &image) == AMEDIA_OK) break;
-        image = nullptr;
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      size_t cap = 0;
+      const uint8_t* buffer = info.size > 0 ? AMediaCodec_getOutputBuffer(codec, size_t(out), &cap) : nullptr;
+      bool pushed = false;
+      if (buffer && layout.known && size_t(info.offset) < cap) {
+        Frame f;
+        f.nv12.resize(size_t(w_) * h_ * 3 / 2);
+        if (Scale(layout, buffer + info.offset, std::min(cap - size_t(info.offset), size_t(info.size)), f.nv12.data())) {
+          f.time = double(info.presentationTimeUs) / 1e6;
+          f.ready = true;
+          last = f.time;
+          Push(std::move(f));
+          pushed = true;
+        }
       }
-      if (!image) continue;
-      Frame f;
-      f.nv12.resize(size_t(w_) * h_ * 3 / 2);
-      const bool scaled = Scale(image, f.nv12.data());
-      AImage_delete(image);
-      if (!scaled) continue;
-      f.time = double(info.presentationTimeUs) / 1e6;
-      f.ready = true;
-      last = f.time;
-      Push(std::move(f));
+      AMediaCodec_releaseOutputBuffer(codec, size_t(out), false);
+      if (eos) ended = true;  // (the end: the last frame stays until the game loops or closes)
+      if (pushed && !pictured) {
+        pictured = true;
+        if (LogOn())
+          REXLOG_INFO("[svr2011] hd movies: {}: first frame after {} ms", movie_.mp4.filename().string(),
+                      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - opened).count());
+      } else if (!pushed && info.size > 0 && layout.known && !told) {
+        told = true;
+        REXLOG_WARN("[svr2011] hd movies: {}: a frame of {} bytes too small for its layout - skipped",
+                    movie_.mp4.filename().string(), info.size);
+      }
     }
   }
 
-  // The decoder's picture (any 4:2:0 plane layout) to the frame's NV12 at
+  // The decoder's picture (planar or semi-planar, `l`) to the frame's NV12 at
   // w_ x h_ (nearest pixel - the titantron's size is near the source's).
-  bool Scale(AImage* image, uint8_t* nv12) {
-    int32_t sw = 0, sh = 0;
-    AImage_getWidth(image, &sw);
-    AImage_getHeight(image, &sh);
-    uint8_t* plane[3] = {};
-    int len[3] = {}, row[3] = {}, pixel[3] = {1, 1, 1};
-    for (int p = 0; p < 3; ++p) {
-      AImage_getPlaneData(image, p, &plane[p], &len[p]);
-      AImage_getPlaneRowStride(image, p, &row[p]);
-      AImage_getPlanePixelStride(image, p, &pixel[p]);
+  // False: the buffer is shorter than its layout says.
+  bool Scale(const Layout& l, const uint8_t* data, size_t len, uint8_t* nv12) {
+    const size_t luma = size_t(l.stride) * l.slice;
+    const uint8_t* y0 = data + size_t(l.top) * l.stride + l.left;
+    const uint8_t *u0, *v0;
+    size_t crow, cpix;
+    if (l.semi) {
+      crow = size_t(l.stride), cpix = 2;
+      u0 = data + luma + size_t(l.top / 2) * crow + size_t(l.left / 2) * 2;
+      v0 = u0 + 1;
+    } else {
+      crow = size_t(l.stride / 2), cpix = 1;
+      u0 = data + luma + size_t(l.top / 2) * crow + l.left / 2;
+      v0 = u0 + crow * size_t(l.slice / 2);
     }
-    if (sw <= 0 || sh <= 0 || !plane[0] || !plane[1] || !plane[2]) return false;
+    // (the last byte read: the bottom right of the last chroma plane)
+    const uint8_t* end = std::max(u0, v0) + size_t((l.h + 1) / 2 - 1) * crow + size_t((l.w + 1) / 2 - 1) * cpix;
+    if (end >= data + len) return false;
     for (uint32_t y = 0; y < h_; ++y) {
-      const uint8_t* src = plane[0] + size_t(int64_t(y) * sh / h_) * row[0];
+      const uint8_t* src = y0 + size_t(int64_t(y) * l.h / h_) * l.stride;
       uint8_t* dst = nv12 + size_t(y) * w_;
-      for (uint32_t x = 0; x < w_; ++x) dst[x] = src[size_t(int64_t(x) * sw / w_) * pixel[0]];
+      for (uint32_t x = 0; x < w_; ++x) dst[x] = src[size_t(int64_t(x) * l.w / w_)];
     }
     uint8_t* uv = nv12 + size_t(w_) * h_;
     for (uint32_t y = 0; y < h_ / 2; ++y) {
-      const size_t sy = size_t(int64_t(y) * sh / h_);
-      const uint8_t* u = plane[1] + sy * row[1];
-      const uint8_t* v = plane[2] + sy * row[2];
+      const size_t sy = size_t(int64_t(y) * l.h / h_);
+      const uint8_t* u = u0 + sy * crow;
+      const uint8_t* v = v0 + sy * crow;
       uint8_t* dst = uv + size_t(y) * w_;
       for (uint32_t x = 0; x < w_ / 2; ++x) {
-        const size_t sx = size_t(int64_t(x) * sw / w_);
-        dst[2 * x] = u[sx * pixel[1]], dst[2 * x + 1] = v[sx * pixel[2]];
+        const size_t sx = size_t(int64_t(x) * l.w / w_);
+        dst[2 * x] = u[sx * cpix], dst[2 * x + 1] = v[sx * cpix];
       }
     }
     return true;

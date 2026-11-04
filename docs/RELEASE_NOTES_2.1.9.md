@@ -12,7 +12,7 @@ A big fix release from your **Report a problem** reports - thank you.
 - **Android can send reports** straight to us now. Reports are sent only (no more saving or copying the report file).
 - **Save cleaner** (launcher Saves tab, and Android): "Clean save of unused mods" removes the data of mods you've uninstalled or turned off from your save. It shows what it will remove first and always makes a backup (Restore backup puts it back).
 - **Per-mod save files** 🧪 (launcher Saves tab, off by default): each mod superstar's save data - and their spots in teams, titles and Universe cards - lives in its own file, so your main save stays clean and a reinstalled mod gets its edits back.
-- **Many more mod superstars** 🧪: mods are no longer tied to the game's fixed 137 slots - install as many as you like and use any of them anywhere.
+- **More superstar mods at once** 🧪 (launcher Saves tab / Android Game settings, off by default): up to **317** superstar mods at once instead of 137. Still being worked on - it can corrupt your save, so **back up your Saves folder first**. It also turns on per-mod save files, and online play is off while it's on.
 - **Faster loading screens** (launcher Play tab / Android Game settings, off by default): the start-up loading screens play about 4x faster - roughly 6-8 seconds off every start. Their animations speed up while they show.
 - **Bigger match memory**: the memory a match load uses went from 4.5 MB to 16 MB, so big mod setups (many superstars, crowd signs and move packs) load instead of stopping with "Out of game memory".
 - **Brighter PlayStation buttons** in matches, and a plain keyboard picture at character select.

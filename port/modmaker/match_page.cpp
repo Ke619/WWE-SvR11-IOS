@@ -261,9 +261,8 @@ void SwitchTab() {
 
 void CustomTab() {
   ImGui::TextWrapped("A match type of your own: one of the game's matches as the base, under a new row in a menu "
-                     "list, with its own people, slots, arena, option rules and weapons. The game builds it at start "
-                     "the way it builds the port's added matches.");
-  ImGui::TextColored(kWarn, "The game side is being built (Limit Breaking): this page writes the format it will read.");
+                     "list, with its own people, slots, arena, option rules and weapons.");
+  ImGui::TextColored(kWarn, "The game doesn't play custom match types yet: this page saves them in the format a later update will read.");
   ImGui::Spacing();
   TextField("Name", g_p.name, sizeof g_p.name, "the match type's name");
   TextField("About (optional)", g_p.about, sizeof g_p.about, "one line for the launcher", 420);

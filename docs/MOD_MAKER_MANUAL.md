@@ -304,9 +304,9 @@ Match type mods (`type=matchtype`, a manifest only). Two kinds:
 - **Custom match type:** one of the game's matches as the base (picked by
   name from the 119 rules), under a new row in a menu list (and submenu),
   with its own people, slots (index, team, kind), arena, option rules with
-  locks, placed weapons and Match Creator rows. The game side that builds
-  these at start is being made by the Limit Breaking work; the page writes
-  the format it will read (docs/MATCH_TYPE_MODS.md) and warns until then.
+  locks, placed weapons and Match Creator rows. The game doesn't play
+  custom match types yet: the page saves them in the format a later update
+  will read, and warns until then.
 - **The game's matches:** every rule record decoded - participants, arena,
   option rules - as reference, with "Use as the base".
 

@@ -2226,8 +2226,7 @@ std::string DiscGameName(const std::string& id) {
 }
 
 std::vector<std::wstring> DiscFolders() {
-  if (!g_settings.disc_folders.empty()) return g_settings.disc_folders;
-  return {L"D:\\Roms\\Xbox 360\\WWE", L"D:\\Roms\\Playstation 2\\WWE Games"};
+  return g_settings.disc_folders;
 }
 
 // Discs() is My game discs (disc_list.h): each set game whose image / folder is there, in its order.

@@ -3395,10 +3395,11 @@ void CheckModProfiles(uint8_t* base) {
     const uint8_t* bp = base + svr2011::RosterEntry(kProfiles, kProfileSize, bi);
     // test aid: SVR2011_TEST_SAVED_MOVE=<folder>,<0xOFF>,<id> - that mod's slot holds the id, as a save made with
     // an older version of the mod would (moves_port.py renumber: a save holding the old id)
-    if (const char* t = std::getenv("SVR2011_TEST_SAVED_MOVE")) {
-      const std::string v = t;
-      const size_t c1 = v.find(','), c2 = c1 == std::string::npos ? c1 : v.find(',', c1 + 1);
-      if (c2 != std::string::npos && v.substr(0, c1) == m.folder) {
+    if (const char* t = std::getenv("SVR2011_TEST_SAVED_MOVE")) {  // (several: ';' between)
+      std::istringstream all(t);
+      for (std::string v; std::getline(all, v, ';');) {
+        const size_t c1 = v.find(','), c2 = c1 == std::string::npos ? c1 : v.find(',', c1 + 1);
+        if (c2 == std::string::npos || v.substr(0, c1) != m.folder) continue;
         const uint32_t off = uint32_t(std::strtoul(v.c_str() + c1 + 1, nullptr, 0));
         const uint16_t id = uint16_t(std::strtoul(v.c_str() + c2 + 1, nullptr, 0));
         if (off + 1u < kEntrance) {
@@ -3440,6 +3441,18 @@ void CheckModProfiles(uint8_t* base) {
     if (!repaired.empty())
       REXLOG_WARN("[svr2011] superstar mods: {}: saved moves the game has no record for, the mod's own put back:{}",
                   m.folder, repaired);
+    {  // (any slot - an edited move-set too - holding a move with no motion anywhere: the base's)
+      std::string none;
+      for (uint32_t off = 0; off + 1 < kEntrance; off += 2) {
+        const uint16_t cur = uint16_t(Rd16(sp + off) & 0x7FFF);
+        if (!cur || !svr2011::NoMotionMove(cur)) continue;
+        sp[off] = bp[off], sp[off + 1] = bp[off + 1];
+        none += fmt::format(" 0x{:03X}={}", off, cur);
+      }
+      if (!none.empty())
+        REXLOG_WARN("[svr2011] superstar mods: {}: saved moves with no motion in the game or a pack (a removed or "
+                    "renumbered pack's), the base's put in:{}", m.folder, none);
+    }
     if (const char* t = std::getenv("SVR2011_TEST_EMPTY_MOVESET"); t && m.folder == t) {  // (test aid: a broken move-set)
       std::memset(sp, 0, kEntrance);
       REXLOG_INFO("[svr2011] superstar mods: test: {}'s move-set emptied", m.folder);

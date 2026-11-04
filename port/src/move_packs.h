@@ -49,11 +49,16 @@ bool StockPlays(uint16_t id);
 // computed at each MOVS/WAZE load (0 = none / not loaded).
 uint16_t CategoryDefaultMove(int category);
 
-// Has a match's move `id` nothing to play: a move a pack gave earlier (its id kept in
-// Mods\PacOverlay\pack_moves.txt) that no pack gives now and the stock game can't play (no stock record with
-// category bits, no stock EXH data). Stock moves are never "missing" (stock movesets name moves without
-// records, bits or EXH that play fine).
+// Has a match's move `id` nothing to play: a record with category bits but no motion in the game's banks (its
+// DLC's too) or a pack (NoMotionMove), a pack's move whose motions are missing or left out of a bank, or a move a
+// pack gave earlier (its id kept in Mods\PacOverlay\pack_moves.txt) that no pack gives now and the stock game
+// can't play (no stock record with category bits, no stock EXH data). Other stock moves are never "missing"
+// (stock movesets name moves without records, bits or EXH that play fine).
 bool MoveMissing(uint16_t id);
+// A move record with category bits whose id no bank of the game (m.pac, mpsp.pac, the DLC's) and no pack has a
+// motion for: it plays as nothing - a save holding one (the stock 30073 of Sin Cara's old port) froze the match.
+// False while the game's motion ids aren't known (Mods\PacOverlay\motion_ids.bin, made by a merge).
+bool NoMotionMove(uint16_t id);
 
 // The entrances the move packs add (pacentry EVP? <n>, n < 10000), for CREATE AN ENTRANCE's MODS
 // rows (cae_mod_motions.cpp): label = the superstar mod's name, else the script's own name and the

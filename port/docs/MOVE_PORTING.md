@@ -123,9 +123,15 @@ page (`port/docs/MOVE_MODDING.md`).
   closest length) before the category vote - a coded category mixes holds with other moves (2K15's M013 is
   mostly reversals: its vote said STAT and the Patriot Lock got Mule Kick Reversal 2; now Single Leg Boston
   Crab 21308).
-- Open: a forced ported hold doesn't play out (25 Oct: it stays in the motion for the whole run, Ankle Lock 3
-  or Boston Crab alike; before it played x 0 and ended): it doesn't run the hold / struggle loop the stock one
-  does (the loop comes from the template's records and the game's submission state, not yet matched).
+- **The game tells a submission by its id** (4 Nov): in a hold = the motion in 21000-21499 (sub_821B57F8 /
+  sub_821B58F8), a standing one 21000-21099 (sub_821B2540), a front grapple 4500-5549 ... (sub_821B9E80). Every
+  21000s record is a stock submission, so a ported hold sits elsewhere: its victim stood up when x 0 ended. These
+  tests now ask about the move a pack's move is copied from (wazecopy: cam_mod_moves.cpp, PackCopySource) - a forced
+  ported hold stays in its hold like a stock one. (A forced start skips the game's submission state: no tap or
+  break, stock holds alike - that needs a hold the CPU or a player applies.)
+- **Standing or on the mat**: choose_submission takes the template whose victim is as high as the source's at the
+  start and in the hold (x 2; standing holds keep him at -7..-11 model units, mat holds -1..-5). 2K15's Kimura Lock
+  (standing start, on the mat: -8.8 / -3.3) got Bearhug, a standing hold - now Crossface 21004 (-8.8 / -1.5).
 
 ## 3. Testing a ported move
 

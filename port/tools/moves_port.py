@@ -991,6 +991,42 @@ class Game11:
             pass
         return self._cues
 
+    def hold_heights(self, tid):
+        """(start, hold) of a 2011 YMBs submission's victim: its root height (model units) at x 0's first frame and the
+        median through x 2 (the struggle loop - in the hold); kept with the start gaps. None if unread"""
+        import statistics
+        import ymbs
+        import ymbs_retarget as YR
+        if self._gaps is None:
+            self._gaps_stamp = None
+            m = os.path.join(self.pac11, 'm.pac')
+            self._gaps_stamp = (os.path.getsize(m), int(os.path.getmtime(m)))
+            try:
+                stamp, self._gaps = __import__('pickle').load(open(self._gaps_file, 'rb'))
+                if stamp != self._gaps_stamp:
+                    self._gaps = {}
+            except Exception:   # noqa: BLE001
+                self._gaps = {}
+        k = ('hold heights', tid)
+        if k not in self._gaps:
+            out = None
+            for path, kind, ks in self.banks_of(tid):
+                if kind != 'YMBs' or (0, 1) not in ks or (2, 1) not in ks:
+                    continue
+                try:
+                    b = ymbs.Bank(self.bank_raw(path)[1])
+                    k0, k2 = b.find(tid, 0, 1), b.find(tid, 2, 1)
+                    d0, d2 = b.decode(k0)[0], b.decode(k2)[0]
+                    n2 = max(1, b.dir[k2][4])
+                    out = (float(YR.frame_values(d0, 0)['root_t'][1]),
+                           float(statistics.median(YR.frame_values(d2, f)['root_t'][1] for f in range(0, n2, max(1, n2 // 8)))))
+                except (IndexError, KeyError, ValueError, TypeError):
+                    out = None
+                break
+            self._gaps[k] = out
+            self._gaps_dirty = True
+        return self._gaps[k]
+
     def save_gaps(self):
         import pickle
         if self._gaps_dirty:
@@ -1486,9 +1522,12 @@ def coded_category(g, g11, cat0):
     return [c for c, v in votes.most_common() if v * 4 >= top]
 
 
-def choose_submission(g11, frames, phases):
+def choose_submission(g11, frames, phases, heights=None):
     """the 2011 submission (a YMBs move in MVMT/ANAS, attacker and victim at x 0) most like a source hold: the
-    most phases in common, then the closest length"""
+    most phases in common, then - heights (the source victim's root height at the start and in the hold, x 2, model
+    units) - a hold as high (standing) or as low (on the mat) as the source's, then the closest length. 2K15's Kimura
+    Lock goes to the mat: on Bearhug 21007 (a standing hold, its victim at -11 all through) the victim let go and stood
+    while the attacker held on alone on the mat, report 20261104-093125"""
     best = None
     for path, (kind, keys, size) in g11.idx.items():
         if not path.startswith('MVMT/ANAS') or kind != 'YMBs':
@@ -1501,8 +1540,13 @@ def choose_submission(g11, frames, phases):
         for e in bank.entries:
             if e['id'] in pairs and e['x'] == 0 and e['y'] == 0 and usable11(g11.waze, e['id']):
                 score = -10 * len(xs[e['id']] & phases) + abs(e['frames'] - frames) / 10.0
+                th = g11.hold_heights(e['id']) if heights else None
+                if th:   # (the hold's height first: standing holds keep the victim at -7..-11, mat holds at -1..-5)
+                    score += 6.0 * abs(th[1] - heights[1]) + 3.0 * abs(th[0] - heights[0])
                 if best is None or score < best[0]:
                     best = (score, e['id'])
+    if hasattr(g11, 'save_gaps'):
+        g11.save_gaps()
     return best[1] if best else None
 
 
@@ -1759,11 +1803,22 @@ def convert(a, rep):
     # are a dive's hit / miss branches - WWE '12's Shooting Star Press 4 has 30 / 40 / 50 - and 90-92 reversals.)
     src_phases = {int(p) for p, d in by.items() if p.isdigit() and 0 < int(p) < 30 and 0 in d and 1 in d}
     if not tid and vic is not None and {1, 2, 4} <= src_phases:
-        sub = choose_submission(g11, nf, src_phases)
+        # (where the source victim is - at the start and in the hold, phase 2: standing or on the mat - in model units,
+        # as the YMBs templates' root heights)
+        hh = None
+        try:
+            p2 = next(p for p, d in by.items() if p.isdigit() and int(p) == 2 and 1 in d)
+            hk = R0.keys(by[p2][1], max(2, (by[p2][1]['frames'] - 1) // 2))
+            hh = (R0.keys(vic, 2)[0][0][1] / 100.0, sorted(k[0][1] for k in hk)[len(hk) // 2] / 100.0)
+        except (StopIteration, IndexError, KeyError, TypeError):
+            hh = None
+        sub = choose_submission(g11, nf, src_phases, hh)
         if sub:
             tid, cat11 = sub, ['ANAS']
             rep['notes'].append('a submission (source phases %s): a 2011 submission (MVMT/ANAS) as the template' %
-                                ', '.join(str(x) for x in sorted(src_phases)))
+                                ', '.join(str(x) for x in sorted(src_phases)) +
+                                ('; the victim at %.1f at the start, %.1f in the hold - %s %.1f / %.1f' % (
+                                    hh[0], hh[1], g11.waze[sub][1], *(g11.hold_heights(sub) or (0, 0))) if hh else ''))
     # (a reversal as the template only for a reversal: WWE '12's G.T.S. and World's Strongest Slam, filed under
     # its STAT, got Ankle Lock Reversal)
     rev = 'reversal' in (name or '').lower()

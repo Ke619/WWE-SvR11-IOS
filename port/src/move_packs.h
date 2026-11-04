@@ -37,6 +37,9 @@ int MoveUsable(uint16_t id);
 // Is `id` one of the packs' own moves (a waze / wazename / wazecopy line names it)? CREATE A MOVE-SET
 // shows those as "MOD: <name>" rows at the end of its lists (cam_mod_moves.cpp).
 bool PackMove(uint16_t id);
+// The move a pack's move is copied from (its wazecopy line), 0 if none: the game's id-range tests (a submission is
+// 21000-21499 ...) ask about that one instead (cam_mod_moves.cpp).
+uint16_t PackCopySource(uint16_t id);
 // The move packs installed (kind "Moves" or "Superstars" - a superstar mod's moves/ - and the mod's folder),
 // each pack's moves, and whether the stock game plays a move without any pack: online lobbies agree which
 // packs every player has, and a match's move from any other pack plays its category's default

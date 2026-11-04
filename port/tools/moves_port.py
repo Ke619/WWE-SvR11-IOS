@@ -622,6 +622,17 @@ def convert0789(a, rep, outdir, g):
             tid = choose_template(g11, SINGLES, nf, gap, family, paired)
             if tid:
                 how = 'the 2011 moves named "%s ...", the closest start gap and length' % name
+        # (a signature / finisher - moveset_port's special slots: 2011's own signatures / finishers of the move's
+        # situation first - SvR 2008's Rated RKO, a corner finisher, got Corner Forehand Chop 5728, a corner strike's
+        # record and menus, report 20261104-071454; 2011 has corner finishers - Twist of Fate 2 5706 ...)
+        if not tid and a.get('special'):
+            special = {i for i in g11.special_ids() if i in motp and usable11(g11.waze, i)
+                       and (sit is None or g11.situation.get(i) == sit) and (not holds or i in held)}
+            if special:
+                tid = choose_template(g11, SINGLES, nf, gap, special, paired)
+                if tid:
+                    how = '2011\'s signatures / finishers%s, the closest start gap and length' % (
+                        ', situation %s' % sit if sit is not None else '')
         for cs, where, same_sit, hold in ([] if tid else tries):
             tid = (dive and choose_template(g11, cs, nf, gap, pool(same_sit, hold), paired, ringside=False)) or \
                 choose_template(g11, cs, nf, gap, pool(same_sit, hold), paired)
@@ -649,6 +660,15 @@ def convert0789(a, rep, outdir, g):
         new_id, why = mid, 'the same id: a record 2011 keeps without a motion'
     else:
         new_id, why = g11.free_record(name, limit=g11.id_limit(btid))
+    # (an id the game never starts - 16000 and up outside the template's thousand (move_packs.cpp NeverStarts: the
+    # move isn't usable, movesets keep the base's) - or past its banks' last id: another free record. moveset_port's
+    # pool gave SvR 2009's Hunting RKO 16126 on Viper RKO 6863's banks - in CREATE A MOVE-SET, never in a match,
+    # report 20261104-072336)
+    lim = g11.id_limit(btid)
+    if new_id and ((new_id >= 16000 and new_id // 1000 != btid // 1000) or (lim is not None and new_id > lim)):
+        old = new_id
+        new_id, why = g11.free_record(name, limit=lim, avoid=a.get('_avoid'))
+        rep['warnings'].append('id %d is one the game never starts with template %d: %s instead' % (old, btid, new_id))
     if not new_id:
         raise RuntimeError('no free 2011 move record')
     rep['notes'].append('template %d %s (%s)' % (tid, g11.waze[tid][1], how))
@@ -703,8 +723,10 @@ def convert0789(a, rep, outdir, g):
         cues = g11.cue_ids()
         for e in tracks:
             x, y = e['x'], e['y']
-            if path.startswith('MVMT') and (x, y) not in ((0, 0), (0, 1)) and not any(xx == x for xx, yy in ks):
-                continue   # (menu banks: the body tracks only)
+            # (menu banks: the body tracks only - of every phase of the move: SvR 2008's Rated RKO keeps the move in x 5
+            # after a 13-frame x 0, and its menu bank had x 0 alone - report 20261104-071454)
+            if path.startswith('MVMT') and not (y in (0, 1) and x < 90) and not any(xx == x for xx, yy in ks):
+                continue
             p = pk_tracks.get((x, y)) if packed else None
             if p is not None:   # (SvR 2009's own match copy, as it is: the same packed codec)
                 data = fix_track(p['data'], pk.T, y in (0, 1) and ymks.is_packed_motion(p['data'], pk.T), mid, new_id,
@@ -994,20 +1016,37 @@ class Game11:
         tops = [max(k[0] for k in self.idx[p][1]) for p, kind, xs in self.banks_of(tid) if self.idx[p][1]]
         return min(tops) - 1 if tops else None
 
-    def free_record(self, name=None, near=None, limit=None, avoid=None):
-        """a record 2011 keeps without motions (a cut move): the one named `name`, else the first. near: a
-        template id - only records in its thousand (a taunt in 9000-9999: an in-match taunt on a record
-        elsewhere, 3894, wasn't found - Sabu's 9040 was). limit: the highest id that fits (id_limit)"""
+    def special_ids(self):
+        """the moves 2011's own profiles have as signatures / finishers (slots 0x1E-0x24)"""
+        if getattr(self, '_special', None) is None:
+            import svr10_superstar as SS
+            self._special = set()
+            for r in SS.Game(self.pac11, 11).pro.values():
+                if len(r) >= 0x26:
+                    self._special.update(struct.unpack_from('<4H', r, 0x1E))
+        return self._special
+
+    def free_ids(self, limit=None, avoid=(), near=None):
+        """the free move records, sorted - the one rule for every picker (free_record, moveset_port, the Mod Doctor's
+        renumber): a record 2011 keeps without motions (a cut move), above 1000, in no 2011 profile, not in `avoid`,
+        at most `limit` (id_limit). near: a template id - only records in its thousand when there are any (a taunt in
+        9000-9999: an in-match taunt on a record elsewhere, 3894, wasn't found - Sabu's 9040 was); without one no
+        9000s (the game's streamed (YMBs) motions are 9000-9779 by its flag table: a keyframe move there played as one)"""
         free = [i for i in sorted(self.waze) if i not in self.moved and i > 1000 and i not in self.in_profiles()
-                and (limit is None or i <= limit) and not (avoid and i in avoid)]
+                and (limit is None or i <= limit) and i not in avoid]
         # (not 16000 and up outside the template's own thousand: a move there never starts - the game doesn't even
-        # ask for its motion. WWE '12's Octopus Stretch on 17071 dropped both people to stance; on 5198 it played.
-        # Likely the same as 2K15's AA on 17013 and Mankind '13's Mandible Claw on 17038.)
+        # ask for its motion (move_packs.cpp NeverStarts). WWE '12's Octopus Stretch on 17071 dropped both people to
+        # stance; on 5198 it played. 2K15's AA on 17013, Mankind '13's Mandible Claw on 17038, SvR 2009's Hunting RKO
+        # on 16126 - report 20261104-072336.)
         free = [i for i in free if i < 16000 or (near is not None and i // 1000 == near // 1000)]
         if near is not None and any(i // 1000 == near // 1000 for i in free):
-            free = [i for i in free if i // 1000 == near // 1000]
-        elif near is None:   # (a keyframe move: not in 9000-9999 - the game's streamed (YMBs) motions are 9000-9779 by
-            free = [i for i in free if i // 1000 != 9]   # its flag table, and a YMKs move there played as one)
+            return [i for i in free if i // 1000 == near // 1000]
+        return [i for i in free if i // 1000 != 9] if near is None else free
+
+    def free_record(self, name=None, near=None, limit=None, avoid=None):
+        """a record 2011 keeps without motions (a cut move) - free_ids: the one named `name`, else one picked by the
+        name. limit: the highest id that fits (id_limit)"""
+        free = self.free_ids(limit, avoid or (), near)
         if name:
             for i in free:
                 if norm(self.waze[i][1]) == norm(name):

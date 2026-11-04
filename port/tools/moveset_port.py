@@ -129,6 +129,12 @@ def port_moveset(c):
         else:
             cand = sorted(by11.get(_norm(nm), set())) if nm else []
         fit = [x for x in cand if x in moved and MP.usable11(w11, x) and (to in in_slot[x] or menu_of.get(to, '') in in_menu[x])]
+        # (a signature / finisher slot also takes 2011's own move of the same id when its record has the signature /
+        # finisher categories - 2007-2009 share 2011's ids: SvR 2008's Dragonrana Pin is 2011's Dragonrana 3506, SvR
+        # 2009's Hunting RKO 2011's Viper RKO 6863 - both "ported" before, copies that didn't play, reports
+        # 20261104-065418 / -072336)
+        if not fit and to in SPECIAL_SLOTS and getattr(c, 'same_ids', False):
+            fit = [x for x in cand if x in moved and MP.usable11(w11, x) and (bytes(w11[x][0])[:1] or b'\0')[0] & 0x0C == 0x0C]
         # (a taunt - 9000-9999, as 2007-2011 keep them - only in a taunt slot, and the ring movement sets (BASE) only
         # as 2011 itself has them: SvR 2007's map put Booker T's and Kurt Angle's taunts in the ring in / out slots and
         # strike slots - in a Hell in a Cell they ran on forever or froze, report 20261101-180328)
@@ -167,7 +173,10 @@ def port_moveset(c):
         # (never a stock one's, nor one another mod's pack already defines: packs are merged by move id - Mankind's
         # signature 2437 was Maria's and Bob Orton's 2437 too, whose waze line took its signature bits, 29 Oct)
         taken = other_pack_ids(c.pac11, '%s %d' % (c.gid, c.cid))
-        free = [i for i in sorted(w11) if i not in g11m.moved and i > 1000 and i not in in_slot and i not in taken]
+        # (moves_port's one rule - Game11.free_ids: below 16000, as the game never starts a move copied onto a record
+        # there from another thousand (move_packs.cpp NeverStarts; this pool gave SvR 2009's Hunting RKO 16126, report
+        # 20261104-072336), no 9000s for a keyframe move)
+        free = g11m.free_ids(avoid=taken)
         used = set(taken)   # (moves_port's own re-pick under a bank's id limit avoids them too: _avoid)
         # (a re-port gives each slot the id its last version had: the free pool shifts with what else is installed, so
         # the hashed pick alone moved Mankind 2.0.3's signatures / finishers off 2.0.2's ids)
@@ -191,13 +200,13 @@ def port_moveset(c):
             new_id = None
             if getattr(c, 'same_ids', False) and v in w11 and v not in g11m.moved and v > 1000 and v not in used:
                 new_id = v   # (SvR 2007-2009: 2011 keeps the move's own record, without a motion)
-            if new_id is None:
-                old = next((prev[to] for to in tos if prev.get(to) and prev[to] not in used), None)
-                if old is not None and old in w11 and old not in g11m.moved and old not in in_slot:
-                    new_id = old
             pool = free
             if v in templ:   # (a taunt: a record in the template's thousand - 9000-9999; elsewhere the match didn't find it)
-                pool = [i for i in free if i // 1000 == templ[v] // 1000] or free
+                pool = g11m.free_ids(avoid=taken, near=templ[v])
+            if new_id is None:   # (the last version's id - if it's still one the rule allows: not a 16126)
+                old = next((prev[to] for to in tos if prev.get(to) and prev[to] not in used), None)
+                if old is not None and old in pool:
+                    new_id = old
             for d in range(len(pool) if new_id is None else 0):
                 cand = pool[(h + d) % len(pool)]
                 if cand not in used:
@@ -214,6 +223,7 @@ def port_moveset(c):
             if v in templ:
                 a['template'] = str(templ[v])
             a['cat'] = (slots.get(tos[0]) or {}).get('bank') or ''   # (template categories: the slot's - moves_port)
+            a['special'] = any(to in SPECIAL_SLOTS for to in tos)   # (a signature / finisher: 2011's as templates first)
             lo, hi = getattr(c, 'prog', (70, 85))
             nport = min(len(to_port), c.max_port if c.max_port is not None else len(to_port))
             kinds = ['taunt' if x in templ else 'move' for x in list(to_port)[:nport]]

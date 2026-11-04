@@ -249,7 +249,16 @@ files when it starts (a few seconds the first time). Format: docs/MOVE_PACKS.md.
 
 Crowd signs, menu backgrounds and the game's media, one tab each; Belts &
 weapons brings title belts' and weapons' looks from another game (a texture
-pack).
+pack); Titles replaces a championship.
+
+### Titles tab
+
+One of the game's 13 titles with a new name, new pictures and new belt
+textures. Pick the title, then fill in only what should change: the name (and
+what its holder is called), the championship art beside the holder, the belt
+picture, and any of the belt's textures. Holders and title matches stay as
+they are, and without the mod the game's title comes back. Two mods on one
+title: the first by folder name wins, and the doctor warns.
 
 ### Crowd signs tab
 

@@ -48,6 +48,7 @@ final class ModsPage {
     static File backstageFolder() { return new File(new File(InstallActivity.gameFolder(), "Mods"), "Backstage"); }
     static File matchTypesFolder() { return new File(new File(InstallActivity.gameFolder(), "Mods"), "MatchTypes"); }
     static File attiresFolder() { return new File(new File(InstallActivity.gameFolder(), "Mods"), "Attires"); }
+    static File titlesFolder() { return new File(new File(InstallActivity.gameFolder(), "Mods"), "Titles"); }
     static File backgroundsFolder() { return Backgrounds.folder(); }
 
     // This app's version: the game's (the app installs the game of its own release).
@@ -116,10 +117,12 @@ final class ModsPage {
         File[] types = matchTypesFolder().listFiles(f -> f.isDirectory() && new File(f, "manifest.txt").isFile());
         File[] pics = backgroundsFolder().listFiles(f -> f.isDirectory() && hasPicture(f));
         File[] attires = attiresFolder().listFiles(f -> f.isDirectory() && new File(f, "attire.pac").isFile());
-        File[] dirs = new File[(arenas == null ? 0 : arenas.length) + (stars == null ? 0 : stars.length)
+        File[] titles = titlesFolder().listFiles(f -> f.isDirectory() && new File(f, "manifest.txt").isFile());
+        File[] dirs = new File[(titles == null ? 0 : titles.length) + (arenas == null ? 0 : arenas.length) + (stars == null ? 0 : stars.length)
             + (signs == null ? 0 : signs.length) + (media == null ? 0 : media.length) + (back == null ? 0 : back.length)
             + (types == null ? 0 : types.length) + (pics == null ? 0 : pics.length) + (attires == null ? 0 : attires.length)];
         int k = 0;
+        if (titles != null) for (File f : titles) dirs[k++] = f;
         if (arenas != null) for (File f : arenas) dirs[k++] = f;
         if (stars != null) for (File f : stars) dirs[k++] = f;
         if (signs != null) for (File f : signs) dirs[k++] = f;
@@ -154,12 +157,13 @@ final class ModsPage {
             boolean matchType = d.getParentFile().getName().equals("MatchTypes");
             boolean pic = d.getParentFile().getName().equals("Backgrounds");
             boolean attire = d.getParentFile().getName().equals("Attires");
+            boolean titlePack = d.getParentFile().getName().equals("Titles");
             String hint = (star && leftOut.contains(d.getName()) ? "NOT IN GAME - over the " + superstarLimit() + " limit. " : "")
-                + (attire ? "Attire " + m.get("attire") + " for " + starName(m.get("superstar")) : pic ? "Menu background" : matchType ? (d.getName().equals("free_roaming_backstage") ? "Match type - REMOVED: FREE-ROAMING BACKSTAGE isn't in the game for now" : "Match type") : backPack ? "Backstage area - OFF: backstage mods are switched off, Backstage Brawl plays the stock backstage" : mediaPack ? "Media" : signPack ? "Crowd signs" : star ? "Superstar" : "Arena")
+                + (titlePack ? "Title" : attire ? "Attire " + m.get("attire") + " for " + starName(m.get("superstar")) : pic ? "Menu background" : matchType ? (d.getName().equals("free_roaming_backstage") ? "Match type - REMOVED: FREE-ROAMING BACKSTAGE isn't in the game for now" : "Match type") : backPack ? "Backstage area - OFF: backstage mods are switched off, Backstage Brawl plays the stock backstage" : mediaPack ? "Media" : signPack ? "Crowd signs" : star ? "Superstar" : "Arena")
                 + (m.containsKey("author") && !m.get("author").isEmpty() ? " by " + m.get("author") : "")
                 + (m.containsKey("version") ? ", v" + m.get("version") : "")
                 + (needsNewer(a_, m.get("needs")) ? " - NEEDS GAME " + m.get("needs") : "")
-                + (signPack || mediaPack || matchType || pic ? "" : ", " + FileOps.human(new File(d, star ? "ch.pac" : attire ? "attire.pac" : "arena.pac").length()));
+                + (titlePack || signPack || mediaPack || matchType || pic ? "" : ", " + FileOps.human(new File(d, star ? "ch.pac" : attire ? "attire.pac" : "arena.pac").length()));
             LinearLayout controls = new LinearLayout(a_);
             Switch on = new Switch(a_);
             // (red when on, as the Settings switches: the default is hard to see)
@@ -473,6 +477,7 @@ final class ModsPage {
         boolean matchType = type.equals("matchtype");
         boolean pic = type.equals("background");
         boolean attire = type.equals("attire");
+        boolean titlePack = type.equals("title");
         if (attire && !parts.containsKey("attire.pac")) {
             deleteTree(stage);
             throw new IOException("that attire mod has no attire.pac");
@@ -481,7 +486,7 @@ final class ModsPage {
             deleteTree(stage);
             throw new IOException("it has no pictures (.dds)");
         }
-        if (!pic && !attire && !signPack && !mediaPack && !matchType && (star ? !parts.containsKey("ch.pac") : !parts.containsKey("arena.pac"))) {
+        if (!titlePack && !pic && !attire && !signPack && !mediaPack && !matchType && (star ? !parts.containsKey("ch.pac") : !parts.containsKey("arena.pac"))) {
             deleteTree(stage);
             throw new IOException(star ? "it has no ch.pac" : "it has no arena (not a SvR2011 mod?)");
         }
@@ -498,8 +503,8 @@ final class ModsPage {
             }
         }
         String id = m.containsKey("id") ? m.get("id").replaceAll("[^A-Za-z0-9_\\-]", "_") : "";
-        if (id.isEmpty()) id = attire ? "attire" : pic ? "background" : matchType ? "matchtype" : backPack ? "backstage" : mediaPack ? "media" : signPack ? "signs" : star ? "superstar" : "arena";
-        File dest = new File(attire ? attiresFolder() : pic ? backgroundsFolder() : matchType ? matchTypesFolder() : backPack ? backstageFolder() : mediaPack ? mediaFolder() : signPack ? signsFolder() : star ? superstarsFolder() : arenasFolder(), id);
+        if (id.isEmpty()) id = titlePack ? "title" : attire ? "attire" : pic ? "background" : matchType ? "matchtype" : backPack ? "backstage" : mediaPack ? "media" : signPack ? "signs" : star ? "superstar" : "arena";
+        File dest = new File(titlePack ? titlesFolder() : attire ? attiresFolder() : pic ? backgroundsFolder() : matchType ? matchTypesFolder() : backPack ? backstageFolder() : mediaPack ? mediaFolder() : signPack ? signsFolder() : star ? superstarsFolder() : arenasFolder(), id);
         Installed r = new Installed();
         r.name = m.containsKey("name") ? m.get("name") : id;
         r.type = type;
@@ -520,7 +525,7 @@ final class ModsPage {
         // if that fails) and only then the old one deleted: a failure leaves the installed copy as it was. (It used
         // to be deleted first: a stopped copy left a folder the mods list showed and the game left out - the PC
         // launcher's 2.1.2 bundled-mod reports, mods_tab.c swap_in.)
-        String need = attire ? "attire.pac" : pic ? "manifest.txt" : signPack || mediaPack || matchType ? "manifest.txt" : star ? "ch.pac" : "arena.pac";
+        String need = attire ? "attire.pac" : pic || titlePack ? "manifest.txt" : signPack || mediaPack || matchType ? "manifest.txt" : star ? "ch.pac" : "arena.pac";
         File kind = dest.getParentFile(), mods = kind.getParentFile();
         File fresh = new File(mods, ".new-" + kind.getName() + "-" + id), old = new File(mods, ".old-" + kind.getName() + "-" + id);
         deleteTree(fresh);

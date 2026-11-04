@@ -183,6 +183,7 @@ it installs one (`launcher/mods_tab.c install_file`; Android
 | `Background` | `Mods\Backgrounds\<id>` | at least one `*.dds` | `src/backgrounds_page.cpp` |
 | `media` | `Mods\Media\<id>` | nothing | `src/media_mods.cpp`, `hd_movies.cpp` |
 | `matchtype` | `Mods\MatchTypes\<id>` | nothing | `src/match_types.cpp` (switches only, see 3.9) |
+| `title` | `Mods\Titles\<id>` | `title=` key | `src/title_mods.cpp` (see `port/docs/TITLE_MODS.md`) |
 
 Any other type is refused with "this version installs ...".
 

@@ -4,6 +4,8 @@
    with the date, the problem and a short "what happened". The launcher's Reports tab asks the server for their
    state with them (POST /api/reports/status), sends an answer to a question (POST /api/reports/reply) and the
    player's changes to a report (POST /api/reports/edit: more text, pictures - 5 a report in all).
+   Suggestions (the Suggestions tab: a report of kind "suggestion") keep theirs in <game>\UserData\suggestions.json
+   (RECEIPTS_SUGGESTIONS); their answers: planned ("Sure"), not_planned ("No, not planned"), fixed ("Done in").
    Plain C: the launcher and the Mod Maker build it. */
 #pragma once
 
@@ -15,12 +17,18 @@ extern "C" {
 
 enum { RECEIPTS_MAX = 200, RECEIPT_MAX_IMAGES = 3, RECEIPT_MAX_EDIT_IMAGES = 5 };
 
+/* The receipts files: the reports' (reports.json) and the suggestions' (suggestions.json). */
+#define RECEIPTS_REPORTS L"reports.json"
+#define RECEIPTS_SUGGESTIONS L"suggestions.json"
+
 typedef struct {
     /* kept on this PC */
     char id[40], secret[80], date[24], app[16], problem[120], what[200];
     int pictures_later;      /* the game's form sent it without pictures, "add them later in the launcher" */
     /* the server's answer ("" until asked) */
-    char state[16];          /* received / looking / fixed / needs_info / replied / done / duplicate / unknown */
+    char state[16];          /* received / looking / fixed / needs_info / replied / done / duplicate / unknown;
+                                a suggestion's also planned / not_planned */
+    char kind[12];           /* the server's: "report" or "suggestion" ("" not asked yet) */
     char note[1000];         /* fixed: how (reports.py mark --fixed) */
     char version[24];        /* fixed: the update it's in */
     char question[1000];     /* needs_info / replied: our question */
@@ -40,6 +48,11 @@ int receipt_add_ex(const WCHAR *game_dir, const char *app, const char *id, const
 /* The kept receipts, newest first; how many. */
 int receipts_load(const WCHAR *game_dir, ReportReceipt *out, int max);
 
+/* The same for one of the receipts files (RECEIPTS_REPORTS / RECEIPTS_SUGGESTIONS). */
+int receipt_add_file(const WCHAR *game_dir, const WCHAR *file, const char *app, const char *id, const char *secret,
+                     const char *problem, const char *what);
+int receipts_load_file(const WCHAR *game_dir, const WCHAR *file, ReportReceipt *out, int max);
+
 /* A test run's guard for the writes (an answer): 1 refuses this server (the launcher's test_run_refuses_url). */
 typedef int (*receipts_guard_fn)(const WCHAR *server, const char *what);
 void receipts_set_guard(receipts_guard_fn guard);
@@ -48,6 +61,10 @@ void receipts_set_guard(receipts_guard_fn guard);
    after the kept ones, up to max). *n: how many there are now. 1 when it answered; 0 and why when not. */
 int receipts_status(const WCHAR *server, const char *token, ReportReceipt *items, int *n, int max, WCHAR *why,
                     int why_n);
+/* ... kind: the account's ones from other PCs of this kind only ("report" / "suggestion"; receipts_status:
+   "report"). */
+int receipts_status_kind(const WCHAR *server, const char *token, const char *kind, ReportReceipt *items, int *n,
+                         int max, WCHAR *why, int why_n);
 
 /* The player's answer to our question: text (UTF-8) and up to 3 pictures (PNG / JPEG / WebP). 1 when the server
    took it; 0 and why (its words) when not. */

@@ -636,6 +636,7 @@ public class LauncherActivity extends Activity {
             }
             settings_.setBool(key, on);
             saved(label);
+            if (warn_on != null) refresh();  // (what Turn on locked - big_roster's per-mod switch - unlocks again)
         });
         refreshers_.add(() -> s.setChecked(settings_.getBool(key, fallback)));
         row(card, label, hint, s);

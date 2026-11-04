@@ -8,6 +8,7 @@
  * until it's done or a duplicate - "Edit / add pictures...": text to add to what happened and pictures, 5 a report
  * in all (POST /api/reports/edit). Reports the game sent with "add pictures later" say "Add your pictures". */
 #include "reports_tab.h"
+#include "report_urls.h"
 
 #include <commctrl.h>
 #include <commdlg.h>
@@ -258,6 +259,12 @@ static void send_answer(void)
     if (!(j = (ReplyJob *)calloc(1, sizeof *j))) return;
     j->r = s_items[i];
     WideCharToMultiByte(CP_UTF8, 0, text, -1, j->text, sizeof j->text, NULL, NULL);
+    if (report_text_has_url(j->text)) {
+        free(j);
+        status(REPORT_NO_URLS_W);
+        SetFocus(s_c[R_ANSWER]);
+        return;
+    }
     memcpy(j->pics, s_pics, sizeof s_pics);
     j->npics = s_npics;
     s_busy = 1;

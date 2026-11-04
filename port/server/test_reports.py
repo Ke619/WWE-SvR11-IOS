@@ -9,6 +9,7 @@ import json
 import os
 import secrets
 import struct
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -246,7 +247,7 @@ def receipts(url, node_data, r1, r2, ver):
     one = rows.get(r1["id"], {})
     check("status: only the public fields (%s)" % sorted(one),
           set(one) <= {"id", "state", "received", "app", "problem", "what", "note", "version", "question", "date",
-                       "replies", "from_account", "edits", "pictures", "editable"}
+                       "replies", "from_account", "edits", "pictures", "editable", "kind"}
           and "contact" not in one and "signature" not in one)
     st, d = post_json(url, "/api/reports/status", {"reports": "nope"})
     check("status: not a list -> 400", st == 400)
@@ -308,6 +309,59 @@ def receipts(url, node_data, r1, r2, ver):
     ip = "10.251.%d.%d" % (secrets.randbelow(250), secrets.randbelow(250))
     codes = [reply(url, r2["id"], r2["secret"], "answer %d" % n, ip=ip)[0] for n in range(6)]
     check("reply: 5 at most per report (%s)" % codes, codes[:5] == [200] * 5 and codes[5] in (409, 429))
+
+
+# (the same list in launcher/report_urls.h's and ReportSend.hasUrl's checks)
+URLS = ["http://x.y", "https://example.com/a", "HTTPS://A.B", "ftp://files.host/x", "see https://x.y now", "www.foo.bar",
+        "WWW.FOO.COM", "discord.gg/abc", "discord.gg", "Discord.gg/abc", "dsc.gg/x", "join discord.gg/abc please",
+        "youtube.com/watch?v=1", "youtu.be/abc", "bit.ly/x", "t.me/foo", "example.co.uk", "mysite.app/path", "see:imgur.com",
+        "(imgur.com/a)", "imgur.com.", "DISCORD.GG/ABC", "my-site.net"]
+NOT_URLS = ["", "v2.1.9", "2.1.10", "1.2.3", "1.2.3.4", "movie.mp4", "pac/m.pac", "SaveData.dat", "foo.zip", "foo.mov", "svr2011.exe",
+            "logs/svr2011_1.log", "C:\\Games\\foo.com", "C://Users/me", "me@gmail.com", "mail me: name.last@mail.gmail.com",
+            "discord: tester", ".NET", "the game.It crashed", "the game.Net play broke", "System.Net.Sockets", "Mods/foo.app",
+            "mysite.app", "game.py", "crashed...then", "U.S.A", "e.g. this", "i.e.", "a.k.a", "Mr.T", "1.5x", "report.md",
+            "shader.gl", "script.gd", "my_game.com", "What happened: it crashed. Then it closed."]
+
+
+def urls(url, r1):
+    """No web addresses in what players write: the rule, the sends, the edits and the answers."""
+    check("has_url: web addresses (missed: %s)" % [u for u in URLS if not reports.has_url(u)],
+          all(reports.has_url(u) for u in URLS))
+    check("has_url: file names, versions, e-mail (caught: %s)" % [u for u in NOT_URLS if reports.has_url(u)],
+          not any(reports.has_url(u) for u in NOT_URLS))
+    no = "Please dont add urls to bug reports"
+    for field in ("what", "before", "contact"):
+        st, d = post(url, meta(**{field: "see discord.gg/abc"}), ip="203.0.113.71")
+        check("a report with a url in %s -> 400 and our words (%s)" % (field, d.get("error")), st == 400 and d.get("error") == no)
+    st, d = post(url, meta(kind="suggestion", problem="An idea", what="like on https://x.y"), ip="203.0.113.71")
+    check("a suggestion with a url -> 400, says suggestions (%s)" % d.get("error"),
+          st == 400 and d.get("error") == "Please dont add urls to suggestions")
+    st, d = post(url, meta(what="movie.mp4 in pac/m.pac on v2.1.9 (SaveData.dat, 1.2.3)", contact="me@gmail.com"), ip="203.0.113.71")
+    check("a report with file names, a version, an e-mail -> taken (%s)" % d.get("id"), st == 200 and d.get("id"))
+    st, d = edit(url, r1["id"], r1["secret"], what="look at www.foo.bar", ip="203.0.113.72")
+    check("an edit with a url -> 400 (%s)" % d.get("error"), st == 400 and d.get("error") == no)
+    st, d = edit(url, r1["id"], r1["secret"], contact="discord.gg/abc", ip="203.0.113.72")
+    check("an edit's contact with a url -> 400", st == 400 and d.get("error") == no)
+    st, d = reply(url, r1["id"], r1["secret"], "see http://x.y", ip="203.0.113.73")
+    check("an answer with a url -> 400 (%s)" % d.get("error"), st == 400 and d.get("error") == no)
+
+
+def who(url, node_data):
+    """Who sent it: the online account, else the contact (the sender's last change too), else anonymous."""
+    def row(rid):
+        return next((x for x in json.loads(get(url, "/api/admin/reports")[1])["reports"] if x["id"] == rid), {})
+    st, a = post(url, meta(problem="Crash", what="who: a contact", contact="discord: whotest"), ip="203.0.113.74")
+    st, b = post(url, meta(problem="Crash", what="who: nobody", contact=""), ip="203.0.113.74")
+    check("who: the contact (%s)" % row(a["id"]).get("who"), row(a["id"]).get("who") == "discord: whotest")
+    check("who: nobody said -> anonymous (%s)" % row(b["id"]).get("who"), row(b["id"]).get("who") == "anonymous")
+    st, _ = edit(url, b["id"], b["secret"], contact="discord: whotest", ip="203.0.113.75")
+    check("who: the sender's edit counts (%s)" % row(b["id"]).get("who"), st == 200 and row(b["id"]).get("who") == "discord: whotest")
+    cli = [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "reports.py"), "--data", node_data]
+    out = subprocess.run(cli + ["list", "--who", "DISCORD: whotest"], capture_output=True, text=True, encoding="utf-8").stdout
+    check("reports.py list --who: that person's two, with the name (%s)" % out.strip()[:90],
+          a["id"] in out and b["id"] in out and "discord: whotest" in out and len(out.strip().splitlines()) == 2)
+    check("the receipts' answer has no contact or who", all(k not in post_json(url, "/api/reports/status", {"reports": [
+        {"id": a["id"], "secret": a["secret"]}]})[1]["reports"][0] for k in ("contact", "who")))
 
 
 def main():
@@ -413,6 +467,8 @@ def main():
     mine = [x for x in index if x.get("version") == ver]
     receipts(url, a.node_data, r1, r2, ver)
     edits(url, a.node_data, r1, r2)
+    urls(url, r1)
+    who(url, a.node_data)
     check("index.jsonl: a line for each accepted report (%d)" % len(mine), len(mine) == 12)
 
     # the dashboard's routes

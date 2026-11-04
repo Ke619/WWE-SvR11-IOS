@@ -51,6 +51,8 @@
 #include "match_record.h"
 #include "native/native_renderer.h"
 
+#include "../launcher/report_urls.h"
+
 #if defined(_WIN32)
 extern "C" {
 #include "report_flow.h"
@@ -584,6 +586,13 @@ void ReportPage::SendIt() {
   if (!*p) {
     status_ = kNeedWhat, status_bad_ = true;
     sel_ = kWhat;
+    return;
+  }
+  // (the server's rule too: no web addresses)
+  const bool url_what = report_text_has_url(a_.what.c_str()), url_before = report_text_has_url(a_.before.c_str());
+  if (url_what || url_before || report_text_has_url(a_.contact.c_str())) {
+    status_ = REPORT_NO_URLS, status_bad_ = true;
+    sel_ = url_what ? kWhat : url_before ? kBefore : kContact;
     return;
   }
   Send s;

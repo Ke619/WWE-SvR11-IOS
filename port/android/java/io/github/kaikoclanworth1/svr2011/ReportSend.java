@@ -70,6 +70,45 @@ final class ReportSend {
 
     // ── report.json ──────────────────────────────────────────────────────────
 
+    // No web addresses in what players write: the server's rule (server/reports.py has_url,
+    // launcher/report_urls.h the same; test_reports.py has the test list). A scheme, www.<something>, or a bare domain:
+    // a word ending in a web address's ending. File types and short words aren't on the list, so a file name, a
+    // version or a path never counts; nor does an e-mail address.
+    static final String kNoUrls = "Please dont add urls to bug reports", kNoUrlsIdeas = "Please dont add urls to suggestions";
+    private static final java.util.Set<String> kUrlEndings = new java.util.HashSet<>(java.util.Arrays.asList(
+        "com", "net", "org", "gg", "io", "tv", "xyz", "co", "uk", "ru", "eu", "nz", "br", "au", "biz"));
+    private static final java.util.Set<String> kUrlWithPath = new java.util.HashSet<>(java.util.Arrays.asList(
+        "app", "dev", "site", "online", "link", "live", "club", "shop", "store", "top", "me", "be", "to",
+        "info", "fun", "cc", "ly", "gl", "gd"));
+    private static final java.util.Set<String> kUrlSites = new java.util.HashSet<>(java.util.Arrays.asList(
+        "youtu.be", "t.me", "wa.me", "discord.me", "bit.ly", "goo.gl", "is.gd"));
+    private static final java.util.regex.Pattern kUrlScheme = java.util.regex.Pattern.compile("[A-Za-z]{2}://");
+    private static final java.util.regex.Pattern kUrlWord = java.util.regex.Pattern.compile("[A-Za-z0-9.\\-]+");
+
+    static boolean hasUrl(String text) {
+        if (text == null || text.isEmpty()) return false;
+        if (kUrlScheme.matcher(text).find()) return true;
+        java.util.regex.Matcher m = kUrlWord.matcher(text);
+        while (m.find()) {
+            String word = m.group().replaceAll("[.\\-]+$", "");
+            if (word.isEmpty()) continue;
+            char before = m.start() > 0 ? text.charAt(m.start() - 1) : 0;
+            int end = m.start() + word.length();
+            char after = end < text.length() ? text.charAt(end) : 0;
+            if (before == '@' || before == '/' || before == '\\' || before == '_'
+                || after == '@' || after == '_' || after == '\\') continue;   // (an e-mail address; a folder's file)
+            if (word.indexOf('.') < 0 || word.contains("..") || word.charAt(0) == '.') continue;
+            String low = word.toLowerCase(java.util.Locale.ROOT);
+            if (low.startsWith("www.")) return true;
+            String tail = word.substring(word.lastIndexOf('.') + 1);
+            String tailLow = tail.toLowerCase(java.util.Locale.ROOT);
+            if (!tail.equals(tailLow) && !tail.equals(tail.toUpperCase(java.util.Locale.ROOT))) continue;
+            if (kUrlEndings.contains(tailLow) || kUrlSites.contains(low) || (after == '/' && kUrlWithPath.contains(tailLow)))
+                return true;
+        }
+        return false;
+    }
+
     static final class Answers {
         String app = "android", version = "", os = "", problem = "", happens = "", what = "", before = "",
             contact = "", signature = "", updater = "";

@@ -3,7 +3,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/GitHub%20Actions-Automated-blue?logo=githubactions" alt="GitHub Actions">
   <img src="https://img.shields.io/badge/Platform-iOS-lightgrey?logo=apple" alt="Platform">
-  <img src="https://img.shields.io/badge/Port%20Status-Playable-8A2BE2?logo=wwe" alt="Status">
+  <img src="https://img.shields.io/badge/Port%20Status-Playable-8A2BE2?logo=wwe" alt="Port Status">
 </p>
 
 <p align="center">

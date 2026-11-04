@@ -545,7 +545,7 @@ void Draw() {
     PopAccent();
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-      ImGui::SetTooltip("Pick a folder (e.g. D:\\Roms): it and everything under it is searched for .iso files and extracted "
+      ImGui::SetTooltip("Pick a folder: it and everything under it is searched for .iso files and extracted "
                         "game folders, and each disc is recognised by its id. Games you already set stay as they are.");
     ImGui::SetCursorPos(after);
   }

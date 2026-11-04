@@ -749,8 +749,8 @@ void SourceRow() {
     }
     ImGui::EndCombo();
   }
-  Hint(("Look inside this game, or straight inside your other WWE discs (Xbox 360 and PS2 disc images, nothing "
-        "extracted): the disc images in the disc folders (" + Utf8(DiscFolders()[0]) + " ...) are listed by game. "
+  Hint(std::string("Look inside this game, or straight inside your other WWE discs (Xbox 360 and PS2 disc images, nothing "
+        "extracted): the disc images in the disc folders are listed by game. "
         "WWE '13 and later pack most files with xcompress; they are unpacked when opened.").c_str());
   ImGui::SameLine();
   if (ImGui::SmallButton("Disc folders...")) {

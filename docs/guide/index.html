@@ -112,7 +112,7 @@
   <div class="card"><h4>Moves</h4><p>Moves the game doesn't have, as a pack on its own or inside a superstar.</p></div>
   <div class="card"><h4>Crowd signs &amp; media</h4><p>Signs the crowd holds up; entrance videos, renders, themes, arena screens, menu music, sounds.</p></div>
   <div class="card"><h4>Match types</h4><p>Switches for the port's extra match types, and your own match types from the game's rules.</p></div>
-  <div class="card"><h4>Other games</h4><p>Superstars, arenas, moves and entrances from your other discs - Xbox 360 SvR 2007 to WWE 2K17 and all nine PS2 SmackDowns - read straight off the disc images.</p></div>
+  <div class="card"><h4>From another game</h4><p>Superstars, arenas, moves and entrances from your other discs - Xbox 360 SvR 2007 to WWE 2K17 and all nine PS2 SmackDowns - read straight off the disc images.</p></div>
   <div class="card"><h4>Look inside</h4><p>Every file of the game, every animation, every picture - browse, play, export.</p></div>
 </div>
 <figure>
@@ -150,7 +150,7 @@
 <ol class="steps">
   <li><b>Open it from the launcher.</b> On the launcher's <b>Mods</b> tab press <b>Open Mod Maker</b>. It then knows where the game is. Started on its own, it asks for the game folder (the one with the <code>pac</code> folder) once and remembers it; the button at the top right changes it.</li>
   <li><b>Direct3D 11</b> is all it needs for making mods. The window is fully resizable; <b>Aa</b> at the top right sets the text size.</li>
-  <li><b>Optional: Python 3</b> with numpy and Pillow, and <b>ffmpeg</b>: the launcher's <b>Setup</b> page (<i>First time setup</i>, it opens by itself on the launcher's first start) installs them into the game's <code>Tools</code> folder - <b>Install Python + numpy + Pillow</b> and <b>Install ffmpeg</b>. A Python 3 on PATH with <code>pip install numpy pillow</code> works too. Only needed for the <i>Other games</i> page's SvR 2010 / SvR 2008 / WWE '13 superstar converters, which run the port's Python tools from the <code>Mod Maker Tools</code> folder next to the Mod Maker. The page tells you what is missing.</li>
+  <li><b>Optional: Python 3</b> with numpy and Pillow, and <b>ffmpeg</b>: the launcher's <b>Setup</b> page (<i>First time setup</i>, it opens by itself on the launcher's first start) installs them into the game's <code>Tools</code> folder - <b>Install Python + numpy + Pillow</b> and <b>Install ffmpeg</b>. A Python 3 on PATH with <code>pip install numpy pillow</code> works too. Only needed for the <i>From another game</i> tabs' SvR 2010 / SvR 2008 / WWE '13 converters, which run the port's Python tools from the <code>Mod Maker Tools</code> folder next to the Mod Maker. The page tells you what is missing.</li>
   <li><b>Optional: Blender</b> (any recent version) to edit arenas as FBX.</li>
 </ol>
 <div class="tip"><b>Nothing you do here can break the game.</b> Mods live in <code>Mods\</code> inside the game folder and are laid over the game while it runs. A mod you don't like is one tick in the launcher away from off.</div>
@@ -227,25 +227,25 @@
   <li><b>Xbox 360</b>: SmackDown vs. Raw 2007, 2008, 2009 and 2010, Legends of WrestleMania (superstars, entrances and arenas; movesets stay the base's), WWE '12, '13, 2K14, 2K15, 2K16 and 2K17.</li>
   <li><b>PS2</b>, all nine: WWF SmackDown! Just Bring It, Shut Your Mouth, Here Comes the Pain, SmackDown! vs. Raw, SvR 2006, and the PS2 SvR 2007, 2008, 2009 and 2010.</li>
 </ul>
-<figure><img src="img/port.png" alt="The Port page: SvR 2009 picked, the Superstars tab listing the disc's superstars, which 2011 has, and Convert"><figcaption>SvR 2009's superstars, read off the disc: "has it" for the ones 2011 already has, "new" for the rest.</figcaption></figure>
+<figure><img src="img/port.png" alt="The Superstar page's From another game tab: SvR 2009 picked, the Superstars tab listing the disc's superstars, which 2011 has, and Convert"><figcaption>SvR 2009's superstars, read off the disc: "has it" for the ones 2011 already has, "new" for the rest.</figcaption></figure>
 <ol class="steps">
-  <li><b>Port from a disc</b> on the rail. <b>1. The disc</b>: your disc images are listed by game (the Mod Maker looks in <code>D:\Roms\Xbox 360\WWE</code> and <code>D:\Roms\Playstation 2\WWE Games</code>; <b>Game assets → Disc folders...</b> adds others). An extracted folder works too.</li>
+  <li>Open the <b>From another game</b> tab of the page for what you want: <b>Superstar</b>, <b>Arena</b>, <b>Moves &amp; entrances</b> or <b>Media</b> on the rail. <b>1. The disc</b>: the discs you set once in <b>My game discs</b> (PORTING on the rail) are listed by game. One file or an extracted folder works too.</li>
   <li>Pick what to port: <b>Superstars</b>, <b>Moves</b>, <b>Entrances</b>, <b>Arenas</b>, <b>Attires</b>, <b>Belts</b> or <b>Weapons</b>. The line under the tabs says whether this game is ready for it ("not portable yet" means its format is still being worked out).</li>
   <li><b>3. List what's on the disc.</b> Find one by name; tick <i>hide what 2011 already has</i> to see only what's new.</li>
   <li>Pick it, then <b>4. Convert</b>. It takes from seconds to a couple of minutes; the status line shows how far it is. A PS2 superstar can have more outfits than the four a mod holds: <b>Choose attires...</b> draws each of them - click up to four, the number on each is the attire it becomes in your mod (untouched: the first four).
-    <figure><img src="img/port_ps2.png" alt="The Port page with WWF SmackDown! Just Bring It: the superstar list, Kurt Angle picked, the Same moves only box and Convert"><figcaption>A PS2 disc: Just Bring It's superstars, Kurt Angle picked.</figcaption></figure></li>
+    <figure><img src="img/port_ps2.png" alt="The From another game tab with WWF SmackDown! Just Bring It: the superstar list, Kurt Angle picked, the Same moves only box and Convert"><figcaption>A PS2 disc: Just Bring It's superstars, Kurt Angle picked.</figcaption></figure></li>
   <li><b>5. Open it to finish</b>: a superstar opens on the Superstar page, an arena in the 3D editor, moves and entrances on the Moves page; belts and weapons install as a texture pack. What the conversion left out is listed under the button.</li>
 </ol>
 <h4>What comes with a superstar</h4>
 <p>The model (fitted to what the game holds), the pictures, the theme and titantron, the ratings and abilities (fitted onto 2011's), the entrance, and the superstar's own moveset and taunts. Each move slot gets the same 2011 move where 2011 has it; a move 2011 doesn't have is ported into a move pack inside the mod (WWE '12 and later), or - for the PS2 games - a <i>similar</i> 2011 move stands in. On the Superstar page the moveset marks those slots <span class="pill warn">similar</span>: hover one to see what it stands in for, and swap it if you like.</p>
 <p><b>Same moves only (no similar ones)</b> (PS2 games): ticked, only the moves 2011 has too come over; the rest keep the fighting style's.</p>
 <h4>Pictures for WWE 2K17</h4>
-<p>2K17's renders aren't named after the superstars, so the Port page can't tell which is whose. Picking a 2K17 superstar shows <b>The select picture</b>: every render on the disc. Click the one that is this superstar, or <b>No picture</b> to keep the base superstar's.</p>
-<figure><img src="img/port_pics.png" alt="The Port page with WWE 2K17: Steve Austin picked, the select picture picker with the disc's renders"><figcaption>WWE 2K17: pick the superstar's render yourself.</figcaption></figure>
+<p>2K17's renders aren't named after the superstars, so the Mod Maker can't tell which is whose. Picking a 2K17 superstar shows <b>The select picture</b>: every render on the disc. Click the one that is this superstar, or <b>No picture</b> to keep the base superstar's.</p>
+<figure><img src="img/port_pics.png" alt="The From another game tab with WWE 2K17: Steve Austin picked, the select picture picker with the disc's renders"><figcaption>WWE 2K17: pick the superstar's render yourself.</figcaption></figure>
 <h4>Arenas that can't be ported</h4>
 <p>Some arenas are greyed out in the list: hover one for why. Either it crashes 2011 when it loads (found by playing every converted arena), or it isn't an arena at all - in WWE '12 and later, bg60 and up are backstage rooms and studio / photo stages, which show a white mat over a black void on an arena slot.</p>
 <p><b>Entrances</b> have a <b>Full preview</b> button after converting: the whole entrance played before you install it (see <a href="#tut-preview">Watch a whole entrance</a>).</p>
-<div class="note"><b>Needs Python</b> (see <a href="#install">Setting up</a>): the converters are the port's Python tools. WWE '12 - 2K17 arenas convert without it (Other games page).</div>
+<div class="note"><b>Needs Python</b> (see <a href="#install">Setting up</a>): the converters are the port's Python tools. WWE '12 - 2K17 arenas convert without it (the Arena page's From another game tab).</div>
 <div class="tip"><b>The work folder</b> (<code>Mods\.convert\port</code> in the game folder) keeps the converters' copies of the disc's files - a superstar can take close to 1 GB. Its size shows on the page with <b>Clear it</b>; above 3 GB the oldest are removed after a conversion.</div>
 </section>
 
@@ -259,7 +259,7 @@
   <li><b>Look</b>: what your superstar looks like. Three ways in:
     <ul>
       <li><b>A superstar in the game</b>: click anyone on the roster.</li>
-      <li><b>From an older game</b>: pick one of your disc images (any game the <a href="#tut-port">Port page</a> reads), list its superstars, convert one, then choose <b>Just the look</b> or <b>Everything</b> (look, music, pictures, moves). From a PS2 game, <b>Choose attires...</b> picks which four of their outfits come over, in which order.</li>
+      <li><b>From an older game</b>: pick one of your disc images (any game <a href="#tut-port">From another game</a> reads), list its superstars, convert one, then choose <b>Just the look</b> or <b>Everything</b> (look, music, pictures, moves). From a PS2 game, <b>Choose attires...</b> picks which four of their outfits come over, in which order.</li>
       <li><b>Import a 3D model</b>: your own model as an FBX - see <a href="#tut-fbx">A superstar from a 3D model</a>.</li>
     </ul>
     <figure><img src="img/simple_look.png" alt="Simple mode, Look step: the Model and Materials tabs, the three ways in and the roster with pictures"><figcaption>Look: click a superstar on the roster.</figcaption></figure>
@@ -312,7 +312,7 @@
   <li><b>Model (ch.pac)</b>: press the button and pick <code>pac\ch\ch139.pac</code> from the game folder (John Cena's model). The preview shows it standing in its idle stance - drag to turn it. A model that doesn't load shows why under the preview.</li>
   <li>Optional: <b>Theme song</b> (mp3, m4a, wav, flac, wma, ogg), <b>Entrance movie</b> (press <b>From a video...</b> next to it to make the 320 x 320 Bink from any video or picture), <b>Attires 2-4</b> (another model pac's first attire each), <b>Crowd signs</b> the fans hold, a <b>Name recording</b> for the ring announcer, and the <b>Select picture</b> (a PNG with a transparent background looks best: it is cropped to the person, who fills the picture top to bottom like the game's renders; the bust, the model's own portrait and the face icon are made from it). <b>Game look</b> moves its tone toward the game's renders; <b>Bust picture</b> gives the small render its own head-and-shoulders picture, <b>Full body picture</b> the full-body render (otherwise the select picture is used).</li>
   <li><b>Moveset</b> (its own section): the style's moves slot by slot. Pick another for any slot by name - each slot lists the game's moves of its kind - and press <b>&gt;</b> to watch it in the preview, done to the style's superstar.</li>
-  <li>Optional, under <b>More</b>: the entrance - any installed one, by number and name, including the ones the Port page converts; <b>Full preview</b> plays it whole - an announcer name the game has clips of, the abilities and a move pack. Attires 2-4 can each have their own entrance.</li>
+  <li>Optional, under <b>More</b>: the entrance - any installed one, by number and name, including the ones the From another game tab converts; <b>Full preview</b> plays it whole - an announcer name the game has clips of, the abilities and a move pack. Attires 2-4 can each have their own entrance.</li>
   <li>Check the <b>Problems</b> at the bottom: red ones must go. Then <b>Save as mod</b> (a <code>.svrmod</code> to share) or <b>Install into game</b>, or <b>Test in game</b> to install and start the game right away.</li>
   <li>In the game: character select → the <b>M</b> tile (EXTRA) → your superstar is in the list, with a MODDED badge.</li>
 </ol>
@@ -353,9 +353,9 @@
 <p>A new attire for one of the game's superstars (or a superstar mod), or one replacing an attire they have - its own mod, on CHANGE ATTIRE.</p>
 <figure><img src="img/attires.png" alt="The Attires page: Matt Hardy picked, attire 3 chosen, a model in the preview"><figcaption>An attire for Matt Hardy: the slots he has, the free ones, the model in the preview.</figcaption></figure>
 <ol class="steps">
-  <li><b>Attires</b> on the rail. Pick the <b>Superstar</b>. The page shows the attires their model pac has.</li>
+  <li><b>Superstar</b> on the rail → the <b>Attires</b> tab. Pick the <b>Superstar</b>. The page shows the attires their model pac has.</li>
   <li><b>A new attire</b>, or <b>Replace</b> one (4 at most - the game's limit; slots marked <i>free?</i> are free if the game allows that superstar more).</li>
-  <li><b>Model (ch.pac)</b>: any character model pac - one of the game's, a superstar mod's, or one the Port page converted. Its first attire becomes this attire.</li>
+  <li><b>Model (ch.pac)</b>: any character model pac - one of the game's, a superstar mod's, or one the From another game tab converted. Its first attire becomes this attire.</li>
   <li>Give it a <b>name</b> for CHANGE ATTIRE and, if you like, its own <b>entrance</b>.</li>
   <li><b>Save as mod</b> or <b>Install into game</b>. The superstar's pictures stay theirs: the game has no per-attire render.</li>
 </ol>
@@ -379,7 +379,7 @@
 <p>A window that plays a whole entrance - all five parts, from the titantron intro to the pose in the ring - in the practice arena, with the entrance's own camera, the superstar's fingers, the theme and the titantron.</p>
 <figure><img src="img/fullpreview.jpg" alt="The Full preview window: John Cena walking down the ramp, the titantron playing at the right, the timeline at part 3 of 5"><figcaption>John Cena's entrance, part 3 of 5, with his titantron.</figcaption></figure>
 <ul>
-  <li>Open it with <b>Full preview</b> on the Superstar page (your superstar's entrance on your model, in its entrance gear) or on the Port page after converting an entrance.</li>
+  <li>Open it with <b>Full preview</b> on the Superstar page (your superstar's entrance on your model, in its entrance gear) or on the From another game tab after converting an entrance.</li>
   <li><b>Play</b>, <b>Restart</b> and the timeline; untick <b>The entrance's camera</b> to look around yourself (right drag turns, the wheel zooms), and the theme or the titantron to leave them out.</li>
   <li>Bink 2 titantrons (WWE 2K15 and later) need converting first: the window says so (see Bink 2 under <a href="#tut-other">From other games</a>).</li>
 </ul>
@@ -447,19 +447,19 @@
 <h2>Tutorial: a backstage room</h2>
 <figure><img src="img/backstage.png" alt="The GM's office in the 3D editor, opened from the Backstage page"><figcaption>The GM's office, opened from the Backstage page. Only that room is shown and edited.</figcaption></figure>
 <ol class="steps">
-  <li><b>Backstage</b> on the rail. Pick the area (parking lot, GM's office, locker rooms, interview area, catering) and press <b>Open the area in the 3D editor</b>.</li>
+  <li><b>Arena</b> on the rail → the <b>Backstage</b> tab. Pick the area (parking lot, GM's office, locker rooms, interview area, catering) and press <b>Open the area in the 3D editor</b>.</li>
   <li>Edit the room like an arena - but keep the floor and walls where they are (the game's cameras and the fighting box expect them). The cars, crates and weapons are placed by the game and are not shown.</li>
   <li>Name it. <b>Save as mod</b> or <b>Test in game</b>: the game plays your room in that area's backstage brawls. One backstage mod plays at a time.</li>
 </ol>
 <h4>An area of its own</h4>
-<p>Tick <b>An area of its own</b> to get a row of your own in ONE ON ONE → BACKSTAGE instead of replacing the room: give it a row name, a fight box (centre and half sizes in game units, 1 = 10 cm), a camera distance cap and a minimum camera height for small areas, and optionally a gimmick pac with the area's own cars and props. The <i>Other games</i> page's SvR 2008 tab makes a complete one from the 2008 Parking Lot.</p>
+<p>Tick <b>An area of its own</b> to get a row of your own in ONE ON ONE → BACKSTAGE instead of replacing the room: give it a row name, a fight box (centre and half sizes in game units, 1 = 10 cm), a camera distance cap and a minimum camera height for small areas, and optionally a gimmick pac with the area's own cars and props. The Arena page's <i>From another game</i> tab (SvR 2008 backstage) makes a complete one from the 2008 Parking Lot.</p>
 </section>
 
 <section id="tut-signs">
 <h2>Tutorial: crowd signs</h2>
 <figure><img src="img/signs.png" alt="The Crowd signs page with two signs added"><figcaption>Any picture becomes a sign: fitted onto a white 128 x 64 board.</figcaption></figure>
 <ol class="steps">
-  <li><b>Crowd signs</b> on the rail. Name the pack.</li>
+  <li><b>Media</b> on the rail → the <b>Crowd signs</b> tab. Name the pack.</li>
   <li><b>Add pictures...</b> - any pictures, several at once. Wide pictures fill the board best. Remove any with <i>remove</i>.</li>
   <li><b>Save as mod</b> or <b>Install</b>. The crowd holds your signs in every match, mixed with the game's own.</li>
 </ol>
@@ -481,9 +481,9 @@
 <section id="tut-moves">
 <h2>Tutorial: new moves</h2>
 <figure><img src="img/moves.png" alt="The Moves page listing a pack's moves with names, tracks and frames"><figcaption>A move pack opened: every move with its name, tracks (A attacker, V victim, numbers props and cameras) and frames.</figcaption></figure>
-<p>Moves the game doesn't have come as a <b>move pack</b>: the motions and the move's table records. Packs are made from your other discs by the <a href="#tut-port">Port page</a> (Moves tab), from SvR 2010 by the <i>Other games</i> page (SvR 2010 moves tab, or a whole superstar), or by hand with the port's tools.</p>
+<p>Moves the game doesn't have come as a <b>move pack</b>: the motions and the move's table records. Packs are made from your other discs or from SvR 2010 by the <a href="#tut-port">From another game</a> tabs (Moves &amp; entrances, or a whole superstar on the Superstar page), or by hand with the port's tools.</p>
 <ol class="steps">
-  <li><b>Moves</b> on the rail → <b>Open a pack folder...</b> (a folder with <code>pack.txt</code> and <code>motions\</code>). The page checks every line and lists the moves.</li>
+  <li><b>Moves &amp; entrances</b> on the rail → the <b>Move pack</b> tab → <b>Open a pack folder...</b> (a folder with <code>pack.txt</code> and <code>motions\</code>). The page checks every line and lists the moves.</li>
   <li>Red problems: missing motion files, bad records. Yellow: moves with motions but no category bits (they can't be put in a move-set - fine for reactions).</li>
   <li><b>Save as mod</b> (installs into <code>Mods\Moves</code>) - or, to carry the moves inside a superstar, pick the same folder on the Superstar page under <b>More → Move pack folder</b>.</li>
   <li>The game merges every enabled pack into copies of its files when it starts (a few seconds the first time, then only when a pack changes). Use the moves in CREATE A MOVE-SET: every move list ends with the packs' moves, named <b>MOD: &lt;move&gt;</b>.</li>
@@ -495,7 +495,7 @@
 <h2>Tutorial: port a move and use it</h2>
 <p>A move from SvR 2007 - 2009 or WWE '12 - 2K17 into a superstar's moveset, ready for a match. (A ported superstar brings its moves by itself.)</p>
 <ol class="steps">
-  <li><b>Port from a disc</b> → pick the disc → <b>Moves</b> tab → <b>3. List what's on the disc</b>. Find the move by name; tick <i>hide what 2011 already has</i>.</li>
+  <li><b>Moves &amp; entrances</b> → <b>From another game</b> tab → pick the disc → <b>Moves</b> → <b>3. List what's on the disc</b>. Find the move by name; tick <i>hide what 2011 already has</i>.</li>
   <li><b>Template (a 2011 move)</b>: the 2011 move the new one is built on - its table record (what kind of move it is, where it can be done, the damage) and its timing. <i>Automatic</i> picks one of the same kind; if the result shows a poor match (a powerbomb built on a strike), pick one by name - a powerbomb for a powerbomb - and convert again.</li>
   <li><b>4. Convert</b>. The move gets a free 2011 move number of its own (it never takes one another installed pack uses), and the page says which template it was built on. <b>5. Open it to finish</b> opens the pack on the Moves page.</li>
   <li><b>Install into game</b> on the Moves page (or <b>Save as mod</b> to share it).</li>
@@ -519,25 +519,25 @@
   <li><b>Custom match type</b>: pick a base match (by name, from the 119), a menu list and submenu for its row, people and free-for-all, the slots, an arena, the option rules you want set (with a lock to stop players changing them) and whose weapons lie around the ring. The <i>manifest.txt it writes</i> is shown at the bottom.</li>
   <li><b>The game's matches</b> is the reference: every rule record with "Use as the base".</li>
 </ol>
-<div class="warn"><b>Custom match types need the game side</b> that is being built after 2.0.5; the page writes the agreed format (<code>docs/MATCH_TYPE_MODS.md</code>) and warns until the game reads it. Custom types play offline, or online when both players have the mod.</div>
+<div class="warn"><b>The game doesn't play custom match types yet.</b> The page saves them in the format a later update will read, and warns until then.</div>
 </section>
 
 <section id="tut-other">
 <h2>Tutorial: from other games</h2>
-<figure><img src="img/other.png" alt="The Other games page: WWE '13 arena tab with the host arena choice and options"><figcaption>Five converters, each landing on its page to finish and save.</figcaption></figure>
+<figure><img src="img/other.png" alt="The Arena page's From another game tab: the WWE '12 - 2K17 arena part with the host arena choice and options"><figcaption>Five converters, each landing on its page to finish and save.</figcaption></figure>
 <h4>A WWE '12 - 2K17 arena (built in)</h4>
 <ol class="steps">
-  <li><b>Other games</b> → <b>WWE '12 - 2K17 arena</b>. Pick the arena's <code>pac\bg\bgNN.pac</code> (compressed or not) - or start from the Port page, which reads it off the disc.</li>
+  <li><b>Arena</b> on the rail → <b>From another game</b> tab → <b>WWE '12 - 2K17 arena</b>. Pick the arena's <code>pac\bg\bgNN.pac</code> (compressed or not), or one of your discs above it, which reads it off the disc.</li>
   <li>Pick the <b>host arena</b> - the 2011 arena whose room, ring and aprons it uses (RAW was used for the bundled ones). Name it.</li>
   <li><b>Options</b> if needed: host ring / aprons / crowd, barrier corners, the full rope, pruning unused pictures, role lights, the canvas tone, meshes to drop (a model over about 430 KB crashes the load; the report after a conversion names the heavy ones).</li>
   <li><b>Convert</b>. A minute later the arena opens in the 3D editor; the Arena page takes its banner and name; save.</li>
 </ol>
 <figure><img src="img/w13_converted.png" alt="A WWE '13 arena converted and open in the 3D editor"><figcaption>A WWE '13 arena after conversion, in the editor.</figcaption></figure>
 <h4>A WWE '13 superstar, an SvR 2010 superstar, SvR 2010 moves, the SvR 2008 backstage</h4>
-<p>These run the port's Python tools (see <a href="#install">Setting up</a>). Point each tab at the other game's extracted <code>pac</code> folder; the SvR 2010 superstar tab has a <b>Survey</b> that lists the ids and names. The result opens on the Superstar, Moves or Backstage page as a normal project. The <a href="#tut-port">Port page</a> does the same from the disc images, for more games.</p>
+<p>These run the port's Python tools (see <a href="#install">Setting up</a>). Point each tab at the other game's extracted <code>pac</code> folder; the SvR 2010 superstar tab has a <b>Survey</b> that lists the ids and names. The result opens on the Superstar, Moves or Backstage page as a normal project. Picking a disc at the top of the tab does the same from the disc images, for more games (see <a href="#tut-port">the tutorial</a>).</p>
 <h4>Bink 2 videos (WWE '13 and later)</h4>
 <p>bg60 and up in WWE '12 - 2K17 are backstage rooms and studio stages, not arenas: the page won't convert them.</p>
-<p>Titantrons and movies of the later games are Bink 2. <b>Enable Bink 2 conversion</b> on the Other games page points the Mod Maker at RAD Video Tools (free from RAD Game Tools) or an ffmpeg built with a Bink 2 decoder - neither comes with the Mod Maker. Then <b>From a video...</b> takes <code>.bk2</code> files, and converted entrances bring their titantron.</p>
+<p>Titantrons and movies of the later games are Bink 2. <b>Enable Bink 2 conversion</b> on the From another game tabs points the Mod Maker at RAD Video Tools (free from RAD Game Tools) or an ffmpeg built with a Bink 2 decoder - neither comes with the Mod Maker. Then <b>From a video...</b> takes <code>.bk2</code> files, and converted entrances bring their titantron.</p>
 </section>
 
 <section id="tut-caw">
@@ -588,16 +588,16 @@
 <table>
   <tr><th>Page</th><th>Makes</th><th>Installs into</th><th>Shows in the game</th></tr>
   <tr><td>Arena</td><td><code>type=arena</code>: arena.pac, banner.dds, load.dds, vs\*.dds</td><td>Mods\Arenas\&lt;id&gt;</td><td>arena select, pages after the game's</td></tr>
-  <tr><td>3D editor</td><td>the arena / room being edited</td><td>-</td><td>-</td></tr>
-  <tr><td>Backstage</td><td><code>type=backstage</code>: arena.pac (bg78), own-area keys, gimmick.pac</td><td>Mods\Backstage\&lt;id&gt;</td><td>that room's brawls, or its own row</td></tr>
+  <tr><td>Arena → 3D editor</td><td>the arena / room being edited</td><td>-</td><td>-</td></tr>
+  <tr><td>Arena → Backstage</td><td><code>type=backstage</code>: arena.pac (bg78), own-area keys, gimmick.pac</td><td>Mods\Backstage\&lt;id&gt;</td><td>that room's brawls, or its own row</td></tr>
   <tr><td>Superstar</td><td><code>type=superstar</code>: ch.pac, theme, movie, renders, signs, attires, moves</td><td>Mods\Superstars\&lt;id&gt;</td><td>the M tile (up to 137)</td></tr>
-  <tr><td>Attires</td><td><code>type=attire</code>: attire.pac</td><td>Mods\Attires\&lt;id&gt;</td><td>that superstar's CHANGE ATTIRE</td></tr>
-  <tr><td>Moves</td><td><code>type=moves</code>: pack.txt + motions\</td><td>Mods\Moves\&lt;id&gt;</td><td>CREATE A MOVE-SET</td></tr>
-  <tr><td>Crowd signs</td><td><code>type=signs</code>: NN_name.dds</td><td>Mods\Signs\&lt;id&gt;</td><td>the crowd, every match</td></tr>
+  <tr><td>Superstar → Attires</td><td><code>type=attire</code>: attire.pac</td><td>Mods\Attires\&lt;id&gt;</td><td>that superstar's CHANGE ATTIRE</td></tr>
+  <tr><td>Moves &amp; entrances → Move pack</td><td><code>type=moves</code>: pack.txt + motions\</td><td>Mods\Moves\&lt;id&gt;</td><td>CREATE A MOVE-SET</td></tr>
+  <tr><td>Media → Crowd signs</td><td><code>type=signs</code>: NN_name.dds</td><td>Mods\Signs\&lt;id&gt;</td><td>the crowd, every match</td></tr>
   <tr><td>Media</td><td><code>type=media</code>: videos, themes, renders, screens, sounds</td><td>Mods\Media\&lt;id&gt;</td><td>entrances, menus, arena screens</td></tr>
   <tr><td>Match types</td><td><code>type=matchtype</code>: manifest only</td><td>Mods\MatchTypes\&lt;id&gt;</td><td>the match menus</td></tr>
-  <tr><td>Port from a disc</td><td>conversions from your other discs → the pages above</td><td>-</td><td>-</td></tr>
-  <tr><td>Other games</td><td>conversions → the pages above</td><td>-</td><td>-</td></tr>
+  <tr><td>From another game (a tab on Superstar, Arena, Moves &amp; entrances and Media)</td><td>conversions from your other discs → the pages above</td><td>-</td><td>-</td></tr>
+  <tr><td>My game discs</td><td>nothing: your other WWE discs, set once</td><td>-</td><td>-</td></tr>
   <tr><td>CAW pictures</td><td>edits the Created Superstar saves</td><td>Saves\</td><td>the select lists</td></tr>
   <tr><td>Installed mods</td><td>nothing: every installed mod shown and checked (the mod doctor)</td><td>-</td><td>-</td></tr>
   <tr><td>Game assets / Animations / Icons &amp; renders</td><td>nothing: viewers and exporters</td><td>-</td><td>-</td></tr>
@@ -636,11 +636,11 @@ made_with=Mod Maker 2.0.5
 <h2>Problems and fixes</h2>
 <table>
   <tr><th>You see</th><th>What it means</th></tr>
-  <tr><td>"The model is not a character model pac (EPK8)"</td><td>The file isn't a <code>chNNN.pac</code>. Arena pacs and menu pacs are EPAC, not characters. A WWE '13 model must be converted first (Other games).</td></tr>
+  <tr><td>"The model is not a character model pac (EPK8)"</td><td>The file isn't a <code>chNNN.pac</code>. Arena pacs and menu pacs are EPAC, not characters. A WWE '13 model must be converted first (the From another game tab).</td></tr>
   <tr><td>"N textures halved to fit the game's room"</td><td>The arena was over its original's size; the biggest textures were shrunk. Use smaller pictures or fewer added objects to avoid it.</td></tr>
   <tr><td>"The game is running: close it first"</td><td>Installs and save edits need the game closed (it keeps its files and saves open).</td></tr>
   <tr><td>"ONE ON ONE is full: give the row a submenu"</td><td>That menu list shows at most 14 rows; a custom match type there needs a submenu.</td></tr>
-  <tr><td>"Needs Python 3 / numpy and Pillow / ffmpeg"</td><td>The converter tabs on Other games need them (see Setting up). Recheck after installing.</td></tr>
+  <tr><td>"Needs Python 3 / numpy and Pillow / ffmpeg"</td><td>The From another game tabs' converters need them (see Setting up). Recheck after installing.</td></tr>
   <tr><td>The arena loads as an empty hall or crashes</td><td>Make sure the mod says which arena it plays in place of (base) and that no model is over the size ceiling; the Size budget panel and the conversion report show the heavy ones.</td></tr>
   <tr><td>A superstar mod doesn't show up</td><td>137 is the limit; check the launcher's Mods tab that it is on; a mod needs <code>ch.pac</code> and a name.</td></tr>
   <tr><td>Theme too loud</td><td>Make it about -24 LUFS (the game's own are about 7 dB under full level).</td></tr>
@@ -649,8 +649,8 @@ made_with=Mod Maker 2.0.5
   <tr><td>"Make will cut it to about 10,500 vertices"</td><td>The game holds about that much of a wrestler. Fine for most models; for full control reduce it in Blender first.</td></tr>
   <tr><td>"No skin on ..." / "N vertices have no skin weights"</td><td>Those parts ride stiffly on a bone or stay at the hips. Give them weights (Blender: parent with automatic weights).</td></tr>
   <tr><td>"No picture for ...: it comes out plain grey"</td><td>The FBX doesn't link that part's texture. Pick a Colour picture for it in the Materials step, or export the FBX with its textures.</td></tr>
-  <tr><td>"The superstar's model needs N of the 192 memory pages ..."</td><td>A wrestler gets 192 pages in a match; over it, the game leaves the superstar out. Use a model with fewer vertices or without blood overlays (the Port page's conversions are fitted already).</td></tr>
-  <tr><td>A greyed arena on the Port page</td><td>It crashes 2011 at load, or it is a backstage room / studio stage, not an arena. Hover it for which.</td></tr>
+  <tr><td>"The superstar's model needs N of the 192 memory pages ..."</td><td>A wrestler gets 192 pages in a match; over it, the game leaves the superstar out. Use a model with fewer vertices or without blood overlays (From another game's conversions are fitted already).</td></tr>
+  <tr><td>A greyed arena on the From another game tab</td><td>It crashes 2011 at load, or it is a backstage room / studio stage, not an arena. Hover it for which.</td></tr>
   <tr><td>A move shows as "MOD: ..." in CREATE A MOVE-SET</td><td>It comes from a move pack (or a superstar mod's moves). That's normal; in the match it has its own name.</td></tr>
   <tr><td>"Attire N of ... is already used by ..."</td><td>An installed attire mod has that slot. The launcher moves the newer one to the next free attire; or pick the free one now.</td></tr>
 </table>

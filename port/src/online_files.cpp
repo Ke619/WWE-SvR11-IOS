@@ -4,7 +4,6 @@
 #include "../modmaker/svrfmt/mod_travel.h"
 #include "mod_transfer.h"
 #include "no_mods.h"
-#include "big_roster.h"
 
 #include <algorithm>
 #include <atomic>
@@ -552,13 +551,8 @@ std::string ModsOnlineMessage() {
       return out + line;
     }
   }
-  // (big_roster: mods past the game's ids 0-321 - online doesn't know them yet: no online while it's on)
-  // (test aid SVR2011_TEST_BIG_ONLINE=1: not blocked - part 5's online tests)
-  if (svr2011::BigRosterOn() && !std::getenv("SVR2011_TEST_BIG_ONLINE")) {
-    static std::atomic<bool> told{false};
-    if (!told.exchange(true)) REXLOG_WARN("online: matches off - big_roster is on (more superstar mods at once)");
-    return "More superstar mods at once (experimental) is on.\nTurn it off in the launcher's Saves tab to play online.";
-  }
+  // (big_roster's ids 323-511 play online as any other mod's: the lobby's key translation, a mod an "added"
+  // superstar at any id and its match slot filled - superstar_mods.cpp; part 5, proven in LAN matches)
   const auto& mods = ActiveMatchMods();
   const int server = g_mods_server.load();
   const bool blocked = !mods.empty() && !(server == 1 && g_mods_online.load());

@@ -1845,6 +1845,7 @@ void ApplyRecords(uint8_t* base) {
         if (x.slot == m.slot && !x.record.empty()) k = &x;
       if (k) {
         std::memcpy(sr, k->record.data(), kRecordSize);
+        for (uint32_t off : {kOwnId, kOwnId2, kSamePerson}) sr[off] = uint8_t(m.slot >> 8), sr[off + 1] = uint8_t(m.slot);
         OwnSelectTile(sr, br);
         SetHeight(sr, br, m);
         continue;
@@ -3752,6 +3753,9 @@ void StartModSaves() {
     if (!ReadModSave(m, s)) continue;
     Kept& k = KeptFor(m.slot);
     k.record = s.record, k.profile = s.profile;
+    // (the file's record names the id the mod had when it was saved: its id of this run - slots move with big_roster)
+    if (k.record.size() >= kRecordSize)
+      for (uint32_t off : {kOwnId, kOwnId2, kSamePerson}) k.record[off] = uint8_t(m.slot >> 8), k.record[off + 1] = uint8_t(m.slot);
     if (!s.entry.empty()) g_saved_entry[m.slot] = s.entry;
     ++seeded;
   }

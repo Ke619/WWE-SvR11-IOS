@@ -788,6 +788,10 @@ bool ReadSession(Reader& r, Session& s) {
 // online.cpp's strings). The host only logs it.
 constexpr uint32_t kModsTag = 0x4D4F4453;  // "MODS"
 constexpr size_t kModsMax = 6000;           // (the set's text, at most)
+// After the version, the DLC packages with game files (online_files.h DlcSet - with mods off online too: the
+// DLC is the game's own): "DLCS", the set's text. A reply without it (a game from before) isn't refused for it.
+constexpr uint32_t kDlcTag = 0x444C4353;  // "DLCS"
+constexpr size_t kDlcMax = 1000;
 
 void WriteMods(Writer& w) {
   const std::string& set = svr2011::GameplayModSet();
@@ -797,6 +801,10 @@ void WriteMods(Writer& w) {
   const std::string& v = svr2011::PortVersion();  // (then the version)
   w.u8(uint8_t(std::min<size_t>(v.size(), 32)));
   w.bytes(reinterpret_cast<const uint8_t*>(v.data()), std::min<size_t>(v.size(), 32));
+  const std::string& dlc = svr2011::DlcSet();
+  const size_t dn = std::min(dlc.size(), kDlcMax);
+  w.u32(kDlcTag), w.u16(uint16_t(dn));
+  w.bytes(reinterpret_cast<const uint8_t*>(dlc.data()), dn);
 }
 
 // Why this game can't play the other side's (its version, then its mods;
@@ -814,6 +822,15 @@ std::string Mismatch(Reader& r) {
     if (r.need(vn)) version.assign(reinterpret_cast<const char*>(r.p + r.at), vn), r.at += vn;
   }
   if (std::string why = svr2011::VersionDifference(version); !why.empty()) return why;
+  if (r.at + 6 <= r.n && Be32(r.p + r.at) == kDlcTag) {
+    r.u32();
+    const uint16_t dn = r.u16();
+    if (r.need(dn)) {
+      const std::string dlc(reinterpret_cast<const char*>(r.p + r.at), dn);
+      r.at += dn;
+      if (std::string why = svr2011::DlcDifference(svr2011::DlcSet(), dlc); !why.empty()) return why;
+    }
+  }
   // (superstar and arena mods are checked in the lobby - per pick, per
   // session: online_mods.h - the others here)
   return svr2011::ModSetDifference(svr2011::GameplayModSet(), set, false);

@@ -81,6 +81,16 @@ const std::string& GameplayModSet();
 // Its hash (FNV-1a 64; 0 with no mods).
 uint64_t GameplayModSetHash();
 
+// The installed DLC packages that bring game files (UserData/0000000000000000/5451085D/00000002/<package>/pac:
+// motions, models, arenas), one line each ("DLC <fingerprint> - <fingerprint> <name>"), sorted; "" with none.
+// A package is known by its pac files' names and sizes, not its folder's name (a package file's name is the
+// player's: 42 hex digits from the console, DLC_02.pck, ...). Catalog-only packages (Fan Axxess, the port's
+// own) and string.pac (the port rewrites its wording) are left out. Read once.
+const std::string& DlcSet();
+// Why two games' DLC keep them apart ("" when the same): "Your downloadable content doesn't match: they have
+// DLC Vol02, you don't." Moves of a DLC's motions play otherwise without it - a lockstep match drifts apart.
+std::string DlcDifference(const std::string& mine, const std::string& theirs);
+
 // Why two sets differ, for both players: "Your mods don't match: they have
 // Practice Arena 1.0, you don't; ..." (`theirs`: the other side's set;
 // superstars = false leaves superstar and arena mods out: they are

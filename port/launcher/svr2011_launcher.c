@@ -67,6 +67,7 @@
 #include "mods_tab.h"
 #include "report_receipts.h"
 #include "reports_tab.h"
+#include "suggestions_tab.h"
 #include "music_tab.h"
 #include "texpacks_tab.h"
 #include "setup_tab.h"
@@ -126,7 +127,7 @@ static void setup_console_progress(int permille, const WCHAR *text);
 
 /* ── state ─────────────────────────────────────────────────────────────── */
 
-enum { TAB_PLAY, TAB_SETTINGS, TAB_ONLINE, TAB_INSTALL, TAB_DLC, TAB_SAVES, TAB_PAINT, TAB_MOVIES, TAB_ANDROID, TAB_MODS, TAB_MUSIC, TAB_ROSTER, TAB_TEXPACKS, TAB_SETUP, TAB_DISCOVER, TAB_TOOLS, TAB_REPORTS, TAB_COUNT };
+enum { TAB_PLAY, TAB_SETTINGS, TAB_ONLINE, TAB_INSTALL, TAB_DLC, TAB_SAVES, TAB_PAINT, TAB_MOVIES, TAB_ANDROID, TAB_MODS, TAB_MUSIC, TAB_ROSTER, TAB_TEXPACKS, TAB_SETUP, TAB_DISCOVER, TAB_TOOLS, TAB_REPORTS, TAB_SUGGESTIONS, TAB_COUNT };
 #define ID_MODS_BASE 900  /* the Mods tab's controls (mods_tab.c) */
 #define ID_MUSIC_BASE 950 /* the Music tab's (music_tab.c) */
 #define ID_ROSTER_BASE 1000 /* the Roster tab's (roster_tab.c) */
@@ -134,6 +135,7 @@ enum { TAB_PLAY, TAB_SETTINGS, TAB_ONLINE, TAB_INSTALL, TAB_DLC, TAB_SAVES, TAB_
 #define ID_SETUP_BASE 1200 /* the Setup tab's (setup_tab.c) */
 #define ID_DISCOVER_BASE 1300 /* Mods -> Discovery's (discover_tab.c) */
 #define ID_REPORTS_BASE 1400 /* the Reports tab's (reports_tab.c) */
+#define ID_SUGGEST_BASE 1450 /* the Suggestions tab's (suggestions_tab.c) */
 
 enum {
     ID_TAB = 100,
@@ -3085,7 +3087,7 @@ static const struct { int tab; WCHAR icon; const WCHAR *name; } k_nav[] = {
     /* (below the line) */
     { TAB_ONLINE, 0xE774, L"Online" },      { TAB_MUSIC, 0xE8D6, L"Music" },
     { TAB_MOVIES, 0xE714, L"Movies" },      { TAB_PAINT, 0xE790, L"Paint Tool" },
-    { TAB_REPORTS, 0xED15, L"Reports" },
+    { TAB_REPORTS, 0xED15, L"Reports" },    { TAB_SUGGESTIONS, 0xEA80, L"Suggestions" },
 };
 
 /* Mods, in three tabs: the installed mods (TAB_MODS), Discovery, Texture packs - a tab bar on top of each
@@ -3426,6 +3428,8 @@ static void show_tab(int t)
         discover_show(s_game_dir);
     if (t == TAB_REPORTS)
         reports_show(s_game_dir);
+    if (t == TAB_SUGGESTIONS)
+        suggestions_show(s_game_dir);
     if (t == TAB_SETUP || t == TAB_TOOLS)
         setup_show(s_game_dir, s_launcher_dir);
     if (t == TAB_PLAY && !s_up_busy)
@@ -4259,7 +4263,7 @@ static void build_ui(void)
     HWND h;
     WCHAR v[64];
     int i;
-    static const WCHAR *names[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Install", L"DLC", L"Saves", L"Paint Tool", L"Movies", L"Android Install", L"Mods", L"Music", L"Roster", L"Texture packs", L"Setup", L"Discovery", L"Tools", L"Reports" };
+    static const WCHAR *names[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Install", L"DLC", L"Saves", L"Paint Tool", L"Movies", L"Android Install", L"Mods", L"Music", L"Roster", L"Texture packs", L"Setup", L"Discovery", L"Tools", L"Reports", L"Suggestions" };
 
     /* The tabs (never shown: the sidebar picks them; --capture and show_tab
        still use its selection). */
@@ -4647,6 +4651,8 @@ static void build_ui(void)
     discover_build(s_wnd, add, TAB_DISCOVER, ID_DISCOVER_BASE, discover_server, discover_account);
     receipts_set_guard(test_run_refuses_url);   /* (a test run: never a server off this PC) */
     reports_build(s_wnd, add, TAB_REPORTS, ID_REPORTS_BASE, discover_server, reports_token);
+    suggestions_build(s_wnd, add, TAB_SUGGESTIONS, ID_SUGGEST_BASE, discover_server, reports_token, test_run_refuses_url,
+                      PORT_VERSION);
     discover_set_ini(s_launcher_ini);
     /* Setup: what's needed, found or missing; the Mod Maker's tools (setup_tab.c) */
     setup_build(s_wnd, add, TAB_SETUP, TAB_TOOLS, ID_SETUP_BASE, setup_go_install);
@@ -8886,7 +8892,7 @@ static void paint_window(HDC dc)
     static const WCHAR *const titles[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Setup", L"Setup",
                                                     L"Saves", L"Paint Tool", L"Movies", L"Setup", L"Mods",
                                                     L"Music", L"Roster: sort categories", L"Mods",
-                                                    L"Setup", L"Mods", L"Setup", L"Reports" };
+                                                    L"Setup", L"Mods", L"Setup", L"Reports", L"Suggestions" };
     RECT cl, r;
     HBRUSH sb = CreateSolidBrush(C_SIDEBAR);
     HGDIOBJ old;
@@ -9039,7 +9045,8 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
                 set_text(ID_FR_NAME, name);
             }
         }
-        if (n->idFrom != ID_TAB && n->idFrom != ID_FR_LIST && !texpacks_notify(n) && !discover_notify(n) && !reports_notify(n)) {
+        if (n->idFrom != ID_TAB && n->idFrom != ID_FR_LIST && !texpacks_notify(n) && !discover_notify(n) && !reports_notify(n) &&
+            !suggestions_notify(n)) {
             const int r = mods_notify(n);
             if (r == 2 || r == 3) return r == 2;  /* (renaming a background: mods_tab.c) */
         }
@@ -9048,7 +9055,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
     case WM_COMMAND:
         if (mv_command(LOWORD(wp), HIWORD(wp)) || up_command(LOWORD(wp), HIWORD(wp)) ||
             mods_command(LOWORD(wp), HIWORD(wp)) || music_command(LOWORD(wp), HIWORD(wp)) ||
-            reports_command(LOWORD(wp), HIWORD(wp)) ||
+            reports_command(LOWORD(wp), HIWORD(wp)) || suggestions_command(LOWORD(wp), HIWORD(wp)) ||
             roster_command(LOWORD(wp), HIWORD(wp)) || texpacks_command(LOWORD(wp), HIWORD(wp)) ||
             discover_command(LOWORD(wp), HIWORD(wp)) ||
             setup_command(LOWORD(wp), HIWORD(wp)))
@@ -9473,6 +9480,9 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         return 0;
     case WM_APP_REPORTS:
         reports_message(m, wp, lp);
+        return 0;
+    case WM_APP_SUGGESTIONS:
+        suggestions_message(m, wp, lp);
         return 0;
     case WM_LBUTTONDOWN: {
         const POINT pt = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
@@ -10176,7 +10186,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         return 0;
     }
     if (argv && argc >= 4 && !wcscmp(argv[1], L"--capture")) {
-        static const WCHAR *names[TAB_COUNT] = { L"play", L"settings", L"online", L"install", L"dlc", L"saves", L"paint", L"movies", L"android", L"mods", L"music", L"roster", L"texpacks", L"setup", L"discover", L"tools", L"reports" };
+        static const WCHAR *names[TAB_COUNT] = { L"play", L"settings", L"online", L"install", L"dlc", L"saves", L"paint", L"movies", L"android", L"mods", L"music", L"roster", L"texpacks", L"setup", L"discover", L"tools", L"reports", L"suggestions" };
         int i;
         const WCHAR *p = argv[2];
         /* A comma list: each tab is shown in turn (after 300 ms), the last captured. */
@@ -10392,7 +10402,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
             /* (the Online tab: until the Friends list is in, 5 s at most) */
             while (GetTickCount64() - t0 < 400 || (s_fr_busy && GetTickCount64() - t0 < 5000) ||
                    (s_cur_tab == TAB_DISCOVER && GetTickCount64() - t0 < 4000) ||   /* (its list and pictures) */
-                   (s_cur_tab == TAB_REPORTS && reports_test_state(NULL, NULL, 0) && GetTickCount64() - t0 < 10000))
+                   (s_cur_tab == TAB_REPORTS && reports_test_state(NULL, NULL, 0) && GetTickCount64() - t0 < 10000) ||
+                   (s_cur_tab == TAB_SUGGESTIONS && suggestions_test_state(NULL, NULL, 0) && GetTickCount64() - t0 < 10000))
                 while (PeekMessageW(&pm, NULL, 0, 0, PM_REMOVE)) {
                     TranslateMessage(&pm);
                     DispatchMessageW(&pm);
@@ -10412,6 +10423,40 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
             if (!_wfopen_s(&f, log, L"w, ccs=UTF-8") && f) {
                 fwprintf(f, L"reports: %d\nstatus: %s\n", n, line);
                 reports_test_dump(f);
+                fclose(f);
+            }
+        }
+        if (s_cur_tab == TAB_SUGGESTIONS) {
+            /* Suggestions: SVR2011_SUGGEST_SEND=<title>|<text>[|<picture>] sends one as the Send button does (its
+               answer waited for, 15 s at most), SVR2011_SUGGEST_PICK=<row> selects one; the list and the status line
+               in <file>.suggestions.txt */
+            WCHAR log[MAX_PATH], line[400];
+            FILE *f = NULL;
+            int n = 0;
+            const char *send = getenv("SVR2011_SUGGEST_SEND"), *pick = getenv("SVR2011_SUGGEST_PICK");
+            if (send) {
+                char buf[2000], *text, *pic;
+                WCHAR wpic[MAX_PATH] = L"";
+                ULONGLONG t1;
+                strcpy_s(buf, sizeof buf, send);
+                if ((text = strchr(buf, '|')) != NULL) *text++ = 0;
+                if (text && (pic = strchr(text, '|')) != NULL) {
+                    *pic++ = 0;
+                    MultiByteToWideChar(CP_UTF8, 0, pic, -1, wpic, MAX_PATH);
+                }
+                suggestions_test_send(buf, text ? text : "", wpic);
+                for (t1 = GetTickCount64(); suggestions_test_state(NULL, NULL, 0) && GetTickCount64() - t1 < 15000;)
+                    while (PeekMessageW(&pm, NULL, 0, 0, PM_REMOVE)) {
+                        TranslateMessage(&pm);
+                        DispatchMessageW(&pm);
+                    }
+            }
+            if (pick) suggestions_test_pick(atoi(pick));
+            suggestions_test_state(&n, line, 400);
+            swprintf_s(log, MAX_PATH, L"%s.suggestions.txt", capture_file);
+            if (!_wfopen_s(&f, log, L"w, ccs=UTF-8") && f) {
+                fwprintf(f, L"suggestions: %d\nstatus: %s\n", n, line);
+                suggestions_test_dump(f);
                 fclose(f);
             }
         }

@@ -129,11 +129,12 @@ static int next_object(const char **p, const char **obj, const char **end)
 
 /* ── the file ────────────────────────────────────────────────────────────── */
 
-static void receipts_path(const WCHAR *game_dir, WCHAR *out)
+static void receipts_path(const WCHAR *game_dir, const WCHAR *file, WCHAR *out)
 {
     swprintf_s(out, MAX_PATH, L"%s\\UserData", game_dir);
     CreateDirectoryW(out, NULL);
-    wcscat_s(out, MAX_PATH, L"\\reports.json");
+    wcscat_s(out, MAX_PATH, L"\\");
+    wcscat_s(out, MAX_PATH, file);
 }
 
 static char *read_file(const WCHAR *path)
@@ -157,8 +158,23 @@ int receipt_add(const WCHAR *game_dir, const char *app, const char *id, const ch
     return receipt_add_ex(game_dir, app, id, secret, problem, what, 0);
 }
 
+static int add_to(const WCHAR *game_dir, const WCHAR *file, const char *app, const char *id, const char *secret,
+                  const char *problem, const char *what, int pictures_later);
+
 int receipt_add_ex(const WCHAR *game_dir, const char *app, const char *id, const char *secret, const char *problem,
                    const char *what, int pictures_later)
+{
+    return add_to(game_dir, RECEIPTS_REPORTS, app, id, secret, problem, what, pictures_later);
+}
+
+int receipt_add_file(const WCHAR *game_dir, const WCHAR *file, const char *app, const char *id, const char *secret,
+                     const char *problem, const char *what)
+{
+    return add_to(game_dir, file, app, id, secret, problem, what, 0);
+}
+
+static int add_to(const WCHAR *game_dir, const WCHAR *file, const char *app, const char *id, const char *secret,
+                  const char *problem, const char *what, int pictures_later)
 {
     WCHAR path[MAX_PATH], tmp[MAX_PATH];
     char *old, date[24], short_what[200];
@@ -169,7 +185,7 @@ int receipt_add_ex(const WCHAR *game_dir, const char *app, const char *id, const
     int kept = 0;
     size_t k;
     if (!game_dir || !game_dir[0] || !id || !id[0] || !secret || !secret[0]) return 0;
-    receipts_path(game_dir, path);
+    receipts_path(game_dir, file, path);
     add_s(&b, "[\n");
     /* (the ones kept: their lines as they are, the oldest dropped past RECEIPTS_MAX) */
     if ((old = read_file(path)) != NULL) {
@@ -213,12 +229,17 @@ int receipt_add_ex(const WCHAR *game_dir, const char *app, const char *id, const
 
 int receipts_load(const WCHAR *game_dir, ReportReceipt *out, int max)
 {
+    return receipts_load_file(game_dir, RECEIPTS_REPORTS, out, max);
+}
+
+int receipts_load_file(const WCHAR *game_dir, const WCHAR *file, ReportReceipt *out, int max)
+{
     WCHAR path[MAX_PATH];
     char *d;
     const char *p, *obj, *end;
     int n = 0, i;
     if (!game_dir || !game_dir[0]) return 0;
-    receipts_path(game_dir, path);
+    receipts_path(game_dir, file, path);
     if (!(d = read_file(path))) return 0;
     for (p = d; n < max && next_object(&p, &obj, &end);) {
         ReportReceipt *r = &out[n];
@@ -316,6 +337,12 @@ static void refused(DWORD status, const char *answer, WCHAR *why, int why_n)
 int receipts_status(const WCHAR *server, const char *token, ReportReceipt *items, int *n, int max, WCHAR *why,
                     int why_n)
 {
+    return receipts_status_kind(server, token, "report", items, n, max, why, why_n);
+}
+
+int receipts_status_kind(const WCHAR *server, const char *token, const char *kind, ReportReceipt *items, int *n,
+                         int max, WCHAR *why, int why_n)
+{
     Buf b = { 0 };
     DWORD status = 0;
     char *answer = NULL;
@@ -343,12 +370,14 @@ int receipts_status(const WCHAR *server, const char *token, ReportReceipt *items
         int keep = *n;
         for (i = 0; i < keep; i++) items[i].state[0] = 0;
         for (; next_object(&p, &obj, &end);) {
-            char id[40], v[24];
+            char id[40], v[24], k[12];
             ReportReceipt *r = NULL;
             field(obj, end, "id", id, sizeof id);
+            if (!field(obj, end, "kind", k, sizeof k) || !k[0]) strcpy_s(k, sizeof k, "report");
             for (i = 0; i < *n; i++)
                 if (!strcmp(items[i].id, id)) { r = &items[i]; break; }
-            if (!r && field(obj, end, "from_account", v, sizeof v) && !strcmp(v, "true") && *n < max) {
+            if (!r && field(obj, end, "from_account", v, sizeof v) && !strcmp(v, "true") && *n < max &&
+                (!kind || !strcmp(kind, k))) {   /* (the account's other kind: the other tab's) */
                 r = &items[(*n)++];   /* (sent from another PC: what the server says of it) */
                 ZeroMemory(r, sizeof *r);
                 strcpy_s(r->id, sizeof r->id, id);
@@ -360,6 +389,7 @@ int receipts_status(const WCHAR *server, const char *token, ReportReceipt *items
                 field(obj, end, "what", r->what, sizeof r->what);
             }
             if (!r) continue;
+            strcpy_s(r->kind, sizeof r->kind, k);
             field(obj, end, "state", r->state, sizeof r->state);
             field(obj, end, "note", r->note, sizeof r->note);
             field(obj, end, "version", r->version, sizeof r->version);
@@ -511,6 +541,19 @@ void receipt_state_text(const ReportReceipt *r, WCHAR *badge, int badge_n, WCHAR
     if (!s[0]) {
         wcscpy_s(badge, badge_n, L"\x2026");
         wcscpy_s(line, line_n, L"Not checked yet.");
+    } else if (!strcmp(s, "planned")) {
+        wcscpy_s(badge, badge_n, L"Sure");
+        swprintf_s(line, line_n, L"Sure - we plan to add this%s%s", note[0] ? L": " : L".", note);
+    } else if (!strcmp(s, "not_planned")) {
+        wcscpy_s(badge, badge_n, L"No, not planned");
+        swprintf_s(line, line_n, L"No, not planned%s%s", note[0] ? L": " : L".", note);
+    } else if (!strcmp(s, "fixed") && !strcmp(r->kind, "suggestion")) {
+        wcscpy_s(badge, badge_n, L"Done");
+        if (ver[0]) swprintf_s(line, line_n, L"Done in %s%s%s", ver, note[0] ? L": " : L".", note);
+        else swprintf_s(line, line_n, L"Done%s%s", note[0] ? L": " : L".", note);
+    } else if (!strcmp(s, "received") && !strcmp(r->kind, "suggestion")) {
+        wcscpy_s(badge, badge_n, L"Received");
+        wcscpy_s(line, line_n, L"We have your idea and will answer it here.");
     } else if (!strcmp(s, "received")) {
         wcscpy_s(badge, badge_n, L"Received");
         wcscpy_s(line, line_n, L"We have your report and will look at it.");

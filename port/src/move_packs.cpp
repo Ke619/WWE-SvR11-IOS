@@ -1997,6 +1997,12 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs, const fs::path& d
   }
   REXLOG_INFO("[svr2011] move packs: merging {} packs ({} items) into {} (lists read in {} ms) ...", dirs.size(),
               packs.count, overlay.string(), stamp_ms);
+  // (the player sees why the picture is still black - Android: a note over it, startup_pump.h; report b7f723)
+  svr2011::StartupNote("Preparing your mods (" + std::to_string(dirs.size()) +
+                       " move packs) - after a mod change this can take a few minutes. Please wait, don't close the game.");
+  struct NoteEnd {
+    ~NoteEnd() { svr2011::StartupNote(""); }
+  } note_end;
   const auto t_merge = std::chrono::steady_clock::now();
   {
     const std::string checked = stamp;

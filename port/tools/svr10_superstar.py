@@ -5,8 +5,8 @@ the bundled Jeff Hardy mod was.
     python svr10_superstar.py survey [--out roster.tsv]
 
 Options:
-    --pac10 DIR     SvR 2010 "pac" folder  (default D:\\Xbox Games Ports\\SvR2010 Extract\\pac)
-    --pac11 DIR     SvR 2011 "pac" folder  (default ...\\WWE Smackdown Vs Raw 2011\\Game Files\\pac)
+    --pac10 DIR     SvR 2010 "pac" folder  (needed)
+    --pac11 DIR     SvR 2011 "pac" folder  (default ..\\..\\Game Files\\pac from this script's folder)
     --base N        the 2011 superstar the mod starts from (default: chosen, see below)
     --model 10|11   take the model from that game (default: 2011's own chNNN.pac when 2011 ships
                     one for the id, else 2010's through svr10_char.py)
@@ -51,18 +51,14 @@ import sys
 import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-for p in (HERE, r'D:\Xbox Games Ports\SvR2011 Arenas\port\tools'):
-    if os.path.exists(os.path.join(p, 'svrfmt.py')):
-        sys.path.insert(0, p)
-        break
+sys.path.insert(0, HERE)
 import ch_tool  # noqa: E402
 import svrfmt  # noqa: E402
 import svr10_char  # noqa: E402
 import svr10_moves  # noqa: E402
 import movepack  # noqa: E402
 
-PAC10 = r'D:\Xbox Games Ports\SvR2010 Extract\pac'
-PAC11 = r'D:\Xbox Games Ports\WWE Smackdown Vs Raw 2011\Game Files\pac'
+PAC11 = os.path.join(os.path.dirname(os.path.dirname(HERE)), 'Game Files', 'pac')
 
 # --------------------------------------------------------------------------- tables
 
@@ -938,7 +934,7 @@ def survey(o, out):
 def main(argv):
     if len(argv) < 2:
         raise SystemExit(__doc__)
-    o = dict(pac10=PAC10, pac11=PAC11)
+    o = dict(pac11=PAC11)
     args = []
     i = 1
     while i < len(argv):
@@ -952,6 +948,8 @@ def main(argv):
         else:
             args.append(a)
         i += 1
+    if 'pac10' not in o:
+        raise SystemExit('svr10_superstar: --pac10 <the SvR 2010 pac folder> is needed')
     for k in ('base', 'entrance', 'call'):
         if k in o:
             o[k] = int(o[k])

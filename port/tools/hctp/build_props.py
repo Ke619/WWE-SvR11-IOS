@@ -14,10 +14,12 @@ import svr08_stage as s8
 import hctp_props, hctp_gimmick, hctp_fake56, hctp2jboy, yobj
 
 ROOM = int(os.environ.get('HCTP_ROOM', '30'))
-UNPACKED = os.environ.get('HCTP_UNPACKED', r"D:\Xbox Games Ports\HCTP Extract\_unpacked")
+if not os.environ.get('HCTP_UNPACKED') or not os.environ.get('SVR11_PAC'):
+    raise SystemExit('set HCTP_UNPACKED (the unpacked HCTP disc) and SVR11_PAC (the SvR 2011 pac folder)')
+UNPACKED = os.environ['HCTP_UNPACKED']
 STAGE = os.path.join(UNPACKED, 'bg', 'stg_00%02d' % ROOM)
 OUT = os.environ.get('HCTP_OUT', 'mod_row')
-PAC11 = os.environ.get('SVR11_PAC', r"D:\Xbox Games Ports\WWE Smackdown Vs Raw 2011\Extract GameFiles\pac")
+PAC11 = os.environ['SVR11_PAC']
 BG78 = os.path.join(PAC11, 'bg', 'bg78.pac')
 GM = os.path.join(PAC11, 'gm.pac')
 BANK = os.environ.get('HCTP_BANK', 'out/mot/bank_h3.bin')

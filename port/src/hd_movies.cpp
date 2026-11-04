@@ -41,8 +41,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <fstream>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <thread>
 #include <vector>
 
@@ -770,6 +772,104 @@ class Decoder : public DecoderBase {
 
 #endif
 
+// What a movie's probe found, kept beside the stubs (.hd/probes.txt): a probe opens the file and a decoder - a
+// tenth of a second a movie on a phone, 10 s before the first picture with 97 mod movies - and the answer only
+// changes with the file. Good answers only: one that doesn't play is asked again at the next start (a decoder may
+// have come). Made on another kind of machine (a copied folder): not used, its decoders aren't this one's.
+struct ProbeFacts {
+  uintmax_t size = 0;
+  int64_t time = 0;
+  double seconds = 0;
+  uint32_t sw = 0, sh = 0;
+};
+#if defined(_WIN32)
+constexpr const char* kProbesHeader = "svr2011 movie probes 1 windows";
+#else
+constexpr const char* kProbesHeader = "svr2011 movie probes 1 android";
+#endif
+
+class ProbeCache {
+ public:
+  // True: the file is as it was when it was probed.
+  bool Find(const fs::path& folder, const fs::path& mp4, ProbeFacts* out) {
+    if (Off()) return false;
+    std::lock_guard lock(mutex_);
+    Load(folder);
+    const auto it = facts_.find(Key(mp4));
+    if (it == facts_.end()) return false;
+    std::error_code ec, ec2;
+    const uintmax_t size = fs::file_size(mp4, ec);
+    const auto time = fs::last_write_time(mp4, ec2);
+    if (ec || ec2 || it->second.size != size || it->second.time != int64_t(time.time_since_epoch().count())) return false;
+    *out = it->second;
+    return true;
+  }
+  void Add(const fs::path& folder, const fs::path& mp4, double seconds, uint32_t sw, uint32_t sh) {
+    if (Off()) return;
+    std::lock_guard lock(mutex_);
+    Load(folder);
+    std::error_code ec, ec2;
+    ProbeFacts f;
+    f.size = fs::file_size(mp4, ec);
+    const auto time = fs::last_write_time(mp4, ec2);
+    if (ec || ec2) return;
+    f.time = int64_t(time.time_since_epoch().count());
+    f.seconds = seconds, f.sw = sw, f.sh = sh;
+    facts_[Key(mp4)] = f;
+    fs::create_directories(folder / kHdFolder, ec);
+    // (added a line at a time: a start closed half way keeps what it found)
+    std::ofstream file(folder / kHdFolder / "probes.txt", fresh_ ? std::ios::trunc : std::ios::app);
+    if (fresh_) file << kProbesHeader << '\n';
+    fresh_ = false;
+    Write(file, Key(mp4), f);
+  }
+
+ private:
+  static bool Off() {
+    static const bool off = std::getenv("SVR2011_TEST_NO_PROBE_CACHE") != nullptr;
+    return off;
+  }
+  static std::string Key(const fs::path& mp4) {
+    const auto u = mp4.u8string();
+    return std::string(reinterpret_cast<const char*>(u.data()), u.size());
+  }
+  static void Write(std::ostream& file, const std::string& key, const ProbeFacts& f) {
+    file << f.size << ' ' << f.time << ' ' << f.seconds << ' ' << f.sw << ' ' << f.sh << ' ' << key << '\n';
+  }
+  void Load(const fs::path& folder) {
+    if (folder_ == folder) return;
+    folder_ = folder;
+    facts_.clear();
+    fresh_ = true;
+    const fs::path name = folder / kHdFolder / "probes.txt";
+    std::ifstream file(name);
+    std::string line;
+    if (!std::getline(file, line) || line != kProbesHeader) return;
+    fresh_ = false;
+    size_t lines = 0;
+    while (std::getline(file, line)) {
+      ++lines;
+      std::istringstream in(line);
+      ProbeFacts f;
+      std::string key;
+      if (!(in >> f.size >> f.time >> f.seconds >> f.sw >> f.sh) || f.seconds <= 0 || !f.sw || !f.sh) continue;
+      std::getline(in >> std::ws, key);
+      if (!key.empty()) facts_[key] = f;  // (a movie changed: its newest line counts)
+    }
+    if (lines <= facts_.size() * 2 + 32) return;
+    file.close();  // (mostly old lines: written again)
+    std::ofstream out(name, std::ios::trunc);
+    out << kProbesHeader << '\n';
+    for (const auto& [key, f] : facts_) Write(out, key, f);
+  }
+
+  std::mutex mutex_;
+  fs::path folder_;
+  std::map<std::string, ProbeFacts> facts_;
+  bool fresh_ = true;  // (the file isn't there or isn't ours: started again at the first new line)
+};
+ProbeCache g_probes;
+
 std::mutex g_open_mutex;
 std::map<uint32_t, std::unique_ptr<Decoder>> g_open;  // by the guest Bink
 
@@ -786,11 +886,16 @@ bool PrepareHdMovie(const fs::path& movies, const std::string& file, const fs::p
   double seconds = 0;
   uint32_t sw = 0, sh = 0;
   bool decodes = false;
-  // (on a thread of its own: Media Foundation's COM set-up stays off the caller's)
-  std::thread([&] { rex::thread::set_current_thread_name("hd movie probe"); decodes = Probe(mp4, &seconds, &sw, &sh); }).join();
-  if (!decodes || seconds <= 0) {
-    REXLOG_INFO("[svr2011] hd movies: {} doesn't play here (no decoder) - its .bik does", mp4.filename().string());
-    return false;
+  if (ProbeFacts known; g_probes.Find(movies, mp4, &known)) {
+    seconds = known.seconds, sw = known.sw, sh = known.sh, decodes = true;
+  } else {
+    // (on a thread of its own: Media Foundation's COM set-up stays off the caller's)
+    std::thread([&] { rex::thread::set_current_thread_name("hd movie probe"); decodes = Probe(mp4, &seconds, &sw, &sh); }).join();
+    if (!decodes || seconds <= 0) {
+      REXLOG_INFO("[svr2011] hd movies: {} doesn't play here (no decoder) - its .bik does", mp4.filename().string());
+      return false;
+    }
+    g_probes.Add(movies, mp4, seconds, sw, sh);
   }
   HdMovie m;
   m.mp4 = mp4;

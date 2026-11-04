@@ -1,6 +1,7 @@
 /* WWE SmackDown vs. Raw 2011 - Report a problem's questions and its send as one call (see report_flow.h). */
 
 #include "report_flow.h"
+#include "report_urls.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,7 +22,9 @@ const WCHAR *report_flow_check(const ReportAnswers *a)
 {
     const char *p = a->what;
     while (*p == ' ' || *p == '\r' || *p == '\n' || *p == '\t') p++;
-    return *p ? NULL : L"Please say what happened first.";
+    if (!*p) return L"Please say what happened first.";
+    return report_text_has_url(a->what) || report_text_has_url(a->before) || report_text_has_url(a->contact)
+               ? REPORT_NO_URLS_W : NULL;
 }
 
 void report_flow_describe(const ReportAnswers *a, const WCHAR *version, const char *platform, char *out, int n)

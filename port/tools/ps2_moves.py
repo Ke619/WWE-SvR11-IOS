@@ -433,12 +433,14 @@ def main(argv):
     ap = argparse.ArgumentParser()
     ap.add_argument('--write-maps', action='store_true')
     ap.add_argument('--report', nargs=2, metavar=('GAME', 'ISO'))
-    ap.add_argument('--pac11', default=r'D:\Xbox Games Ports\SvR2011 Arenas\port\runs\opt_arena_game\pac')
+    ap.add_argument('--pac11')
     ap.add_argument('--limit', type=int)
     a = ap.parse_args(argv[1:])
     if a.write_maps:
         write_maps()
     if a.report:
+        if not a.pac11:
+            ap.error('--report needs --pac11 (the SvR 2011 pac folder)')
         report(a.report[0], a.report[1], a.pac11, a.limit)
     return 0
 

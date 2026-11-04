@@ -128,7 +128,7 @@ def main(argv):
     ap.add_argument('--pac11', default=SP.PAC11 if hasattr(SP, 'PAC11') else MP.PAC11)
     ap.add_argument('--svrmod')
     ap.add_argument('--cache', help='where the files a disc image gives are copied (default tools/work/src/<game>)')
-    ap.add_argument('--pac10', default=r'D:\Xbox Games Ports\SvR2010 Extract\pac', help='SvR 2010 pac (the chain for 2007-2009)')
+    ap.add_argument('--pac10', help='SvR 2010 pac (the chain for 2007-2009)')
     a = ap.parse_args(argv[1:])
     g11, _ = SP.game11(a.pac11)
     by11 = collections.defaultdict(set)
@@ -150,6 +150,8 @@ def main(argv):
         # (SvR 2007-2009: aligned with SvR 2010 - nearer, the same ids - and composed with the 2010 -> 2011
         # map, svr10_superstar.MAP; then the direct pairs with 2011 where both slots are still free)
         import svr10_superstar as SS
+        if not a.pac10:
+            ap.error('--pac10 is needed for %s (the chain through SvR 2010)' % a.game)
         g10 = SP.svr10().Game(a.pac10, 10)
         w10 = g10.waze()
         m10, nshared, ns = fit(g, g10, lambda i: {i} if i in w10 else set(), nt=4096)

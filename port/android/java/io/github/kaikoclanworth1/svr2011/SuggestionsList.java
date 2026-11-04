@@ -184,6 +184,11 @@ final class SuggestionsList {
                 error.setVisibility(View.VISIBLE);
                 return;
             }
+            if (ReportSend.hasUrl(t) || ReportSend.hasUrl(w)) {
+                error.setText(ReportSend.kNoUrlsIdeas);
+                error.setVisibility(View.VISIBLE);
+                return;
+            }
             ReportSend.Answers ans = new ReportSend.Answers();
             ans.kind = "suggestion";
             ans.version = a.versionName();

@@ -24,7 +24,7 @@ import svr08_stage as s8  # noqa: E402
 import hctp2jboy  # noqa: E402
 import yobj  # noqa: E402
 
-GOBJ = os.path.join(os.environ.get('HCTP_UNPACKED', r"D:\Xbox Games Ports\HCTP Extract\_unpacked"), 'gm', 'GMMC_GOBJ')
+GOBJ = os.path.join(os.environ.get('HCTP_UNPACKED', ''), 'gm', 'GMMC_GOBJ')
 
 # class kind -> (model params, solid collision params at rest) by param index (param[0] = model)
 # (indices into the tag's float list)

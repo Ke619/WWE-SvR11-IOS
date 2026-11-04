@@ -251,6 +251,12 @@ final class ReportForm {
             ans.what = happened;
             ans.before = before.getText().toString().trim();
             ans.contact = contact.getText().toString().trim();
+            if (ReportSend.hasUrl(ans.what) || ReportSend.hasUrl(ans.before) || ReportSend.hasUrl(ans.contact)) {
+                status.setText(ReportSend.kNoUrls);
+                status.setVisibility(View.VISIBLE);
+                (ReportSend.hasUrl(ans.what) ? what : ReportSend.hasUrl(ans.before) ? before : contact).requestFocus();
+                return;
+            }
             boolean save = withSave.isChecked(), mods = withMods.isChecked() && withMods.isEnabled();
             st.sending = true;
             d.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);

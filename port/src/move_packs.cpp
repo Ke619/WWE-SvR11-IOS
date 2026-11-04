@@ -2522,7 +2522,9 @@ bool StockPlays(uint16_t id) {
 }
 
 bool NoMotionMove(uint16_t id) {
-  if (!id) return false;
+  // (not the created finishers' ids, 16001-19999 and 30000-30999 - cam_mod_moves.cpp CreatedFinisher: 213 of the
+  // 637 records are theirs, and a player's created finisher has no motion in any pac - the game makes it)
+  if (!id || (id >= 16001 && id <= 19999) || (id >= 30000 && id <= 30999)) return false;
   {
     std::lock_guard lock(g_usable_mutex);
     if (g_bits.empty() || !g_bits[id]) return false;  // (no record with category bits: not this rule's)
@@ -2531,14 +2533,15 @@ bool NoMotionMove(uint16_t id) {
   return !g_motion_ids.empty() && !g_motion_ids[id] && !g_pack_motion_ids.count(id);
 }
 
-bool MoveMissing(uint16_t id) {
+bool MoveMissing(uint16_t id, bool local) {
   // a record with bits and no motion anywhere (a save's removed or renumbered pack move - 30073), a pack's move
   // whose motions are missing or left out of a bank (g_motionless), else only a move a pack gave once, no pack
   // gives now and the stock game can't play: stock movesets name moves without records, bits or EXH data that
   // play fine, so nothing wider can be trusted
   if (!id) return false;
-  if (NoMotionMove(id)) return true;
+  if (local && NoMotionMove(id)) return true;
   if (PackMove(id)) {
+    if (!local) return false;
     std::lock_guard lock(g_motionless_mutex);
     return g_motionless.count(id) > 0;
   }

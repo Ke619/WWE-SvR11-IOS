@@ -7,19 +7,36 @@ mods are cosmetic: they don't count as mods for online matches).
 ## New titles (in progress)
 
 A mod with `new=1` adds a title beyond the game's own instead of replacing one: `type=title`, `new=1`,
-`name=`, `champion=` and `kind=tag` for a tag title. Up to 32. So far (piece 1) the game knows it and keeps its
-holders, but no screen offers it yet.
+`name=`, `champion=`, `short=` (the entrance's banner, where the game adds "CHAMPION" after it; without it the
+holder's form less that word) and `kind=tag` for a tag title. Up to 32.
 
-- The game's table is at 0x82EDEB50, 14 rows x 16 B: holder a, holder b, +8 a group, +12 kind (2 = tag), +13
-  display order. Its rows, by index: 0 and 1 the two world titles (holders 139, 123), 2 and 3 tag, 4 IC ...
+**Works so far:** Championship Scramble's title list and a match on the title; the holder's banner in an entrance;
+holders kept beside the save.
+
+**Not yet:** other screens' lists (Universe, title select), a belt or art of its own (the holder walks out without a
+belt and the list shows no art for it), announcer lines, online rules, a Mod Maker page.
+
+Outside Universe titles don't change hands in the game: every holder write is Universe, title settings or the save's
+set-up (`sub_825B7EB0`, `sub_825B1488`, `sub_8243D680`, `sub_8257B268`).
+
+- The game's table is at 0x82EDEB50, 14 rows x 16 B, all 14 in use: holder a, holder b, +8 a group, +12 kind (2 = tag),
+  +13 display order. Names: `sub_82588698(title, kind)`, kind 0 the name, 1 the short name.
 - A new title's index is 14 + its place in folder order, for that run only: nothing stores the index.
-- Holders are in `Saves	itles.txt`, one row per mod folder: holder a, holder b, each an id, `m:<mod folder>` or
-  `-`. The save itself is never changed, so removing the mod takes only its holders. The row stays while the mod
-  is off or gone, and the title comes back with its holders if the mod returns.
-- Hooks: `src/title_new.cpp`, the title module's functions in 828BD488-828BDEF8 plus 828C22E0 and 8243B0A8. Each is
-  the game's own for indices 0-13.
-- Universe's per-title store (`sub_825B6BE0`, P+20776) is 8 rows of 4 B, and only for the titles in the list at
-  0x8206D6BC (`sub_828BDA98`). It returns a pointer, so a new title can have its row in a side buffer.
+- Holders are in `Saves	itles.txt`, one row per mod folder: holder a, holder b, each an id, `m:<mod folder>` or `-`.
+  The file is written once the save file has changed (the game builds its save before it asks, so a save turned down
+  at its prompt doesn't count). The save itself is never changed, so removing the mod takes only its holders. The row
+  stays while the mod is off or gone, and the title comes back with its holders if the mod returns.
+- Hooks: `src/title_new.cpp`, the title module's functions in 828BD488-828BDEF8 plus 828C22E0 and 8243B0A8, the name
+  above, the list below. Each is the game's own with no new title installed.
+- Championship Scramble's list (`sub_8244C9B0`): 11 rows on screen, the game's own 11 first. With new titles the rows
+  scroll in the list's on-move function (`sub_8244CF50`). The art of a row is a widget (`sub_82452A48`: row -> widget
+  1342-1352); its picture is the widget's +0x4C, so a scrolled row's widget gets its title's picture.
+- `sub_82732D68` (select screen: is this pick allowed) marks titles in a 14-entry stack list. With a new title in the
+  picks the same rules run in the hook, so nothing writes past the list. Written from the game's code; no run has
+  confirmed that path was taken.
+- Universe's per-title store (`sub_825B6BE0`, P+20776) is 8 rows of 4 B, only for the titles in the list at 0x8206D6BC
+  (`sub_828BDA98`). It returns a pointer, so a new title can have its row in a side buffer.
+- Test aids: `SVR2011_TEST_NEW_TITLES` (the table in the log; =<id> gives the first new title that holder, in memory).
 
 ## The mod
 

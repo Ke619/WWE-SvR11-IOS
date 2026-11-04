@@ -21,7 +21,6 @@
 #include "big_roster.h"
 #include "superstar_threads.h"
 #include "superstar_mods.h"
-#include "title_new.h"
 
 #include <algorithm>
 #include <chrono>
@@ -398,7 +397,6 @@ REX_HOOK_RAW(sub_827235D8) {
   }
   svr2011::OnlineTempForSave(base, true);  // (the fetched mods of this run: not in the save)
   svr2011::PerModSavesForSave(base, true);  // (per_mod_saves: the mods' data in their own files)
-  svr2011::NewTitlesForSave();  // (new titles' holders: title_new.h)
   __imp__sub_827235D8(ctx, base);
   // Test aid: SVR2011_TEST_SAVE_DUMP=<folder> - the records, profiles and the built save (guest memory) as files
   if (const char* dir = std::getenv("SVR2011_TEST_SAVE_DUMP")) {

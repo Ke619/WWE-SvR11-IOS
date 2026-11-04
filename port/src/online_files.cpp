@@ -398,7 +398,11 @@ std::vector<MissingGameFile> MissingGameFiles() {
     if (Optional(p)) continue;
     std::string u;
     for (wchar_t c : p) u += char(c);  // (the list's names are ASCII)
-    if (fs::exists(g_game_root / fs::path(p), ec) && !(test && u == test)) continue;
+    // (slashes, as the online check: on Android a backslash is part of a name - every file in a subfolder counted as
+    // missing there, "360 of the disc's files missing (265 ...)" in every Android 2.1.9 log)
+    std::string rel = u;
+    std::replace(rel.begin(), rel.end(), '\\', '/');
+    if (fs::exists(g_game_root / fs::path(rel), ec) && !(test && u == test)) continue;
     const bool essential = p == L"default.xex" || p.rfind(L"plist360", 0) == 0 || p.rfind(L"pac\\", 0) == 0;
     out.push_back({u, essential});
   }

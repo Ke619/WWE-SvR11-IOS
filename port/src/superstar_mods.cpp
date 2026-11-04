@@ -401,6 +401,7 @@ std::vector<std::pair<std::string, uint32_t>> ReadSlots(const fs::path& file) {
 // the game's (0-321) and under 1000 (a render's name is attire * 1000 + id, SSFA/%04d) - a mod can then hold any id,
 // or none, with its files mounted once.
 constexpr uint32_t kFirstKey = 400, kLastKey = 999;
+constexpr uint32_t kNobodyId = 512;  // (the game's "nobody": never a new mod's key)
 // A mod's own crowd signs: 10000 + key * 10 + 1..4 (as a character's, id * 10 + n - but the game's own signs and the
 // sign packs use 1-9991)
 constexpr uint32_t kModSignBase = 10000;
@@ -856,7 +857,7 @@ void LoadMods() {
       for (const auto& k : keys)
         if (k.first == folder) return k.second;
     for (uint32_t k = kFirstKey; k <= kLastKey; ++k) {
-      if (keys_taken.count(k)) continue;
+      if (k == kNobodyId || keys_taken.count(k)) continue;  // (512: see sub_828B8190's hook)
       keys_taken.insert(k);
       if (!temp) keys.push_back({folder, k}), keys_changed = true;  // (a fetched mod's: this run only)
       return k;
@@ -3635,6 +3636,20 @@ REX_HOOK_RAW(sub_828B78C0) {
     return;
   }
   __imp__sub_828B78C0(ctx, base);
+}
+
+// A pick (sub_828B8190(id, attire, kind)): id * 100 + attire * 10 + kind when that character's file is there, else
+// id * 100 + attire * 10. Nobody (512) has no file, so nobody's pick is 51200 - unless a mod's key is 512: mods are
+// keyed from 400, the 113th gets 512 and its ch512.pac is there. Then nobody picks as 51202, which the game doesn't
+// take for nobody: Story Designer's NEW (sub_82625988 fills its six cast places with nobody's pick) crashed in
+// sub_82750ED8 reading nobody's record. Nobody's pick is 51200 whatever files there are (keys already given stay).
+REX_EXTERN(__imp__sub_828B8190);
+REX_HOOK_RAW(sub_828B8190) {
+  if (ctx.r3.u32 == kNobodyId) {
+    ctx.r3.u64 = kNobodyId * 100;
+    return;
+  }
+  __imp__sub_828B8190(ctx, base);
 }
 
 // A match slot from a lobby's person (sub_828BA250(L, slot, id, team, attire, kind, r9) - the online hand-off's

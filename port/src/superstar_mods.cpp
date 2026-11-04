@@ -3135,6 +3135,7 @@ REX_HOOK_RAW(sub_8257A218) {
   CheckSavedProfiles(base);  // (slots whose saved profile is another mod's: handed over by ApplyRecords)
   ApplyRecords(base);
   svr2011::PerModSavesLoaded(base);  // (key refs: the save's teams / titles / cards naming a mod)
+  svr2011::BigRosterTestCard(base);
   g_moves_checked = false;  // (the save's profiles - its kept edits - get CheckModProfiles' move check too)
   svr2011::UniverseModsLoaded(base);  // (the mods' Universe side table for this save)
   ctx.r3.u64 = r3;

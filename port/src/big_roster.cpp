@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -283,6 +284,31 @@ void BigRosterTestMove(uint8_t* base, const uint32_t* ids, int count) {
   heap->Protect(kIdToIndex, 322 * 2, old);
 }
 
+void BigRosterTestCard(uint8_t* base) {
+  const char* env = std::getenv("SVR2011_TEST_UNIVERSE_CARD");
+  if (!env) return;
+  const uint32_t save = uint32_t(base[0x82E407B4]) << 24 | uint32_t(base[0x82E407B5]) << 16 |
+                       uint32_t(base[0x82E407B6]) << 8 | base[0x82E407B7];
+  if (!save) return;
+  const uint32_t cards = save + 0x364B4 + 14942, end = save + 0x364B4 + 20808;  // (88 B blocks: 16 B, 6 x 12 B people)
+  int changed = 0;
+  for (const char* at = env; *at;) {
+    unsigned from = 0, to = 0;
+    if (std::sscanf(at, "%u:%u", &from, &to) != 2) break;
+    for (uint32_t b = cards; b + 88 <= end; b += 88)
+      for (uint32_t k = 0; k < 6; ++k) {
+        uint8_t* id = base + b + 16 + k * 12;
+        if (Rd16(id) != from) continue;
+        id[0] = uint8_t(to >> 8), id[1] = uint8_t(to);
+        ++changed;
+      }
+    const char* comma = std::strchr(at, ',');
+    if (!comma) break;
+    at = comma + 1;
+  }
+  REXLOG_INFO("[svr2011] big roster: test aid - {} Universe card place(s) given another person ({})", changed, env);
+}
+
 void InstallBigRoster(rex::memory::Memory* memory) {
   g_memory = memory;
   g_on = REXCVAR_GET(big_roster);
@@ -303,6 +329,29 @@ REX_HOOK_RAW(sub_828B7038) {
 }
 
 // list position -> id: a loop a bound site let past 241 gets the ids of the indices from 242.
+// Test aid SVR2011_TEST_SNAPSHOT_CHECK (big_roster on): right after the roster snapshot is taken (sub_8243B6F0:
+// sub_8243A380 + A9E0), it's compared with the roster (sub_8243A590, AB60: 0 = the same), put back (A488, AAA0) and
+// compared again - the compare and put-back walks past 241 run, and a wrong walk shows as a difference.
+REX_EXTERN(__imp__sub_8243B6F0);
+REX_HOOK_RAW(sub_8243B6F0) {
+  const uint32_t snap = ctx.r3.u32;
+  __imp__sub_8243B6F0(ctx, base);
+  if (!g_on || !std::getenv("SVR2011_TEST_SNAPSHOT_CHECK")) return;
+  const auto saved = ctx;
+  auto call = [&](void (*fn)(PPCContext&, uint8_t*)) {
+    ctx.r3.u64 = snap;
+    fn(ctx, base);
+    return ctx.r3.u32;
+  };
+  const uint32_t a = call(sub_8243A590), b = call(sub_8243AB60);
+  call(sub_8243A488);
+  call(sub_8243AAA0);
+  const uint32_t c = call(sub_8243A590), d = call(sub_8243AB60);
+  ctx = saved;
+  REXLOG_INFO("[svr2011] big roster: test aid - snapshot {:08X} compared {} / {} (0 = the same), put back, compared {} / {}",
+              snap, a, b, c, d);
+}
+
 REX_EXTERN(__imp__sub_828B7060);
 REX_HOOK_RAW(sub_828B7060) {
   if (g_on && int32_t(ctx.r3.u32) == g_ext_pos.load() && ctx.r3.u32 >= svr2011::kStockIndices && ctx.r3.u32 < g_count) {

@@ -25,14 +25,14 @@ $tools = Split-Path $PSScriptRoot -Parent
 $port = Split-Path $tools -Parent
 . (Join-Path $tools "test_guard.ps1")
 
-$o = @{ p = @{}; arena = ""; rule = ""; attire = ""; mods = "none"; pad1 = ""; pad2 = ""; clock = "600,1200,1800"; play = "30s"; name = "lan"; args = @(); picks1 = ""; picks2 = ""; joinenv = @() }
+$o = @{ p = @{}; arena = ""; rule = ""; attire = ""; mods = "none"; pad1 = ""; pad2 = ""; clock = "600,1200,1800"; play = "30s"; name = "lan"; args = @(); picks1 = ""; picks2 = ""; joinenv = @(); session = "" }
 for ($i = 0; $i -lt $Rest.Count; $i++) {
     $a = $Rest[$i]; $v = if ($i + 1 -lt $Rest.Count) { $Rest[$i + 1] } else { "" }
     switch -regex ($a) {
         '^--p([1-6])$' { $o.p[[int]$Matches[1]] = $v; $i++; continue }
         '^--join-env$' { $o.joinenv += $v; $i++; continue }  # (NAME=VALUE in the joiner's environment only, e.g. SVR2011_TEST_SLOT_SWAP)
         '^--arg$' { $o.args += $v; $i++; continue }  # (a game option for both games, e.g. --arg --big_roster=true)
-        '^--(arena|rule|attire|mods|pad1|pad2|clock|play|name|picks1|picks2)$' { $o[$Matches[1]] = $v; $i++; continue }
+        '^--(arena|rule|attire|mods|pad1|pad2|clock|play|name|picks1|picks2|session)$' { $o[$Matches[1]] = $v; $i++; continue }
         default { throw "svrtest lan: unknown option $a" }
     }
 }
@@ -128,9 +128,11 @@ try {
     # host: ONLINE (dbg_boot) -> MATCH (it loads slowly) -> PLAYER MATCH -> CREATE SESSION, entrances off, CONTINUE
     Start-Side "host" @("--p2p_port=$hp")
     In "host" @("until $online", "wait 15000", "press A 200", "wait 55000", "press DOWN 200", "wait 1500", "press A 200", "wait 12000",
-                "press DOWN 200", "wait 1200", "press DOWN 200", "wait 1200", "press A 200", "wait 12000",
-                "press DOWN 200", "wait 900", "press DOWN 200", "wait 900", "press DOWN 200", "wait 900", "press RIGHT 200", "wait 1200",
-                "press DOWN 200", "wait 900", "press DOWN 200", "wait 900", "press A 200")
+                "press DOWN 200", "wait 1200", "press DOWN 200", "wait 1200", "press A 200", "wait 12000")
+    # (CREATE SESSION's settings: --session <step file> instead, e.g. another match type)
+    if ($o.session) { In "host" @(Get-Content $o.session) }
+    else { In "host" @("press DOWN 200", "wait 900", "press DOWN 200", "wait 900", "press DOWN 200", "wait 900", "press RIGHT 200", "wait 1200",
+                       "press DOWN 200", "wait 900", "press DOWN 200", "wait 900", "press A 200") }
     if (-not (Wait-Log "host" "session .* hosted \(flags 42F" 300)) { throw "the host made no session" }
     $timings.hosted_s = Since
     # joiner: ONLINE -> MATCH -> PLAYER MATCH -> QUICK MATCH -> YES (it finds the host through p2p_peers)

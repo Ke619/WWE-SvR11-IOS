@@ -1047,6 +1047,19 @@ void LoadMods() {
     if (!temp) InstallMedia(m, f, song, movie, song_gain);  // (a fetched mod's theme / movie: not copied in)
     ReadApplied(m, f);
     m.slot = temp ? temp_slot() : slot_of(m.folder);
+    // Test aid SVR2011_TEST_SLOT_SWAP=<folder>,<folder>: those two mods take each other's ids this run (slots.txt
+    // unchanged) - another PC's numbering for online tests (svrtest lan --join-env)
+    if (const char* sw = std::getenv("SVR2011_TEST_SLOT_SWAP"); sw && !temp && m.slot) {
+      const std::string s = sw;
+      const size_t comma = s.find(',');
+      if (comma != std::string::npos) {
+        const std::string a = s.substr(0, comma), other = m.folder == a ? s.substr(comma + 1) : a;
+        if (m.folder == a || m.folder == s.substr(comma + 1)) {
+          m.slot = slot_of(other);
+          REXLOG_INFO("[svr2011] superstar mods: test - {} takes {}'s id {} (SVR2011_TEST_SLOT_SWAP)", m.folder, other, m.slot);
+        }
+      }
+    }
     if (!m.slot) {
       REXLOG_WARN("[svr2011] superstar mods: only {} fit, {} left out (switch another mod off to make room)",
                   std::size(kPool), m.folder);

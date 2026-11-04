@@ -186,17 +186,23 @@ class DecoderBase {
     if (!best) return;
     shown_ = true;
     for (uint32_t r = 0; r < h_; ++r) std::memcpy(y + size_t(r) * ypitch, best->nv12.data() + size_t(r) * w_, w_);
-    // (cR / cB rows go `down` rows below their luma rows: the game's
-    // Bink planes have them so - its own decodes measured: 12 rows at 320, 6 at
-    // 1024 - and the screens draw them back up; level, the colour sat that far
-    // above the picture: pink and green edges)
-    // (test aid SVR2011_TEST_CHROMA_DOWN=<rows>: that many instead - an A/B of the colour's place)
-    static const int test_down = [] { const char* v = std::getenv("SVR2011_TEST_CHROMA_DOWN"); return v ? std::atoi(v) : -1; }();
-    const uint32_t down = test_down >= 0 ? uint32_t(test_down) : w_ == 320 ? 12 : 6;
+    // Every row of the colour planes (w_ / 2 of them): the picture's colour rows, and neutral (128) where the
+    // picture has none (a wide movie's strip under the big screen: black, not the stub's bytes - green there).
+    // (The "down" rows of de9f8027 - colour written 12 rows lower at 320, 6 at 1024 - made up for the planes'
+    // address 4 KB off (the movie step's hook, below); with it right the colour goes level with its picture.
+    // Test aid SVR2011_TEST_CHROMA_DOWN=<rows>: that many lower, wrapping round - an A/B of the colour's place.)
+    static const int test_down = [] { const char* v = std::getenv("SVR2011_TEST_CHROMA_DOWN"); return v ? std::atoi(v) : 0; }();
+    const uint32_t down = uint32_t(std::max(test_down, 0));
     const uint8_t* uv = best->nv12.data() + size_t(w_) * h_;
-    for (uint32_t r = 0; r < h_ / 2 && r + down < w_ / 2; ++r) {
-      uint8_t* u = cb + size_t(r + down) * cpitch;
-      uint8_t* v = cr + size_t(r + down) * cpitch;
+    const uint32_t rows = w_ / 2;
+    for (uint32_t k = 0; k < rows; ++k) {
+      const uint32_t r = (k + rows - down % rows) % rows;
+      uint8_t* u = cb + size_t(k) * cpitch;
+      uint8_t* v = cr + size_t(k) * cpitch;
+      if (r >= h_ / 2) {
+        std::memset(u, 128, rows), std::memset(v, 128, rows);
+        continue;
+      }
       const uint8_t* s = uv + size_t(r) * w_;
       for (uint32_t x = 0; x < w_ / 2; ++x) u[x] = s[2 * x], v[x] = s[2 * x + 1];
     }
@@ -883,22 +889,26 @@ REX_HOOK_RAW(sub_82592B90) {
   const uint32_t movie = ctx.r3.u32;
   __imp__sub_82592B90(ctx, base);
   if (!movie) return;
-  const uint32_t bink = Rd32(base + movie + 12), sets = Rd32(base + movie + 32);
+  // (guest E0000000+ - physical, where the movie's planes are - sits REX_PHYS_HOST_OFFSET further on the host, as
+  // the game's own loads have it: written at base + address the frames went 4 KB early on Windows - the planes'
+  // last rows never written, and the 4 KB before each plane overwritten: coloured / green lines (2.1.9 reports))
+  const auto at = [&](uint32_t a) { return base + a + REX_PHYS_HOST_OFFSET(a); };
+  const uint32_t bink = Rd32(at(movie + 12)), sets = Rd32(at(movie + 32));
   if (!bink || !sets) return;
   std::lock_guard lock(g_open_mutex);
   const auto it = g_open.find(bink);
   if (it == g_open.end()) return;
-  const uint32_t frame = Rd32(base + bink + 12), i = Rd32(base + sets + 148);
+  const uint32_t frame = Rd32(at(bink + 12)), i = Rd32(at(sets + 148));
   if (!frame || i > 1) return;
   const uint32_t set = sets + 152 + i * 48;
-  const uint32_t y = Rd32(base + set + 4), yp = Rd32(base + set + 8);
-  const uint32_t cr = Rd32(base + set + 16), cp = Rd32(base + set + 20), cb = Rd32(base + set + 28);
+  const uint32_t y = Rd32(at(set + 4)), yp = Rd32(at(set + 8));
+  const uint32_t cr = Rd32(at(set + 16)), cp = Rd32(at(set + 20)), cb = Rd32(at(set + 28));
   if (!y || !cr || !cb || !yp || !cp) return;
   static int told = 0;
   if (LogOn() && told < 3) {
     ++told;
     REXLOG_INFO("[svr2011] hd movies: frame {} set {} Y {:08X}/{} cR {:08X} cB {:08X}/{} planes {}x{} chroma {}x{}", frame, i, y, yp, cr,
-                cb, cp, Rd32(base + sets + 132), Rd32(base + sets + 136), Rd32(base + sets + 140), Rd32(base + sets + 144));
+                cb, cp, Rd32(at(sets + 132)), Rd32(at(sets + 136)), Rd32(at(sets + 140)), Rd32(at(sets + 144)));
   }
-  it->second->Write(double(frame - 1) / kFps, base + y, yp, base + cr, base + cb, cp);
+  it->second->Write(double(frame - 1) / kFps, at(y), yp, at(cr), at(cb), cp);
 }

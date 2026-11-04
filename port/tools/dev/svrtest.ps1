@@ -17,6 +17,7 @@
 #         --fresh (the user data may have no save: a first-start test - else svrtest refuses one without
 #         Saves\SaveData.dat, the game would sit in its first-time screens)
 #         --arg "<game option>" (more of the game's --options, repeatable)
+#         --keep-overlay (Mods\PacOverlay as the last run left it: a start that finds the overlay up to date)
 #
 # Each run: refuses when the player's game runs or 4 test games already do (any chat); refreshes the private
 # game folder runs\svrtest\game (the exe + DLLs copied; pac's own files private copies - the game patches some at
@@ -84,6 +85,7 @@ for ($i = 0; $i -lt $Rest.Count; $i++) {
         '^--log-level$' { $o.loglevel = $v; $i++; continue }
         '^--name$' { $o.name = $v; $i++; continue }
         '^--keep$' { $o.keep = $true; continue }
+        '^--keep-overlay$' { $o.keepoverlay = $true; continue }
         '^--arg$' { $o.args += $v; $i++; continue }
         default { if (-not $o.target -and $a -notlike "--*") { $o.target = $a } else { throw "svrtest: unknown option $a" } }
     }
@@ -157,7 +159,7 @@ foreach ($f in $exeName, "rexruntime.dll", "rexgpu-xenos.dll") {
 }
 # its Mods: only --mods (a mod folder is placed by its manifest's type)
 $kinds = @{ superstar = "Superstars"; attire = "Attires"; arena = "Arenas"; moves = "Moves"; backstage = "Backstage"; signs = "Signs"; media = "Media"; backgrounds = "Backgrounds"; matchtype = "MatchTypes"; weapon = "Weapons" }
-Get-ChildItem (Join-Path $game "Mods") -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne ".convert" } | Remove-Item -Recurse -Force
+Get-ChildItem (Join-Path $game "Mods") -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne ".convert" -and -not ($o.keepoverlay -and $_.Name -eq "PacOverlay") } | Remove-Item -Recurse -Force
 if ($o.mods -and $o.mods -ne "none") {
     foreach ($m in $o.mods -split ',') {
         $man = Join-Path $m "manifest.txt"

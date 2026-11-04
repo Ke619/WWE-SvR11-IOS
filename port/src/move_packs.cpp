@@ -212,6 +212,12 @@ std::atomic<bool> g_ymbs_motion[0x8000] = {};
 // 2010's) - at worst a slot keeps the base's move.
 std::mutex g_motionless_mutex;
 std::set<uint16_t> g_motionless;
+// The body motions (y 0 / 1) a merge left out of a bank - their id past the bank's last (BankInsert / YmbsInsert).
+// Such a move plays as nothing even when its pack's other banks took the motion: the wrestler slid off in it,
+// stayed there and took no more input (2.1.9 report a745b2: Sin Cara's 30073 from an older Mod Maker port, out of
+// MOT/BM00 only). Unless the game has the id itself, they join g_motionless (not usable: a mod's slots keep the
+// base's moves); the overlay's left_out.txt keeps them for the starts that don't merge. (g_motionless_mutex)
+std::set<uint16_t> g_left_out;
 
 // data false: the lists and the stamp only (no motion files read - enough to
 // see that the overlay is up to date: thousands of small files on a hard
@@ -453,6 +459,10 @@ bool BankInsert(Bytes& raw, const std::vector<Motion>& add, size_t& added) {
     if (m->id >= ents.back().id) {
       REXLOG_WARN("[svr2011] move packs: {}: motion {} x {} y {} - id past this bank's last ({}), left out", m->pack,
                   m->id, m->x, m->y, ents.back().id);
+      if (m->y <= 1) {
+        std::lock_guard lock(g_motionless_mutex);
+        g_left_out.insert(m->id);
+      }
       continue;
     }
     size_t pos = 0;
@@ -559,6 +569,10 @@ bool YmbsInsert(Bytes& raw, const std::vector<Motion>& add, size_t& added) {
     if (m->id >= ents.back().id) {
       REXLOG_WARN("[svr2011] move packs: {}: motion {} x {} y {} - id past this bank's last ({}), left out", m->pack,
                   m->id, m->x, m->y, ents.back().id);
+      if (m->y <= 1) {
+        std::lock_guard lock(g_motionless_mutex);
+        g_left_out.insert(m->id);
+      }
       continue;
     }
     // Appended after the stock entries (before the end mark), never between
@@ -1117,6 +1131,41 @@ bool BuildMotionFile(const fs::path& src, const fs::path& dst, const std::string
 
 bool BuildMotionPac(const fs::path& game, const fs::path& overlay, const std::string& pac, const MotionEntries& entries) {
   return BuildMotionFile(game / "pac" / pac, overlay / pac, pac, entries);
+}
+
+// The body motions an overlay merged before left_out.txt (an older build) left out - without merging again, which
+// took minutes on a phone with many packs: only a body motion of 16000 and up can be past a bank's last (MOT/BM00's
+// is 16000, the others' higher), so only the banks such a motion goes into are read, from the game's own pac as the
+// merge reads them, for their last id. Nothing read without such motions.
+std::set<uint16_t> LeftOutNow(const fs::path& game, const Packs& packs) {
+  std::set<uint16_t> out;
+  for (const auto& [pac, entries] : packs.motions)
+    for (const auto& [type_name, banks] : entries) {
+      Bytes blob;
+      bool read = false;
+      for (const auto& [path, motions] : banks) {
+        if (std::none_of(motions.begin(), motions.end(), [](const Motion& m) { return m.y <= 1 && m.id >= 16000; }))
+          continue;
+        if (!read) {
+          read = true;
+          svr2011::KeepWindowAlive();
+          if (!ReadEntry(game / "pac" / svr2011::Lower(pac), type_name, blob)) blob.clear();
+        }
+        if (blob.empty()) break;
+        uint32_t last = 0;
+        EditTree(blob, path, 0, [&](Bytes& raw) {  // (a look only: false leaves the entry as it is)
+          if (raw.size() >= 0x114 && (!std::memcmp(raw.data(), "YMKs", 4) || !std::memcmp(raw.data(), "YMBs", 4))) {
+            const uint32_t n = Le32(&raw[0x110]);
+            if (n && 0x114 + size_t(n) * 16 <= raw.size()) last = Le16(&raw[0x114 + 16 * size_t(n - 1) + 2]);
+          }
+          return false;
+        });
+        if (!last) continue;
+        for (const Motion& m : motions)
+          if (m.y <= 1 && m.id >= last) out.insert(m.id);
+      }
+    }
+  return out;
 }
 
 // MOVS/WAZE as in the file (little-endian: u32 255, u32 record count, 128
@@ -1886,7 +1935,7 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs, const fs::path& d
     for (size_t i = 0; i < kMaxGimmickPacs; ++i) fs::remove(overlay / GimmickPacName(i), ec);
   };
   if (dirs.empty() && gms.empty()) {
-    for (const char* f : {"m.pac", "misc.pac", "mpsp.pac", "gm.pac", "plist360.h", "plist360_4x3.h", "stamp.txt"})
+    for (const char* f : {"m.pac", "misc.pac", "mpsp.pac", "gm.pac", "plist360.h", "plist360_4x3.h", "stamp.txt", "left_out.txt"})
       fs::remove(overlay / f, ec);  // (nothing to serve: free the space)
     remove_gimmick_pacs();
     fs::remove_all(overlay / "evt", ec);
@@ -1991,6 +2040,24 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs, const fs::path& d
       g_folder = "Mods\\PacOverlay";
       REXLOG_INFO("[svr2011] move packs: {} packs ({} items), overlay up to date (lists read in {} ms, checked in {} ms)",
                   dirs.size(), packs.count, stamp_ms, ms_since(t_start));
+      {  // (the moves the merge left the body motion of out: BuildMotionFile; an older build's overlay: found now)
+        std::set<uint16_t> ids;
+        if (fs::exists(overlay / "left_out.txt", ec)) {
+          std::ifstream in(overlay / "left_out.txt");
+          for (int id; in >> id;)
+            if (id > 0 && id < 65536) ids.insert(uint16_t(id));
+        } else {
+          const auto t_look = std::chrono::steady_clock::now();
+          ids = LeftOutNow(game, packs);
+          std::string list;
+          for (uint16_t id : ids) list += std::to_string(id) + "\n";
+          WriteWhole(overlay / "left_out.txt", Bytes(list.begin(), list.end()));
+          REXLOG_INFO("[svr2011] move packs: left_out.txt made without a merge - {} move(s) whose body motion a bank "
+                      "left out ({} ms)", ids.size(), ms_since(t_look));
+        }
+        std::lock_guard lock(g_motionless_mutex);
+        g_motionless.insert(ids.begin(), ids.end());
+      }
       LoadMoveTables(game);
       return;
     }
@@ -2012,6 +2079,7 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs, const fs::path& d
   fs::create_directories(overlay, ec);
   fs::remove(overlay / "stamp.txt", ec);
   bool ok = true;
+  std::vector<bool> stock_motions;  // (the game's own motion ids: a left-out body motion it has still plays)
   {  // (the motions the game and the packs have: a pack motion going on to none of them is cleared, BankInsert)
     g_known_motions.assign(0x10000, false);
     for (const char* name : {"m.pac", "mpsp.pac"}) {
@@ -2029,6 +2097,7 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs, const fs::path& d
     }
     size_t n = 0;
     for (bool b : g_known_motions) n += b;
+    if (n >= 1000) stock_motions = g_known_motions;
     for (const auto& [pac, entries] : packs.motions)
       for (const auto& [type_name, banks] : entries)
         for (const auto& [path, motions] : banks)
@@ -2036,9 +2105,23 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs, const fs::path& d
     if (n < 1000) g_known_motions.clear();  // (the game's motions not read: nothing judged)
     REXLOG_INFO("[svr2011] move packs: {} motion ids in the game's m.pac / mpsp.pac", n);
   }
+  {
+    std::lock_guard lock(g_motionless_mutex);
+    g_left_out.clear();
+  }
   for (const auto& [pac, entries] : packs.motions) {
     svr2011::KeepWindowAlive();
     ok = ok && BuildMotionPac(game, overlay, Lower(pac), entries);
+  }
+  {  // (the moves whose body motion a bank left out: g_motionless, and left_out.txt for the starts that don't merge)
+    std::string list;
+    std::lock_guard lock(g_motionless_mutex);
+    for (uint16_t id : g_left_out) {
+      if (id < stock_motions.size() && stock_motions[id]) continue;
+      g_motionless.insert(id);
+      list += std::to_string(id) + "\n";
+    }
+    WriteWhole(overlay / "left_out.txt", Bytes(list.begin(), list.end()));
   }
   svr2011::KeepWindowAlive();
   if (ok && pacs.count("misc.pac")) ok = BuildMisc(game, overlay, packs);
@@ -2288,7 +2371,8 @@ void LoadMoveTables(const fs::path& game) {
     for (uint16_t id : ids)
       if (svr2011::MoveUsable(id) == 0) gone += " " + std::to_string(id);
     if (!gone.empty())
-      REXLOG_WARN("[svr2011] move packs: moves without their motion files (not usable - movesets keep other moves):{}", gone);
+      REXLOG_WARN("[svr2011] move packs: moves without their motion files, or with them left out of the game's banks "
+                  "(not usable - movesets keep other moves):{}", gone);
   }
   REXLOG_INFO("[svr2011] move packs: move tables from {} ({} records)", src.filename().string(), Le32(w.data() + 4));
 }

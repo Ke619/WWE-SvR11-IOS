@@ -19,6 +19,7 @@
 #include "generated/default/svr2011_init.h"
 #include "no_mods.h"
 #include "text_guard.h"
+#include "title_new.h"
 
 namespace fs = std::filesystem;
 
@@ -145,6 +146,7 @@ void Load() {
   for (const fs::path& f : folders) {
     std::ifstream in(f / "manifest.txt", std::ios::binary);
     const std::string man((std::istreambuf_iterator<char>(in)), {});
+    if (Value(man, "new") == "1") continue;  // (a new title, not a replaced one: title_new.cpp)
     const std::string key = Upper(Value(man, "title"));
     const TitleStrings* t = nullptr;
     for (const auto& k : kTitleStrings)
@@ -183,6 +185,7 @@ void Load() {
 void InstallTitleMods(rex::memory::Memory* memory) {
   g_memory = memory;
   std::call_once(g_load_once, Load);
+  InstallNewTitles();
 }
 
 uint32_t TitleModString(PPCContext& ctx, uint8_t* base) {

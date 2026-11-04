@@ -12,10 +12,14 @@
 
 #include <rex/ppc.h>
 
+namespace rex::memory {
+class Memory;
+}
+
 namespace svr2011 {
 
 // At start: reads Mods\Titles for new=1 mods.
-void InstallNewTitles();
+void InstallNewTitles(rex::memory::Memory* memory);
 int NewTitleCount();
 // After the game loads a save / around the game writing one (superstar_mods.cpp, superstar_threads.cpp).
 void NewTitlesLoaded();

@@ -3,7 +3,9 @@
 #include "title_new.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -12,6 +14,7 @@
 #include <rex/filesystem.h>
 #include <rex/hook.h>
 #include <rex/logging.h>
+#include <rex/memory.h>
 
 #include "generated/default/svr2011_init.h"
 #include "no_mods.h"
@@ -30,6 +33,9 @@ REX_EXTERN(__imp__sub_828BD5B8);
 REX_EXTERN(__imp__sub_828BD6C8);
 REX_EXTERN(__imp__sub_828BDB38);
 REX_EXTERN(__imp__sub_8243B0A8);
+REX_EXTERN(__imp__sub_82588698);
+REX_EXTERN(__imp__sub_8244C9B0);
+REX_EXTERN(__imp__sub_8244CF50);
 
 namespace {
 
@@ -42,6 +48,7 @@ struct NewTitle {
   std::string folder, name, champion;
   bool tag = false;
   uint32_t holder[2] = {kNoHolder, kNoHolder};
+  uint32_t guest_name = 0;
 };
 std::vector<NewTitle> g_new;
 
@@ -89,7 +96,7 @@ namespace svr2011 {
 
 int NewTitleCount() { return int(g_new.size()); }
 
-void InstallNewTitles() {
+void InstallNewTitles(rex::memory::Memory* memory) {
   if (NoMods()) return;
   const fs::path dir = rex::filesystem::GetExecutableFolder() / "Mods" / "Titles";
   std::error_code ec;
@@ -117,6 +124,13 @@ void InstallNewTitles() {
       continue;
     }
     REXLOG_INFO("[svr2011] new titles: {} = title {} \"{}\"{}", t.folder, kStockTitles + int(g_new.size()), t.name, t.tag ? " (tag)" : "");
+    const std::string up = [&] {  // (the game's lists write titles in capitals)
+      std::string u = t.name;
+      for (char& c : u) c = char(std::toupper(static_cast<unsigned char>(c)));
+      return u;
+    }();
+    if (memory && (t.guest_name = memory->SystemHeapAlloc(uint32_t(up.size() + 1))))
+      std::memcpy(memory->TranslateVirtual<char*>(t.guest_name), up.c_str(), up.size() + 1);
     g_new.push_back(std::move(t));
   }
 }
@@ -225,6 +239,7 @@ REX_HOOK_RAW(sub_828BD548) {
 REX_HOOK_RAW(sub_828BD5B8) {
   if (NewTitle* t = Row(ctx.r3.s32)) {
     t->holder[ctx.r5.u32 & 1] = ctx.r4.u32 & 0xFFFF;
+    REXLOG_INFO("[svr2011] new titles: {} holder {} is now {}", t->folder, ctx.r5.u32 & 1, ctx.r4.u32 & 0xFFFF);
     return;
   }
   __imp__sub_828BD5B8(ctx, base);
@@ -260,6 +275,63 @@ REX_HOOK_RAW(sub_828BDB38) {
     ++n;
   }
   ctx.r3.u64 = n;
+}
+
+// A title's name: (title, kind) -> the string.
+REX_HOOK_RAW(sub_82588698) {
+  if (const NewTitle* t = Row(ctx.r3.s32)) {
+    static uint32_t said = 0;
+    if (said != uint32_t(ctx.lr)) REXLOG_INFO("[svr2011] new titles: name of {} asked by {:08X}", t->folder, uint32_t(ctx.lr));
+    said = uint32_t(ctx.lr);
+    ctx.r3.u64 = t->guest_name;
+    return;
+  }
+  __imp__sub_82588698(ctx, base);
+}
+
+// Championship Scramble's title list: 11 rows on screen (widgets 256 B apart, from *(*(*0x82EDE628 + 56) + 8) + 0x53300),
+// the title of each at +400 of the screen, 14 rows of room, the count at +456.
+// Test aid SVR2011_TEST_NEW_TITLE_ROW: the last row is the first new title.
+REX_HOOK_RAW(sub_8244C9B0) {
+  const uint32_t self = ctx.r3.u32;
+  __imp__sub_8244C9B0(ctx, base);
+  if (g_new.empty() || !std::getenv("SVR2011_TEST_NEW_TITLE_ROW")) return;
+  const auto rd = [&](uint32_t a) {
+    const uint8_t* p = base + a;
+    return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3];
+  };
+  const auto wr = [&](uint32_t a, uint32_t v) {
+    uint8_t* p = base + a;
+    p[0] = uint8_t(v >> 24), p[1] = uint8_t(v >> 16), p[2] = uint8_t(v >> 8), p[3] = uint8_t(v);
+  };
+  const uint32_t holder_table = rd(rd(0x82EDE628) + 56);
+  const uint32_t row = 10, w = rd(holder_table + 8) + 0x53300 + row * 256;
+  wr(w - 2600, g_new[0].guest_name);
+  if (g_new[0].holder[0] != kNoHolder) {  // (the holder's name: sub_825884D8(id, 0))
+    ctx.r3.u64 = g_new[0].holder[0], ctx.r4.u64 = 0;
+    sub_825884D8(ctx, base);
+    wr(w + 216, ctx.r3.u32);
+  }
+  wr(self + 400 + row * 4, uint32_t(kStockTitles));
+  REXLOG_INFO("[svr2011] new titles: test - row {} of the Scramble list is title {}", row, kStockTitles);
+}
+
+// The Scramble list's input (the row under the cursor: *(self + 28), its title at self + 628).
+REX_HOOK_RAW(sub_8244CF50) {
+  if (!g_new.empty() && std::getenv("SVR2011_TEST_NEW_TITLE_ROW")) {
+    const uint32_t self = ctx.r3.u32;
+    const auto rd = [&](uint32_t a) {
+      const uint8_t* p = base + a;
+      return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3];
+    };
+    const uint32_t row = rd(self + 28), flags = rd(self + 88);
+    static uint32_t said = 0xFFFFFFFF;
+    if (said != (row << 8 | (flags & 3))) {
+      said = row << 8 | (flags & 3);
+      REXLOG_INFO("[svr2011] new titles: test - list row {}, title {}, flags {:X}", row, rd(self + 628 + row * 4), flags);
+    }
+  }
+  __imp__sub_8244CF50(ctx, base);
 }
 
 // A holder, read from the save: (title, slot).

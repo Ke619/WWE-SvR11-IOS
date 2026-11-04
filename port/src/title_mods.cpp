@@ -185,7 +185,7 @@ void Load() {
 void InstallTitleMods(rex::memory::Memory* memory) {
   g_memory = memory;
   std::call_once(g_load_once, Load);
-  InstallNewTitles();
+  InstallNewTitles(memory);
 }
 
 uint32_t TitleModString(PPCContext& ctx, uint8_t* base) {

@@ -73,6 +73,7 @@ final class ReportSend {
     static final class Answers {
         String app = "android", version = "", os = "", problem = "", happens = "", what = "", before = "",
             contact = "", signature = "", updater = "";
+        String kind = "";   // "suggestion": an idea (SuggestionsList), "" a report
     }
 
     static void str(StringBuilder b, String key, String v) {
@@ -96,6 +97,7 @@ final class ReportSend {
     static String json(Answers a, String matchName, List<Mod> mods, boolean withMods) {
         StringBuilder b = new StringBuilder("{");
         b.append("\"format\":1");
+        if (a.kind != null && !a.kind.isEmpty()) str(b, "kind", a.kind);
         str(b, "app", a.app);
         str(b, "version", a.version);
         str(b, "platform", "android");

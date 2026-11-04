@@ -4,7 +4,9 @@
 // line, the same file the PC launcher and Mod Maker keep - then their state
 // asked from the server (POST /api/reports/status), an answer to our
 // question sent (POST /api/reports/reply) and the player's changes to a report
-// (POST /api/reports/edit: text to add, pictures - 5 a report in all). Plain
+// (POST /api/reports/edit: text to add, pictures - 5 a report in all).
+// Suggestions (SuggestionsList: reports of kind "suggestion") keep theirs in
+// UserData/suggestions.json (kSuggestions), as the PC's Suggestions tab. Plain
 // Java (no android.*): it runs on the PC too, against a test server.
 package io.github.kaikoclanworth1.svr2011;
 
@@ -24,6 +26,7 @@ import java.util.Locale;
 
 final class Receipts {
     static final int kMax = 200, kMaxImages = 3, kMaxEditImages = 5;
+    static final String kReports = "reports.json", kSuggestions = "suggestions.json";
 
     static final class Item {
         // kept on the phone
@@ -34,12 +37,17 @@ final class Receipts {
         int replies;
         int edits, pictures;  // the player's changes so far; the pictures it has (sent + added)
         boolean fromAccount;  // sent from another device, listed by the signed-in account
+        String kind = "report";  // "suggestion": its words are Sure / No, not planned / Done in
     }
 
     static File file(File gameFolder) {
+        return file(gameFolder, kReports);
+    }
+
+    static File file(File gameFolder, String name) {
         File d = new File(gameFolder, "UserData");
         d.mkdirs();
-        return new File(d, "reports.json");
+        return new File(d, name);
     }
 
     // Keeps a sent report's receipt (the oldest go past kMax).
@@ -49,11 +57,17 @@ final class Receipts {
 
     // picturesLater: the player adds pictures later from the launcher (the game's own form) - "pictures_later":1 on
     // its line (the PC's report_receipts.c receipt_add_ex; the Reports tab offers an edit with pictures).
-    static synchronized boolean add(File gameFolder, String app, String id, String secret, String problem, String what,
-                                    boolean picturesLater) {
+    static boolean add(File gameFolder, String app, String id, String secret, String problem, String what,
+                       boolean picturesLater) {
+        return add(kReports, gameFolder, app, id, secret, problem, what, picturesLater);
+    }
+
+    // ... into one of the files (kReports / kSuggestions).
+    static synchronized boolean add(String name, File gameFolder, String app, String id, String secret, String problem,
+                                    String what, boolean picturesLater) {
         if (id == null || id.isEmpty() || secret == null || secret.isEmpty()) return false;
         List<String> kept = new ArrayList<>();
-        File f = file(gameFolder);
+        File f = file(gameFolder, name);
         if (f.isFile()) {
             try {
                 String text = new String(ProblemReport.read(f, 8 << 20), StandardCharsets.UTF_8);
@@ -87,8 +101,12 @@ final class Receipts {
 
     // The kept receipts, newest first.
     static List<Item> load(File gameFolder) {
+        return load(gameFolder, kReports);
+    }
+
+    static List<Item> load(File gameFolder, String name) {
         List<Item> out = new ArrayList<>();
-        File f = file(gameFolder);
+        File f = file(gameFolder, name);
         if (!f.isFile()) return out;
         try {
             String text = new String(ProblemReport.read(f, 8 << 20), StandardCharsets.UTF_8);
@@ -101,6 +119,7 @@ final class Receipts {
                 it.app = field(obj, "app");
                 it.problem = field(obj, "problem");
                 it.what = field(obj, "what");
+                if (name.equals(kSuggestions)) it.kind = "suggestion";
                 String later = field(obj, "pictures_later");
                 it.picturesLater = later.equals("1") || later.equals("true");
                 if (!it.id.isEmpty() && !it.secret.isEmpty()) out.add(it);
@@ -115,6 +134,11 @@ final class Receipts {
     // its reports from other devices are added after). Returns why it couldn't
     // ask, or null when it did.
     static String status(String server, String token, List<Item> items) {
+        return status(server, token, items, "report");
+    }
+
+    // ... kind: the account's ones from other devices of this kind only ("report" / "suggestion").
+    static String status(String server, String token, List<Item> items, String kind) {
         if (server == null || server.isEmpty()) return "No online server is set.";
         String refused = ReportSend.refuses(server);
         if (refused != null) return refused;
@@ -139,10 +163,11 @@ final class Receipts {
         for (Item it : items) it.state = "";
         for (int[] o : objects(a, at)) {
             String obj = a.substring(o[0], o[1]);
-            String id = field(obj, "id");
+            String id = field(obj, "id"), k = field(obj, "kind");
+            if (k.isEmpty()) k = "report";
             Item it = null;
             for (Item x : items) if (x.id.equals(id)) it = x;
-            if (it == null && field(obj, "from_account").equals("true") && items.size() < kMax) {
+            if (it == null && field(obj, "from_account").equals("true") && items.size() < kMax && k.equals(kind)) {
                 it = new Item();
                 it.id = id;
                 it.fromAccount = true;
@@ -154,6 +179,7 @@ final class Receipts {
                 items.add(it);
             }
             if (it == null) continue;
+            it.kind = k;
             it.state = field(obj, "state");
             it.note = field(obj, "note");
             it.version = field(obj, "version");
@@ -249,6 +275,14 @@ final class Receipts {
 
     // The player's words for its state: a short badge and the line under it.
     static String badge(Item it) {
+        if (it.kind.equals("suggestion"))
+            switch (it.state) {
+                case "received": return "Received";
+                case "planned": return "Sure";
+                case "not_planned": return "No, not planned";
+                case "fixed": return it.version.isEmpty() ? "Done" : "Done in " + it.version;
+                default: break;
+            }
         switch (it.state) {
             case "": return "…";
             case "received": return "Received";
@@ -263,6 +297,15 @@ final class Receipts {
     }
 
     static String line(Item it) {
+        String note = it.note.isEmpty() ? "." : ": " + it.note;
+        if (it.kind.equals("suggestion"))
+            switch (it.state) {
+                case "received": return "We have your idea and will answer it here.";
+                case "planned": return "Sure - we plan to add this" + note;
+                case "not_planned": return "No, not planned" + note;
+                case "fixed": return (it.version.isEmpty() ? "Done" : "Done in " + it.version) + note;
+                default: break;
+            }
         switch (it.state) {
             case "": return "Not checked yet.";
             case "received": return "We have your report and will look at it.";

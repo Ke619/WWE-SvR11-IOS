@@ -812,6 +812,33 @@ def convert0789(a, rep, outdir, g):
     return rep
 
 
+def retime_camera(data, scale, nframes, old, new):
+    """a camera track (y 50-57: unpacked records - a camera key, count + pose, after an optional event block) stretched
+    in time by `scale` to `nframes`: each key's frame and its count (the frames it takes to reach that shot) scaled,
+    its events moved with it, jumps to the template pointed at the new move"""
+    import ymks
+    out = []
+    last = -1
+    for f, r in ymks.parse_stream(data).records():
+        ev, pose = ymks.split_record(r, False)
+        try:   # (a key size ymks doesn't read - 11 bytes in some tracks - keeps its bytes, only moved in time)
+            cam = ymks.decode_camera(pose) if pose else None
+        except ValueError:
+            cam = None
+        if cam:
+            cam['count'] = max(0, min(255, int(round((cam['count'] + 1) * scale)) - 1))
+            pose = ymks.encode_camera(cam)
+        if ev and old != new:
+            e2 = bytearray(ev)
+            if e2[0] in (49, 50) and len(e2) >= 3 and struct.unpack_from('<H', e2, 1)[0] == old:
+                struct.pack_into('<H', e2, 1, new)
+            ev = bytes(e2)
+        nf = max(last + 1, min(nframes - 1, int(round(f * scale))))
+        last = nf
+        out.append((nf, ymks.join_record(ev, pose, False)))
+    return ymks.build_stream(ymks.make_stream(out, max(nframes, last + 1)))
+
+
 def fix_track(data, T, packed, old, new, keep, cues=None):
     """a track copied as it is (cameras, ropes, props; SvR 2009's packed people): its events as clean_events08"""
     import ymks
@@ -2096,6 +2123,15 @@ def convert(a, rep):
                 data, frames = ymks.build_motion(ks_, n + 1, packed=packed), n + 1
             else:
                 data, frames = e['data'], e['frames']   # (props, cameras, reversal branches: the template's)
+                # (a camera, y 50-57, of a phase the source has: timed to the ported length, as the events are - a
+                # template's 99-frame camera on a 144-frame move ended early and held its last shot; Goldberg 2K14's
+                # finishers, report 20261104-103857)
+                body = phase_keys(x)[0] if 50 <= y <= 57 and x < 90 else None
+                if body and frames and len(body) != frames:
+                    try:
+                        data, frames = retime_camera(e['data'], len(body) / float(frames), len(body), tid, new_id), len(body)
+                    except (ValueError, IndexError):
+                        data, frames = e['data'], e['frames']
             fn = 'motions/%d_%d_%d%s.ymk' % (new_id, x, y, '_p' if packed else '')
             open(os.path.join(pd, fn), 'wb').write(data)
             lines.append('motion %s %s %d %d %d %d %s' % (pac, path, new_id, x, y, frames, fn))

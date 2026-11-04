@@ -3687,7 +3687,7 @@ void RecordStubs(uint8_t* base) {
     const uint8_t* sr = base + svr2011::RosterEntry(kRecords, kRecordSize, si);
     if (!std::strncmp(reinterpret_cast<const char*>(sr + kFullName), m.name.c_str(), kNameLen - 1)) continue;
     g_stub_record[m.slot].assign(sr, sr + kRecordSize);
-    const uint8_t* se = base + kEntries40 + si * kEntry40Size;
+    const uint8_t* se = base + svr2011::RosterEntry(kEntries40, kEntry40Size, si);
     g_stub_entry[m.slot].assign(se, se + kEntry40Size);
   }
 }
@@ -3746,7 +3746,7 @@ void PutBackEntries(uint8_t* base) {
       ++it;
       continue;
     }
-    std::memcpy(base + kEntries40 + si * kEntry40Size, it->second.data(), kEntry40Size);
+    std::memcpy(base + svr2011::RosterEntry(kEntries40, kEntry40Size, si), it->second.data(), kEntry40Size);
     it = g_saved_entry.erase(it);
   }
 }
@@ -3930,7 +3930,7 @@ void PerModSavesForSave(uint8_t* base, bool saving) {
     if (!sp_stub) continue;
     uint8_t* sr = base + svr2011::RosterEntry(kRecords, kRecordSize, si);
     uint8_t* sp = base + svr2011::RosterEntry(kProfiles, kProfileSize, si);
-    uint8_t* se = base + kEntries40 + si * kEntry40Size;
+    uint8_t* se = base + svr2011::RosterEntry(kEntries40, kEntry40Size, si);
     if (saving) {
       if (std::strncmp(reinterpret_cast<const char*>(sr + kFullName), m.name.c_str(), kNameLen - 1)) continue;
       ModSave s{svrfmt::Bytes(sr, sr + kRecordSize), svrfmt::Bytes(sp, sp + kProfileSize),

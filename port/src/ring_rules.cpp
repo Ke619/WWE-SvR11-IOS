@@ -343,6 +343,53 @@ REX_HOOK_RAW(sub_8269BA30) {
   }
 }
 
+// The entrances' state object (*0x82EDE664, 12,872 bytes): its owner makes it (sub_82323748) when the entrances'
+// stage starts and removes it in its destructor (sub_823236D0), when the entrances end and just before the match
+// loads ("match:" comes 0.4 s later). sub_82769338, an entrances' per-frame update (a float of the person's, +32 ->
+// +292), asks it for the state (sub_8274FD98 -> sub_8275DA50 reads +0x14) without checking it's there: an update
+// still in the task list after the removal read 0x14 as the match started - reports ea268d (2.1.9) and a0a0ff
+// (2.1.8), Android. No update without the object: the entrances are over and the float isn't used again.
+// Test aid SVR2011_TEST_MATCH_STATE_LATE: 1 an update runs right after the removal, 2 and without this check.
+constexpr uint32_t kEntranceState = 0x82EDE664;
+int MatchStateLateAid() {
+  static const int aid = [] {
+    const char* v = std::getenv("SVR2011_TEST_MATCH_STATE_LATE");
+    return v ? std::atoi(v) : 0;
+  }();
+  return aid;
+}
+uint32_t g_last_update_arg = 0;
+
+REX_EXTERN(__imp__sub_82323748);
+REX_HOOK_RAW(sub_82323748) {
+  __imp__sub_82323748(ctx, base);
+  REXLOG_INFO("[svr2011] entrance state: object made ({:08X})", Rd32(base + kEntranceState));
+}
+REX_EXTERN(__imp__sub_82769338);
+REX_HOOK_RAW(sub_82769338) {
+  g_last_update_arg = ctx.r3.u32;
+  if (!Rd32(base + kEntranceState) && MatchStateLateAid() != 2) {
+    static std::atomic<int> skipped{0};
+    if (const int n = skipped.fetch_add(1); n == 0 || n == 1000)
+      REXLOG_WARN("[svr2011] entrance state: no object - an entrance update skipped ({} so)", n + 1);
+    return;
+  }
+  __imp__sub_82769338(ctx, base);
+}
+REX_EXTERN(__imp__sub_823236D0);
+REX_HOOK_RAW(sub_823236D0) {
+  const uint32_t was = Rd32(base + kEntranceState);
+  __imp__sub_823236D0(ctx, base);
+  if (!was) return;
+  REXLOG_INFO("[svr2011] entrance state: object removed ({:08X})", was);
+  if (MatchStateLateAid() && g_last_update_arg) {
+    const auto saved = ctx;
+    ctx.r3.u64 = g_last_update_arg;
+    sub_82769338(ctx, base);
+    ctx = saved;
+  }
+}
+
 // The heaps' block (heap 12 bigger, above): sub_821581A8(request, out) - request +20 0x10C00000 (the block ends
 // 0x1FC00000 - it), +24 the block's size; out +0 its start, +4 its size.
 REX_EXTERN(__imp__sub_821581A8);

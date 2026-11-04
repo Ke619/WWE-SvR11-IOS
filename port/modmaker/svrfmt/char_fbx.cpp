@@ -1309,6 +1309,14 @@ bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>
     turn(te->second, rot);
   };
   int aimed = 0;
+  const auto head_of = src_of.find("atama");
+  auto holds_head = [&](int i) {
+    if (head_of == src_of.end()) return false;
+    for (int k = head_of->second; k >= 0; k = parent[size_t(k)])
+      if (k == i) return true;
+    return false;
+  };
+  M head_turned;  // (what the aims above the head did to it)
   for (const auto& pr : kAimPairs) {
     const auto a = src_of.find(pr[0]), b = src_of.find(pr[1]);
     V3 ta, tb;
@@ -1320,10 +1328,21 @@ bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>
     const V3 r_pa = ApplyDir(sw, pa);
     for (int k = 0; k < 3; ++k) rot.t[k] = pa[k] - r_pa[k];  // (about the bone's own joint)
     turn(a->second, rot);
+    if (holds_head(a->second)) head_turned = Mul(rot, head_turned);
     ++aimed;
     if (std::string(pr[1]).ends_with("_yubi20")) roll(pr[0][0]);
   }
   rep.aimed = aimed;
+  // The head has no bone to aim at, so it took every turn of the spine and the neck: a model whose neck or spine stands
+  // straighter than the template's (report ac68af) looked at the floor. It keeps the way it faces in the FBX: turned
+  // back about its own joint. (The neck's vertices blend between the two, as a neck does.)
+  if (head_of != src_of.end()) {
+    const V3 p = origin(posed[size_t(head_of->second)]);
+    M back = Inv(head_turned);
+    const V3 r_p = ApplyDir(back, p);
+    for (int k = 0; k < 3; ++k) back.t[k] = p[k] - r_p[k];
+    turn(head_of->second, back);
+  }
 
   // the output frame: game axes, the hips at 0; scaled (below, once the meshes are posed) so the soles sit as far
   // below the hips as the template's (the game's motions hold the hips at its height: the feet then meet the floor)

@@ -401,6 +401,9 @@ void Compact(uint8_t* base, uint32_t l) {
 // pin judge's count, set by its hook) - each task or system call that
 // changes it is logged.
 bool g_extra_update = false;  // (see below: an extra update of this frame)
+// A pin's count is on: the pin judge's hook (sub_822446E0) sets it each update - the pinner's +516 is 2 and the
+// referee is in his count motion (190).
+std::atomic<bool> g_pin_counting{false};
 
 // The characters' job's hand-offs, the last 512 (all threads), dumped with a
 // stuck world update - for the "stuck in pass 20" freeze (Android, 4+ people
@@ -589,6 +592,14 @@ REX_HOOK_RAW(sub_8269D768) {
   g_world_ticks = std::clamp(int(g_world_acc), 1, kMaxTicks);
   g_world_acc = std::clamp(g_world_acc - g_world_ticks, -0.5, 1.0);
   if (g_lockstep || !REXCVAR_GET(full_speed)) g_world_ticks = 1, g_world_acc = 0;
+  // A pin's count: one update a frame. The characters' job runs once a frame (see the top), so with two updates a
+  // frame (30 fps, a slow PC, a phone) it missed every other step of the count: the referee's slap that should make
+  // a count 2 or 3 made it 0 (the guard by sub_822446E0 put it right by its timing) and a kick-out - the pinned
+  // player's or the CPU's - went with it: nobody ever kicked out (reports 4f62f3, Android at 14 fps; a2fd0a, PC at
+  // 30). The count takes its real length at the frame rate then (twice as long at 30 fps, as with FULL SPEED off).
+  // Test aid SVR2011_TEST_PIN_FULL_SPEED=1: the updates as before.
+  if (static const bool old_way = std::getenv("SVR2011_TEST_PIN_FULL_SPEED") != nullptr; !old_way && g_pin_counting.load())
+    g_world_ticks = 1, g_world_acc = 0;
 #if SVR2011_DEBUG_SUITE
   if (const int n = svr2011::dbg::SpeedTicks(); n && !g_lockstep) g_world_ticks = n, g_world_acc = 0;  // (dbg_speed)
 #endif
@@ -1465,7 +1476,17 @@ SVR2011_LOST_TRACE(sub_822473B0)
 // has dropped to 0 with the referee still in the count motion and the pin
 // still on, the count follows that timing. A real kick-out ends the pin
 // (+516), changes the wrestlers' pin motions (the pinner's +212 and his
-// opponent's, +96) or the referee's: then it's left alone.
+// opponent's, +96) or the referee's: then it's left alone. A kick-out at the
+// last moment drops the count in the same window as the lost step, and not
+// always with the motion change in the same update - so a drop there is first
+// held (HoldFrames, the game's 0 left as it is): the pin ending or a motion
+// changing in that time is a kick-out; only a pin still on in the same
+// motions is the lost step (HoldFrames). The lost step's drop comes at
+// 141 / 153 frames in for the 2 and 203 / 204 for the 3 (before its slap:
+// left to the game there, the pin stays on and the referee counts again).
+// Since the count runs one update a frame (g_pin_counting, above) the lost step
+// doesn't come; this stays for the cases that still have two (a replay played
+// back as recorded, SVR2011_TEST_PIN_FULL_SPEED).
 namespace {
 struct PinGuard {
   uint32_t judge = 0;
@@ -1474,7 +1495,14 @@ struct PinGuard {
   bool broken = false;  // (the count dropped to 0: the timing rules)
   uint32_t motions = 0; // (the pinner's and his opponent's motions at the start)
   int32_t voiced = 0;   // (the count the judge last called out: its +104 after the judge ran)
+  uint32_t held = 0;    // (match frame a drop in the lost step's window was seen: held, 0 = none)
 };
+// How long a drop in the lost step's window is held before it's taken as the lost step (match frames: a kick-out's
+// motion change comes in that time). Test aid SVR2011_TEST_PIN_HOLD=<frames>.
+uint32_t HoldFrames() {
+  static const uint32_t n = [] { const char* v = std::getenv("SVR2011_TEST_PIN_HOLD"); return v ? uint32_t(std::atoi(v)) : 12u; }();
+  return n;
+}
 int32_t CountAt(uint32_t frames) { return frames >= 210 ? 3 : frames >= 140 ? 2 : frames >= 78 ? 1 : 0; }
 PinGuard g_pin;
 
@@ -1488,6 +1516,27 @@ struct PinLog {
   uint32_t start = 0;  // (match frame the count began: its first step)
 };
 PinLog g_pin_log;
+// Problem reports: after a count drops to 0 with the pin on, how many frames later the pin ends or a pin motion
+// changes - a kick-out shows it, the lost step doesn't (60 frames watched; 60 lines a session).
+struct DropWatch {
+  uint32_t judge = 0, frame = 0, motions = 0;
+  int32_t was = 0;
+  bool extra = false;
+};
+DropWatch g_drop;
+void WatchDrop(uint32_t judge, int32_t before, int32_t count, bool pin_on, uint32_t motions, uint32_t frame) {
+  static int lines = 0;
+  if (g_drop.judge == judge && g_drop.frame) {
+    const bool ended = !pin_on, moved = motions != g_drop.motions;
+    if ((ended || moved || frame - g_drop.frame >= 60) && lines < 60 && ++lines)
+      REXLOG_INFO("pin count: the drop from {} ({}) - {} {} frames later", g_drop.was,
+                  g_drop.extra ? "in an extra update" : "in a frame's last update",
+                  ended ? "the pin ended" : moved ? "a pin motion changed" : "still pinned", frame - g_drop.frame);
+    if (ended || moved || frame - g_drop.frame >= 60) g_drop = DropWatch{};
+    return;
+  }
+  if (before > 0 && count == 0 && pin_on) g_drop = DropWatch{judge, std::max<uint32_t>(frame, 1), motions, before, g_extra_update};
+}
 int PersonOf(uint8_t* base, uint32_t ch) {  // (the character's place in the match's list)
   for (int i = 0; i < 10; ++i)
     if (Rd32(base + kChars + uint32_t(i) * 4) == ch) return i;
@@ -1530,6 +1579,11 @@ REX_HOOK_RAW(sub_822446E0) {
   const uint32_t frame = Rd32(base + kMatchFrames);
   const bool pin_on = pinner && Rd32(base + pinner + 516) == 2;
   const bool counting = ref && (Rd32(base + ref + 212) & 0x7FFF) == 190;
+  g_pin_counting = pin_on && counting;
+  // (a new match - its frame count starts again, the judge object is the same: nothing from the last one's pins)
+  static uint32_t last_frame = 0;
+  if (frame < last_frame) g_pin = PinGuard{}, g_drop = DropWatch{}, g_pin_log = PinLog{};
+  last_frame = frame;
   // Test aid: SVR2011_TEST_PIN_DROP_3=1 - once a session, a count of 2 drops to 0 in an extra update when the 3 is
   // due (as the lost step does), to try the guard's repair at the 3.
   if (static const bool drop3 = std::getenv("SVR2011_TEST_PIN_DROP_3") != nullptr; drop3 && g_extra_update && pin_on &&
@@ -1545,10 +1599,25 @@ REX_HOOK_RAW(sub_822446E0) {
   const int32_t count = int32_t(Rd32(base + judge + 100));
   const uint32_t pinned = pinner ? Rd32(base + pinner + 96) : 0;
   const uint32_t motions = pinner && pinned ? (Rd32(base + pinner + 212) << 16) ^ Rd32(base + pinned + 212) : 0;
-  if (!pin_on || !counting || g_pin.judge != judge || motions != g_pin.motions) {
+  if (g_pin.held && g_pin.judge == judge && pin_on && motions == g_pin.motions && !counting) {
+    // (held, and the referee's count motion ended with the pin still on in the same motions: the lost step at the
+    // 3 - the 3 now, or he'd count again)
+    g_pin.broken = true;
+    g_pin.count = std::max(g_pin.count, CountAt(frame - g_pin.start));
+    REXLOG_INFO("frame rate: the held pin count drop was the lost step (the referee's count ended, {} frames held) - {}",
+                frame - g_pin.held, g_pin.count);
+    Wr32(base + judge + 100, uint32_t(g_pin.count));
+    if (g_pin.voiced > 0) Wr32(base + judge + 104, uint32_t(std::min(g_pin.voiced, g_pin.count)));
+    g_pin = PinGuard{};
+  } else if (!pin_on || !counting || g_pin.judge != judge || motions != g_pin.motions) {
+    if (g_pin.held && g_pin.judge == judge)
+      REXLOG_INFO("frame rate: the held pin count drop was a kick-out ({} after {} frames) - the game's count",
+                  !pin_on ? "the pin ended" : motions != g_pin.motions ? "a pin motion changed" : "the judge changed",
+                  frame - g_pin.held);
     g_pin = PinGuard{pin_on && counting ? judge : 0, pin_on && counting ? count : 0, frame, false, motions};
   } else if (count > g_pin.count) {
     g_pin.count = count;
+    g_pin.held = 0;
   } else if (count == 0 && g_pin.count > 0) {
     // Only the lost step is put right: a count of 1 dropping when the 2 is due (140 frames in), or of 2 when
     // the 3 is due (210) - the same lost step one slap later, seen in an extra update (the only place it
@@ -1560,15 +1629,18 @@ REX_HOOK_RAW(sub_822446E0) {
     const uint32_t into = frame - g_pin.start;
     const bool lost_2 = g_pin.count == 1 && into >= 128 && into <= 160;
     const bool lost_3 = g_pin.count == 2 && into >= 198 && into <= 230 && g_extra_update;
-    if (!g_pin.broken && !lost_2 && !lost_3) {
+    if (!g_pin.broken && !g_pin.held && !lost_2 && !lost_3) {
       g_pin = PinGuard{};  // (a kick-out: the game's own count)
+    } else if (!g_pin.broken && (!g_pin.held || frame - g_pin.held < HoldFrames())) {
+      // (held: the game's 0 stays while a kick-out can still show - the pin ending or a motion changing, above)
+      if (!g_pin.held) g_pin.held = std::max<uint32_t>(frame, 1);
     } else {
       if (!g_pin.broken) {
         g_pin.broken = true;
         static int fixed = 0;
         if (++fixed <= 20 || fixed % 100 == 0)
-          REXLOG_INFO("frame rate: a pin count of {} dropped to 0 {} frames into the count - it goes on by its timing ({} times)",
-                      g_pin.count, into, fixed);
+          REXLOG_INFO("frame rate: a pin count of {} dropped to 0 {} frames into the count - still pinned {} frames later: "
+                      "it goes on by its timing ({} times)", g_pin.count, into, frame - g_pin.held, fixed);
       }
       g_pin.count = std::max(g_pin.count, CountAt(into));
       Wr32(base + judge + 100, uint32_t(g_pin.count));
@@ -1579,6 +1651,7 @@ REX_HOOK_RAW(sub_822446E0) {
       if (g_pin.voiced > 0) Wr32(base + judge + 104, uint32_t(std::min(g_pin.voiced, g_pin.count)));
     }
   }
+  WatchDrop(judge, g_pin_log.judge == judge ? g_pin_log.count : 0, int32_t(Rd32(base + judge + 100)), pin_on, motions, frame);
   if (!LostTraceOn()) {
     __imp__sub_822446E0(ctx, base);
     if (g_pin.judge == judge) g_pin.voiced = int32_t(Rd32(base + judge + 104));

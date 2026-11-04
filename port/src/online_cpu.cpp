@@ -405,7 +405,15 @@ REX_HOOK_RAW(sub_824F6AE0) {
   if (!IsHost(ctx, base)) {
     const uint32_t id = Rd32(Record(base, L, from) + 136);
     const uint8_t* blk = base + L + kBlocks + from * kBlockSize;
-    if ((uint32_t(blk[32]) << 8 | blk[33]) != id) BuildBlock(ctx, base, L, from, id);
+    if ((uint32_t(blk[32]) << 8 | blk[33]) != id) {
+      // (then this CPU plays this game's own data - its save's move-set for that superstar, edits and start-up
+      // repairs included - not the host's: a lockstep match can drift if they differ. Rare: the host's block
+      // normally comes first.)
+      BuildBlock(ctx, base, L, from, id);
+      const char* name = reinterpret_cast<const char*>(Record(base, L, from) + 242);
+      REXLOG_WARN("online cpu: joiner built CPU block itself - lobby slot {}, superstar {} ({}): the host's hadn't come, "
+                  "so its move-set is this game's own", from, id, std::string(name, strnlen(name, 36)));
+    }
   }
   // (+56 stays as the game set it, "use the copied block": the host built the
   // CPU's block (BuildBlock) and every machine has it - a cleared +56 left

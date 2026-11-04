@@ -28,6 +28,7 @@
 #include "match_diag.h"
 #include "move_packs.h"
 #include "online_mods.h"
+#include "p2p.h"
 #include "text_guard.h"
 
 #include "generated/default/svr2011_init.h"
@@ -211,12 +212,29 @@ uint32_t MatchMove(uint8_t* base, uint32_t slot, uint32_t got) {
   bool planted = false;
   if (test.first == int(slot) || (test.first == 999 && kSlotCategory[slot] < 128))
     got = (got & 0x8000) | uint32_t(test.second), planted = true;
+  // Test aid: SVR2011_TEST_HELD_MOVE=<slot>:<id> (or all:<id>): the match sees that id there, judged as a moveset's
+  // move would be (a save holding a move with no motion - NoMotionMove)
+  static const std::pair<int, int> held = [] {
+    const char* v = std::getenv("SVR2011_TEST_HELD_MOVE");
+    int s = -1, id = 0;
+    if (v && std::sscanf(v, "all:%d", &id) == 1) return std::make_pair(999, id);
+    if (v && std::sscanf(v, "%d:%d", &s, &id) == 2 && s >= 0 && s < 224) return std::make_pair(s, id);
+    return std::make_pair(-1, 0);
+  }();
+  if (!planted && (held.first == int(slot) || (held.first == 999 && kSlotCategory[slot] < 128)))
+    got = (got & 0x8000) | uint32_t(held.second);
   const uint32_t cat = kSlotCategory[slot];
   const uint16_t id = uint16_t(got & 0x7FFF);
   // (no move table in a match - 0x82E3C214 is a menu's: what the game loaded is asked, move_packs.cpp)
   // (online: a move from a pack not every player has - its category's default on every game: online_mods.h)
+  // (a networked match - P2PMatchLobby().in, the same on every peer: the rules every peer judges the same only -
+  // NoMotionMove and the missing / left-out pack motions depend on each player's own files, and lockstep peers must
+  // pick the same move. Asked last: it takes p2p's lock. Test aid SVR2011_TEST_ONLINE_MOVES=1: judged as networked)
+  static const bool test_online = [] { const char* v = std::getenv("SVR2011_TEST_ONLINE_MOVES"); return v && *v == '1'; }();
+  const auto networked = [] { return test_online || svr2011::P2PMatchLobby().in; };
   if (cat >= 128 || !id || CreatedFinisher(id) ||
-      !(planted || svr2011::MoveMissing(id) || !svr2011::OnlinePackMoveAllowed(id)))
+      !(planted || svr2011::MoveMissing(id, false) || (svr2011::MoveMissing(id, true) && !networked()) ||
+        !svr2011::OnlinePackMoveAllowed(id)))
     return got;
   const uint16_t def = svr2011::CategoryDefaultMove(int(cat));
   if (!def) {

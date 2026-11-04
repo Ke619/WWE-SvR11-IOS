@@ -55,6 +55,14 @@ page (`port/docs/MOVE_MODDING.md`).
 - **Not 9000-9999 for a keyframe move.** The game treats 9000-9779 as streamed (YMBs) motions by its flag
   table; a keyframe move there plays through the wrong path.
 - The converter picks a free record (one 2011 keeps without motions) within those limits; `--id` chooses.
+- **Not 16000 and up outside the template's thousand** (the game never starts it: move_packs.cpp NeverStarts),
+  **nor a DLC move**: 2011's DLC brings 282 records the disc keeps cut back to life with its own motions and adds
+  18 (`tools/dlc_move_ids.json`, 303 ids) - 273 of the disc's "free" records. One rule for every picker:
+  `Game11.free_ids` (free_record, moveset_port, the Mod Doctor's renumber); a passed `--id` outside it is picked
+  again (4 Nov, reports db3291 / d97b88 / e47af7 / 3b5056).
+- **A move on YMBs banks (a submission) takes minutes**: 2K15's Kimura Lock solves 5 hold phases in ~172 s. The
+  move-set port's limit (120 s a move) gives such a move `YMBS_EXTRA` (480 s) more - before, it was stopped and the
+  base move kept ("missing from CREATE A MOVE-SET").
 
 ### 2.5 The template
 

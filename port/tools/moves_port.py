@@ -126,6 +126,18 @@ class TimeLimit(Exception):
     pass
 
 
+# (a move on YMBs banks - a submission, a taunt - solves the limb IK per phase and bank: 2K15's Kimura Lock (5 hold
+# phases) took 184 s and moveset_port's 120 s a move stopped it - the base move kept, "missing from CREATE A MOVE-SET",
+# report 20261104-093125. Such a move gets this much more once.)
+YMBS_EXTRA = 480
+
+
+def extend_deadline():
+    global DEADLINE
+    if DEADLINE is not None:
+        DEADLINE += YMBS_EXTRA
+
+
 def progress(pct, text):
     if STAGES is not None:
         STAGES.append((text, time.time()))
@@ -672,7 +684,9 @@ def convert0789(a, rep, outdir, g):
     # pool gave SvR 2009's Hunting RKO 16126 on Viper RKO 6863's banks - in CREATE A MOVE-SET, never in a match,
     # report 20261104-072336)
     lim = g11.id_limit(btid)
-    if new_id and ((new_id >= 16000 and new_id // 1000 != btid // 1000) or (lim is not None and new_id > lim)):
+    own = new_id == mid and why.startswith('the same id')   # (the move's own cut record: kept unless the game can't use it)
+    if new_id and ((new_id >= 16000 and new_id // 1000 != btid // 1000) or (lim is not None and new_id > lim) or
+                   (not own and new_id not in g11.free_ids(lim))):
         old = new_id
         new_id, why = g11.free_record(name, limit=lim, avoid=a.get('_avoid'))
         rep['warnings'].append('id %d is one the game never starts with template %d: %s instead' % (old, btid, new_id))
@@ -845,6 +859,20 @@ def usable11(waze, mid):
     profiles hold a few it can't (RVD's 10280 and 35781 have no record): never a template or a pick."""
     r = waze.get(mid)
     return bool(r and any(r[0]))
+
+
+_DLC_IDS = None
+
+
+def dlc_move_ids():
+    """SvR 2011's DLC move ids (dlc_move_ids.json next to this file) - never a ported move's record"""
+    global _DLC_IDS
+    if _DLC_IDS is None:
+        try:
+            _DLC_IDS = frozenset(json.load(open(os.path.join(HERE, 'dlc_move_ids.json')))['ids'])
+        except (OSError, ValueError, KeyError):
+            _DLC_IDS = frozenset()
+    return _DLC_IDS
 
 
 class Game11:
@@ -1039,8 +1067,12 @@ class Game11:
         at most `limit` (id_limit). near: a template id - only records in its thousand when there are any (a taunt in
         9000-9999: an in-match taunt on a record elsewhere, 3894, wasn't found - Sabu's 9040 was); without one no
         9000s (the game's streamed (YMBs) motions are 9000-9779 by its flag table: a keyframe move there played as one)"""
+        # (nor a DLC move: 2011's DLC brings 282 records the disc keeps cut back to life, with its own motions, and adds
+        # 18 - dlc_move_ids.json. A ported move on one collided with the DLC's own for every player with the DLC: 273
+        # of the "free" records were such - Brock Lesnar 2K14 / 2K15 ports, reports 20261104-091730 / -093125)
+        dlc = dlc_move_ids()
         free = [i for i in sorted(self.waze) if i not in self.moved and i > 1000 and i not in self.in_profiles()
-                and (limit is None or i <= limit) and i not in avoid]
+                and (limit is None or i <= limit) and i not in avoid and i not in dlc]
         # (not 16000 and up outside the template's own thousand: a move there never starts - the game doesn't even
         # ask for its motion (move_packs.cpp NeverStarts). WWE '12's Octopus Stretch on 17071 dropped both people to
         # stance; on 5198 it played. 2K15's AA on 17013, Mankind '13's Mandible Claw on 17038, SvR 2009's Hunting RKO
@@ -1768,13 +1800,17 @@ def convert(a, rep):
     lim = g11.id_limit(tid)
     if a.get('id'):
         new_id, why = int(a['id']), 'option'
-        # (an id given by a caller - moveset_port's pick - that no template bank can take: picked again under the
-        # limit; it went into no bank and the game never played it - Mankind '13's Mandible Claw on 17038)
-        if (lim is not None and new_id > lim) or (not ymb and new_id // 1000 == 9):
+        # (an id given by a caller - moveset_port's or the Mod Maker's pick - outside free_ids' rule is picked again:
+        # past the template banks' last id it went into no bank (Mankind '13's Mandible Claw on 17038), 16000+ outside
+        # the template's thousand the game never starts it (move_packs.cpp NeverStarts - 2.1.9's Brock Lesnar 2K14 / 2K15
+        # ports, reports 20261104-091730 / -093125), 9000-9999 are streamed motions)
+        if new_id not in g11.free_ids(lim, near=tid if ymb else None):
             nid, why2 = g11.free_record(name, tid if ymb else None, lim, avoid=a.get('_avoid'))
             if nid:
-                rep['warnings'].append("id %d is past what %d's banks take (%s): %d instead" % (
-                    new_id, tid, 'their last id %d' % (lim + 1) if lim is not None and new_id > lim else '9000-9999 are streamed motions', nid))
+                rep['warnings'].append("id %d isn't free for a move on %d's banks (%s): %d instead" % (
+                    new_id, tid, 'a DLC move' if new_id in dlc_move_ids() else
+                    'past their last id' if lim is not None and new_id > lim else
+                    'one the game never starts' if new_id >= 16000 else 'a stock or streamed record', nid))
                 new_id, why = nid, why2
     else:
         new_id, why = g11.free_record(name, tid if ymb else None, lim)
@@ -1877,6 +1913,8 @@ def convert(a, rep):
     ymb_ns, ymb_solved, ymb_built = None, {}, {}
     ymb_shift = None   # (YMBs: the source moved so its attacker starts where the template's does - as the YMKs path)
     landing = {}   # (a dive's drop to the mat: from the keyframe bank, the packed copies too - fall_tail)
+    if any(kd == 'YMBs' for p, kd, ks in g11.banks_of(tid)):   # (the slow limb-IK path: more time - YMBS_EXTRA)
+        extend_deadline()
     for path, kind, ks in g11.banks_of(tid):
         if kind == 'YMBs':   # (taunts, submissions: ADPCM channels with limb IK - ymbs_retarget)
             import ymbs

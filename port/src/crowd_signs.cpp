@@ -15,8 +15,9 @@
 // tied to the game's 437 entries, so it keeps the original.
 //
 // Here:
-//  - a character's own signs (superstar mods: sign1..4.dds) go in as
-//    10000 + key*10 + 1..4 (the mod's key: whatever id it holds - superstar_mods.cpp);
+//  - a character's own signs (superstar mods: sign1..4.dds) go in under the mod's key, whatever id it holds
+//    (ModSignBase: in the packs' tens, other last digits). Never 10000 and up: the game takes those as a created
+//    superstar's Paint Tool picture (sub_821C6008: id - 10000 indexes the painted signs) and doesn't look in the bank;
 //  - sign packs, <game>/Mods/Signs/<pack>/*.dds (a manifest.txt; a "disabled"
 //    file turns one off), go in as 6001, 6011, ... and join the general
 //    signs: the free slots of each match are drawn from the game's 16 and
@@ -28,6 +29,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <random>
@@ -133,6 +135,13 @@ bool BuildBank(rex::memory::Memory* memory) {
 
 namespace svr2011 {
 
+// The game's own signs stop at 5151 and the sign packs use the tens 600-999 with last digit 1, so keys 400-799 have
+// those tens with last digits 2-5, keys 800-999 the tens 600-799 with 6-9. (2.1.9's 10000 + key*10 + n showed nothing,
+// report 145029.)
+uint32_t ModSignBase(uint32_t key) {
+  return key < 800 ? (600 + (key - 400)) * 10 + 1 : (600 + (key - 800)) * 10 + 5;
+}
+
 void AddCharacterSigns(uint32_t first, const std::vector<fs::path>& dds) {
   for (size_t k = 0; k < dds.size() && k < 4; ++k) g_signs[first + 1 + uint32_t(k)] = dds[k];
 }
@@ -165,6 +174,18 @@ REX_HOOK_RAW(sub_821EA4E0) {
 REX_EXTERN(__imp__sub_821E9A48);
 REX_HOOK_RAW(sub_821E9A48) {
   __imp__sub_821E9A48(ctx, base);
+  // (test aid SVR2011_TEST_OLD_SIGN=<id>: the match's first sign is that id, as an old record would say)
+  if (const char* v = std::getenv("SVR2011_TEST_OLD_SIGN")) Wr32(base + kSignTable, uint32_t(std::atoi(v)));
+  // A record that still says 2.1.9's 10000 + key*10 + n (far above the painted signs' few ids from 10000): the mod's sign now,
+  // or a general one when it has none.
+  for (uint32_t i = 0, n = std::min<uint32_t>(Rd32(base + kSignCount), 16); i < n; ++i) {
+    const uint32_t old = Rd32(base + kSignTable + i * 8);
+    if (old < 14001 || old > 19994 || (old % 10) < 1 || (old % 10) > 4) continue;
+    const uint32_t now = svr2011::ModSignBase((old - 10000) / 10) + old % 10;
+    const bool have = g_signs.count(now) != 0;
+    Wr32(base + kSignTable + i * 8, have ? now : g_general[i % g_general.size()]);
+    if (!have) Wr32(base + kSignTable + i * 8 + 4, kNoCharacter);
+  }
   if (g_general.size() <= 16 && g_signs.empty()) return;
   static std::mt19937 rng{std::random_device{}()};
   std::vector<uint32_t> pool = g_general;

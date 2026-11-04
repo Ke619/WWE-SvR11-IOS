@@ -401,9 +401,6 @@ std::vector<std::pair<std::string, uint32_t>> ReadSlots(const fs::path& file) {
 // the game's (0-321) and under 1000 (a render's name is attire * 1000 + id, SSFA/%04d) - a mod can then hold any id,
 // or none, with its files mounted once.
 constexpr uint32_t kFirstKey = 400, kLastKey = 999;
-// A mod's own crowd signs: 10000 + key * 10 + 1..4 (as a character's, id * 10 + n - but the game's own signs and the
-// sign packs use 1-9991)
-constexpr uint32_t kModSignBase = 10000;
 std::vector<std::pair<std::string, uint32_t>> ReadKeys(const fs::path& file) {
   std::vector<std::pair<std::string, uint32_t>> out;
   if (FILE* t = std::fopen(file.string().c_str(), "rb")) {
@@ -1150,7 +1147,7 @@ void LoadMods() {
     else
       REXLOG_WARN("[svr2011] superstar mods: {}: base {} has no select render (not a playable superstar)", m.folder,
                   m.base);
-    if (m.signs) svr2011::AddCharacterSigns(kModSignBase + m.key * 10, m.sign_files);
+    if (m.signs) svr2011::AddCharacterSigns(svr2011::ModSignBase(m.key), m.sign_files);
     REXLOG_INFO("[svr2011] superstar mods: {} as id {} (from {}, key {}){}", m.name, m.slot, m.base, m.key,
                 temp ? " - fetched from the session's host, this run only" : "");
     m.fingerprint = Fingerprint(m);
@@ -1565,12 +1562,12 @@ void Remember(uint8_t* base) {
   }
 }
 
-// The record's crowd signs: the mod's own (crowd_signs.cpp adds them as
-// id*10 + 1..4, repeated to fill 4), else its base's.
+// The record's crowd signs: the mod's own (crowd_signs.cpp adds them at
+// ModSignBase + 1..4, repeated to fill 4), else its base's.
 void SetSigns(uint8_t* sr, const uint8_t* br, const Mod& m) {
   for (uint32_t k = 0; k < 4; ++k) {
     if (m.signs) {
-      const uint32_t v = kModSignBase + m.key * 10 + 1 + k % m.signs;
+      const uint32_t v = svr2011::ModSignBase(m.key) + 1 + k % m.signs;
       sr[kSignIds + k * 2] = uint8_t(v >> 8), sr[kSignIds + k * 2 + 1] = uint8_t(v);
     } else {
       sr[kSignIds + k * 2] = br[kSignIds + k * 2], sr[kSignIds + k * 2 + 1] = br[kSignIds + k * 2 + 1];

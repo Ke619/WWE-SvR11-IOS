@@ -36,10 +36,18 @@ original bank.
 
 ## What the port adds
 
-**A character's own signs.** A superstar mod's `sign1..4.dds` go in as
-id*10 + 1..4, replacing a DLC slot's placeholders. Its record's +210 points at
-them, repeated to fill 4. Without its own signs, the mod's fans hold its
-base's signs.
+**A character's own signs.** A superstar mod's `sign1..4.dds` go in under its
+key (400-999), whatever id it holds: keys 400-799 at (600 + key - 400) * 10 +
+2..5, keys 800-999 at (600 + key - 800) * 10 + 6..9 - the sign packs' tens, with
+last digits the packs don't use. Its record's +210 points at them, repeated to
+fill 4. Without its own signs, the mod's fans hold its base's signs.
+
+An id must stay below 10000: from 10000 up the game takes a sign as a created
+superstar's Paint Tool picture (id - 10000, `sub_821C6008`; `sub_821E9900` asks
+whether a match has any) and never looks in the bank. 2.1.9 put mod signs at
+10000 + key*10 + n, so none showed (report 145029). A record still holding such
+an id (14001-19994; the painted signs' are the first few from 10000) is mapped when the match's
+table is built: the mod's sign now, or a general one.
 
 **Sign packs.** `<game>/Mods/Signs/<pack>/` holds `manifest.txt`
 (`type=signs`, `id`, `name`, ...) and `*.dds` files, in name order. A

@@ -1740,6 +1740,13 @@ void MarksTick(uint8_t* base) {
 // nothing it makes for the save differs from a start without it.
 uint8_t Selectable(const Mod& m) { return m.temp && !svr2011::P2POnlineMode() ? 0 : 1; }
 
+// A slot's placeholder record name (CHAR/DAT's): "0" on a pool id, "DLC <n>" on a free DLC id (59-69).
+bool PlaceholderName(uint32_t slot, const std::string& name) {
+  if (name.empty() || name == "0") return true;
+  if (slot < 59 || slot > 69 || name.size() < 5 || name.compare(0, 4, "DLC ") != 0) return false;
+  return std::all_of(name.begin() + 4, name.end(), [](char c) { return c >= '0' && c <= '9'; });
+}
+
 void ApplyRecords(uint8_t* base) {
   // Test aid: SVR2011_TEST_ID_TABLE=1 - once, the ids whose present flag
   // (0x82DB3AE0 + id, sub_828B7078) is off, with their record index and name.
@@ -1825,7 +1832,10 @@ void ApplyRecords(uint8_t* base) {
     // one, slots.txt) - its profile, the moves and entrance a save kept for
     // the old mod, goes too: this mod's, as for a new slot. (A placeholder's
     // record, "0", comes with its blank profile: nothing to take back.)
-    if (!stale && !was.empty() && was != "0" && !IsBlank(m.slot, sp)) {
+    // (A placeholder record - "0", or "DLC <n>" on the DLC ids 59-69, which the game puts back at each CHAR/DAT
+    // reload after a save load - is no other mod's: the profile there is the save's, the player's edits. 2.1.8
+    // report a82070: mods on 59-65 lost their edited move-sets at every start.)
+    if (!stale && !PlaceholderName(m.slot, was) && !IsBlank(m.slot, sp)) {
       std::memcpy(sp, bp, kProfileSize);
       svr2011::ThreadsSlots(sp, m.folder);
       SetOwnMoves(sp, m);

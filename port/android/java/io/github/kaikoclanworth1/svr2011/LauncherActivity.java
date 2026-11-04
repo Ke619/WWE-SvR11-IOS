@@ -58,6 +58,7 @@ public class LauncherActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        ProblemReport.ctx = getApplicationContext();  // (report.txt's "last exit" lines)
         InstallActivity.init(this);
         getWindow().setStatusBarColor(kBackground);
         getWindow().setNavigationBarColor(kBackground);

@@ -142,6 +142,7 @@ public class GameActivity extends SDLActivity {
             Log.e("SvR2011", "setenv failed", e);
         }
         super.onCreate(savedInstanceState);
+        ProblemReport.ctx = getApplicationContext();  // (report.txt's "last exit" lines)
         PreferSixtyHz();
         GameModeSetup();
     }

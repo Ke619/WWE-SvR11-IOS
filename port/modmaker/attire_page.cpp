@@ -355,7 +355,7 @@ void Draw() {
     g_at.star = g_test.star, g_at.slot = g_test.slot;
     if (Lower(FileName(g_test.model)).ends_with(".pac")) {
       g_at.model = g_test.model;
-      std::snprintf(g_at.name, sizeof g_at.name, "TEST GEAR");
+      std::snprintf(g_at.name, sizeof g_at.name, "RING GEAR");
     } else {
       TakeStarSource(g_test.model);  // (a superstar mod: an installed folder, a .svrmod or a project)
     }

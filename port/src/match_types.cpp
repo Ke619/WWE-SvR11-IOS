@@ -12,6 +12,7 @@
 // new rows inserted after their anchors (a group's rows are consecutive, in
 // display order; flag 2 at +0x3C marks the group's last row; a submenu finds
 // its rows by their parent node, +0x38). No file size limit applies.
+#include "big_roster.h"
 #include "match_diag.h"
 #include "match_types.h"
 #include "mystery_opponent.h"
@@ -1435,7 +1436,7 @@ void FillRandomSlots(uint8_t* base, uint32_t match, uint32_t count, uint8_t team
     if (id >= 1000) return nullptr;
     const uint32_t index = Rd16(base + kIdToIndex + id * 2);
     if (index >= 1000) return nullptr;
-    const uint8_t* rec = base + kRecords + index * kRecordSize;
+    const uint8_t* rec = base + svr2011::RosterEntry(kRecords, kRecordSize, index);
     return Rd16(rec + kOwnId) == id ? rec : nullptr;
   };
   const uint8_t* first = record(picked[0]);

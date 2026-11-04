@@ -22,6 +22,8 @@
 
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 
 #include <rex/cvar.h>
 #include <rex/hook.h>
@@ -103,6 +105,15 @@ REX_HOOK_RAW(sub_82448A90) {
 REX_EXTERN(__imp__sub_824621F8);
 REX_HOOK_RAW(sub_824621F8) {
   const uint32_t cursor = ctx.r3.u32;
+  // Test aid SVR2011_TEST_TILE=<column>,<row>: A on the grid is A on that tile (scripted input can't steer the
+  // cursor reliably there - big roster's portrait shots open the Mods list this way)
+  if (const char* tile = std::getenv("SVR2011_TEST_TILE"); tile && Rd32(base, cursor + kListMode) == 0) {
+    int col = 0, row = 0;
+    if (std::sscanf(tile, "%d,%d", &col, &row) == 2) {
+      Wr32(base, cursor + kCol, uint32_t(col));
+      Wr32(base, cursor + kRow, uint32_t(row));
+    }
+  }
   REXLOG_INFO("[svr2011] character select: player {} A on the tile at column {} row {}{}", Rd32(base, cursor + kPlayer),
               Rd32(base, cursor + kCol), Rd32(base, cursor + kRow), Rd32(base, cursor + kListMode) ? " (a list is open)" : "");
   // (Match Creator sets the lists up without the two calls above: fill them here)

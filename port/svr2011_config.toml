@@ -98,3 +98,270 @@ longjmp_address = 0x82BC95F0
 0x82ACF9E8 = {}  # 1 ref(s), e.g. 0x82ACFB2C
 0x82ACFA00 = {}  # 1 ref(s), e.g. 0x82ACFB30
 0x82C7D438 = {}  # 1 ref(s), e.g. 0x82C7E64C
+
+# Big roster (src/big_roster.cpp, cvar big_roster): the instructions that build an address in a table with one
+# entry per record index; each hook does nothing while the cvar is off.
+
+[[midasm_hook]]
+name = "BigRosterRecord_8257A244"
+address = 0x8257A244
+registers = ["r3", "r10"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterRecord_8257A2D0"
+address = 0x8257A2D0
+registers = ["r3", "r10"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterRecord_8257AF84"
+address = 0x8257AF84
+registers = ["r3", "r10"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterProfile_8257BBBC"
+address = 0x8257BBBC
+registers = ["r3", "r11"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterEntry_8257BC58"
+address = 0x8257BC58
+registers = ["r3", "r11"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterEntry_8257BE68"
+address = 0x8257BE68
+registers = ["r11", "r10"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterProfile_82594CFC"
+address = 0x82594CFC
+registers = ["r11", "r28"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterProfile_825952B0"
+address = 0x825952B0
+registers = ["r11", "r28"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterChar_8259C804"
+address = 0x8259C804
+registers = ["r11", "r10"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterChar_8259C86C"
+address = 0x8259C86C
+registers = ["r11", "r10"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterChar_8259C928"
+address = 0x8259C928
+registers = ["r11", "r10"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterChar_8259C958"
+address = 0x8259C958
+registers = ["r11", "r10"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterChar_8259CA28"
+address = 0x8259CA28
+registers = ["r11", "r10"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterChar_8259CA58"
+address = 0x8259CA58
+registers = ["r11", "r10"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterChar_8259CB1C"
+address = 0x8259CB1C
+registers = ["r11", "r10"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterChar_8259CB4C"
+address = 0x8259CB4C
+registers = ["r11", "r10"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterChar_8259CC30"
+address = 0x8259CC30
+registers = ["r11", "r10"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterBound_82594D34"
+address = 0x82594D34
+registers = ["cr6", "xer", "r30"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterBound_825952E8"
+address = 0x825952E8
+registers = ["cr6", "xer", "r30"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterCheck_8259C7F4"
+address = 0x8259C7F4
+registers = ["cr6", "xer", "r3"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterCheck_8259C85C"
+address = 0x8259C85C
+registers = ["cr6", "xer", "r3"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterCheck_8259C918"
+address = 0x8259C918
+registers = ["cr6", "xer", "r3"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterCheck_8259C948"
+address = 0x8259C948
+registers = ["cr6", "xer", "r3"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterCheck_8259CA18"
+address = 0x8259CA18
+registers = ["cr6", "xer", "r3"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterCheck_8259CA48"
+address = 0x8259CA48
+registers = ["cr6", "xer", "r3"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterCheck_8259CB0C"
+address = 0x8259CB0C
+registers = ["cr6", "xer", "r3"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterCheck_8259CB3C"
+address = 0x8259CB3C
+registers = ["cr6", "xer", "r3"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterCheck_8259CC20"
+address = 0x8259CC20
+registers = ["cr6", "xer", "r3"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterPortraitIndex_82741FE4"
+address = 0x82741FE4
+registers = ["r31"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterPortraitBound_82742024"
+address = 0x82742024
+registers = ["cr6", "xer", "r31"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterPortrait_82742034"
+address = 0x82742034
+registers = ["r30", "r27", "r31"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterPortrait_8274205C"
+address = 0x8274205C
+registers = ["r11", "r27", "r31"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterSnapWalk_8243A3F4"
+address = 0x8243A3F4
+registers = ["cr6", "xer", "r28", "r27", "r30"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterSnapWalk_8243A4F0"
+address = 0x8243A4F0
+registers = ["cr6", "xer", "r31", "r28", "r30"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterSnapWalk_8243A624"
+address = 0x8243A624
+registers = ["cr6", "xer", "r30", "r29", "r31"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterSnapWalk_8243AD34"
+address = 0x8243AD34
+registers = ["cr6", "xer", "r28", "r29"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterSnapWalk_8243AA3C"
+address = 0x8243AA3C
+registers = ["cr6", "xer", "r29", "r30"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterSnapWalk_8243AAFC"
+address = 0x8243AAFC
+registers = ["cr6", "xer", "r29", "r30"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterSnapWalk_8243ABB8"
+address = 0x8243ABB8
+registers = ["cr6", "xer", "r31", "r30"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterSnap_8243A99C"
+address = 0x8243A99C
+registers = ["r11", "r30"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterSnap_8243ADB8"
+address = 0x8243ADB8
+registers = ["r10", "r11"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterSnap_8243C130"
+address = 0x8243C130
+registers = ["r11", "r10"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterList_82438BE0"
+address = 0x82438BE0
+registers = ["r11", "r31"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "BigRosterList_82438C70"
+address = 0x82438C70
+registers = ["r11", "r31"]
+after_instruction = true

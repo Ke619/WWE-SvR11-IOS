@@ -602,7 +602,14 @@ public class LauncherActivity extends Activity {
     }
 
     // An on/off setting.
-    void toggle(LinearLayout card, String label, String hint, String key, boolean fallback) {
+    Switch toggle(LinearLayout card, String label, String hint, String key, boolean fallback) {
+        return toggle(card, label, hint, key, fallback, null, null);
+    }
+
+    // warn_on: a warning to confirm each time it's switched on (Turn on / Cancel; Cancel leaves it off); also_on:
+    // what else Turn on does.
+    Switch toggle(LinearLayout card, String label, String hint, String key, boolean fallback, String warn_on,
+                  Runnable also_on) {
         Switch s = new Switch(this);
         // (the theme's own colours left an "on" switch nearly invisible on the dark cards)
         int[][] states = {{android.R.attr.state_checked}, {}};
@@ -610,11 +617,29 @@ public class LauncherActivity extends Activity {
         s.setTrackTintList(new android.content.res.ColorStateList(states, new int[] {0x88C8102E, 0xFF4A4A54}));
         s.setOnCheckedChangeListener((b, on) -> {
             if (loading_ || on == settings_.getBool(key, fallback)) return;
+            if (on && warn_on != null) {
+                final boolean[] yes = {false};
+                new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_DARK)
+                    .setTitle("\uD83E\uDDEA Experimental").setMessage(warn_on)
+                    .setPositiveButton("Turn on", (dlg, w) -> {
+                        yes[0] = true;
+                        settings_.setBool(key, true);
+                        if (also_on != null) also_on.run();
+                        saved(label);
+                    })
+                    .setNegativeButton("Cancel", null)
+                    .setOnDismissListener(dlg -> {
+                        if (!yes[0]) s.setChecked(false);
+                    })
+                    .show();
+                return;
+            }
             settings_.setBool(key, on);
             saved(label);
         });
         refreshers_.add(() -> s.setChecked(settings_.getBool(key, fallback)));
         row(card, label, hint, s);
+        return s;
     }
 
     // A choice between labelled values (strings saved quoted, or numbers).
@@ -732,9 +757,26 @@ public class LauncherActivity extends Activity {
         // (src/fast_loads.cpp: the Start Screen's loading screens at four updates a frame)
         toggle(game, "Faster loading screens", "Their animations play faster", "fast_loads", false);
         // (src/superstar_mods.cpp: per_mod_saves - the save is backed up first when it's turned on)
-        toggle(game, "Experimental: mod saves in their own files",
-            "Each superstar mod's save data in Saves/.mods - an uninstalled mod leaves the save clean. At the next start",
+        Switch per_mod = toggle(game, "Experimental: mod saves in their own files",
+            "Each superstar mod's save data in Saves/.mods - an uninstalled mod leaves the save clean. At the next "
+            + "start. Always on while more superstar mods at once is on",
             "per_mod_saves", false);
+        // (src/big_roster.cpp: big_roster - each time it's switched on, the warning first)
+        String big_roster_warning = "Experimental - still being worked on. More mod superstars is not finished. "
+            + "Turning it on may corrupt your save or even damage your game install. Back up your Saves folder "
+            + "first. This also turns on per-mod save files. Turn it on anyway?";
+        toggle(game, "\uD83E\uDDEA Experimental: more superstar mods at once", big_roster_warning, "big_roster",
+            false, big_roster_warning, () -> {
+                settings_.setBool("per_mod_saves", true);
+                refresh();
+            });
+        // (per-mod saves: on and locked while big_roster is on - its indices from 242 up are in no table SaveData.dat
+        // holds)
+        refreshers_.add(() -> {
+            boolean big = settings_.getBool("big_roster", false);
+            per_mod.setEnabled(!big);
+            if (big) per_mod.setChecked(true);
+        });
 
         drivers_ = new Drivers(this, settings_);
         drivers_.build(c);
@@ -763,6 +805,7 @@ public class LauncherActivity extends Activity {
             settings_.setBool("skip_training", false);
             settings_.setBool("fast_loads", false);
             settings_.setBool("per_mod_saves", false);
+            settings_.setBool("big_roster", false);
             settings_.setString("native_texture_quality", "high");
             saved("Defaults");
             refresh();

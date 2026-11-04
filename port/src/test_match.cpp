@@ -33,6 +33,7 @@
 #include <rex/logging.h>
 #include <rex/ppc.h>
 
+#include "big_roster.h"
 #include "generated/default/svr2011_init.h"
 #include "arena_mods.h"
 #include "fast_start.h"
@@ -126,7 +127,7 @@ const uint8_t* Record(const uint8_t* base, uint32_t id) {
   if (id >= 1000) return nullptr;
   const uint32_t index = Rd16(base + kIdToIndex + id * 2);
   if (index >= 1000) return nullptr;
-  const uint8_t* rec = base + kRecords + index * kRecordSize;
+  const uint8_t* rec = base + svr2011::RosterEntry(kRecords, kRecordSize, index);
   return Rd16(rec + kOwnId) == id ? rec : nullptr;
 }
 
@@ -280,6 +281,8 @@ REX_HOOK_RAW(sub_828BC5E8) {
         }
     REXLOG_INFO("test match: people {}; arena {}", done.empty() ? "as picked" : done,
                 Rd32(base + kLive + kArena));
+    // (a Universe card's people as the match's again: its select screen re-picks every slot - big roster's card test)
+    svr2011::BigRosterTestCard(base);
     // Test aid: SVR2011_TEST_DAMAGE=<0-255> - the six DAMAGE BALANCING sliders (game block +10394..+10399, damage x
     // (slider x 0.01 + 0.5); 255 about 3x) for this match: pins come in minutes, not at a match's end (pin tests).
     if (const char* v = std::getenv("SVR2011_TEST_DAMAGE")) {

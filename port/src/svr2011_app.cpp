@@ -76,6 +76,7 @@
 #include "user_movies.h"
 #include "cae_mod_motions.h"
 #include "cam_mod_moves.h"
+#include "big_roster.h"
 #include "text_guard.h"
 #include "native/native_renderer.h"
 #include "frame_stats.h"
@@ -862,6 +863,7 @@ void Svr2011App::OnPostLoadXexImage() {
     svr2011::InstallCaeModMotions(runtime()->memory());  // (CREATE AN ENTRANCE's MODS rows)
     svr2011::InstallCamModMoves(runtime()->memory());    // (CREATE A MOVE-SET's MOD rows)
     svr2011::InstallTextGuard(runtime()->memory());      // (no byte of a name stalls the game's text walks)
+    svr2011::InstallBigRoster(runtime()->memory());      // (cvar big_roster: the per-index tables past 241)
     std::error_code ec;
     std::filesystem::create_directories(movies, ec);
     // (HD movies' stubs, hd_movies.h: the folder made before the mount - the

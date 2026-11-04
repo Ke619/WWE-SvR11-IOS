@@ -5816,10 +5816,19 @@ void OnLoadShaderConstants(uint32_t shader_object, uint32_t base) {
   const uint32_t table_offset = Be32(obj + 20);
   if (!table_offset) return;
   const uint8_t* table = obj + table_offset + 20;
-  const uint8_t* end = table + Be32(obj + table_offset + 16);
+  const uint32_t table_size = Be32(obj + table_offset + 16);
+  if (table_size > 0x10000) {  // (not a shader object's table: 8 bytes an entry, a few dozen at most)
+    static std::atomic<int> bad{0};
+    if (bad++ < 4)
+      REXLOG_WARN("native renderer: shader object {:08X} has a constant table of {} bytes - not loaded", shader_object,
+                  table_size);
+    return;
+  }
+  const uint8_t* end = table + table_size;
   {
-    // Log each distinct table once (which constant ranges come from memory).
-    static std::unordered_map<uint64_t, int> seen;
+    // Log each distinct table once (which constant ranges come from memory). Never destroyed: the runtime's disc
+    // error path left by exit() while this thread drew on - a destroyed map's read of 0 (2.1.9 report edcc87).
+    static auto& seen = *new std::unordered_map<uint64_t, int>;
     const uint64_t key = end > table ? XXH3_64bits(table, size_t(end - table)) : 0;
     if (seen.size() < 64 && seen.emplace(key, 0).second) {
       std::string entries;

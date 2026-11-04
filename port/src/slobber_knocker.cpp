@@ -324,9 +324,11 @@ REX_HOOK_RAW(sub_828061E8) {
     if (++count <= 10 || count % 1000 == 0)
       REXLOG_INFO("match types: a character pair missing one ({:08X} / {:08X}) - skipped ({} times)",
                   Rd32(base + pair), Rd32(base + pair + 20), count);
+    // (every one of kLooksAt, +20 too: with +16 added to the list the loop still stopped at three, so +20 was left
+    // NULL and the update read through it - guest 0x1BC, 2.1.9 report 93af87, an RTWM run-in after the pin)
     if (const uint32_t self = Rd32(base + pair); self && pair == t_update_pair && !std::getenv("SVR2011_TEST_PAIR_OLD"))
-      for (int i = 0; i < 3; ++i)
-        if (!Rd32(base + pair + kLooksAt[i])) Wr32(base + pair + kLooksAt[i], self), t_stand_in = true;
+      for (const uint32_t off : kLooksAt)
+        if (!Rd32(base + pair + off)) Wr32(base + pair + off, self), t_stand_in = true;
     return;
   }
   __imp__sub_828061E8(ctx, base);

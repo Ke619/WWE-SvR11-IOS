@@ -1213,6 +1213,55 @@ std::unordered_map<uint32_t, uint32_t> g_attire_pairs;  // id -> guest 4 x {name
 std::unordered_map<uint32_t, uint32_t> g_attire_own;    // id -> attires its own pac has (bit mask)
 std::set<uint32_t> g_attire_gear;                         // ids with entrance gear models (ExtraKinds): no new attires
 constexpr uint32_t kAttireModNameIds = 0xB400;           // string ids for attire mods' names
+std::unordered_map<uint32_t, uint32_t> g_attire_disc;   // id -> attires the game's pac\ch\chNNN.pac has
+
+// The installed DLC packages (PrepareAttirePacks: <user data>\0000000000000000\<title>\00000002, unpacked by
+// dlc.cpp, only read) and their character model pacs: <pkg>\pac\ch\ch<id>_dlcNN.pac - the DLC superstars' own
+// (ids 51-58: Vol. 2 ch51-56, Vol. 3 ch57 / ch58) and extra attires for disc superstars (Vol. 2 ch145 / ch178,
+// Vol. 3 ch131 / ch279). The game finds every attire by its entry name in whatever pac is mounted, so these
+// count as the superstar's own attires too.
+fs::path g_attire_dlc;
+const std::vector<std::pair<uint32_t, fs::path>>& DlcCharacterPacs() {
+  static std::vector<std::pair<uint32_t, fs::path>> pacs;
+  static bool listed = false;
+  if (listed || g_attire_dlc.empty()) return pacs;
+  listed = true;
+  std::error_code ec;
+  for (const auto& pkg : fs::directory_iterator(g_attire_dlc, ec))
+    for (const auto& e : fs::directory_iterator(pkg.path() / "pac" / "ch", ec)) {
+      const std::string n = e.path().filename().string();
+      unsigned id = 0, nn = 0;
+      char tail[8] = {};
+      if (std::sscanf(n.c_str(), "ch%u_dlc%u.%3s", &id, &nn, tail) == 3 && std::string(tail) == "pac" && id &&
+          id < 1000)
+        pacs.push_back({id, e.path()});
+    }
+  std::sort(pacs.begin(), pacs.end());
+  return pacs;
+}
+// A DLC superstar: no pac of the game's own (ids below 100), a model pac in an installed DLC package.
+bool DlcSuperstar(uint32_t id) {
+  if (id >= 100) return false;
+  for (const auto& p : DlcCharacterPacs())
+    if (p.first == id) return true;
+  return false;
+}
+// Which attires superstar `id` has (bit mask): the game's pac and the DLC's; gear: ExtraKinds of any of them.
+uint32_t OwnAttires(uint32_t id, bool* gear = nullptr) {
+  char stock[32];
+  std::snprintf(stock, sizeof stock, "ch%03u.pac", id);
+  const fs::path disc = g_game / "pac" / "ch" / stock;
+  uint32_t mask = id >= 100 ? AttireMask(disc, id) : 0;
+  bool g = id >= 100 && ExtraKinds(disc, id);
+  g_attire_disc[id] = mask;
+  for (const auto& p : DlcCharacterPacs())
+    if (p.first == id) {
+      mask |= AttireMask(p.second, id);
+      g = g || ExtraKinds(p.second, id);
+    }
+  if (gear) *gear = g;
+  return mask;
+}
 
 // Attire mods with no model (Simple entrance porting: "a superstar in the game"): only an entrance for one of the
 // superstar's own attires - not an attire of their own (no name, no slot of the attire rule); the first folder
@@ -1270,9 +1319,9 @@ void LoadAttireMods() {
       std::fclose(t);
     }
     if (type != "attire") continue;
-    if (p.a.id < 100 || p.a.id > 321 || ModOf(p.a.id)) {
-      REXLOG_WARN("[svr2011] attire mods: {}: superstar={} is not a stock superstar (a superstar mod takes attireN= in "
-                  "its own manifest)", p.a.folder, p.a.id);
+    if (((p.a.id < 100 || p.a.id > 321) && !DlcSuperstar(p.a.id)) || ModOf(p.a.id)) {
+      REXLOG_WARN("[svr2011] attire mods: {}: superstar={} is not a stock or installed DLC superstar (a superstar mod "
+                  "takes attireN= in its own manifest)", p.a.folder, p.a.id);
       continue;
     }
     if (p.which != "new") {
@@ -1299,11 +1348,10 @@ void LoadAttireMods() {
       }
       continue;
     }
-    char stock[32];
-    std::snprintf(stock, sizeof stock, "ch%03u.pac", p.a.id);
     if (!g_attire_own.count(p.a.id)) {
-      g_attire_own[p.a.id] = AttireMask(g_game / "pac" / "ch" / stock, p.a.id);
-      if (ExtraKinds(g_game / "pac" / "ch" / stock, p.a.id)) g_attire_gear.insert(p.a.id);
+      bool gear = false;
+      g_attire_own[p.a.id] = OwnAttires(p.a.id, &gear);
+      if (gear) g_attire_gear.insert(p.a.id);
     }
     pending.push_back(std::move(p));
   }
@@ -1315,9 +1363,10 @@ void LoadAttireMods() {
   auto place = [&](Pending& p) {
     AttireMod& a = p.a;
     const uint32_t own = g_attire_own[a.id];
-    if (own >> a.attire & 1) {  // (replaces the game's: its model is in the pac overlay, PrepareAttirePacks)
-      REXLOG_INFO("[svr2011] attire mods: {} -> superstar {} attire {} (replaces the game's) ({})", a.folder, a.id,
-                  a.attire + 1, a.name);
+    // (replaces the game's or the DLC's: its model is in the pac overlay or a copy of the DLC's pac, PrepareAttirePacks)
+    if (own >> a.attire & 1) {
+      REXLOG_INFO("[svr2011] attire mods: {} -> superstar {} attire {} (replaces the {}) ({})", a.folder, a.id,
+                  a.attire + 1, g_attire_disc[a.id] >> a.attire & 1 ? "game's" : "DLC's", a.name);
       g_attire_mods.push_back(std::move(a));
       return;
     }
@@ -2911,14 +2960,19 @@ REX_HOOK_RAW(sub_828C4140) {
     ctx.r3.u64 = m->attires;
     return;
   }
-  const uint32_t id = ctx.r4.u32;
+  const uint32_t id = ctx.r4.u32, mode = ctx.r5.u32;
   __imp__sub_828C4140(ctx, base);
+  const uint32_t game = ctx.r3.u32;
   if (g_attire_pairs.count(id)) {  // (attire mods: up to the last attire one of them gives)
     uint32_t n = ctx.r3.u32;
     for (const auto& a : g_attire_mods)
       if (a.id == id) n = std::max(n, a.attire + 1);
     ctx.r3.u64 = std::min(n, 4u);
   }
+  static const bool log = std::getenv("SVR2011_TEST_ATTIRE_LOG") != nullptr;  // (test aid: the count asked for)
+  if (log)
+    REXLOG_INFO("[svr2011] attire count: id {} mode {} -> {} (the game's {}, lr {:08X})", id, mode, ctx.r3.u32, game,
+                uint32_t(ctx.lr));
 }
 REX_EXTERN(__imp__sub_828C4060);
 REX_HOOK_RAW(sub_828C4060) {
@@ -2926,12 +2980,19 @@ REX_HOOK_RAW(sub_828C4060) {
     ctx.r3.u64 = ctx.r5.u32 < m->attires ? m->attire_pairs + ctx.r5.u32 * 8 : 0;
     return;
   }
-  if (const auto it = g_attire_pairs.find(ctx.r4.u32); it != g_attire_pairs.end() && ctx.r5.u32 < 4 &&
-      AttireModOf(ctx.r4.u32, ctx.r5.u32)) {
-    ctx.r3.u64 = it->second + ctx.r5.u32 * 8;
+  const uint32_t id = ctx.r4.u32, attire = ctx.r5.u32;
+  const auto it = g_attire_pairs.find(id);
+  if (it != g_attire_pairs.end() && attire < 4 && AttireModOf(id, attire)) {
+    ctx.r3.u64 = it->second + attire * 8;
     return;
   }
   __imp__sub_828C4060(ctx, base);
+  // (a superstar the table has no record for - the DLC superstars 51-58: the count's 0 - with attire mods: the
+  // others are ORIGINAL ATTIRE, always available, as the port's table has them - else the select screen counted
+  // only the mods' attires as available and offered no CHANGE ATTIRE)
+  if (!ctx.r3.u32 && it != g_attire_pairs.end() && attire < 4) ctx.r3.u64 = it->second + attire * 8;
+  static const bool log = std::getenv("SVR2011_TEST_ATTIRE_LOG") != nullptr;
+  if (log) REXLOG_INFO("[svr2011] attire pair: id {} attire {} -> {:08X}", id, attire, ctx.r3.u32);
 }
 
 // ---- The select screen's model framing
@@ -4345,7 +4406,8 @@ void AddOverlayMount(const std::string& file) { g_extra_mounts.push_back("smods:
 // first entry with a name, its own, so a mounted guest pac isn't used. The
 // mod's model goes into an overlay copy of the game's pac instead, as a move
 // pack's pacentry (move_packs.cpp): one generated pack per such mod.
-void PrepareAttirePacks(const fs::path& game) {
+void PrepareAttirePacks(const fs::path& game, const fs::path& dlc_root) {
+  g_attire_dlc = dlc_root;
   std::error_code ec;
   const fs::path dir = game / "Mods" / "Attires", out = game / "Mods" / "SuperstarOverlay" / "attirepacks";
   std::set<std::string> keep;
@@ -4374,16 +4436,35 @@ void PrepareAttirePacks(const fs::path& game) {
       std::fclose(t);
     }
     const int n = std::atoi(which.c_str());
-    if (type != "attire" || id < 100 || id > 321 || n < 1 || n > 4) continue;
+    if (type != "attire" || ((id < 100 || id > 321) && !DlcSuperstar(id)) || n < 1 || n > 4) continue;
     const uint32_t a = uint32_t(n - 1);
     char stock[32];
     std::snprintf(stock, sizeof stock, "ch%03u.pac", id);
-    if (!(AttireMask(game / "pac" / "ch" / stock, id) >> a & 1)) continue;  // (a new attire: mounted as a guest pac)
+    // the pac with that attire: the game's (pac list name ch\chNNN.pac), else a DLC package's (dlc\ch\ch<id>_dlcNN.pac:
+    // move_packs' DLC copies - the package's catalogs say where the game reads it, a guest pac's same name loses)
+    std::string target;
+    if (id >= 100 && (AttireMask(game / "pac" / "ch" / stock, id) >> a & 1))
+      target = std::string("ch\\") + stock;
+    else
+      for (const auto& p : DlcCharacterPacs())
+        if (p.first == id && (AttireMask(p.second, id) >> a & 1)) {
+          target = "dlc\\ch\\" + p.second.filename().string();
+          for (auto& c : target) c = char(std::tolower(static_cast<unsigned char>(c)));
+          break;
+        }
+    if (target.empty()) continue;  // (a new attire: mounted as a guest pac, LoadAttireMods)
     if (!fs::exists(f / model, ec)) continue;  // (no model: an entrance only, LoadAttireMods)
     if (!taken.insert({id, a}).second) continue;
     const fs::path pd = out / f.filename();
     keep.insert(f.filename().string());
-    if (Current(pd / "pack.txt", {f / model, f / "manifest.txt"})) continue;
+    char name[16];
+    std::snprintf(name, sizeof name, "%06u%u2", id, a);
+    const std::string line = "pacentry " + target + " EMD " + name + " entry.bin\n";
+    {  // (up to date: the same mod files and the same target - a DLC installed or gone since changes it)
+      std::ifstream was(pd / "pack.txt", std::ios::binary);
+      const std::string had((std::istreambuf_iterator<char>(was)), std::istreambuf_iterator<char>());
+      if (had == line && Current(pd / "pack.txt", {f / model, f / "manifest.txt"})) continue;
+    }
     svrfmt::Bytes d;
     svrfmt::Epac e;
     std::string notes;
@@ -4399,15 +4480,11 @@ void PrepareAttirePacks(const fs::path& game) {
           if (en.name.size() >= 8 && en.name[7] == '2' && (!first || en.name[6] < first->name[6])) first = &en;
     if (!first) continue;
     fs::create_directories(pd, ec);
-    char name[16];
-    std::snprintf(name, sizeof name, "%06u%u2", id, a);
-    char line[128];
-    std::snprintf(line, sizeof line, "pacentry ch\\%s EMD %s entry.bin\n", stock, name);
     if (!svrfmt::WriteFile((pd / "entry.bin").string(), svrfmt::Unpack(first->data)) ||
-        !svrfmt::WriteFile((pd / "pack.txt").string(), svrfmt::Bytes(line, line + std::strlen(line))))
+        !svrfmt::WriteFile((pd / "pack.txt").string(), svrfmt::Bytes(line.begin(), line.end())))
       continue;
     MarkCurrent(pd / "pack.txt", {f / model, f / "manifest.txt"});
-    REXLOG_INFO("[svr2011] attire mods: {}: {} attire {} through the pac overlay ({})", f.filename().string(), stock, n,
+    REXLOG_INFO("[svr2011] attire mods: {}: {} attire {} through the pac overlay ({})", f.filename().string(), target, n,
                 name);
   }
   for (const auto& e : fs::directory_iterator(out, ec))  // (packs of mods gone or switched off)

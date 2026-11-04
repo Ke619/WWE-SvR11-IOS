@@ -580,14 +580,36 @@ final class ModsPage {
         return "superstar " + id;
     }
 
-    // Attires 1-4 (bits 0-3) the superstar's own pac has, plus bit 8 when it has other model kinds for attire 1:
+    // Attires 1-4 (bits 0-3) the superstar's own pacs have, plus bit 8 when one has other model kinds for attire 1:
     // the entrance gear superstars (Undertaker, CM Punk, Cena, Shawn Michaels, Morrison) - a new attire for them
-    // doesn't load in the game yet (src/superstar_mods.cpp ExtraKinds), so only their own can be replaced.
+    // doesn't load in the game yet (src/superstar_mods.cpp ExtraKinds), so only their own can be replaced. Own pacs:
+    // the game's pac/ch/chNNN.pac and the installed DLC's pac/ch/ch<id>_dlcNN.pac
+    // (UserData/0000000000000000/5451085D/00000002/<package>: a DLC superstar's own, ids 51-58, and DLC attires of
+    // disc superstars) - the game counts both.
     static final int kGear = 0x100;
 
     static int ownAttires(int id) {
-        File pac = new File(new File(new File(InstallActivity.gameFolder(), "pac"), "ch"),
-            String.format(java.util.Locale.ROOT, "ch%03d.pac", id));
+        int mask = 0;
+        if (id >= 100)
+            mask |= pacAttires(new File(new File(new File(InstallActivity.gameFolder(), "pac"), "ch"),
+                String.format(java.util.Locale.ROOT, "ch%03d.pac", id)), id);
+        File[] pkgs = new File(InstallActivity.gameFolder(), "UserData/0000000000000000/5451085D/00000002").listFiles(File::isDirectory);
+        if (pkgs != null)
+            for (File pkg : pkgs) {
+                String prefix = "ch" + id + "_dlc";
+                File[] pacs = new File(pkg, "pac/ch").listFiles(f -> f.isFile() && f.getName().toLowerCase(java.util.Locale.ROOT).startsWith(prefix)
+                    && f.getName().toLowerCase(java.util.Locale.ROOT).endsWith(".pac"));
+                if (pacs != null) for (File f : pacs) mask |= pacAttires(f, id);
+            }
+        return mask;
+    }
+
+    // A DLC superstar the player has installed (ids below 100: only DLC model pacs).
+    static boolean dlcSuperstar(int id) {
+        return id > 0 && id < 100 && (ownAttires(id) & 0xF) != 0;
+    }
+
+    static int pacAttires(File pac, int id) {
         byte[] d = new byte[0x4000];
         try (FileInputStream in = new FileInputStream(pac)) {
             int n = 0, r;
@@ -665,7 +687,7 @@ final class ModsPage {
             } catch (NumberFormatException e) {
                 continue;
             }
-            if (a.id < 100 || a.id > 321 || a.attire < 0 || a.attire > 4) continue;
+            if (((a.id < 100 || a.id > 321) && !dlcSuperstar(a.id)) || a.attire < 0 || a.attire > 4) continue;
             a.born = d.lastModified();
             try (BufferedReader r = new BufferedReader(new InputStreamReader(new FileInputStream(new File(d, ".installed")),
                     StandardCharsets.UTF_8))) {

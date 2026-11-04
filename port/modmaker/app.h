@@ -215,6 +215,13 @@ struct StarInfo {
 // Loaded on first use (quick).
 const std::vector<StarInfo>& Stars();
 const StarInfo* StarById(int id);
+// The installed DLC's superstars (ids 51-58: a model pac pac\ch\ch<id>_dlcNN.pac in a package the game unpacked,
+// <game>\UserData\0000000000000000\5451085D\00000002\<package>; names from its chEtc.pac, "(DLC)" added), sorted by
+// name - attire mods can take them (the Attires page). DlcModelPacs: a superstar's model pacs in those packages (a
+// DLC superstar's own; DLC attires of disc superstars, e.g. ch145_dlc02.pac). StarOrDlcById: either list.
+const std::vector<StarInfo>& DlcStars();
+std::vector<std::filesystem::path> DlcModelPacs(int id);
+const StarInfo* StarOrDlcById(int id);
 // A superstar's 7 ratings (record +0..+6), 74 if unknown.
 int StarRating(int id, int k);
 // A superstar's body scale (record +28, 4.12 fixed point: the game stretches the

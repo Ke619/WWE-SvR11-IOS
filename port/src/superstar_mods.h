@@ -22,8 +22,10 @@ void InstallSuperstarMods(rex::memory::Memory* memory, rex::filesystem::VirtualF
 // Attire mods that replace an attire a stock superstar's own pac has: a move
 // pack each (Mods/SuperstarOverlay/attirepacks/<folder>: "pacentry
 // ch\chNNN.pac EMD <entry> <file>"), merged by InstallMovePacks into an overlay
-// copy of the game's pac. Called by InstallMovePacks before it lists the packs.
-void PrepareAttirePacks(const std::filesystem::path& game);
+// copy of the game's pac. Called by InstallMovePacks before it lists the packs. dlc_root: the installed DLC
+// packages (their pac\ch\ch<id>_dlcNN.pac: the DLC superstars' attires and DLC attires of disc superstars count
+// as the superstar's own; an attire mod replacing one of those is mounted as a guest pac, LoadAttireMods).
+void PrepareAttirePacks(const std::filesystem::path& game, const std::filesystem::path& dlc_root);
 // Before the Custom Movies folder is mounted (its device lists the files
 // once): the mods' entrance movies are copied into it.
 void CopySuperstarMovies(const std::filesystem::path& movies);

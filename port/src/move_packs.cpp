@@ -740,13 +740,18 @@ struct TocEntry {
 bool ReadToc(std::ifstream& f, Bytes& head, std::vector<TocEntry>& toc) {
   head.resize(0x4000);
   f.seekg(0);
-  if (!f.read(reinterpret_cast<char*>(head.data()), 0x4000) || std::memcmp(head.data(), "EPAC", 4)) return false;
+  if (!f.read(reinterpret_cast<char*>(head.data()), 0x4000) ||
+      (std::memcmp(head.data(), "EPAC", 4) && std::memcmp(head.data(), "EPK8", 4)))
+    return false;
+  // (EPK8 - a model pac, evt\Nyujyo*.pac: u16 count * 4 and 16-byte entries with 8-character names; BuildEntryPac)
+  const bool epk8 = !std::memcmp(head.data(), "EPK8", 4);
+  const size_t nl = epk8 ? 8 : 4, el = nl + 8;
   for (size_t p = 0x800; p + 12 <= 0x4000 && Le32(&head[p]);) {
     const std::string type(reinterpret_cast<char*>(&head[p]), 4);
-    const uint32_t cnt = Le32(&head[p + 4]) / 3;
+    const uint32_t cnt = epk8 ? Le16(&head[p + 4]) / 4 : Le32(&head[p + 4]) / 3;
     p += 12;
-    for (uint32_t i = 0; i < cnt && p + 12 <= 0x4000; ++i, p += 12)
-      toc.push_back({type, std::string(reinterpret_cast<char*>(&head[p]), 4), Le32(&head[p + 4]), Le32(&head[p + 8])});
+    for (uint32_t i = 0; i < cnt && p + el <= 0x4000; ++i, p += el)
+      toc.push_back({type, std::string(reinterpret_cast<char*>(&head[p]), nl), Le32(&head[p + nl]), Le32(&head[p + nl + 4])});
   }
   return true;
 }
@@ -888,9 +893,15 @@ uint64_t Epk8Order(const std::string& name) {
   return n.empty() || n.find_first_not_of("0123456789") != std::string::npos ? ~0ull - 1 : std::stoull(n);
 }
 
+bool BuildEntryPacFile(const fs::path& src, const fs::path& dst, const std::string& pac,
+                       const std::map<std::string, Bytes>& add);
 bool BuildEntryPac(const fs::path& game, const fs::path& overlay, const std::string& pac,
                    const std::map<std::string, Bytes>& add) {
-  const fs::path src = game / "pac" / PacPath(pac), dst = overlay / PacPath(pac);
+  return BuildEntryPacFile(game / "pac" / PacPath(pac), overlay / PacPath(pac), pac, add);
+}
+// (src: the game's pac, or a DLC package's - DlcCopy entries; dst: its copy with the entries)
+bool BuildEntryPacFile(const fs::path& src, const fs::path& dst, const std::string& pac,
+                       const std::map<std::string, Bytes>& add) {
   std::ifstream in(src, std::ios::binary);
   Bytes head(0x4000);
   if (!in || !in.read(reinterpret_cast<char*>(head.data()), 0x4000) ||
@@ -1400,10 +1411,18 @@ using svr2011::Lower;
 // Mods\PacOverlay\dlc\<package>\<name>, and the game's open of dlcN:\pac\<name> is linked to the copy. The
 // package's files are only ever read (test folders link their user data to the player's: a build writing into
 // the package changed the player's DLC). Players without the DLC: nothing.
+// A package's own pacs in sub-folders take pacentry lines too: "pacentry dlc\ch\ch52_dlc02.pac EMD 00005202 <file>"
+// names <package>\pac\ch\ch52_dlc02.pac (the attire mods replacing a DLC superstar's attire, or a DLC attire of a
+// disc superstar: PrepareAttirePacks) - its copy gets the entries (BuildEntryPacFile), the catalogs its places.
+constexpr const char* kDlcEntryPrefix = "dlc\\";
+bool DlcEntryPac(const std::string& pac) { return pac.rfind(kDlcEntryPrefix, 0) == 0; }
+
 struct DlcCopy {
-  fs::path file;    // the package's pac (read only)
-  std::string pac;  // the game's pac it stands for ("m.pac", "mpsp.pac", "misc.pac")
-  fs::path copy;    // the overlay's copy with the packs
+  fs::path file;     // the package's pac (read only)
+  std::string pac;   // the game's pac it stands for ("m.pac", "mpsp.pac", "misc.pac"), or a pacentry target
+                     // ("dlc\ch\ch52_dlc02.pac": the package's own file, entries added / replaced)
+  fs::path copy;     // the overlay's copy with the packs (Mods\PacOverlay\dlc\<package>\<file name>)
+  fs::path package;  // the package's folder (file is in its pac\ or pac\<sub>\)
 };
 
 std::vector<DlcCopy> DlcCopies(const fs::path& dlc_root, const fs::path& overlay, const std::set<std::string>& pacs) {
@@ -1413,6 +1432,14 @@ std::vector<DlcCopy> DlcCopies(const fs::path& dlc_root, const fs::path& overlay
   for (const auto& pkg : fs::directory_iterator(dlc_root, ec)) {
     const fs::path dir = pkg.path() / "pac";
     if (!fs::is_directory(dir, ec)) continue;
+    for (const auto& p : pacs) {  // (pacentry lines into the package's own files; the first package having it)
+      if (!DlcEntryPac(p)) continue;
+      const fs::path f = dir / PacPath(p.substr(std::strlen(kDlcEntryPrefix)));
+      if (!fs::is_regular_file(f, ec)) continue;
+      bool taken = false;
+      for (const auto& c : out) taken |= c.pac == p;
+      if (!taken) out.push_back({f, p, overlay / "dlc" / pkg.path().filename() / f.filename(), pkg.path()});
+    }
     for (const auto& f : fs::directory_iterator(dir, ec)) {
       if (!f.is_regular_file()) continue;
       const std::string name = Lower(f.path().filename().string());
@@ -1424,7 +1451,7 @@ std::vector<DlcCopy> DlcCopies(const fs::path& dlc_root, const fs::path& overlay
         // (the same name, or <stem>_dlcNN.pac)
         if (name == p ||
             (name.rfind(stem + "_dlc", 0) == 0 && name.size() > 4 && name.compare(name.size() - 4, 4, ".pac") == 0))
-          out.push_back({f.path(), p, overlay / "dlc" / pkg.path().filename() / f.path().filename()});
+          out.push_back({f.path(), p, overlay / "dlc" / pkg.path().filename() / f.path().filename(), pkg.path()});
       }
     }
   }
@@ -1475,6 +1502,10 @@ bool MergeDlcCopy(const DlcCopy& c, const Packs& p) {
   if (c.pac == "misc.pac") {
     ok = BuildMiscFile(c.file, c.copy, p);
     entries = 1;
+  } else if (DlcEntryPac(c.pac)) {
+    const auto it = p.entries.find(c.pac);
+    ok = it != p.entries.end() && BuildEntryPacFile(c.file, c.copy, c.pac, it->second);
+    entries = ok ? it->second.size() : 0;
   } else {
     for (const auto& [pac, motions] : p.motions)  // (as pack.txt names it: "m.pac", "mpsp.pac")
       if (Lower(pac) == c.pac) {
@@ -1515,15 +1546,16 @@ bool PatchCatalog(Bytes& arc, const fs::path& orig_pac, const fs::path& copy_pac
   auto be = [](uint8_t* d, uint32_t v) { d[0] = uint8_t(v >> 24), d[1] = uint8_t(v >> 16), d[2] = uint8_t(v >> 8), d[3] = uint8_t(v); };
   std::vector<std::pair<size_t, const TocEntry*>> at;
   for (size_t i = 0; i < ta.size(); ++i) {
-    if (ta[i].type != tb[i].type || ta[i].name != tb[i].name || ta[i].name.size() != 4) return false;
-    uint8_t want[12];
-    std::memcpy(want, ta[i].name.data(), 4);
-    be(want + 4, ta[i].sector), be(want + 8, ta[i].size256);
-    const auto first = std::search(arc.begin(), arc.end(), want, want + 12);
-    if (first == arc.end() || std::search(first + 1, arc.end(), want, want + 12) != arc.end()) return false;
-    at.push_back({size_t(first - arc.begin()), &tb[i]});
+    const size_t nl = ta[i].name.size();  // (4: EPAC; 8: EPK8 - a DLC model pac, attire mods)
+    if (ta[i].type != tb[i].type || ta[i].name != tb[i].name || (nl != 4 && nl != 8)) return false;
+    uint8_t want[16];
+    std::memcpy(want, ta[i].name.data(), nl);
+    be(want + nl, ta[i].sector), be(want + nl + 4, ta[i].size256);
+    const auto first = std::search(arc.begin(), arc.end(), want, want + nl + 8);
+    if (first == arc.end() || std::search(first + 1, arc.end(), want, want + nl + 8) != arc.end()) return false;
+    at.push_back({size_t(first - arc.begin()) + nl, &tb[i]});
   }
-  for (const auto& [p, e] : at) be(&arc[p + 4], e->sector), be(&arc[p + 8], e->size256);
+  for (const auto& [p, e] : at) be(&arc[p], e->sector), be(&arc[p + 4], e->size256);
   return true;
 }
 
@@ -1557,11 +1589,13 @@ bool CatalogNames(const Bytes& arc, const fs::path& pac) {
   std::vector<TocEntry> toc;
   if (!f || !ReadToc(f, head, toc) || toc.empty()) return false;
   for (const auto& e : toc) {
-    if (e.name.size() != 4) return false;
-    uint8_t want[12];
-    std::memcpy(want, e.name.data(), 4);
-    for (int k = 0; k < 4; ++k) want[4 + k] = uint8_t(e.sector >> (24 - 8 * k)), want[8 + k] = uint8_t(e.size256 >> (24 - 8 * k));
-    if (std::search(arc.begin(), arc.end(), want, want + 12) == arc.end()) return false;
+    const size_t nl = e.name.size();
+    if (nl != 4 && nl != 8) return false;
+    uint8_t want[16];
+    std::memcpy(want, e.name.data(), nl);
+    for (int k = 0; k < 4; ++k)
+      want[nl + k] = uint8_t(e.sector >> (24 - 8 * k)), want[nl + 4 + k] = uint8_t(e.size256 >> (24 - 8 * k));
+    if (std::search(arc.begin(), arc.end(), want, want + nl + 8) == arc.end()) return false;
   }
   return true;
 }
@@ -1618,7 +1652,7 @@ std::string OverlayDamage(const fs::path& game, const fs::path& overlay, const s
     if (!fs::exists(c.copy, ec)) continue;
     if (std::string why = TocFits(c.copy); !why.empty()) return "DLC " + why;
     if (std::string why = KeepsEntries(c.file, c.copy); !why.empty()) return "DLC " + why;
-    by_package[c.file.parent_path().parent_path()].push_back(&c);
+    by_package[c.package].push_back(&c);
   }
   for (const auto& [package, list] : by_package)
     if (std::string why = PackageMismatch(package, list); !why.empty())
@@ -1632,7 +1666,7 @@ void PatchDlcCatalogs(std::vector<DlcCopy>& copies) {
   std::error_code ec;
   std::map<fs::path, std::vector<DlcCopy*>> by_package;
   for (auto& c : copies)
-    if (fs::exists(c.copy, ec)) by_package[c.file.parent_path().parent_path()].push_back(&c);
+    if (fs::exists(c.copy, ec)) by_package[c.package].push_back(&c);
   for (auto& [package, list] : by_package) {
     const fs::path out_dir = list.front()->copy.parent_path() / "info";
     for (const fs::path& cat : DlcCatalogs(package)) {
@@ -1704,9 +1738,11 @@ void LinkDlcCopies(rex::filesystem::VirtualFileSystem* vfs, const fs::path& over
   int n = 0;
   for (const auto& c : copies) {
     if (!fs::exists(c.copy, ec)) continue;
-    const fs::path package = c.file.parent_path().parent_path();
+    const fs::path package = c.package;
     const std::string pkg = Lower(package.filename().string());
-    add(pkg, "pac\\" + c.file.filename().string(), c.copy);
+    // (pac\<name>, or pac\ch\<name> for a pacentry target in a sub-folder)
+    add(pkg, DlcEntryPac(c.pac) ? "pac\\" + c.pac.substr(std::strlen(kDlcEntryPrefix)) : "pac\\" + c.file.filename().string(),
+        c.copy);
     ++n;
     for (const fs::path& cat : DlcCatalogs(package)) {
       const fs::path mine = c.copy.parent_path() / "info" / cat.filename();
@@ -2008,7 +2044,7 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs, const fs::path& d
   // the packs: superstar mods' moves/ folders and Mods/Moves/<pack>
   std::vector<fs::path> dirs;
   // (attire mods replacing an attire the game's pac has: generated packs, a pacentry line each)
-  PrepareAttirePacks(game);
+  PrepareAttirePacks(game, dlc_root);
   // (title mods: their belt models, pacentry lines into evt\evtobj.pac - title_mods.h)
   std::vector<fs::path> roots = {game / "Mods" / "Superstars", game / "Mods" / "Moves",
                                  game / "Mods" / "SuperstarOverlay" / "attirepacks", game / "Mods" / "Titles"};
@@ -2089,7 +2125,8 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs, const fs::path& d
     // matches the next start's and every start merges again)
     for (const char* f : {"m.pac", "misc.pac", "mpsp.pac", "plist360.h", "plist360_4x3.h"})
       stamp += FileStamp(game / "pac" / f);
-    for (const auto& [pac, e] : packs.entries) stamp += FileStamp(game / "pac" / PacPath(pac));
+    for (const auto& [pac, e] : packs.entries)
+      if (!DlcEntryPac(pac)) stamp += FileStamp(game / "pac" / PacPath(pac));  // (a DLC's: dlc_stamp)
     for (const auto& gm : gms) stamp += "gimmick " + gm.string() + " " + FileStamp(gm);
   };
   const auto t_start = std::chrono::steady_clock::now();
@@ -2102,7 +2139,9 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs, const fs::path& d
   WarnOverrides(packs);
   std::set<std::string> pacs;
   for (const auto& [pac, e] : packs.motions) pacs.insert(Lower(pac));
-  for (const auto& [pac, e] : packs.entries) pacs.insert(pac);  // ("evt\nyujyo5.pac": WriteList maps pac\evt\... to it)
+  std::set<std::string> dlc_entry_pacs;  // (pacentry lines into a DLC package's own pacs: DlcCopies, not the overlay's)
+  for (const auto& [pac, e] : packs.entries)
+    (DlcEntryPac(pac) ? dlc_entry_pacs : pacs).insert(pac);  // ("evt\nyujyo5.pac": WriteList maps pac\evt\... to it)
   if (!packs.waze.empty() || !packs.names.empty() || !packs.copies.empty() || !packs.exh.empty() || !packs.evt.empty() ||
       !packs.mbd.empty())
     pacs.insert("misc.pac");
@@ -2111,13 +2150,15 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs, const fs::path& d
   g_copies = packs.copies;
   // (the DLC packages' pacs the packs go into: copies in the overlay - a package installed again, or another,
   // merges again)
-  std::vector<DlcCopy> dlc = DlcCopies(dlc_root, overlay, pacs);
+  std::set<std::string> dlc_wanted = pacs;
+  dlc_wanted.insert(dlc_entry_pacs.begin(), dlc_entry_pacs.end());
+  std::vector<DlcCopy> dlc = DlcCopies(dlc_root, overlay, dlc_wanted);
   auto dlc_stamp = [&] {
     std::string s;
     std::set<fs::path> packages;
     for (const auto& c : dlc) {
-      s += "dlc " + c.file.parent_path().parent_path().filename().string() + "/" + FileStamp(c.file);
-      packages.insert(c.file.parent_path().parent_path());
+      s += "dlc " + c.package.filename().string() + "/" + FileStamp(c.file);
+      packages.insert(c.package);
     }
     for (const auto& p : packages)
       for (const fs::path& cat : DlcCatalogs(p)) s += "dlc " + p.filename().string() + "/" + FileStamp(cat);
@@ -2127,7 +2168,7 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs, const fs::path& d
   auto dlc_complete = [&] {
     for (const auto& c : dlc)
       if (fs::exists(c.copy, ec))
-        for (const fs::path& cat : DlcCatalogs(c.file.parent_path().parent_path()))
+        for (const fs::path& cat : DlcCatalogs(c.package))
           if (!fs::exists(c.copy.parent_path() / "info" / cat.filename(), ec)) return false;
     return true;
   };
@@ -2265,7 +2306,7 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs, const fs::path& d
   }
   for (const auto& [pac, entries] : packs.entries) {
     svr2011::KeepWindowAlive();
-    if (pac == kPropPac) continue;
+    if (pac == kPropPac || DlcEntryPac(pac)) continue;  // (a DLC package's: its copy, MergeDlcCopy)
     ok = ok && BuildEntryPac(game, overlay, pac, entries);
   }
   fs::remove(overlay / "gm.pac", ec);  // (an older build served a whole gm.pac)
@@ -2299,7 +2340,7 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs, const fs::path& d
   PatchDlcCatalogs(dlc);
   for (const auto& c : dlc)  // (a catalog that couldn't be written: that copy isn't served)
     if (fs::exists(c.copy, ec))
-      for (const fs::path& cat : DlcCatalogs(c.file.parent_path().parent_path()))
+      for (const fs::path& cat : DlcCatalogs(c.package))
         if (!fs::exists(c.copy.parent_path() / "info" / cat.filename(), ec)) {
           REXLOG_WARN("[svr2011] move packs: DLC {}: no {} beside it - the package's own plays", c.file.filename().string(),
                       cat.filename().string());
@@ -2318,7 +2359,7 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs, const fs::path& d
   {  // (a package whose served files still don't match its catalogs: its own files play)
     std::map<fs::path, std::vector<const DlcCopy*>> by_package;
     for (const auto& c : dlc)
-      if (fs::exists(c.copy, ec)) by_package[c.file.parent_path().parent_path()].push_back(&c);
+      if (fs::exists(c.copy, ec)) by_package[c.package].push_back(&c);
     for (const auto& [package, list] : by_package) {
       std::string why = PackageMismatch(package, list);
       for (const DlcCopy* c : list)

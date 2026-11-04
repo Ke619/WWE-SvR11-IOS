@@ -95,6 +95,12 @@ pacentry evt\Nyujyo5.pac EVPE 504 entrance/504_evp.bin
 pacentry evt\Nyujyo5.pac EVTE 504 entrance/504_evt.bin
 ```
 
+A pac named `dlc\<path under the package's pac\>` is an installed DLC package's own file, e.g.
+`pacentry dlc\ch\ch52_dlc02.pac EMD 00005202 entry.bin` (attire mods replacing a DLC attire,
+docs/SUPERSTAR_MODS.md): its copy with the entry goes to `Mods/PacOverlay/dlc/<package>/`, the package's
+catalogs get the copy's places, and both are served when the game mounts the package - as the DLC
+m / mpsp / misc copies below. The package's files are never written.
+
 The pac is copied to `Mods/PacOverlay/evt/Nyujyo5.pac` with the entries in
 (numeric name order, the `65535` end mark last, BPE-packed, the packer's
 footer kept) and the overlay pac list names the copy

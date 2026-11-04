@@ -896,29 +896,36 @@ std::map<int, Picture> g_renders;
 // Names and ratings from chEtc.pac CHAR/DAT (260-byte records after a 4-byte
 // header: ratings at +0, the full name at +34); the playable ones are those
 // with a render in DLC_HD.pac.
+// chEtc.pac's CHAR/DAT records -> names (and ratings / scales when keep).
+void ReadCharNames(const fs::path& chetc, std::map<int, std::string>& names, bool keep) {
+  Bytes d;
+  Epac e;
+  if (!ReadFile(PathStr(chetc), d) || !EpacRead(d, e)) return;
+  for (const auto& g : e.groups)
+    for (const auto& en : g.entries)
+      if (g.type == "CHAR" && en.name.rfind("DAT", 0) == 0) {
+        std::vector<PachEntry> pe;
+        if (!PachRead(en.data, pe)) continue;
+        for (const auto& x : pe) {
+          const Bytes r = Unpack(x.data);
+          if (r.size() < 4 + 66) continue;
+          const char* nm = reinterpret_cast<const char*>(&r[4 + 34]);
+          names[int(x.id)] = std::string(nm, strnlen(nm, 32));
+          if (!keep) continue;
+          std::array<int, 7> v{};
+          for (int j = 0; j < 7; ++j) v[j] = r[4 + j];
+          g_ratings[int(x.id)] = v;
+          g_scales[int(x.id)] = r[4 + 28] | (r[4 + 29] << 8);
+        }
+      }
+}
+
 void LoadStars() {
   g_stars_loaded = true;
   if (g_game.empty()) return;
-  Bytes d;
   Epac e;
   std::map<int, std::string> names;
-  if (ReadFile(PathStr(fs::path(g_game) / L"pac" / L"ch" / L"chEtc.pac"), d) && EpacRead(d, e))
-    for (const auto& g : e.groups)
-      for (const auto& en : g.entries)
-        if (g.type == "CHAR" && en.name.rfind("DAT", 0) == 0) {
-          std::vector<PachEntry> pe;
-          if (!PachRead(en.data, pe)) continue;
-          for (const auto& x : pe) {
-            const Bytes r = Unpack(x.data);
-            if (r.size() < 4 + 66) continue;
-            const char* nm = reinterpret_cast<const char*>(&r[4 + 34]);
-            names[int(x.id)] = std::string(nm, strnlen(nm, 32));
-            std::array<int, 7> v{};
-            for (int j = 0; j < 7; ++j) v[j] = r[4 + j];
-            g_ratings[int(x.id)] = v;
-            g_scales[int(x.id)] = r[4 + 28] | (r[4 + 29] << 8);
-          }
-        }
+  ReadCharNames(fs::path(g_game) / L"pac" / L"ch" / L"chEtc.pac", names, true);
   Bytes h;
   if (!ReadFile(PathStr(fs::path(g_game) / L"pac" / L"DLC_HD.pac"), h) || !EpacRead(h, e)) return;
   for (const auto& g : e.groups)
@@ -940,6 +947,56 @@ const std::vector<StarInfo>& Stars() {
 
 const StarInfo* StarById(int id) {
   for (const auto& s : Stars())
+    if (s.id == id) return &s;
+  return nullptr;
+}
+
+namespace {
+// The packages the game unpacked (UserData\0000000000000000\5451085D\00000002\<package>: dlc.cpp) and their model
+// pacs pac\ch\ch<id>_dlcNN.pac: id -> files.
+std::map<int, std::vector<fs::path>> g_dlc_pacs;
+std::vector<StarInfo> g_dlc_stars;
+bool g_dlc_loaded = false;
+void LoadDlc() {
+  g_dlc_loaded = true;
+  if (g_game.empty()) return;
+  std::error_code ec;
+  const fs::path root = fs::path(g_game) / L"UserData" / L"0000000000000000" / L"5451085D" / L"00000002";
+  std::map<int, std::string> names;
+  for (const auto& pkg : fs::directory_iterator(root, ec)) {
+    ReadCharNames(pkg.path() / L"pac" / L"ch" / L"chEtc.pac", names, false);
+    for (const auto& f : fs::directory_iterator(pkg.path() / L"pac" / L"ch", ec)) {
+      unsigned id = 0, nn = 0;
+      char tail[8] = {};
+      if (std::sscanf(PathStr(f.path().filename()).c_str(), "ch%u_dlc%u.%3s", &id, &nn, tail) == 3 &&
+          std::string(tail) == "pac" && id && id < 1000)
+        g_dlc_pacs[int(id)].push_back(f.path());
+    }
+  }
+  for (auto& [id, files] : g_dlc_pacs) {
+    std::sort(files.begin(), files.end());
+    if (id >= 100) continue;  // (a disc superstar's DLC attires: DlcModelPacs only)
+    const auto it = names.find(id);
+    g_dlc_stars.push_back({id, (it != names.end() && !it->second.empty() ? it->second : "Superstar " + std::to_string(id)) + " (DLC)"});
+  }
+  std::sort(g_dlc_stars.begin(), g_dlc_stars.end(), [](const StarInfo& a, const StarInfo& b) { return a.name < b.name; });
+}
+}  // namespace
+
+const std::vector<StarInfo>& DlcStars() {
+  if (!g_dlc_loaded) LoadDlc();
+  return g_dlc_stars;
+}
+
+std::vector<fs::path> DlcModelPacs(int id) {
+  if (!g_dlc_loaded) LoadDlc();
+  const auto it = g_dlc_pacs.find(id);
+  return it == g_dlc_pacs.end() ? std::vector<fs::path>{} : it->second;
+}
+
+const StarInfo* StarOrDlcById(int id) {
+  if (const StarInfo* s = StarById(id)) return s;
+  for (const auto& s : DlcStars())
     if (s.id == id) return &s;
   return nullptr;
 }

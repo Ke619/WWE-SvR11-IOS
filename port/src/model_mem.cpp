@@ -395,6 +395,13 @@ REX_HOOK_RAW(sub_8215A380) {
 // sub_8269B2D0, whose hook hands such a block back), so the match loads instead of hanging.
 // Test aids: SVR2011_TEST_CACHE_LOG=1 - every request of 1 MB or more; SVR2011_TEST_CACHE_FULL=<bytes> - the
 // cache finds no room for a request of at least that size (the hang, on purpose).
+namespace svr2011 {
+// (match_types.cpp: the cell's extra rule motions' read, '/MOT/RUWM' while pending)
+extern const char* const kExtraRuleMotionsRead;
+bool ExtraRuleMotionsPending();
+void ExtraRuleMotionsRead();
+}  // namespace svr2011
+
 namespace {
 constexpr uint32_t kLoaderCache = 0x82ED5FE8;
 
@@ -503,6 +510,7 @@ REX_HOOK_RAW(sub_826BA928) {
     REXLOG_INFO("[svr2011] file cache: {} {} bytes -> {:08X} after {:.1f} s ({} tries)", name, size, ctx.r3.u32, s,
                 t_alloc.tries);
   t_alloc.active = false;
+  if (name == svr2011::kExtraRuleMotionsRead) svr2011::ExtraRuleMotionsRead();
 }
 
 // (inside sub_826BA928's retry loop: one call per failed try; r3 after it = the idle files it could still free)
@@ -515,10 +523,16 @@ REX_HOOK_RAW(sub_826B9FB8) {
   ++r.tries;
   if (r.stuck || ctx.r3.u32 != 0) return;
   const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - r.t0).count();
-  if (s < 3.0) return;
+  // (the cell's extra rule motions - match_types.cpp: Extreme Rules' RUWM read after the cell's own, when heap 16
+  // already holds the arena, the stage and the weapons' models - from the fallback memory at once, no 3 s wait)
+  const bool at_once = svr2011::ExtraRuleMotionsPending() && RequestName(base) == svr2011::kExtraRuleMotionsRead;
+  if (s < 3.0 && !at_once) return;
   r.stuck = true;
   r.name = RequestName(base);
-  LogLoaderCache(base, cache, r, s);
+  if (at_once)
+    REXLOG_INFO("[svr2011] file cache: no room for {} ({} bytes) - from the fallback memory", r.name, r.size);
+  else
+    LogLoaderCache(base, cache, r, s);
 }
 
 namespace svr2011 {

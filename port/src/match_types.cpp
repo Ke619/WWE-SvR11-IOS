@@ -55,6 +55,7 @@
 #include "match_box.h"
 #include "match_record.h"
 #include "thread_cpu.h"
+#include "util.h"
 #include "../modmaker/svrfmt/bytes.h"
 
 namespace svr2011 {
@@ -2786,6 +2787,37 @@ void MatchTypesUpdate(PPCContext& ctx, uint8_t* base) {
         for (int k = 0; k < 3; ++k) last_pos[i][k] = RdF(base + o + 288 + k * 4);
     }
   }
+  // Research aid: SVR2011_TEST_RULE_MOTIONS=1 - once a match (frame 600), the first slot of each motion bank list
+  // (*0x82E3CC40, *0x82E3C108 - searched in slot order) that has the ladders' and tables' motions and two of the cell's
+  // own (report 8a07a5: the cell's are found first, Extreme Rules' RUWM 6 / 7 after them).
+  if (static const bool motions_log = !svr2011::Env("SVR2011_TEST_RULE_MOTIONS").empty(); motions_log) {
+    static uint32_t told_at = ~0u;
+    const uint32_t frames = Rd32(base + 0x82E3CD0C);
+    if (frames >= 600 && frames < 660 && told_at != 600) {
+      told_at = 600;
+      const auto at = [&](uint32_t a) { return base + a + REX_PHYS_HOST_OFFSET(a); };
+      constexpr uint32_t kKeys[][2] = {{15943, 6}, {15084, 6}, {15010, 6}, {15943, 11}, {15090, 11}, {15010, 11}, {1670, 0}, {4200, 0}};
+      std::string s;
+      for (const uint32_t list_at : {0x82E3CC40u, 0x82E3C108u}) {
+        const uint32_t list = Rd32(base + list_at);
+        s += fmt::format(" | list {:08X}:", list_at);
+        for (const auto& [id, x] : kKeys) {
+          int slot = -1;
+          for (uint32_t k = 0; list && k < 68 && slot < 0; ++k) {
+            uint32_t b = Rd32(at(list + 4 * k));
+            if (!b) continue;
+            if (Rd32(at(b)) != 0x734B4D59 && Rd32(at(b)) != 0x73424D59) b -= 16;
+            const uint32_t n = Rd32(at(b + 272));
+            for (uint32_t i = 0; n < 65536 && i < n && slot < 0; ++i)
+              if (Rd32(at(b + 276 + i * 16)) == (id << 16 | x << 8)) slot = int(k);
+          }
+          s += fmt::format(" {}x{} slot {}", id, x, slot);
+        }
+      }
+      REXLOG_INFO("match types: rule motions (SVR2011_TEST_RULE_MOTIONS){}", s);
+    }
+    if (frames < 600) told_at = ~0u;
+  }
   // (with SVR2011_TEST_ITEM_LOG) the stock under the ring (*0x82E3C06C: +0
   // count, +8 entries: weapon model ids, -1 taken) each time it changes, and how long each
   // search under the ring (motions 15480 / 15481) lasts.
@@ -3073,6 +3105,69 @@ void ApplyWeapons(uint8_t* base) {
 }
 
 }  // namespace
+
+// HELL IN A CELL: TABLES & LADDERS - the ladders' and tables' motions. A match's rule motions are one group of m.pac
+// (MOT/RU..): sub_82325D18 picks it from the live rules - the cell (+20) is RUHI, before Extreme Rules' RUWM (+19, +24,
+// +56) - and sub_82325E78 has a loader (sub_82325C58) read its children whose bit is in a flags word: bit 6 (+19 / +24 /
+// +56) the ladders' x 6 motions, bit 7 (+18 / +24 / +51 / +56) the tables' x 11. Each child read takes the bank lists'
+// next free slot, 40-67 (sub_823261B8). RUHI has no children 6 / 7: a ladder or table picked up in the cell started
+// 15943 / 15090 x 6 / 11 with nothing to play, and the wrestler stood in it for the rest of the match (report
+// 8a07a5, every time). So a second loader: RUWM, those children only, started after the cell's own - its banks in the
+// slots after the cell's (the lists are searched in slot order: the cell's motions come first; RUWM 6 / 7 share no key
+// with RUHI anyway). A stock cell has none of those bits; Extreme Rules gets RUWM itself.
+namespace {
+char g_rule_motions[16] = {};  // (the rule motions' group sub_82325D18 picked last)
+std::atomic<bool> g_extra_read{false};  // (our RUWM read not served yet: model_mem.cpp takes no room as no wait)
+}  // namespace
+namespace svr2011 {
+extern const char* const kExtraRuleMotionsRead = "'/MOT/RUWM'";  // (as the file cache's log names a request)
+bool ExtraRuleMotionsPending() { return g_extra_read.load(std::memory_order_relaxed); }
+void ExtraRuleMotionsRead() { g_extra_read = false; }
+}  // namespace svr2011
+
+REX_EXTERN(__imp__sub_82325D18);
+REX_HOOK_RAW(sub_82325D18) {
+  const uint32_t out = ctx.r4.u32;
+  __imp__sub_82325D18(ctx, base);
+  if (out) std::snprintf(g_rule_motions, sizeof g_rule_motions, "%.15s", reinterpret_cast<const char*>(base + out));
+}
+
+REX_EXTERN(__imp__sub_82325E78);
+REX_HOOK_RAW(sub_82325E78) {
+  const uint32_t loading = ctx.r3.u32 ? Rd32(base + ctx.r3.u32 + 272) : 1;  // (already loading: the game's call does nothing)
+  g_rule_motions[0] = 0;
+  __imp__sub_82325E78(ctx, base);
+  constexpr uint32_t kLiveRules = 0x82E3DE00;
+  const uint8_t* live = base + kLiveRules;
+  const uint32_t bits = (live[19] || live[24] || live[56] ? 1u << 6 : 0) | (live[18] || live[24] || live[51] || live[56] ? 1u << 7 : 0);
+  if (loading || std::strcmp(g_rule_motions, "/MOT/RUHI") || !bits || !g_memory) return;
+  static uint32_t path = 0;  // (guest: "/MOT/RUWM")
+  if (!path && (path = g_memory->SystemHeapAlloc(16))) std::memcpy(base + path, "/MOT/RUWM", 10);
+  if (!path) return;
+  const auto saved = ctx;
+  ctx.r1.u64 = saved.r1.u32 - 0x200;
+  // (as sub_82325E78 makes its own: the object from the heap sub_8269A178 names, the one before put back after)
+  sub_8269A178(ctx, base);
+  const uint32_t object_heap = ctx.r3.u32;
+  sub_8269A478(ctx, base);
+  const uint32_t was = ctx.r3.u32;
+  ctx.r3.u64 = object_heap;
+  sub_8269AC60(ctx, base);
+  sub_825743A8(ctx, base);  // (the heap the banks are read into, as the game's loader has it)
+  const uint32_t heap = ctx.r3.u32;
+  ctx.r3.u64 = 64;
+  sub_82150000(ctx, base);  // (the loader object)
+  if (const uint32_t loader = ctx.r3.u32) {
+    ctx.r3.u64 = loader, ctx.r4.u64 = path, ctx.r5.u64 = bits, ctx.r6.u64 = heap;
+    g_extra_read = true;
+    sub_82325C58(ctx, base);
+    REXLOG_INFO("match types: HELL IN A CELL with weapons - Extreme Rules' ladder / table motions (MOT/RUWM bits {:X}) "
+                "loaded after the cell's", bits);
+  }
+  ctx.r3.u64 = was;
+  sub_8269AC60(ctx, base);
+  ctx = saved;
+}
 
 // The crowd area's weapons (crowd_fight.h): with the crowd area open, the rule's placed list gets these too -
 // on the floor behind the barricade (SvR 2008's crowd area: barricade z -85, outer wall z -112), fixed places (every

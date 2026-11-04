@@ -270,12 +270,16 @@ index 1cb3faa..7f9ef91 100644
  
  /// Create a default InputSystem with SDL + NOP drivers.
 diff --git a/include/rex/input/mnk/mnk_input_driver.h b/include/rex/input/mnk/mnk_input_driver.h
-index c8751b7..bb0dcb5 100644
+index c8751b7..6f045bb 100644
 --- a/include/rex/input/mnk/mnk_input_driver.h
 +++ b/include/rex/input/mnk/mnk_input_driver.h
-@@ -97,7 +97,9 @@ class MnkInputDriver final : public InputDriver,
+@@ -96,8 +96,13 @@ class MnkInputDriver final : public InputDriver,
+   // Guest thread to UI thread. The queued flag coalesces the posts.
    std::atomic<bool> mouse_capture_requested_{false};
    std::atomic<bool> mouse_capture_update_queued_{false};
++  // [svr2011] what the UI thread last settled on (0 released, 1 captured, -1 nothing yet): the guest thread posts only
++  // when the request differs (the pad read runs every frame - each post pushed an SDL event)
++  std::atomic<int> mouse_capture_applied_{-1};
  
 -  std::atomic<bool> has_focus_{true};
 +  // (the window's real focus: taken from it on attach, then its focus events -
@@ -6711,7 +6715,7 @@ index 2251429..9145077 100644
 +
  }  // namespace rex::ui
 diff --git a/src/ui/windowed_app_context_sdl.cpp b/src/ui/windowed_app_context_sdl.cpp
-index dc0b4c2..85004d0 100644
+index dc0b4c2..1d0aa10 100644
 --- a/src/ui/windowed_app_context_sdl.cpp
 +++ b/src/ui/windowed_app_context_sdl.cpp
 @@ -97,6 +97,28 @@ int SDLWindowedAppContext::RunMainMessageLoop() {
@@ -6771,6 +6775,27 @@ index dc0b4c2..85004d0 100644
      case SDL_EVENT_DROP_FILE: {
        if (WindowSDL* window = GetWindow(event.drop.windowID)) {
          window->HandleDropEvent(event);
+@@ -182,6 +225,7 @@ void SDLWindowedAppContext::ProcessEvent(SDL_Event& event) {
+ 
+ bool SDLCALL SDLWindowedAppContext::WatchEvent(void* userdata, SDL_Event* event) {
+   auto* context = static_cast<SDLWindowedAppContext*>(userdata);
++#if REX_PLATFORM_MAC
+   if (event->type == SDL_EVENT_QUIT && SDL_IsMainThread() && context->IsInUIThread()) {
+     // Cocoa stops making Metal drawables available as part of its termination
+     // request. Handle the request synchronously while SDL is queueing it,
+@@ -189,6 +233,12 @@ bool SDLCALL SDLWindowedAppContext::WatchEvent(void* userdata, SDL_Event* event)
+     ++context->synchronously_handled_quit_events_;
+     context->ProcessQuitRequest();
+   }
++#else
++  // [svr2011] Elsewhere the quit goes through the message loop (ProcessEvent): handled here, inside SDL's event-watcher
++  // lock, it stops the guest threads while one of them can be pushing an event (waiting for that lock) - Alt+F4 hung.
++  (void)context;
++  (void)event;
++#endif
+   return true;
+ }
+ 
 diff --git a/src/ui/windowed_app_main_sdl.cpp b/src/ui/windowed_app_main_sdl.cpp
 index 77bb1dc..acc33de 100644
 --- a/src/ui/windowed_app_main_sdl.cpp
@@ -6799,7 +6824,7 @@ index 77bb1dc..acc33de 100644
    rex::cvar::ApplyEnvironment();
    rex::InitLoggingEarly();
 diff --git a/src/input/mnk/mnk_input_driver.cpp b/src/input/mnk/mnk_input_driver.cpp
-index 3f9422d..a1c95a0 100644
+index 3f9422d..d7119a9 100644
 --- a/src/input/mnk/mnk_input_driver.cpp
 +++ b/src/input/mnk/mnk_input_driver.cpp
 @@ -21,6 +21,7 @@
@@ -6906,8 +6931,46 @@ index 3f9422d..a1c95a0 100644
    uint16_t buttons = 0;
    if (IsBindPressed(key_down_, REXCVAR_GET(keybind_a)))
      buttons |= X_INPUT_GAMEPAD_A;
-@@ -423,7 +469,9 @@ void MnkInputDriver::ApplyMouseCaptureFromUIThread() {
+@@ -398,17 +444,31 @@ void MnkInputDriver::EnqueueKeystroke(uint16_t vk_pad, bool down) {
+ 
+ void MnkInputDriver::QueueMouseCaptureUpdate(bool should_capture) {
+   mouse_capture_requested_.store(should_capture, std::memory_order_relaxed);
++  // [svr2011] nothing to change, nothing posted
++  if (mouse_capture_applied_.load(std::memory_order_relaxed) == int(should_capture)) {
++    return;
++  }
+   bool already_queued = false;
+   if (!mouse_capture_update_queued_.compare_exchange_strong(already_queued, true)) {
+     return;
+   }
+-  std::lock_guard lock(state_mutex_);
+-  if (!attached_window_) {
++  rex::ui::WindowedAppContext* context = nullptr;
++  {
++    std::lock_guard lock(state_mutex_);
++    if (attached_window_) {
++      context = &attached_window_->app_context();
++    }
++  }
++  if (!context) {
+     mouse_capture_update_queued_.store(false, std::memory_order_relaxed);
+     return;
+   }
+   // Deferred, not CallInUIThread: running inline would re-enter state_mutex_.
+-  attached_window_->app_context().CallInUIThreadDeferred([this] {
++  // [svr2011] Posted with state_mutex_ released: the post pushes an SDL event, which runs SDL's event watchers under
++  // its lock - the UI thread can be in one waiting for state_mutex_ (a quit handled there detaches this driver), and
++  // with the lock held here neither went on: the pad read stuck (the world update with it) and Alt+F4 hung (2.1.9,
++  // mnk_mode).
++  context->CallInUIThreadDeferred([this] {
+     mouse_capture_update_queued_.store(false, std::memory_order_relaxed);
+     ApplyMouseCaptureFromUIThread();
+   });
+@@ -421,13 +481,17 @@ void MnkInputDriver::ApplyMouseCaptureFromUIThread() {
+   }
+   bool should_capture = mouse_capture_requested_.load(std::memory_order_relaxed);
    if (should_capture == mouse_captured_) {
++    mouse_capture_applied_.store(int(mouse_captured_), std::memory_order_relaxed);
      return;
    }
 -  if (!should_capture) {
@@ -6917,7 +6980,20 @@ index 3f9422d..a1c95a0 100644
      ReleaseMouseCaptureFromUIThread(window);
      return;
    }
-@@ -459,7 +507,7 @@ void MnkInputDriver::RecenterCursorFromUIThread(int32_t x, int32_t y) {
+   mouse_captured_ = true;
++  mouse_capture_applied_.store(1, std::memory_order_relaxed);
+   precapture_cursor_visibility_ = window->GetCursorVisibility();
+   window->SetCursorVisibility(rex::ui::Window::CursorVisibility::kHidden);
+   window->CaptureMouse();
+@@ -442,6 +506,7 @@ void MnkInputDriver::ApplyMouseCaptureFromUIThread() {
+ }
+ 
+ void MnkInputDriver::ReleaseMouseCaptureFromUIThread(rex::ui::Window* window) {
++  mouse_capture_applied_.store(0, std::memory_order_relaxed);
+   if (!mouse_captured_) {
+     return;
+   }
+@@ -459,7 +524,7 @@ void MnkInputDriver::RecenterCursorFromUIThread(int32_t x, int32_t y) {
    }
    int32_t width = int32_t(window->GetActualPhysicalWidth());
    int32_t height = int32_t(window->GetActualPhysicalHeight());

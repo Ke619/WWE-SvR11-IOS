@@ -1002,6 +1002,32 @@ void CheckMatchType(const fs::path& dir, std::vector<Problem>& p) {
                     .With("Turn it off", TurnOff(dir)));
 }
 
+// A title mod (docs/TITLE_MODS.md): a known title key, something to replace, pictures named by a texture hash.
+constexpr const char* kTitleKeys[] = {"IC", "US", "WWE", "WHC", "WWE_TAG", "WORLD_TAG", "ECW", "DIVAS", "WOMENS",
+                                      "HARDCORE", "CRUISER", "MILLION", "WCW"};
+void CheckTitle(const fs::path& dir, std::vector<Problem>& p) {
+  const Manifest m = ReadManifest(dir);
+  std::string key = Trim(m.Get("title"));
+  for (char& c : key) c = char(std::toupper(static_cast<unsigned char>(c)));
+  if (std::none_of(std::begin(kTitleKeys), std::end(kTitleKeys), [&](const char* k) { return key == k; }))
+    p.push_back(Error("Its title= isn't one of the game's titles (IC, US, WWE, WHC, WWE_TAG, WORLD_TAG, ECW, DIVAS, WOMENS, "
+                      "HARDCORE, CRUISER, MILLION, WCW): the game leaves it out.").With("Turn it off", TurnOff(dir)));
+  std::error_code ec;
+  int pictures = 0, unnamed = 0;
+  for (const auto& e : fs::recursive_directory_iterator(dir / "textures", ec)) {
+    if (!e.is_regular_file(ec)) continue;
+    const std::string ext = Lower(PathStr(e.path().extension())), stem = PathStr(e.path().stem());
+    if (ext != ".dds" && ext != ".png") continue;
+    const size_t u = stem.rfind('_');
+    const std::string h = u == std::string::npos ? stem : stem.substr(u + 1);
+    const bool hashed = h.size() == 16 && std::all_of(h.begin(), h.end(), [](char c) { return std::isxdigit(static_cast<unsigned char>(c)); });
+    (hashed ? pictures : unnamed) += 1;
+  }
+  if (unnamed) p.push_back(Warning(std::to_string(unnamed) + " of its pictures have no texture hash at the end of the name (<name>_<16 hex>): the game skips them.").With(kOpen, OpenIt(dir / "textures")));
+  if (Trim(m.Get("name")).empty() && !pictures && !Exists(dir / "pack.txt"))
+    p.push_back(Error("It changes nothing: no name=, no pictures in textures\\, no pack.txt.").With("Turn it off", TurnOff(dir)));
+}
+
 }  // namespace
 
 std::string KindOfType(const std::string& type) {
@@ -1015,6 +1041,7 @@ std::string KindOfType(const std::string& type) {
   if (t == "media") return "Media";
   if (t == "background") return "Backgrounds";
   if (t == "matchtype") return "MatchTypes";
+  if (t == "title") return "Titles";
   return "";
 }
 
@@ -1031,6 +1058,7 @@ std::vector<Problem> CheckModFolder(const std::string& kind, const fs::path& dir
   else if (kind == "Media") CheckMedia(dir, p);
   else if (kind == "Backgrounds") CheckBackgrounds(dir, p);
   else if (kind == "MatchTypes") CheckMatchType(dir, p);
+  else if (kind == "Titles") CheckTitle(dir, p);
   if (Exists(dir / "disabled"))
     p.push_back(Problem{false, "It's switched off: the game doesn't load it.", ""}.With("Switch it on", [dir] {
       std::error_code ec;
@@ -1079,6 +1107,23 @@ std::vector<Problem> CheckInstalledSet() {
   for (const auto& d : on_dirs("Backstage")) (ReadManifest(d).Has("row") ? rows : plain) += 1;
   if (rows > 8) p.push_back(Warning(std::to_string(rows) + " new backstage areas are on: the menu holds 8, so the rest don't show."));
   if (plain > 1) p.push_back(Warning(std::to_string(plain) + " backstage mods change the same area: only one of them plays."));
+  {  // (two title mods on one title: the first by folder name plays - title_mods.cpp)
+    std::map<std::string, std::vector<std::string>> by_title;
+    auto titles = on_dirs("Titles");
+    std::sort(titles.begin(), titles.end());
+    for (const auto& d : titles) {
+      std::string key = Trim(ReadManifest(d).Get("title"));
+      for (char& c : key) c = char(std::toupper(static_cast<unsigned char>(c)));
+      by_title[key].push_back(PathStr(d.filename()));
+    }
+    for (const auto& [key, folders] : by_title)
+      if (folders.size() > 1) {
+        std::string rest;
+        for (size_t i = 1; i < folders.size(); ++i) rest += (i > 1 ? ", " : "") + folders[i];
+        p.push_back(Warning(std::to_string(folders.size()) + " title mods replace the " + key + " title: " + folders[0] +
+                            " plays, the game leaves out " + rest + ".").With("See them", [] { GoTo(PageId::kInstalled); }));
+      }
+  }
   return p;
 }
 

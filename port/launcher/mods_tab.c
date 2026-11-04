@@ -188,7 +188,7 @@ static int maker_present(void);
 static void scan(void)
 {
     static const WCHAR *const types[] = { L"Arenas", L"Superstars", L"Signs", L"Media", L"Backstage", L"Moves", L"MatchTypes",
-                                         L"Backgrounds", L"Attires" };
+                                         L"Backgrounds", L"Attires", L"Titles" };
     int t;
     s_nmods = 0;
     if (!s_game[0]) return;
@@ -814,7 +814,7 @@ static const WCHAR *kind_folder(const WCHAR *type)
     static const struct { const WCHAR *type, *folder; } k[] = {
         {L"superstar", L"Superstars"}, {L"arena", L"Arenas"}, {L"backstage", L"Backstage"}, {L"signs", L"Signs"},
         {L"media", L"Media"}, {L"matchtype", L"MatchTypes"}, {L"background", L"Backgrounds"}, {L"attire", L"Attires"},
-        {L"moves", L"Moves"},
+        {L"moves", L"Moves"}, {L"title", L"Titles"},
     };
     int i;
     for (i = 0; i < (int)(sizeof k / sizeof *k); ++i)
@@ -1885,9 +1885,10 @@ static int install_file(const WCHAR *zip)
         const int match_type = !_wcsicmp(m.type, L"matchtype");
         const int background = !_wcsicmp(m.type, L"background");
         const int attire = !_wcsicmp(m.type, L"attire");
+        const int title = !_wcsicmp(m.type, L"title");  /* a championship's name / belt / pictures (Mods/Titles) */
         WCHAR need1[MAX_PATH], need2[MAX_PATH];
-        if (signs || media || match_type) {
-            wcsncpy_s(kind, 32, signs ? L"Signs" : media ? L"Media" : L"MatchTypes", _TRUNCATE);
+        if (signs || media || match_type || title) {
+            wcsncpy_s(kind, 32, signs ? L"Signs" : media ? L"Media" : title ? L"Titles" : L"MatchTypes", _TRUNCATE);
             goto place;
         }
         if (background) {  /* main menu pictures: picture.dds or a pack's *.dds (1024 x 512 DXT5) */
@@ -2016,6 +2017,8 @@ place:
                        : !wcscmp(kind, L"Backgrounds") ? L"Installed \"%s\". The main menu shows it after its own "
                                                          L"12 pictures."
                        : !wcscmp(kind, L"Signs") ? L"Installed \"%s\". The crowd holds these signs up in every match."
+                       : !wcscmp(kind, L"Titles") ? L"Installed \"%s\". The game shows the title's new name, belt and "
+                                                    L"picture the next time it starts."
                        : !wcscmp(kind, L"Attires") ? L"Installed \"%s\". The superstar has it on CHANGE ATTIRE the next "
                                                      L"time the game starts."
                        : wcscmp(kind, L"Arenas") ? L"Installed \"%s\". It is under the M tile of the character "

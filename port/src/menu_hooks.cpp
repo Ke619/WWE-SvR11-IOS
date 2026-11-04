@@ -47,6 +47,7 @@
 #include "weapons_page.h"
 #include "discord_presence.h"
 #include "online.h"
+#include "title_mods.h"
 #include "caw_limits.h"
 #include "match_record.h"
 #include "match_types.h"
@@ -374,6 +375,10 @@ std::string GameString(PPCContext& ctx, uint8_t* base, uint32_t id) { return Lab
 REX_EXTERN(__imp__sub_82153EF8);
 REX_HOOK_RAW(sub_82153EF8) {
   if (!g_string_manager) g_string_manager = ctx.r3.u32;  // (for the log's menu names)
+  if (const uint32_t s = svr2011::TitleModString(ctx, base)) {  // (title mods' names: title_mods.h)
+    ctx.r3.u64 = s;
+    return;
+  }
   if (const uint32_t s = svr2011::OnlineString(ctx.r4.u32)) {  // (online.h)
     ctx.r3.u64 = s;
     return;

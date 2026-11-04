@@ -281,6 +281,8 @@ REX_HOOK_RAW(sub_828BC5E8) {
         }
     REXLOG_INFO("test match: people {}; arena {}", done.empty() ? "as picked" : done,
                 Rd32(base + kLive + kArena));
+    // (a Universe card's people as the match's again: its select screen re-picks every slot - big roster's card test)
+    svr2011::BigRosterTestCard(base);
     // Test aid: SVR2011_TEST_DAMAGE=<0-255> - the six DAMAGE BALANCING sliders (game block +10394..+10399, damage x
     // (slider x 0.01 + 0.5); 255 about 3x) for this match: pins come in minutes, not at a match's end (pin tests).
     if (const char* v = std::getenv("SVR2011_TEST_DAMAGE")) {

@@ -20,8 +20,9 @@ uint32_t RosterEntry(uint32_t start, uint32_t stride, uint32_t index);
 // Test aid SVR2011_TEST_HIGH_INDEX=<n> (big_roster on): the first n of these ids (the mods) get record indices from
 // 242 up, their old index left unused - the extensions without new ids. Before the game reads its tables.
 void BigRosterTestMove(uint8_t* base, const uint32_t* ids, int count);
-// Test aid SVR2011_TEST_UNIVERSE_CARD=<id>:<id>,... (after a save load): the Universe cards' people with the first
-// id get the second (a moved mod on a card without simulating weeks).
+// Test aid SVR2011_TEST_UNIVERSE_CARD=<id>:<id>,... (after a save load, and as a test match loads - a Universe
+// card's select screen re-picks every slot): the Universe cards' people with the first id get the second (a moved
+// mod on a card without simulating weeks).
 void BigRosterTestCard(uint8_t* base);
 
 }  // namespace svr2011

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <mutex>
@@ -247,6 +248,56 @@ void LogThread(int every) {
   }
 }
 
+// A light memory line every 30 s, perf_log_seconds or not (2.1.9 report 94e7bb: a 4 GB phone's game closed by Android
+// after 10-20 minutes, no crash - and nothing in the log to tell growth from a full phone): the process's RAM, on
+// Linux / Android its proportional share (PSS, what the low-memory killer weighs) and swap, and what the system has
+// left. Its own thread: smaps_rollup takes a while on a big address space.
+std::string MemoryLine() {
+  PerfSample s;
+  Memory(s);
+  char b[256];
+  std::snprintf(b, sizeof b, "RAM %.0f MB (private %.0f)", s.ram_ws_mb, s.ram_private_mb);
+  std::string out = b;
+#if defined(_WIN32)
+  MEMORYSTATUSEX m = {sizeof m};
+  if (GlobalMemoryStatusEx(&m))
+    std::snprintf(b, sizeof b, "; system: %.0f MB available of %.0f MB", m.ullAvailPhys / 1048576.0,
+                  m.ullTotalPhys / 1048576.0),
+        out += b;
+#else
+  auto kb = [](const char* file, const char* key) {
+    long v = -1;
+    if (FILE* f = std::fopen(file, "r")) {
+      char line[256];
+      const size_t n = std::strlen(key);
+      while (std::fgets(line, sizeof line, f))
+        if (!std::strncmp(line, key, n)) {
+          v = std::atol(line + n);
+          break;
+        }
+      std::fclose(f);
+    }
+    return v;
+  };
+  if (const long pss = kb("/proc/self/smaps_rollup", "Pss:"); pss >= 0)
+    std::snprintf(b, sizeof b, ", PSS %.0f MB", pss / 1024.0), out += b;
+  if (const long swap = kb("/proc/self/status", "VmSwap:"); swap >= 0)
+    std::snprintf(b, sizeof b, ", swap %.0f MB", swap / 1024.0), out += b;
+  const long avail = kb("/proc/meminfo", "MemAvailable:"), total = kb("/proc/meminfo", "MemTotal:");
+  if (avail >= 0 && total > 0)
+    std::snprintf(b, sizeof b, "; system: %.0f MB available of %.0f MB", avail / 1024.0, total / 1024.0), out += b;
+#endif
+  return out;
+}
+
+void MemoryLogThread() {
+  rex::thread::set_current_thread_name("memory log");
+  for (;;) {
+    REXLOG_INFO("[svr2011] memory: {}", MemoryLine());
+    std::this_thread::sleep_for(std::chrono::seconds(30));
+  }
+}
+
 }  // namespace
 
 PerfSample SamplePerf() {
@@ -279,6 +330,7 @@ std::string PerfLine(const PerfSample& s) {
 
 void InstallPerfStats(rex::memory::Memory* memory) {
   g_memory = memory;
+  std::thread(MemoryLogThread).detach();
   const int every = REXCVAR_GET(perf_log_seconds);
   if (every > 0) {
     REXLOG_INFO("[svr2011] perf: a line every {} s (perf_log_seconds), and a warning when RAM / VRAM keeps growing", every);

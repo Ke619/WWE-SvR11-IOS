@@ -5,6 +5,7 @@
 #include "svr2011_app.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdlib>
 #include <fstream>
@@ -25,6 +26,7 @@
 #include <rex/audio/sdl/sdl_audio_system.h>
 #include <rex/cvar.h>
 #include <rex/filesystem.h>
+#include <rex/hook.h>
 #include <rex/filesystem/devices/host_path_device.h>
 #include <rex/filesystem/vfs.h>
 #include <rex/logging.h>
@@ -324,9 +326,16 @@ void CheckGameFilesThere() {
     REXLOG_WARN("game files: {} of the disc's files missing from the game folder: {}", missing.size(), list);
     return;
   }
+#if defined(_WIN32)
+  // (test aid SVR2011_TEST_FILES_LOG_ONLY=1: logged only, as on Android - the game runs on to DiscReadError)
+  const bool stop = !std::getenv("SVR2011_TEST_FILES_LOG_ONLY");
+#else
+  const bool stop = false;  // (no box this early on Android: the game stops at its first read of one, DiscReadError)
+#endif
   REXLOG_ERROR("game files: {} of the disc's files missing from the game folder ({} the game can't start without): {}"
-               " - not started (reinstall from the Xbox 360 disc image: launcher Install, then Verify game files)",
-               missing.size(), essential, list);
+               " - {} (reinstall from the Xbox 360 disc image: launcher Install, then Verify game files)",
+               missing.size(), essential, list, stop ? "not started" : "the game stops with a message when it reads one");
+  if (!stop) return;
   rex::FlushLogging();
 #if defined(_WIN32)
   if (!std::getenv("SVR2011_TEST_NO_DIALOGS")) {
@@ -345,6 +354,53 @@ void CheckGameFilesThere() {
   std::_Exit(3);
 #endif
 }
+
+}  // namespace
+
+// The game's disc read error (sub_82904DB8 -> XamShowDirtyDiscErrorUI): a file it needs couldn't be opened. The
+// runtime's box blamed "bad or unimplemented file IO calls" and then called exit(1) - static objects destroyed under
+// the still running render and audio threads: a SIGSEGV in native::OnLoadShaderConstants or a SIGABRT in the audio
+// worker seconds later (2.1.9 report edcc87, Android: pac/m.pac missing). Instead the missing files are named on
+// screen, the log is flushed and the game ends without destructors.
+REX_HOOK_RAW(sub_82904DB8) {
+  (void)ctx, (void)base;
+  static std::atomic<bool> ending{false};
+  if (ending.exchange(true))
+    for (;;) std::this_thread::sleep_for(std::chrono::seconds(1));
+  std::string names;
+  int listed = 0, more = 0;
+  if (g_disc_data_beside)
+    for (int pass = 0; pass < 2; ++pass)  // (the ones the game can't start without first)
+      for (const auto& m : svr2011::MissingGameFiles()) {
+        if (m.essential != (pass == 0)) continue;
+        if (listed == 3) {
+          ++more;
+          continue;
+        }
+        std::string p = m.path;
+        std::replace(p.begin(), p.end(), '\\', '/');
+        names += (listed++ ? ", " : "") + p;
+      }
+  if (more) names += " and " + std::to_string(more) + " more";
+  const std::string text =
+      names.empty() ? "A game file couldn't be read. Install the game again from your Xbox 360 disc image (launcher "
+                      "Install). The game will close."
+                    : "Game files missing: " + names + ". Install the game again from your Xbox 360 disc image "
+                      "(launcher Install). The game will close.";
+  REXLOG_ERROR("[svr2011] disc read error: {} - ending the game", names.empty() ? "a file couldn't be read" : names);
+  svr2011::ShowNotice(text, 15.0f);
+  rex::FlushLogging();
+  std::this_thread::sleep_for(std::chrono::seconds(15));
+  rex::FlushLogging();
+#if defined(_WIN32)
+  // (not _Exit alone: on Windows it still unloads the DLLs - rexruntime's static objects destroyed under the running
+  // threads, an abort() and a crash report)
+  TerminateProcess(GetCurrentProcess(), 4);
+#endif
+  std::_Exit(4);
+}
+
+namespace {
 
 // A Mac through Wine / CrossOver (Wine's ntdll says the host is Darwin): its Vulkan is MoltenVK, which lacks what the
 // game's Vulkan path needs - the game aborted in winevulkan a moment in, a black window (2.1.7 report f331f8, Apple

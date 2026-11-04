@@ -123,12 +123,16 @@ page (`port/docs/MOVE_MODDING.md`).
   closest length) before the category vote - a coded category mixes holds with other moves (2K15's M013 is
   mostly reversals: its vote said STAT and the Patriot Lock got Mule Kick Reversal 2; now Single Leg Boston
   Crab 21308).
-- **The game tells a submission by its id** (4 Nov): in a hold = the motion in 21000-21499 (sub_821B57F8 /
-  sub_821B58F8), a standing one 21000-21099 (sub_821B2540), a front grapple 4500-5549 ... (sub_821B9E80). Every
-  21000s record is a stock submission, so a ported hold sits elsewhere: its victim stood up when x 0 ended. These
-  tests now ask about the move a pack's move is copied from (wazecopy: cam_mod_moves.cpp, PackCopySource) - a forced
-  ported hold stays in its hold like a stock one. (A forced start skips the game's submission state: no tap or
-  break, stock holds alike - that needs a hold the CPU or a player applies.)
+- **Open: the game tells a submission by its id** (4 Nov): in a hold = the motion in 21000-21499 (sub_821B57F8 for
+  an id, sub_821B58F8 a fighter's current one), standing 21000-21099 (sub_821B2540), the sub-kinds 21100s / 21200-249 /
+  21250-299 / 21300-349 / 21350-399 / 21400-449 / 21450-499 (sub_821B2560 / 5818 / 5838 / 5858 / 5878 / 5898 / 58B8),
+  a front grapple 4500-5549 ... (sub_821B9E80), submissions among the moveset's slots 101-103 / 107-109
+  (sub_821BBAF0). Every 21000s record is a stock submission, so a ported hold sits elsewhere: its victim stands up when
+  x 0 ends. Tried (branch kimura-ground, not merged): those four tests answering for the move's wazecopy source - a
+  forced hold then stayed in its hold, but one the CPU applied (SVR2011_TEST_SLOT_MOVE + SVR2011_TEST_MOMENTUM) never
+  ended (230 s; the stock Crossface the same way ended in 40 s) - a stuck match, worse than the stand-up: taken out.
+  A forced start skips the game's submission state (stock holds loop forever too): taps and breaks need a CPU-applied
+  hold.
 - **Standing or on the mat**: choose_submission takes the template whose victim is as high as the source's at the
   start and in the hold (x 2; standing holds keep him at -7..-11 model units, mat holds -1..-5). 2K15's Kimura Lock
   (standing start, on the mat: -8.8 / -3.3) got Bearhug, a standing hold - now Crossface 21004 (-8.8 / -1.5).

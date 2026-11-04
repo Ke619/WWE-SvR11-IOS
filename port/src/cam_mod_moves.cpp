@@ -74,42 +74,6 @@ namespace svr2011 {
 void InstallCamModMoves(rex::memory::Memory* memory) { g_memory = memory; }
 }  // namespace svr2011
 
-// The game tells kinds of move apart by their id: in a submission = the motion in 21000-21499 (sub_821B57F8 for an
-// id, sub_821B58F8 for a fighter's current one), a standing submission 21000-21099 (sub_821B2540), a front grapple
-// 4500-5549 / 6510-6609 / 21000-21099 / ... (sub_821B9E80). A pack's move copied onto another record (its wazecopy:
-// the free records are elsewhere - every 21000s record is a stock submission) answered as nothing of the kind: a
-// ported submission ran no hold - its victim stood up when x 0 ended (2K15's Kimura Lock, report 20261104-093125).
-// These tests now ask about the move it was copied from.
-namespace {
-uint32_t AsCopied(uint32_t id) {
-  const uint16_t from = id < 65536 ? svr2011::PackCopySource(uint16_t(id)) : 0;
-  return from ? from : id;
-}
-}  // namespace
-
-REX_EXTERN(__imp__sub_821B57F8);
-REX_HOOK_RAW(sub_821B57F8) {
-  ctx.r3.u64 = AsCopied(ctx.r3.u32);
-  __imp__sub_821B57F8(ctx, base);
-}
-
-REX_EXTERN(__imp__sub_821B2540);
-REX_HOOK_RAW(sub_821B2540) {
-  ctx.r3.u64 = AsCopied(ctx.r3.u32);
-  __imp__sub_821B2540(ctx, base);
-}
-
-REX_EXTERN(__imp__sub_821B9E80);
-REX_HOOK_RAW(sub_821B9E80) {
-  ctx.r3.u64 = AsCopied(ctx.r3.u32);
-  __imp__sub_821B9E80(ctx, base);
-}
-
-REX_HOOK_RAW(sub_821B58F8) {   // (the fighter's motion +212 in 21000-21499 - the game's own, its id as copied)
-  const int32_t m = int32_t(AsCopied(Rd32(base, ctx.r3.u32 + 212)));
-  ctx.r3.u64 = (m >= 21000 && m < 21500) ? 1 : 0;
-}
-
 // CREATE A MOVE-SET's list rows (sub_82BA1AC8(page, tab, first row)): each of the 13 rows' text element
 // (*(*(page + 620) + 8) + ((row + *(page + 1112)) << 8)) keeps a pointer to its record's name at +216. A pack
 // move's row points to "MOD: <name>" - unless the record's own name has it (move_packs.cpp names pack moves so

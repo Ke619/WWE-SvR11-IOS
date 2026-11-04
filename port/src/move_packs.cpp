@@ -2497,11 +2497,6 @@ namespace svr2011 {
 // (g_waze / g_names / g_copies are set once at start-up, before the game runs)
 bool PackMove(uint16_t id) { return g_waze.count(id) || g_names.count(id) || g_copies.count(id); }
 
-uint16_t PackCopySource(uint16_t id) {
-  const auto it = g_copies.find(id);
-  return it == g_copies.end() ? 0 : it->second;
-}
-
 uint16_t CategoryDefaultMove(int category) {
   std::lock_guard lock(g_usable_mutex);
   return category >= 0 && size_t(category) < g_defaults.size() ? g_defaults[category] : 0;

@@ -3061,6 +3061,142 @@ uint32_t PoseOf(uint8_t* base, uint32_t mgr, uint32_t id) {
       return Rd32(base + pairs + i * 8 + 4);
   return 0;
 }
+// ---- A Created Superstar's Menu Screen Pose (report 123925)
+// The editor's page keeps one byte per attire in the .cas and previews it with motion 1010, x = pose * 2 (+ 1 for a
+// diva: the bank has 18 poses, the odd x only for the first 9), from pac\edit\edit.pac's EDIT/MOT. The game reads the
+// byte nowhere else: a CAW on the select screen isn't in the pairs above and takes a rotating pose. Now, when a CAW has
+// a pose set, the select screen also loads EDIT/MOT (its own loader, as the MMDL/MOTN one) and that CAW's panel plays
+// it. Byte 0 is the first pose and also "never set": those keep the rotating poses.
+constexpr uint32_t kCawBlocks = 0xB6364, kCawBlock = 0x24818, kCawPoseByte = 0x24814;
+constexpr uint32_t kCawPoseMotion = 1010;
+uint32_t g_pose_bank = 0;                               // (guest: the loader of EDIT/MOT, while it's loaded)
+int g_panel_pose_x[6] = {-1, -1, -1, -1, -1, -1};       // (per panel: the x of its pose)
+
+int CawPose(uint32_t id, uint32_t attire) {
+  if (id >= 50 || attire >= 4 || g_save_file.empty()) return 0;
+  // (test aid SVR2011_TEST_CAW_POSE=<id>=<pose>[,...]: that CAW's pose, whatever its file holds)
+  static const std::string test = svr2011::Env("SVR2011_TEST_CAW_POSE");
+  for (size_t at = 0; at < test.size();) {
+    size_t end = test.find(',', at);
+    if (end == std::string::npos) end = test.size();
+    const std::string one = test.substr(at, end - at);
+    if (const size_t eq = one.find('='); eq != std::string::npos && uint32_t(std::atoi(one.c_str())) == id)
+      return std::atoi(one.c_str() + eq + 1);
+    at = end + 1;
+  }
+  char name[32];
+  std::snprintf(name, sizeof name, "%02uCreateSuperStar.cas", id);
+  std::ifstream in(g_save_file.parent_path() / name, std::ios::binary);
+  if (!in) return 0;
+  in.seekg(kCawBlocks + attire * kCawBlock + kCawPoseByte);
+  char pose = 0;
+  if (!in.get(pose)) return 0;
+  return uint8_t(pose) < 18 ? uint8_t(pose) : 0;
+}
+
+bool AnyCawPose() {
+  for (uint32_t id = 0; id < 50; ++id)
+    for (uint32_t attire = 0; attire < 4; ++attire)
+      if (CawPose(id, attire)) return true;
+  return false;
+}
+
+void FreePoseBank(PPCContext& ctx, uint8_t* base) {
+  if (!g_pose_bank) return;
+  const uint32_t loader = g_pose_bank;
+  g_pose_bank = 0;
+  const auto saved = ctx;
+  ctx.r1.u64 = saved.r1.u32 - 0x200;
+  ctx.r3.u64 = loader;
+  sub_8274D0D8(ctx, base);
+  ctx.r3.u64 = loader, ctx.r4.u64 = 1;
+  sub_8269B2D0(ctx, base);
+  ctx = saved;
+  REXLOG_INFO("[svr2011] select pose: EDIT/MOT freed");
+}
+
+// (as sub_8273F5C0 asks for MMDL/MOTN, in the select screen's heap)
+void LoadPoseBank(PPCContext& ctx, uint8_t* base, uint32_t mgr) {
+  const auto saved = ctx;
+  const uint32_t sp = saved.r1.u32 - 0x300, name = sp + 96, args = sp + 128;
+  ctx.r1.u64 = sp;
+  sub_8269A478(ctx, base);
+  const uint32_t was = ctx.r3.u32;
+  ctx.r3.u64 = Rd32(base + mgr + 712);
+  sub_8269AC60(ctx, base);
+  ctx.r3.u64 = 80;
+  sub_82150000(ctx, base);
+  if (const uint32_t loader = ctx.r3.u32) {
+    ctx.r3.u64 = loader;
+    sub_8274D098(ctx, base);
+    std::memset(base + name, 0, 20);
+    std::memcpy(base + name, "/EDIT/MOT", 9);
+    ctx.r3.u64 = args;
+    sub_8273E9A0(ctx, base);
+    ctx.r3.u64 = args, ctx.r4.u64 = 32, ctx.r5.u64 = name, ctx.r6.u64 = 20;
+    sub_826A0468(ctx, base);
+    sub_825743A8(ctx, base);
+    Wr32(base + args + 32, ctx.r3.u32);
+    Wr32(base + args + 36, 1);
+    Wr32(base + args + 40, 0);
+    Wr32(base + args + 44, 0);
+    Wr32(base + args + 48, 1);
+    Wr32(base + args + 52, 0);
+    Wr32(base + args + 56, 0);
+    Wr32(base + args + 60, 99);
+    ctx.r3.u64 = loader, ctx.r4.u64 = args;
+    sub_8274D7A0(ctx, base);
+    g_pose_bank = loader;
+    REXLOG_INFO("[svr2011] select pose: a Created Superstar has a Menu Screen Pose - EDIT/MOT loaded");
+  }
+  ctx.r3.u64 = was;
+  sub_8269AC60(ctx, base);
+  ctx = saved;
+}
+
+REX_EXTERN(__imp__sub_8273F5C0);
+REX_HOOK_RAW(sub_8273F5C0) {
+  const uint32_t mgr = ctx.r3.u32, before = Rd32(base + mgr + 728);
+  __imp__sub_8273F5C0(ctx, base);
+  if (Rd32(base + mgr + 728) == before) return;  // (the screen's load didn't start on this call)
+  const auto r3 = ctx.r3.u64;
+  FreePoseBank(ctx, base);
+  if (AnyCawPose()) LoadPoseBank(ctx, base, mgr);
+  ctx.r3.u64 = r3;
+}
+REX_EXTERN(__imp__sub_8273D758);
+REX_HOOK_RAW(sub_8273D758) {
+  FreePoseBank(ctx, base);
+  std::fill(std::begin(g_panel_pose_x), std::end(g_panel_pose_x), -1);
+  __imp__sub_8273D758(ctx, base);
+}
+// A panel's motion starts here (r5 motion, r6 x); a pose put off to later is in the panel's +120 for sub_8273DF80.
+REX_EXTERN(__imp__sub_8273D978);
+REX_HOOK_RAW(sub_8273D978) {
+  if (ctx.r5.u32 == kCawPoseMotion && ctx.r4.u32 < 6 && g_panel_pose_x[ctx.r4.u32] >= 0)
+    ctx.r6.u64 = uint32_t(g_panel_pose_x[ctx.r4.u32]);
+  __imp__sub_8273D978(ctx, base);
+}
+// (r3 the screen, r4 the panel) A panel's first motion starts here, with x 0 or the +120 sub_8273D978 put off: while it
+// runs, motion 1010 is that panel's pose - in the check that it's there and in the start.
+int g_starting_pose_x = -1;
+REX_EXTERN(__imp__sub_8238C808);
+REX_HOOK_RAW(sub_8238C808) {
+  if (g_starting_pose_x >= 0 && ctx.r4.u32 == kCawPoseMotion) ctx.r5.u64 = uint32_t(g_starting_pose_x);
+  __imp__sub_8238C808(ctx, base);
+}
+REX_EXTERN(__imp__sub_82396E80);
+REX_HOOK_RAW(sub_82396E80) {
+  if (g_starting_pose_x >= 0 && ctx.r4.u32 == kCawPoseMotion) ctx.r5.u64 = uint32_t(g_starting_pose_x);
+  __imp__sub_82396E80(ctx, base);
+}
+REX_EXTERN(__imp__sub_8273DF80);
+REX_HOOK_RAW(sub_8273DF80) {
+  g_starting_pose_x = ctx.r4.u32 < 6 ? g_panel_pose_x[ctx.r4.u32] : -1;
+  __imp__sub_8273DF80(ctx, base);
+  g_starting_pose_x = -1;
+}
+
 REX_EXTERN(__imp__sub_8273D4A0);
 REX_HOOK_RAW(sub_8273D4A0) {
   const uint32_t mgr = ctx.r3.u32, slot = mgr + ctx.r4.u32 * 116;
@@ -3085,6 +3221,27 @@ REX_HOOK_RAW(sub_8273D4A0) {
   uint32_t as = id;
   if (const char* v = std::getenv("SVR2011_TEST_POSE_AS"); v && uint32_t(std::atoi(v)) == id)
     if (const char* q = std::strchr(v, '=')) as = uint32_t(std::atoi(q + 1));
+  // (a Created Superstar with a pose set, once its bank has a slot; else as any CAW)
+  if (ctx.r4.u32 < 6) g_panel_pose_x[ctx.r4.u32] = -1;
+  if (id < 50 && ctx.r4.u32 < 6 && g_pose_bank && Rd32(base + g_pose_bank + 44) != 0xFFFFFFFFu) {
+    const uint32_t which = Rd32(base + slot + 20) == 1 ? 64 : 44;
+    if (const int pose = CawPose(id, Rd32(base + slot + which + 4))) {
+      const uint32_t panel = ctx.r4.u32;
+      const auto saved = ctx;
+      ctx.r1.u64 = saved.r1.u32 - 0x100;
+      ctx.r3.u64 = id;
+      sub_828B6950(ctx, base);
+      const bool diva = ctx.r3.u32 == 1;
+      ctx = saved;
+      g_panel_pose_x[panel] = pose * 2 + (diva && pose < 9 ? 1 : 0);
+      static std::set<uint32_t> told_caw;
+      if (told_caw.insert(id << 8 | uint32_t(pose)).second)
+        REXLOG_INFO("[svr2011] select pose: Created Superstar {} attire {} plays its Menu Screen Pose {} (x {})", id,
+                    Rd32(base + slot + which + 4), pose, g_panel_pose_x[panel]);
+      ctx.r3.u64 = kCawPoseMotion;
+      return;
+    }
+  }
   const Mod* m = ModOf(as);
   uint32_t motion = 0;
   if (m) motion = m->pose >= 512 ? m->pose : PoseOf(base, mgr, m->pose ? m->pose : m->base);

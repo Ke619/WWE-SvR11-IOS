@@ -51,7 +51,7 @@ struct NewTitle {
   std::string folder, name, champion;
   bool tag = false;
   uint32_t holder[2] = {kNoHolder, kNoHolder};
-  uint32_t guest_name = 0, guest_champion = 0;  // (in capitals, as the game's lists write titles)
+  uint32_t guest_name = 0, guest_short = 0;  // (in capitals, as the game's lists write titles)
 };
 std::vector<NewTitle> g_new;
 rex::memory::Memory* g_memory = nullptr;
@@ -142,7 +142,19 @@ void InstallNewTitles(rex::memory::Memory* memory) {
       for (char& c : up) c = char(std::toupper(static_cast<unsigned char>(c)));
       t.champion = up.size() > 4 && up.compare(up.size() - 4, 4, "SHIP") == 0 ? t.name.substr(0, t.name.size() - 4) : t.name + " Champion";
     }
-    t.guest_name = guest(t.name), t.guest_champion = guest(t.champion);
+    // (the entrance's banner: the game adds " CHAMPION" to this one: short=, else the holder's form less that word)
+    std::string short_name = CleanUtf8(Value(man, "short"), 120);
+    if (short_name.empty()) {
+      short_name = t.champion;
+      std::string up = short_name;
+      for (char& c : up) c = char(std::toupper(static_cast<unsigned char>(c)));
+      const std::string word = "CHAMPION";
+      if (up.size() >= word.size() && up.compare(up.size() - word.size(), word.size(), word) == 0)
+        short_name.resize(short_name.size() - word.size());
+      while (!short_name.empty() && short_name.back() == ' ') short_name.pop_back();
+      if (short_name.empty()) short_name = t.name;
+    }
+    t.guest_name = guest(t.name), t.guest_short = guest(short_name);
     g_new.push_back(std::move(t));
   }
 }
@@ -289,13 +301,13 @@ REX_HOOK_RAW(sub_828BDB38) {
   ctx.r3.u64 = n;
 }
 
-// A title's name: (title, kind 0 the name / 1 the holder's form) -> the string.
+// A title's name: (title, kind 0 the name / 1 the short name, for " CHAMPION" after it) -> the string.
 REX_HOOK_RAW(sub_82588698) {
   if (const NewTitle* t = Row(ctx.r3.s32)) {
     static uint32_t said = 0;
     if (said != uint32_t(ctx.lr)) REXLOG_INFO("[svr2011] new titles: name of {} asked by {:08X}", t->folder, uint32_t(ctx.lr));
     said = uint32_t(ctx.lr);
-    ctx.r3.u64 = ctx.r4.u32 == 1 ? t->guest_champion : t->guest_name;
+    ctx.r3.u64 = ctx.r4.u32 == 1 ? t->guest_short : t->guest_name;
     return;
   }
   __imp__sub_82588698(ctx, base);

@@ -7,7 +7,8 @@ mods are cosmetic: they don't count as mods for online matches).
 ## New titles (in progress)
 
 A mod with `new=1` adds a title beyond the game's own instead of replacing one: `type=title`, `new=1`,
-`name=`, `champion=` and `kind=tag` for a tag title. Up to 32.
+`name=`, `champion=`, `short=` (the entrance's banner, where the game adds "CHAMPION" after it; without it the
+holder's form less that word) and `kind=tag` for a tag title. Up to 32.
 
 **Works so far:** Championship Scramble's title list and a match on the title; the holder's banner in an entrance;
 holders kept beside the save.
@@ -19,7 +20,7 @@ Outside Universe titles don't change hands in the game: every holder write is Un
 set-up (`sub_825B7EB0`, `sub_825B1488`, `sub_8243D680`, `sub_8257B268`).
 
 - The game's table is at 0x82EDEB50, 14 rows x 16 B, all 14 in use: holder a, holder b, +8 a group, +12 kind (2 = tag),
-  +13 display order. Names: `sub_82588698(title, kind)`, kind 0 the name, 1 the holder's form ("X CHAMPION").
+  +13 display order. Names: `sub_82588698(title, kind)`, kind 0 the name, 1 the short name.
 - A new title's index is 14 + its place in folder order, for that run only: nothing stores the index.
 - Holders are in `Saves	itles.txt`, one row per mod folder: holder a, holder b, each an id, `m:<mod folder>` or `-`.
   The file is written once the save file has changed (the game builds its save before it asks, so a save turned down

@@ -9,8 +9,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # (its own folde
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))  # (tools\: ymks.py)
 import hmot, ymks as Y, hctp2ymks as C, objpose
 
-PB = r"D:/Xbox Games Ports/HCTP Extract/_unpacked/bg/stg_0030/50102.bin"
-DANBORU = r"D:/Xbox Games Ports/HCTP Extract/_unpacked/bg/stg_0030/50101/01243.yobj"
+UNPACKED = os.environ.get('HCTP_UNPACKED')
+if not UNPACKED:
+    raise SystemExit('set HCTP_UNPACKED to the unpacked HCTP disc')
+PB = os.path.join(UNPACKED, 'bg', 'stg_0030', '50102.bin')
+DANBORU = os.path.join(UNPACKED, 'bg', 'stg_0030', '50101', '01243.yobj')
 
 
 def decode11_obj(p):

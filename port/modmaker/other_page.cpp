@@ -35,14 +35,11 @@ namespace {
 std::wstring g_w13_pac, g_w10_pac, g_w08_pac;
 
 // A game's pac folder: its extracted folder in My game discs first, else the old extract next to the port.
-std::wstring Guess(const wchar_t* folder, const char* game = nullptr) {
+std::wstring Guess(const char* game) {
   std::error_code ec;
-  if (game) {
-    const std::wstring mine = disc_list::PathFor(game);
-    if (!mine.empty() && fs::is_directory(fs::path(mine) / L"pac", ec)) return (fs::path(mine) / L"pac").wstring();
-  }
-  const fs::path cand = fs::path(L"D:\\Xbox Games Ports") / folder / L"pac";
-  return fs::exists(cand, ec) ? cand.wstring() : L"";
+  const std::wstring mine = disc_list::PathFor(game);
+  if (!mine.empty() && fs::is_directory(fs::path(mine) / L"pac", ec)) return (fs::path(mine) / L"pac").wstring();
+  return L"";
 }
 
 // Under a folder row: where My game discs has that game (a disc image the tools here can't read: the Port page can).
@@ -307,7 +304,7 @@ void Svr10StarTab() {
                      "into a move pack, the entrance and announcer name when 2011 has them. The mod opens on the "
                      "Superstar page.");
   ImGui::Spacing();
-  if (g_w10_pac.empty()) g_w10_pac = Guess(L"SvR2010 Extract", "svr2010");
+  if (g_w10_pac.empty()) g_w10_pac = Guess("svr2010");
   FolderRow("SvR 2010 pac folder...", g_w10_pac, L"The SvR 2010 \"pac\" folder (its extract)");
   MyDiscNote("svr2010");
   ImGui::SetNextItemWidth(120 * g_scale);
@@ -322,7 +319,7 @@ void Svr10StarTab() {
        "best). It can be changed on the Superstar page afterwards, where the preview shows it.");
   if (!ToolsReady(true)) return;
   if (ImGui::Button("Survey the 2010 roster (ids and names into the log)", ImVec2(320 * g_scale, 0)))
-    RunTool(L"svr10_superstar.py", {L"survey", L"--pac10", g_w10_pac}, [](int) {});
+    RunTool(L"svr10_superstar.py", {L"survey", L"--pac10", g_w10_pac, L"--pac11", Pac11()}, [](int) {});
   ImGui::BeginDisabled(g_w10_pac.empty() || Busy());
   PushAccent();
   if (ImGui::Button("Make the mod and open it on the Superstar page", ImVec2(320 * g_scale, 0))) {
@@ -356,7 +353,7 @@ void Svr10MovesTab() {
                      "cameras), table records and category bits. The pack opens on the Move pack tab (save it as a "
                      "mod, or hand it to a superstar mod).");
   ImGui::Spacing();
-  if (g_w10_pac.empty()) g_w10_pac = Guess(L"SvR2010 Extract", "svr2010");
+  if (g_w10_pac.empty()) g_w10_pac = Guess("svr2010");
   FolderRow("SvR 2010 pac folder...", g_w10_pac, L"The SvR 2010 \"pac\" folder (its extract)");
   MyDiscNote("svr2010");
   TextField("Move ids", g_w10_moves, sizeof g_w10_moves, "e.g. 3088 3274 7573 (2010 move ids, space or comma separated)", 420);
@@ -396,7 +393,7 @@ void Svr08Tab() {
                      "the area's objects - the bundled Parking Lot (2008) mod. The settings below are the ones it "
                      "used. The result opens on the Backstage tab as an area of its own.");
   ImGui::Spacing();
-  if (g_w08_pac.empty()) g_w08_pac = Guess(L"SvR2008 Extract", "svr2008");
+  if (g_w08_pac.empty()) g_w08_pac = Guess("svr2008");
   FolderRow("SvR 2008 pac folder...", g_w08_pac, L"The SvR 2008 \"pac\" folder (its extract)");
   MyDiscNote("svr2008");
   ImGui::SetNextItemWidth(160 * g_scale);

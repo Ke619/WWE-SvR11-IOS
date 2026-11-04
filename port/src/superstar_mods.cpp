@@ -3429,6 +3429,7 @@ void CheckModProfiles(uint8_t* base) {
   MarksTick(base);  // (and which mod each slot's saved profile is: mod_profiles.txt)
   svr2011::StoryModsTick();  // (Story Designer's stories that name a mod: story_mods.cpp)
   UniverseTeamsTick(base);  // (Universe's teams and stables made / changed / dissolved: logged)
+  svr2011::NewTitlesTick(base);  // (the title list's pages: title_new.cpp)
   UniverseWelcomeTick(base);  // (the Universe welcome accepted: kept as seen in the save file at once)
   std::lock_guard lock(g_slots_mutex);
   for (const auto& m : g_mods) {

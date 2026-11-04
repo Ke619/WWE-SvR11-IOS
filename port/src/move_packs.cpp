@@ -218,6 +218,14 @@ std::set<uint16_t> g_motionless;
 // MOT/BM00 only). Unless the game has the id itself, they join g_motionless (not usable: a mod's slots keep the
 // base's moves); the overlay's left_out.txt keeps them for the starts that don't merge. (g_motionless_mutex)
 std::set<uint16_t> g_left_out;
+// Every motion id the game's own banks have - m.pac, mpsp.pac and the DLC packages' m* / mpsp* pacs (DLC Vol. 2's
+// Toe Kick 1 3010, Headbutt 2 4532 and Decavitator 1 5887, in stock movesets, are only in mpsp_dlc02.pac) - and the
+// ids the packs list motions for. A move record with category bits whose id has neither plays as nothing
+// (NoMotionMove): 2011 keeps 637 such records (cut moves), the 30073 Sin Cara's old port used among them, so a save
+// still holding it froze the match once the port moved off it. Read in the merge's walk of the banks and kept in
+// Mods\PacOverlay\motion_ids.bin with the pacs' stamp; empty: not known (nothing judged). (g_motionless_mutex)
+std::vector<bool> g_motion_ids;
+std::set<uint16_t> g_pack_motion_ids;
 
 // data false: the lists and the stamp only (no motion files read - enough to
 // see that the overlay is up to date: thousands of small files on a hard
@@ -251,6 +259,10 @@ void ReadPack(const fs::path& dir, Packs& p, std::string& stamp, bool data = tru
       m.id = uint16_t(id), m.x = uint8_t(x), m.y = uint8_t(y), m.frames = frames;
       m.hdr = Hex(hdr);
       if (m.hdr.size() == 20) g_ymbs_motion[id & 0x7FFF] = true;
+      {
+        std::lock_guard lock(g_motionless_mutex);
+        g_pack_motion_ids.insert(uint16_t(id));
+      }
       m.pack = (dir.filename() == "moves" ? dir.parent_path() : dir).filename().string();
       m.motp = parts[0] == "MOTP";  // (by its bank: the SvR 2008 ports name their packed copies *_p.ymk, not motp_*)
       // (the motion file in the stamp - size and time, no read: a pack whose
@@ -1133,6 +1145,82 @@ bool BuildMotionPac(const fs::path& game, const fs::path& overlay, const std::st
   return BuildMotionFile(game / "pac" / pac, overlay / pac, pac, entries);
 }
 
+// The game's own motion pacs: m.pac, mpsp.pac, then each DLC package's m* / mpsp* pacs (as DlcCopies finds them).
+std::vector<fs::path> MotionPacs(const fs::path& game, const fs::path& dlc_root) {
+  std::vector<fs::path> dlc;
+  std::error_code ec;
+  if (!dlc_root.empty() && fs::is_directory(dlc_root, ec))
+    for (const auto& pkg : fs::directory_iterator(dlc_root, ec)) {
+      std::error_code ec2;
+      for (const auto& f : fs::directory_iterator(pkg.path() / "pac", ec2)) {
+        const std::string n = svr2011::Lower(f.path().filename().string());
+        if (f.is_regular_file(ec2) && n.size() > 4 && n.compare(n.size() - 4, 4, ".pac") == 0 &&
+            (n == "m.pac" || n == "mpsp.pac" || n.rfind("m_dlc", 0) == 0 || n.rfind("mpsp_dlc", 0) == 0))
+          dlc.push_back(f.path());
+      }
+    }
+  std::sort(dlc.begin(), dlc.end());
+  std::vector<fs::path> out = {game / "pac" / "m.pac", game / "pac" / "mpsp.pac"};
+  out.insert(out.end(), dlc.begin(), dlc.end());
+  return out;
+}
+
+std::string MotionStamp(const std::vector<fs::path>& pacs) {
+  std::string s = "motion ids 1\n";
+  for (const auto& p : pacs) {
+    std::error_code ec;
+    const uintmax_t size = fs::file_size(p, ec);
+    if (ec) continue;
+    s += p.filename().string() + " " + std::to_string(size) + " " +
+         std::to_string(static_cast<long long>(fs::last_write_time(p, ec).time_since_epoch().count())) + "\n";
+  }
+  return s;
+}
+
+// Every motion id in those pacs' banks: each entry read whole - seconds (the merge does it anyway).
+std::vector<bool> ReadMotionIds(const std::vector<fs::path>& pacs) {
+  std::vector<bool> ids(0x10000, false);
+  for (const auto& p : pacs) {
+    std::ifstream in(p, std::ios::binary);
+    Bytes head, blob;
+    std::vector<TocEntry> toc;
+    if (!in || !ReadToc(in, head, toc)) continue;
+    for (const auto& e : toc) {
+      svr2011::KeepWindowAlive();
+      blob.resize(size_t(e.size256) * 0x100);
+      in.seekg(std::streamoff(0x4000 + uint64_t(e.sector) * 0x800));
+      if (in.read(reinterpret_cast<char*>(blob.data()), std::streamsize(blob.size()))) CollectMotionIds(blob, ids);
+      else in.clear();
+    }
+  }
+  return ids;
+}
+
+// motion_ids.bin: the stamp, then a bit per id (8 KB).
+bool LoadMotionIds(const fs::path& file, const std::string& stamp, std::vector<bool>& ids) {
+  Bytes b;
+  if (!ReadAll(file, b) || b.size() != stamp.size() + 0x2000 || std::memcmp(b.data(), stamp.data(), stamp.size())) return false;
+  ids.assign(0x10000, false);
+  for (size_t i = 0; i < 0x10000; ++i) ids[i] = (b[stamp.size() + i / 8] >> (i % 8) & 1) != 0;
+  return true;
+}
+
+void SaveMotionIds(const fs::path& file, const std::string& stamp, const std::vector<bool>& ids) {
+  Bytes b(stamp.begin(), stamp.end());
+  b.resize(stamp.size() + 0x2000, 0);
+  for (size_t i = 0; i < 0x10000 && i < ids.size(); ++i)
+    if (ids[i]) b[stamp.size() + i / 8] |= uint8_t(1u << (i % 8));
+  WriteWhole(file, b);
+}
+
+void SetMotionIds(std::vector<bool> ids) {
+  size_t n = 0;
+  for (bool b : ids) n += b;
+  if (n < 1000) ids.clear();  // (the game's motions not read: nothing judged)
+  std::lock_guard lock(g_motionless_mutex);
+  g_motion_ids = std::move(ids);
+}
+
 // The body motions an overlay merged before left_out.txt (an older build) left out - without merging again, which
 // took minutes on a phone with many packs: only a body motion of 16000 and up can be past a bank's last (MOT/BM00's
 // is 16000, the others' higher), so only the banks such a motion goes into are read, from the game's own pac as the
@@ -1947,6 +2035,21 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs, const fs::path& d
     remove_gimmick_pacs();
     fs::remove_all(overlay / "evt", ec);
     fs::remove_all(overlay / "dlc", ec);
+    {  // (a removed pack's move in a save: judged by the game's motion ids - kept, else read once if packs ever were)
+      std::vector<bool> ids;
+      const auto mpacs = MotionPacs(game, dlc_root);
+      const std::string st = MotionStamp(mpacs);
+      std::error_code e2;
+      const uintmax_t had = fs::file_size(overlay / "pack_moves.txt", e2);
+      if (!LoadMotionIds(overlay / "motion_ids.bin", st, ids) && !e2 && had > 0) {
+        const auto t0 = std::chrono::steady_clock::now();
+        ids = ReadMotionIds(mpacs);
+        SaveMotionIds(overlay / "motion_ids.bin", st, ids);
+        REXLOG_INFO("[svr2011] move packs: the game's motion ids read for the removed packs' moves ({} ms)",
+                    std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count());
+      }
+      SetMotionIds(std::move(ids));
+    }
     LoadMoveTables(game);  // (a removed pack's moves in movesets: the match fallback still needs the tables)
     return;
   }
@@ -2065,6 +2168,13 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs, const fs::path& d
         std::lock_guard lock(g_motionless_mutex);
         g_motionless.insert(ids.begin(), ids.end());
       }
+      {  // (the game's motion ids: kept by the last merge - an older build's overlay has none until the next)
+        std::vector<bool> ids;
+        const auto mpacs = MotionPacs(game, dlc_root);
+        if (LoadMotionIds(overlay / "motion_ids.bin", MotionStamp(mpacs), ids)) SetMotionIds(std::move(ids));
+        else REXLOG_INFO("[svr2011] move packs: no motion id list yet (the next merge makes it): moves with no motion "
+                         "aren't judged");
+      }
       LoadMoveTables(game);
       return;
     }
@@ -2094,29 +2204,21 @@ void InstallMovePacks(rex::filesystem::VirtualFileSystem* vfs, const fs::path& d
   bool ok = true;
   std::vector<bool> stock_motions;  // (the game's own motion ids: a left-out body motion it has still plays)
   {  // (the motions the game and the packs have: a pack motion going on to none of them is cleared, BankInsert)
-    g_known_motions.assign(0x10000, false);
-    for (const char* name : {"m.pac", "mpsp.pac"}) {
-      std::ifstream in(game / "pac" / name, std::ios::binary);
-      Bytes head, blob;
-      std::vector<TocEntry> toc;
-      if (!in || !ReadToc(in, head, toc)) continue;
-      for (const auto& e : toc) {
-        svr2011::KeepWindowAlive();
-        blob.resize(size_t(e.size256) * 0x100);
-        in.seekg(std::streamoff(0x4000 + uint64_t(e.sector) * 0x800));
-        if (in.read(reinterpret_cast<char*>(blob.data()), std::streamsize(blob.size()))) CollectMotionIds(blob, g_known_motions);
-        else in.clear();
-      }
-    }
+    const std::vector<fs::path> mpacs = MotionPacs(game, dlc_root);
+    g_known_motions = ReadMotionIds(mpacs);
     size_t n = 0;
     for (bool b : g_known_motions) n += b;
-    if (n >= 1000) stock_motions = g_known_motions;
+    if (n >= 1000) {
+      stock_motions = g_known_motions;
+      SaveMotionIds(overlay / "motion_ids.bin", MotionStamp(mpacs), stock_motions);
+    }
+    SetMotionIds(stock_motions);
     for (const auto& [pac, entries] : packs.motions)
       for (const auto& [type_name, banks] : entries)
         for (const auto& [path, motions] : banks)
           for (const auto& m : motions) g_known_motions[m.id] = true;
     if (n < 1000) g_known_motions.clear();  // (the game's motions not read: nothing judged)
-    REXLOG_INFO("[svr2011] move packs: {} motion ids in the game's m.pac / mpsp.pac", n);
+    REXLOG_INFO("[svr2011] move packs: {} motion ids in the game's m.pac / mpsp.pac and its DLC's ({} pacs)", n, mpacs.size());
   }
   {
     std::lock_guard lock(g_motionless_mutex);
@@ -2419,10 +2521,27 @@ bool StockPlays(uint16_t id) {
   return g_stock_ok.empty() || g_stock_ok[id];  // (tables not loaded: nothing to judge by)
 }
 
+bool NoMotionMove(uint16_t id) {
+  if (!id) return false;
+  {
+    std::lock_guard lock(g_usable_mutex);
+    if (g_bits.empty() || !g_bits[id]) return false;  // (no record with category bits: not this rule's)
+  }
+  std::lock_guard lock(g_motionless_mutex);
+  return !g_motion_ids.empty() && !g_motion_ids[id] && !g_pack_motion_ids.count(id);
+}
+
 bool MoveMissing(uint16_t id) {
-  // only a move a pack gave once, no pack gives now and the stock game can't play: stock movesets name moves
-  // without records, bits or EXH data that play fine, so nothing wider can be trusted
-  if (!id || PackMove(id)) return false;
+  // a record with bits and no motion anywhere (a save's removed or renumbered pack move - 30073), a pack's move
+  // whose motions are missing or left out of a bank (g_motionless), else only a move a pack gave once, no pack
+  // gives now and the stock game can't play: stock movesets name moves without records, bits or EXH data that
+  // play fine, so nothing wider can be trusted
+  if (!id) return false;
+  if (NoMotionMove(id)) return true;
+  if (PackMove(id)) {
+    std::lock_guard lock(g_motionless_mutex);
+    return g_motionless.count(id) > 0;
+  }
   std::lock_guard lock(g_usable_mutex);
   if (g_past_pack.empty() || !g_past_pack[id]) return false;
   return g_stock_ok.empty() || !g_stock_ok[id];
@@ -2434,6 +2553,7 @@ int MoveUsable(uint16_t id) {
     if (g_usable.empty()) return -1;
     if (!g_usable[id]) return 0;
   }
+  if (NoMotionMove(id)) return 0;
   std::lock_guard lock(g_motionless_mutex);
   return g_motionless.count(id) ? 0 : 1;
 }

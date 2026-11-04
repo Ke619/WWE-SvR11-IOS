@@ -8,8 +8,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # (its own folde
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))  # (tools\: ymks.py)
 import hmot, ymks as Y
 
-H = [r"D:/Xbox Games Ports/HCTP Extract/_unpacked/m/MOT_GAME/0000%d.bin" % b for b in (0, 1, 2, 3, 4, 6, 7)] + \
-    [r"D:/Xbox Games Ports/HCTP Extract/_unpacked/bg/stg_0030/50102.bin"]
+UNPACKED = os.environ.get('HCTP_UNPACKED')
+if not UNPACKED:
+    raise SystemExit('set HCTP_UNPACKED to the unpacked HCTP disc')
+H = [os.path.join(UNPACKED, 'm', 'MOT_GAME', '0000%d.bin' % b) for b in (0, 1, 2, 3, 4, 6, 7)] + \
+    [os.path.join(UNPACKED, 'bg', 'stg_0030', '50102.bin')]
 S11 = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', '..',
                    'dfe83e05-1f37-4854-b5ee-c656d2553e43', 'scratchpad', 'ymks', 'banks')
 

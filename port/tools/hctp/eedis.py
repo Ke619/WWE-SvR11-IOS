@@ -4,18 +4,21 @@
     python eedis.py dis <name|0xaddr> [n]  disassemble a function (or n instructions)
     python eedis.py xref <name|0xaddr>     functions that call / reference an address
 """
+import os
 import re
 import struct
 import sys
 
 import capstone
 
-ELF = r"D:\Xbox Games Ports\HCTP Extract\SLES_520.36"
+ELF = os.environ.get('HCTP_ELF', '')  # (the disc's SLES_520.36)
 
 
 def _read_elf(path):
     """the 'main' section (address, bytes) and .symtab as (value, size, name, 'STT_FUNC'|...) - a 32-bit LE ELF,
     read with struct (no pyelftools needed)"""
+    if not path:
+        raise SystemExit('set HCTP_ELF to the HCTP disc\'s SLES_520.36')
     d = open(path, 'rb').read()
     shoff, = struct.unpack_from('<I', d, 0x20)
     shentsize, shnum, shstrndx = struct.unpack_from('<HHH', d, 0x2E)

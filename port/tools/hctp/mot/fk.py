@@ -62,7 +62,15 @@ class Skel:
         return np.array([W[self.index[n]][:3, 3] for n in names])
 
 
-def hctp_nodes(pac_path=r"D:\Xbox Games Ports\HCTP Extract\PAC\CH.PAC", entry=0):
+def need_env(name, what):
+    v = os.environ.get(name)
+    if not v:
+        raise SystemExit('set %s to %s' % (name, what))
+    return v
+
+
+def hctp_nodes(pac_path=None, entry=0):
+    pac_path = pac_path or need_env('HCTP_CH_PAC', "the HCTP disc's PAC\\CH.PAC")
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
     import hpac, yobj
     d = open(pac_path, 'rb').read()
@@ -72,6 +80,7 @@ def hctp_nodes(pac_path=r"D:\Xbox Games Ports\HCTP Extract\PAC\CH.PAC", entry=0)
     return [dict(name=n['name'], t=tuple(n['t']), r=tuple(n['r']), parent=n['parent']) for n in m.nodes], m.name
 
 
-def svr11_nodes(path=r"D:\Xbox Games Ports\WWE Smackdown Vs Raw 2011\Extract GameFiles\pac\ch\ch104.pac"):
+def svr11_nodes(path=None):
+    path = path or os.path.join(need_env('SVR11_PAC', 'the SvR 2011 pac folder'), 'ch', 'ch104.pac')
     import skel11
     return [dict(name=n['name'], t=tuple(n['t']), r=tuple(n['r']), parent=n['parent']) for n in skel11.nodes(path)]

@@ -3610,6 +3610,35 @@ REX_HOOK_RAW(sub_828BA250) {
                 c.r3.u32);
 }
 
+// The online object (*0x82E3DD98, built by sub_824C44F8) keeps the roster's records at +1976 - 242 of 260 bytes,
+// by record index, a 322-entry list right after them - and reads a superstar's profile at *(+1968) + id * 1056 +
+// 48. Its readers (sub_824C3BA0 records by id through the index, sub_824C3B48 profiles by id) would run past
+// both for big roster's indices from 242 / ids from 322: the record comes from the live table's extension instead
+// (RosterEntry), the profile from the game's own fallback (sub_828B6938, the live profile). No online test
+// reached them (lobby picks, CPU slots, matches); a guard, logged once.
+REX_EXTERN(__imp__sub_824C3BA0);
+REX_HOOK_RAW(sub_824C3BA0) {
+  const uint32_t id = ctx.r3.u32;
+  __imp__sub_824C3BA0(ctx, base);
+  if (!ctx.r3.u32 || id < 322 || id >= svr2011::kMaxIds) return;
+  const uint32_t si = svr2011::RosterIndex(base, id);
+  if (si < svr2011::kStockIndices || si >= 512) return;
+  ctx.r3.u64 = svr2011::RosterEntry(kRecords, kRecordSize, si);
+  static std::atomic<bool> told{false};
+  if (!told.exchange(true))
+    REXLOG_INFO("[svr2011] superstar mods: online object record for id {} (index {}) - the live table's", id, si);
+}
+REX_EXTERN(__imp__sub_824C3B48);
+REX_HOOK_RAW(sub_824C3B48) {
+  if (ctx.r3.u32 >= 322 && ctx.r3.u32 < svr2011::kMaxIds) {
+    static std::atomic<bool> told{false};
+    if (!told.exchange(true)) REXLOG_INFO("[svr2011] superstar mods: online object profile for id {} - the live one", ctx.r3.u32);
+    sub_828B6938(ctx, base);
+    return;
+  }
+  __imp__sub_824C3B48(ctx, base);
+}
+
 REX_EXTERN(__imp__sub_825B75A8);
 REX_HOOK_RAW(sub_825B75A8) {  // (id, need owned) -> in Universe
   if (ModOf(ctx.r3.u32) && !svr2011::UniverseModIn(ctx.r3.u32)) {  // (a mod past the side table's room)

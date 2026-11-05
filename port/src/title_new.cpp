@@ -116,6 +116,10 @@ void InstallNewTitles(rex::memory::Memory* memory) {
     std::ifstream in(f / "manifest.txt", std::ios::binary);
     const std::string man((std::istreambuf_iterator<char>(in)), {});
     if (Value(man, "type") != "title" || Value(man, "new") != "1") continue;
+    if (!std::getenv("SVR2011_TEST_NEW_TITLES_ON")) {  // (until new titles ship: no belt, art or Universe yet)
+      REXLOG_WARN("[svr2011] new titles: {} left out - new titles aren't supported yet", f.filename().string());
+      continue;
+    }
     if (int(g_new.size()) >= kMaxNew) {
       REXLOG_WARN("[svr2011] new titles: {} left out ({} is the limit)", f.filename().string(), kMaxNew);
       continue;

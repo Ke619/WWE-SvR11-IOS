@@ -25,12 +25,15 @@ $tools = Split-Path $PSScriptRoot -Parent
 $port = Split-Path $tools -Parent
 . (Join-Path $tools "test_guard.ps1")
 
-$o = @{ p = @{}; arena = ""; rule = ""; attire = ""; mods = "none"; pad1 = ""; pad2 = ""; clock = "600,1200,1800"; play = "30s"; name = "lan"; args = @(); picks1 = ""; picks2 = ""; joinenv = @(); session = ""; rumble = $false }
+$o = @{ p = @{}; arena = ""; rule = ""; attire = ""; mods = "none"; pad1 = ""; pad2 = ""; clock = "600,1200,1800"; play = "30s"; name = "lan"; args = @(); picks1 = ""; picks2 = ""; hostenv = @(); hostargs = @(); joinargs = @(); joinenv = @(); session = ""; rumble = $false }
 for ($i = 0; $i -lt $Rest.Count; $i++) {
     $a = $Rest[$i]; $v = if ($i + 1 -lt $Rest.Count) { $Rest[$i + 1] } else { "" }
     switch -regex ($a) {
         '^--p([1-6])$' { $o.p[[int]$Matches[1]] = $v; $i++; continue }
         '^--join-env$' { $o.joinenv += $v; $i++; continue }  # (NAME=VALUE in the joiner's environment only, e.g. SVR2011_TEST_SLOT_SWAP)
+        '^--host-env$' { $o.hostenv += $v; $i++; continue }  # (the host's only: each behind its own NAT box router)
+        '^--host-arg$' { $o.hostargs += $v; $i++; continue }  # (a game option for one game, after the others: it wins)
+        '^--join-arg$' { $o.joinargs += $v; $i++; continue }
         '^--rumble$' { $o.rumble = $true; continue }  # (ONLINE's ROYAL RUMBLE row instead of MATCH, both games)
         '^--arg$' { $o.args += $v; $i++; continue }  # (a game option for both games, e.g. --arg --big_roster=true)
         '^--(arena|rule|attire|mods|pad1|pad2|clock|play|name|picks1|picks2|session)$' { $o[$Matches[1]] = $v; $i++; continue }
@@ -114,9 +117,12 @@ function Start-Side([string]$side, [string[]]$extra) {
     $env:SVR2011_TEST_RULE = if ($o.rule) { $(if ($o.rule -match '^\d+$' -and $o.rule.Length -lt 3) { "{0:X2}" -f [int]$o.rule } else { $o.rule -replace '^0x', '' }) } else { $null }
     $gameArgs = @("--log_file=`"$(Join-Path $out "$side.log")`"", "--log_level=info", "--audio_mute=true", "--fullscreen=false",
               "--mnk_mode=false", "--p2p_port_mapping=false", "--p2p_relay=false", "--dbg_boot=online",
-              "--dbg_state_clock=$($o.clock)", "--dbg_out=`"$(Join-Path $out $side)`"") + $o.args + $extra
+              "--dbg_state_clock=$($o.clock)", "--dbg_out=`"$(Join-Path $out $side)`"") + $o.args + $extra + @(if ($side -eq "join") { $o.joinargs } else { $o.hostargs })
+    # (each option once, the last one asked for: the game ignores its whole command line when a text option comes twice)
+    $last = @{}; foreach ($a in $gameArgs) { $last[($a -split '=', 2)[0]] = $a }
+    $gameArgs = @($gameArgs | Where-Object { $last[($_ -split '=', 2)[0]] -ceq $_ })
     Use-SvrTestServer -GameDir $game -GameArgs $gameArgs | Out-Null
-    $sideEnv = @(if ($side -eq "join") { $o.joinenv })
+    $sideEnv = @(if ($side -eq "join") { $o.joinenv } else { $o.hostenv })
     foreach ($e in $sideEnv) { $k, $val = $e -split "=", 2; [Environment]::SetEnvironmentVariable($k, $val, "Process") }
     $procs[$side] = Start-Process $exe -WorkingDirectory $game -ArgumentList $gameArgs -PassThru -WindowStyle Minimized
     foreach ($e in $sideEnv) { [Environment]::SetEnvironmentVariable(($e -split "=", 2)[0], $null, "Process") }

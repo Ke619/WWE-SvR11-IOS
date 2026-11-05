@@ -43,6 +43,7 @@ REX_EXTERN(__imp__sub_82735910);
 namespace {
 
 constexpr int kStockTitles = 14;   // the game's table: 0x82EDEB50, 14 rows x 16 B
+constexpr int kFirstNew = 32;      // (not 14 up: Universe's lists use 14 for "no title", sub_825C9F98, sub_825AA2C8)
 constexpr int kMaxNew = 32;        // (title indices travel as signed bytes elsewhere: well under 127)
 constexpr uint32_t kNoHolder = 0x200;
 constexpr uint32_t kTable = 0x82EDEB50;
@@ -68,7 +69,7 @@ std::string Value(const std::string& text, const char* key) {
 }
 
 NewTitle* Row(int64_t index) {
-  const int64_t k = index - kStockTitles;
+  const int64_t k = index - kFirstNew;
   return k >= 0 && k < int64_t(g_new.size()) ? &g_new[size_t(k)] : nullptr;
 }
 
@@ -133,7 +134,7 @@ void InstallNewTitles(rex::memory::Memory* memory) {
       REXLOG_WARN("[svr2011] new titles: {} has no name - left out", t.folder);
       continue;
     }
-    REXLOG_INFO("[svr2011] new titles: {} = title {} \"{}\"{}", t.folder, kStockTitles + int(g_new.size()), t.name, t.tag ? " (tag)" : "");
+    REXLOG_INFO("[svr2011] new titles: {} = title {} \"{}\"{}", t.folder, kFirstNew + int(g_new.size()), t.name, t.tag ? " (tag)" : "");
     const auto guest = [&](const std::string& text) {
       std::string u = text;
       for (char& c : u) c = char(std::toupper(static_cast<unsigned char>(c)));
@@ -297,7 +298,7 @@ REX_HOOK_RAW(sub_828BDB38) {
     const NewTitle& t = g_new[k];
     if (t.tag ? which == 0 : which == 1) continue;
     if (t.holder[0] != id && !(t.tag && t.holder[1] == id)) continue;
-    const uint32_t v = uint32_t(kStockTitles + k);
+    const uint32_t v = uint32_t(kFirstNew + k);
     uint8_t* p = base + out + n * 4;
     p[0] = uint8_t(v >> 24), p[1] = uint8_t(v >> 16), p[2] = uint8_t(v >> 8), p[3] = uint8_t(v);
     ++n;
@@ -390,7 +391,7 @@ REX_HOOK_RAW(sub_8244C9B0) {
   for (size_t k = 0; k < g_new.size(); ++k) {
     const NewTitle& t = g_new[k];
     ListRow r = g_list.rows[0];  // (an in-play row's look: rows 0 and 1 always are)
-    r.title = uint32_t(kStockTitles + k);
+    r.title = uint32_t(kFirstNew + k);
     r.name = t.guest_name, r.name_on = 5;
     bool shown = t.holder[0] != kNoHolder && t.holder[0] < 322;
     if (shown) {  // (as the game's rows: a holder it can show)
@@ -476,7 +477,7 @@ REX_HOOK_RAW(sub_82732D68) {
   bool any_new = false;
   for (uint32_t p = 0; p < n && p < 32; ++p) {
     const uint32_t t = Rd(base, row(p) + 40);
-    if (t != 255 && t >= uint32_t(kStockTitles)) any_new = true;
+    if (t != 255 && t >= uint32_t(kFirstNew)) any_new = true;
   }
   const uint32_t mine = Rd(base, row(person) + 40), team = Rd(base, row(person) + 12);
   if (!any_new || mine == 255) {
@@ -522,9 +523,19 @@ REX_HOOK_RAW(sub_82732D68) {
   ctx.r3.u64 = ok && used.size() <= 2 ? 1 : 0;
 }
 
+// The list's row is picked.
+REX_EXTERN(__imp__sub_8244D040);
+REX_HOOK_RAW(sub_8244D040) {
+  if (!g_new.empty()) {
+    const uint32_t row = Rd(base, ctx.r3.u32 + 28);
+    REXLOG_INFO("[svr2011] new titles: picked row {}, title {}", row, Rd(base, ctx.r3.u32 + 628 + row * 4));
+  }
+  __imp__sub_8244D040(ctx, base);
+}
+
 // The match's title is set: (select, title, 1).
 REX_HOOK_RAW(sub_82735910) {
-  if (const NewTitle* t = Row(ctx.r4.s32)) REXLOG_INFO("[svr2011] new titles: the match is for {}", t->folder);
+  if (!g_new.empty()) REXLOG_INFO("[svr2011] new titles: the match is for title {}", ctx.r4.s32);
   __imp__sub_82735910(ctx, base);
 }
 
@@ -558,13 +569,13 @@ void TestCheck(PPCContext& ctx, uint8_t* base) {
     const char* v = std::getenv("SVR2011_TEST_NEW_TITLES");
     const uint32_t id = uint32_t(std::strtoul(v, nullptr, 10));
     if (id) {
-      ctx.r3.u64 = kStockTitles, ctx.r4.u64 = id, ctx.r5.u64 = 0;
+      ctx.r3.u64 = kFirstNew, ctx.r4.u64 = id, ctx.r5.u64 = 0;
       sub_828BD5B8(ctx, base);
     }
-    const uint32_t h = call(sub_828BD548, kStockTitles, 0, 1);
-    const uint32_t h2 = call(sub_8243B0A8, kStockTitles, 0);
-    REXLOG_INFO("[svr2011] new titles test: title {} holder {} / {} tag {} in play {}", kStockTitles, h, h2, call(sub_828BD508, kStockTitles),
-                call(sub_828C22E0, kStockTitles));
+    const uint32_t h = call(sub_828BD548, kFirstNew, 0, 1);
+    const uint32_t h2 = call(sub_8243B0A8, kFirstNew, 0);
+    REXLOG_INFO("[svr2011] new titles test: title {} holder {} / {} tag {} in play {}", kFirstNew, h, h2, call(sub_828BD508, kFirstNew),
+                call(sub_828C22E0, kFirstNew));
   }
   ctx = saved;
 }

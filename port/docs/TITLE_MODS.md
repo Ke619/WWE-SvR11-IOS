@@ -24,7 +24,7 @@ set-up (`sub_825B7EB0`, `sub_825B1488`, `sub_8243D680`, `sub_8257B268`).
 
 - The game's table is at 0x82EDEB50, 14 rows x 16 B, all 14 in use: holder a, holder b, +8 a group, +12 kind (2 = tag),
   +13 display order. Names: `sub_82588698(title, kind)`, kind 0 the name, 1 the short name.
-- A new title's index is 14 + its place in folder order, for that run only: nothing stores the index.
+- A new title's index is 32 + its place in folder order, for that run only: nothing stores the index. (Not 14 up: Universe's lists use 14 for "no title".)
 - Holders are in `Saves	itles.txt`, one row per mod folder: holder a, holder b, each an id, `m:<mod folder>` or `-`.
   The file is written once the save file has changed (the game builds its save before it asks, so a save turned down
   at its prompt doesn't count). The save itself is never changed, so removing the mod takes only its holders. The row

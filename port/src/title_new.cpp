@@ -51,10 +51,14 @@ constexpr uint32_t kTable = 0x82EDEB50;
 struct NewTitle {
   std::string folder, name, champion;
   bool tag = false;
+  int belt_of = 4;  // the game's title whose belt model it carries (belt=<key>; a tag title: the WWE tag title's)
+  int brand = -1;   // Universe: 0 RAW, 1 SmackDown, 7 both (brand=raw / smackdown / both); -1 not in Universe
+  int like = 4;     // the game's title whose rank class it counts in (like=<key>)
   uint32_t holder[2] = {kNoHolder, kNoHolder};
   uint32_t guest_name = 0, guest_short = 0;  // (in capitals, as the game's lists write titles)
 };
 std::vector<NewTitle> g_new;
+uint32_t g_contenders = 0;  // guest: each new title's Universe row, 4 B
 rex::memory::Memory* g_memory = nullptr;
 uint32_t Be32(const uint8_t* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; }
 
@@ -130,6 +134,21 @@ void InstallNewTitles(rex::memory::Memory* memory) {
     t.name = CleanUtf8(Value(man, "name"), 120);
     t.champion = CleanUtf8(Value(man, "champion"), 120);
     t.tag = Value(man, "kind") == "tag";
+    if (t.tag) t.belt_of = 2;
+    {
+      static const char* const kKeys[kStockTitles] = {"WWE", "WHC", "WWE_TAG", "WORLD_TAG", "IC", "US", "CRUISER", "WOMENS", "HARDCORE", "ECW", "WCW", "DIVAS", "UNIFIED_TAG", "MILLION"};
+      std::string key = Value(man, "belt");
+      for (char& c : key) c = char(std::toupper(static_cast<unsigned char>(c)));
+      for (int k = 0; k < kStockTitles; ++k)
+        if (key == kKeys[k]) t.belt_of = k;
+      if (t.tag) t.like = 12;
+      key = Value(man, "like");
+      for (char& c : key) c = char(std::toupper(static_cast<unsigned char>(c)));
+      for (int k = 0; k < kStockTitles; ++k)
+        if (key == kKeys[k]) t.like = k;
+      const std::string brand = Value(man, "brand");
+      t.brand = brand == "raw" ? 0 : brand == "smackdown" ? 1 : brand == "both" ? 7 : -1;
+    }
     if (t.name.empty()) {
       REXLOG_WARN("[svr2011] new titles: {} has no name - left out", t.folder);
       continue;
@@ -166,6 +185,12 @@ void InstallNewTitles(rex::memory::Memory* memory) {
 
 void NewTitlesLoaded() {
   for (NewTitle& t : g_new) t.holder[0] = t.holder[1] = kNoHolder;
+  if (g_memory && !g_contenders && !g_new.empty()) g_contenders = g_memory->SystemHeapAlloc(uint32_t(g_new.size()) * 4);
+  if (g_memory && g_contenders)
+    for (size_t k = 0; k < g_new.size(); ++k) {  // (none yet: 0x200, big-endian)
+      uint8_t* p = g_memory->TranslateVirtual<uint8_t*>(g_contenders + uint32_t(k) * 4);
+      p[0] = 2, p[1] = 0, p[2] = 2, p[3] = 0;
+    }
   const fs::path file = HoldersFile();
   if (g_new.empty() || file.empty()) return;
   std::ifstream in(file, std::ios::binary);
@@ -248,8 +273,8 @@ REX_HOOK_RAW(sub_828BD508) {
 
 // The table's +8.
 REX_HOOK_RAW(sub_828BD530) {
-  if (Row(ctx.r3.s32)) {
-    ctx.r3.u64 = 0;
+  if (const NewTitle* t = Row(ctx.r3.s32)) {
+    ctx.r3.u64 = uint64_t(t->brand < 0 ? 7 : t->brand);
     return;
   }
   __imp__sub_828BD530(ctx, base);
@@ -533,10 +558,77 @@ REX_HOOK_RAW(sub_8244D040) {
   __imp__sub_8244D040(ctx, base);
 }
 
+// A title's belt model: (title, pose 0 / 1 / 2) -> the evtobj.pac SOBJ id, 0 none.
+REX_EXTERN(__imp__sub_827540D8);
+REX_HOOK_RAW(sub_827540D8) {
+  if (const NewTitle* t = Row(ctx.r3.s32)) ctx.r3.u64 = uint64_t(t->belt_of);
+  __imp__sub_827540D8(ctx, base);
+}
+
 // The match's title is set: (select, title, 1).
 REX_HOOK_RAW(sub_82735910) {
   if (!g_new.empty()) REXLOG_INFO("[svr2011] new titles: the match is for title {}", ctx.r4.s32);
   __imp__sub_82735910(ctx, base);
+}
+
+
+// ---- Universe's loops over titles (svr2011_config.toml's [[midasm_hook]] entries, after the compare with 14): past
+// the game's titles the new ones, then out. A guard ("title < 14") lets a new title through.
+namespace {
+void TitleLoop(PPCCRRegister& cr, PPCXERRegister& xer, PPCRegister& i) {
+  if (g_new.empty()) return;
+  if (i.u32 == uint32_t(kStockTitles)) i.u64 = uint64_t(kFirstNew);
+  if (i.s32 >= kFirstNew) cr.compare<int32_t>(i.s32, kFirstNew + int32_t(g_new.size()), xer);
+}
+void TitleGuard(PPCCRRegister& cr, PPCXERRegister& xer, PPCRegister& i) {
+  if (Row(i.s32)) cr.compare<int32_t>(i.s32, kFirstNew + int32_t(g_new.size()), xer);
+}
+}  // namespace
+#define NEW_TITLE_LOOP(a) \
+  void NewTitleLoop_##a(PPCCRRegister& cr, PPCXERRegister& xer, PPCRegister& i) { TitleLoop(cr, xer, i); }
+#define NEW_TITLE_GUARD(a) \
+  void NewTitleGuard_##a(PPCCRRegister& cr, PPCXERRegister& xer, PPCRegister& i) { TitleGuard(cr, xer, i); }
+NEW_TITLE_LOOP(824AC0BC)
+NEW_TITLE_LOOP(8257B3D0)
+NEW_TITLE_LOOP(825A6674)
+NEW_TITLE_LOOP(825A66B4)
+NEW_TITLE_LOOP(825AA954)
+NEW_TITLE_LOOP(825AAAF0)
+NEW_TITLE_LOOP(825AC8E4)
+NEW_TITLE_LOOP(825ADB00)
+NEW_TITLE_LOOP(825B4584)
+NEW_TITLE_LOOP(825B53E4)
+NEW_TITLE_LOOP(825C1FF0)
+NEW_TITLE_LOOP(825CA2B0)
+NEW_TITLE_GUARD(825ADBE4)
+
+// Is the title one of Universe's: (title).
+REX_EXTERN(__imp__sub_828BDA98);
+REX_HOOK_RAW(sub_828BDA98) {
+  if (const NewTitle* t = Row(ctx.r3.s32)) {
+    ctx.r3.u64 = t->brand >= 0 ? 1 : 0;
+    return;
+  }
+  __imp__sub_828BDA98(ctx, base);
+}
+
+// A title's rank class, the field of a superstar's Universe record it counts in: (title) -> 0-4.
+REX_EXTERN(__imp__sub_825B74D0);
+REX_HOOK_RAW(sub_825B74D0) {
+  if (const NewTitle* t = Row(ctx.r3.s32)) ctx.r3.u64 = uint64_t(t->like);
+  __imp__sub_825B74D0(ctx, base);
+}
+
+// Universe's row of a title: (list, title, slot) -> its place in the list at P + 20776 (the title's number one contender).
+// A new title's row is beside the save.
+REX_EXTERN(__imp__sub_825B6BE0);
+REX_HOOK_RAW(sub_825B6BE0) {
+  const int64_t k = int64_t(ctx.r4.s32) - kFirstNew;
+  if (k >= 0 && k < int64_t(g_new.size())) {
+    ctx.r3.u64 = g_new[size_t(k)].brand >= 0 ? g_contenders + uint32_t(k) * 4 : 0;
+    return;
+  }
+  __imp__sub_825B6BE0(ctx, base);
 }
 
 // A holder, read from the save: (title, slot).
@@ -562,8 +654,9 @@ void TestCheck(PPCContext& ctx, uint8_t* base) {
   };
   for (int i = 0; i < kStockTitles; ++i) {
     const uint8_t* r = base + kTable + i * 16;
-    REXLOG_INFO("[svr2011] new titles test: table {}: a {} b {} c {} kind {} order {} | holders {} {} in play {}", i, Be32(r), Be32(r + 4), Be32(r + 8),
-                r[12], int(int8_t(r[13])), call(sub_828BD548, uint32_t(i), 0, 0), call(sub_828BD548, uint32_t(i), 1, 0), call(sub_828C22E0, uint32_t(i)));
+    REXLOG_INFO("[svr2011] new titles test: table {}: a {} b {} c {} kind {} order {} | holders {} {} in play {} universe {} class {}", i, Be32(r), Be32(r + 4), Be32(r + 8),
+                r[12], int(int8_t(r[13])), call(sub_828BD548, uint32_t(i), 0, 0), call(sub_828BD548, uint32_t(i), 1, 0), call(sub_828C22E0, uint32_t(i)),
+                call(sub_828BDA98, uint32_t(i)), call(sub_825B74D0, uint32_t(i)));
   }
   if (!g_new.empty()) {
     const char* v = std::getenv("SVR2011_TEST_NEW_TITLES");

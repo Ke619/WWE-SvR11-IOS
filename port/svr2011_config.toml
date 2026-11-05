@@ -103,6 +103,84 @@ longjmp_address = 0x82BC95F0
 # entry per record index; each hook does nothing while the cvar is off.
 
 [[midasm_hook]]
+name = "NewTitleLoop_824AC0BC"
+address = 0x824AC0BC
+registers = ["cr6", "xer", "r31"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "NewTitleLoop_8257B3D0"
+address = 0x8257B3D0
+registers = ["cr6", "xer", "r31"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "NewTitleLoop_825A6674"
+address = 0x825A6674
+registers = ["cr6", "xer", "r31"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "NewTitleLoop_825A66B4"
+address = 0x825A66B4
+registers = ["cr6", "xer", "r31"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "NewTitleLoop_825AA954"
+address = 0x825AA954
+registers = ["cr6", "xer", "r31"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "NewTitleLoop_825AAAF0"
+address = 0x825AAAF0
+registers = ["cr6", "xer", "r31"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "NewTitleLoop_825AC8E4"
+address = 0x825AC8E4
+registers = ["cr6", "xer", "r31"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "NewTitleLoop_825ADB00"
+address = 0x825ADB00
+registers = ["cr6", "xer", "r31"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "NewTitleLoop_825B4584"
+address = 0x825B4584
+registers = ["cr6", "xer", "r29"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "NewTitleLoop_825B53E4"
+address = 0x825B53E4
+registers = ["cr6", "xer", "r31"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "NewTitleLoop_825C1FF0"
+address = 0x825C1FF0
+registers = ["cr6", "xer", "r29"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "NewTitleLoop_825CA2B0"
+address = 0x825CA2B0
+registers = ["cr6", "xer", "r29"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "NewTitleGuard_825ADBE4"
+address = 0x825ADBE4
+registers = ["cr6", "xer", "r5"]
+after_instruction = true
+
+[[midasm_hook]]
 name = "BigRosterRecord_8257A244"
 address = 0x8257A244
 registers = ["r3", "r10"]

@@ -131,7 +131,8 @@ std::string SystemText() {
   t += "settings: text size " + std::to_string(g_settings.font) + " px, UI scale " + scale + ", log " +
        (g_settings.log_open ? "open" : "closed") + ", Bink 2 tool " +
        (g_settings.bink2_tool.empty() ? std::string("(look for one)") : Utf8(g_settings.bink2_tool)) + "\n";
-  for (const auto& d : g_settings.my_discs) t += "my game discs: " + d.key + " (" + d.id + ") " + Utf8(d.path) + "\n";
+  for (const auto& d : g_settings.my_discs)
+    t += "my game discs: " + d.key + " (" + d.id + ") " + Utf8(d.path) + (d.dlc.empty() ? "" : ", DLC " + Utf8(d.dlc)) + "\n";
   if (g_settings.my_discs.empty()) t += "my game discs: (none set)\n";
   for (const auto& r : g_settings.recent) t += "settings: recent project " + Utf8(r) + "\n";
   return t;

@@ -235,6 +235,23 @@ void GameRow(const Game& g) {
         ImGui::PopTextWrapPos();
       }
   }
+  if (g.xbox && !path.empty()) {  // (its DLC: the superstars it adds join the From another game list)
+    const std::wstring dlc = DlcFor(g.key);
+    if (dlc.empty()) ImGui::TextDisabled("DLC: none set");
+    else ImGui::TextDisabled("DLC: %s", Utf8(dlc).c_str());
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("A folder holding this game's DLC packages (as the console keeps them, or unpacked).\n"
+                        "The superstars they add are listed in From another game > Superstar, marked (DLC).");
+    ImGui::SameLine();
+    if (ImGui::SmallButton(dlc.empty() ? "Add DLC folder..." : "Change DLC...")) {
+      const std::wstring p = PickFolder(L"The folder with this game's DLC packages", dlc);
+      if (!p.empty()) SetDlc(g.key, p), Status(FullName(g) + " DLC: " + Utf8(p));
+    }
+    if (!dlc.empty()) {
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Remove DLC")) SetDlc(g.key, L"");
+    }
+  }
   ImGui::TableNextColumn();  // what the converters bring from it (their `games` lists, asked once)
   {
     const std::string kinds = port_page::KindsFor(IdFor(g.key));
@@ -307,6 +324,19 @@ std::string IdFor(const std::string& key) {
   if (d && !d->id.empty()) return d->id;
   const Game* g = GameByKey(key);
   return g && !g->ids.empty() ? g->ids[0] : "";
+}
+
+std::wstring DlcFor(const std::string& key) {
+  const Settings::MyDisc* d = Find(key);
+  std::error_code ec;
+  return d && !d->dlc.empty() && fs::exists(d->dlc, ec) ? d->dlc : std::wstring();
+}
+
+void SetDlc(const std::string& key, const std::wstring& folder) {
+  if (Settings::MyDisc* d = Find(key)) {
+    d->dlc = folder;
+    SaveSettings();
+  }
 }
 
 void Set(const std::string& key, const std::wstring& path, const std::string& disc_id) {
@@ -440,14 +470,11 @@ std::string NotGameFiles(const std::wstring& folder) {
   const std::string name = Utf8(dir.filename().wstring());
   if (packages)
     return "\"" + name + "\" holds Xbox 360 packages (DLC or a game update as the console keeps them), not a game's files. "
-           "DLC superstars can't be read from the DLC alone - their names, moves and entrances are in the game's own files: "
-           "set the game's disc (an .iso, or the whole extracted disc with default.xex). A DLC superstar's model can still come "
-           "in on its own: unpack the package with an Xbox 360 package tool, then From another game > One file > its "
-           "pac\\ch\\chNNN.pac.";
+           "Set the game's disc here (an .iso, or the whole extracted disc with default.xex), then pick this folder with "
+           "its row's Add DLC folder: the DLC's superstars join the From another game list.";
   return "\"" + name + "\" has none of a game's own files (no default.xex, pac\\misc.pac, pac\\ch\\chEtc.pac ...): is it DLC? "
-         "DLC superstars can't be read from the DLC alone - their names, moves and entrances are in the game's own files: "
-         "set the game's disc (an .iso, or the whole extracted disc with default.xex). A DLC superstar's model can still come "
-         "in on its own: From another game > One file > its pac\\ch\\chNNN.pac.";
+         "Set the game's disc here (an .iso, or the whole extracted disc with default.xex), then pick the DLC with its "
+         "row's Add DLC folder: the DLC's superstars join the From another game list.";
 }
 
 bool Scanning() { return g_scanning; }

@@ -245,6 +245,29 @@ Fallback limits: 2540 under an HCTP track keeps the position, not the wheels.
 States: **decoded** = we read it and a tool uses it or could; **partly** =
 layout known, some fields not; **unknown** = not looked at or not found.
 
+### A game's DLC superstars (`--dlc`)
+
+`superstar_port.py ... --dlc <folder>` (the Mod Maker: My game discs, a game's **Add DLC folder**) adds the source
+game's DLC superstars to `list` and `convert`, beside the disc, which is still needed. The folder holds packages as the
+console keeps them (STFS, up to 3 levels down) or unpacked; another game's packages in it are skipped by title id.
+`tools/dlc_src.py` reads them, `Src` falls back to them for files the disc doesn't have, and `merge_dlc` takes each
+package's own superstars: those with a model pac the disc doesn't have (`pac/ch/ch<id>[_dlc<nn>].pac`). A list row has
+`dlc: true` and its name ends " (DLC)".
+
+| Game | Tables (`chEtc`, a whole table in the disc's format) | Renders | DLC superstars seen |
+|---|---|---|---|
+| SvR 2009 | `pac/ch/chEtc.pac` CHAR | `pac/DLC_HD.pac` | 10 (ids 54-68) |
+| WWE '12 | `pac/ch/chEtc.pac` CHAR (its CHCM group also has a DAT: not the table) | `pac/DLC_HD_dlc<nn>.pac` | 11 (61-82) |
+| WWE '13 | `chEtc_dlc<nn>.pac` CHAR | `DLC_HD_dlc<nn>.pac` | 14 (52, 65-85) |
+| WWE 2K14 | `chEtc_dlc<nn>.pac` CHAR; names in `string_dlc<nn>.pac` | `DLC_HD_dlc<nn>.pac` | 20 (377-396) |
+| WWE 2K15 | `chEtc_dlc<nn>.pac` CHAR; names as 2K14 | `dlc_hd_dlc<nn>.pac` | 19 |
+| WWE 2K16 | `chEtc_dlc<nn>.pac` CH20 / CH40, id at +4; names as 2K14 | `dlc_hd_dlc<nn>.pac` | 32; model pacs are EPK8 (2K15's form), not the disc's EPAC |
+
+The theme comes from the package's own bank (`sound/DLC_<nn>.pck` and kin), else the disc's. Not read from a package yet:
+entrances, titantrons (`movies/titantron/`, in the package), and moves whose motions only the DLC has (their slots keep
+the base's move). SvR 2007 / 2008 / Legends use the 2009 reader but no package has been tried. WWE All Stars isn't a
+source game; its packages are skipped. A disc model with the same id wins: DLC attires of disc superstars aren't taken.
+
 ### What SvR 2011 has (the target)
 
 | Asset | Where | Notes |

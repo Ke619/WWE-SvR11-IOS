@@ -6,6 +6,7 @@ updates and DLC. Lists and extracts files.
 Library: Stfs(path).files -> [(path, size, entry)], .read(entry) -> bytes,
 .display_name, .title_id, .content_type.
 """
+import mmap
 import os
 import struct
 import sys
@@ -20,7 +21,8 @@ def i24le(b, o):
 
 class Stfs:
     def __init__(self, path):
-        self.data = open(path, "rb").read()
+        with open(path, "rb") as f:  # (a DLC package can be 1 GB: mapped, read as asked)
+            self.data = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
         d = self.data
         if d[:4] not in (b"CON ", b"LIVE", b"PIRS"):
             raise ValueError(f"{path}: not an STFS package")

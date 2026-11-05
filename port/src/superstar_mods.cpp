@@ -2323,11 +2323,15 @@ uint32_t KeyAlias(uint8_t* base, const char* n) {
     // 11ffd2 '/EMD/00016300', every start). The loader then opens a null pac name (sub_826A1D38's request +72) and
     // crashes in sub_826BB8A0; a failed open only retries, so the name is answered here: the model a match would use
     // for the disc's own first superstar. (Other kinds - 4 gear, 5, 6 - are optional: the game takes the miss.)
-    if (!m && !standin_off && (kind % 10 == 0 || kind % 10 == 2) &&
-        std::find(std::begin(kPool), std::end(kPool), v) != std::end(kPool)) {
+    // big_roster's ids count too, whether it is on or not; those from 400 can also be a mod's key, whose overlay
+    // entries are real: left to the lookup.
+    const bool empty_id = !m && (std::find(std::begin(kPool), std::end(kPool), v) != std::end(kPool) ||
+                                 (v >= svr2011::kFirstHighId && v <= svr2011::kLastHighId &&
+                                  std::none_of(g_mods.begin(), g_mods.end(), [v](const Mod& x) { return x.key == v; })));
+    if (empty_id && !standin_off && (kind % 10 == 0 || kind % 10 == 2)) {
       static std::atomic<int> said{0};
       if (said++ < 8)
-        REXLOG_WARN("[svr2011] superstar mods: '/EMD/{:06}{:02}' - no mod on pool id {}: the model of id 139 stands in", v, kind, v);
+        REXLOG_WARN("[svr2011] superstar mods: '/EMD/{:06}{:02}' - no mod on id {}: the model of id 139 stands in", v, kind, v);
       std::snprintf(out, sizeof out, "%.*sEMD/00013902", int(n[0] == '/'), n);
     } else if (p == asked) {
       std::snprintf(out, sizeof out, "%.*s%s", int(n[0] == '/'), n, asked);

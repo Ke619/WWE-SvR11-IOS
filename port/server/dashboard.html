@@ -673,7 +673,7 @@ td.acts { text-align: right; white-space: nowrap; }
         (t.all.relayed || 0).toLocaleString() + ' packets';
       var g = d.net || {matches: 0, path: {}, nat: {}, rtt: {}, steps: {}};
       function pct(o, k) { return g.matches ? Math.round((o[k] || 0) * 100 / g.matches) + '%' : '0%'; }
-      el('s-net').innerHTML = 'Online matches (30 days): <b>' + g.matches + '</b> reported · path: direct ' + pct(g.path, 'direct') +
+      el('s-net').innerHTML = 'Online matches (30 days): <b>' + g.matches + '</b> reported · path: direct ' + pct(g.path, 'direct') + ', IPv6 ' + pct(g.path, 'ipv6') +
         ', relay ' + pct(g.path, 'relay') + ', LAN ' + pct(g.path, 'lan') + ' · NAT: cone ' + pct(g.nat, 'cone') +
         ', symmetric ' + pct(g.nat, 'symmetric') + ', router-mapped ' + pct(g.nat, 'mapped') + ', unknown ' + pct(g.nat, 'unknown') +
         esc(Object.keys(g.steps).length ? ' (symmetric steps ' + Object.keys(g.steps).map(function (k) {

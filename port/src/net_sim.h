@@ -31,12 +31,14 @@ void NetPacket(bool out, uint32_t peer, size_t size, bool relayed);
 
 // Round trips (p2p.cpp pings the peers it exchanges game packets with, once a
 // second): the latest per peer, for the log and the ping indicator.
-void NetRtt(uint32_t peer, double ms, bool relayed);
+// how: the path's word for the ping indicator ("direct", "IPv6", "LAN", "relay").
+void NetRtt(uint32_t peer, double ms, bool relayed, const char* how);
 struct NetLink {
   uint32_t peer = 0;
   float rtt_ms = 0;     // the latest
   float worst_ms = 0;   // the worst of the last 5 s
   bool relayed = false;
+  const char* how = "";  // (the latest ping's path: NetRtt)
   std::string name;     // (its player's name, when its pings carry it)
 };
 std::vector<NetLink> NetLinks();  // (peers answered within the last 5 s)

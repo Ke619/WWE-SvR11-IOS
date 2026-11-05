@@ -203,7 +203,7 @@ void NoteFailed(const uint8_t* base, uint32_t heap, uint32_t size, uint32_t lr) 
   bool told = true;
   {
     std::lock_guard lock(m);
-    if (!g_heap_log && !seen.insert(uint64_t(heap) << 32 | lr).second) told = false;
+    if ((!g_heap_log || heap == 16) && !seen.insert(uint64_t(heap) << 32 | lr).second) told = false;  // (the file cache's retries: thousands a second)
   }
   if (told) REXLOG_WARN("[svr2011] heap {}: allocation of {} bytes FAILED (lr {:08X})", heap, size, lr);
   if (std::find(std::begin(kExhaustedHeaps), std::end(kExhaustedHeaps), heap) != std::end(kExhaustedHeaps))

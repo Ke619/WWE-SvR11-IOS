@@ -540,6 +540,14 @@ bool ScriptInputDriver::RunSmart(Clock::time_point now, Step& out) {
   return true;
 }
 
+// (test aids steering the left stick from the game's side: ScriptStickOverride)
+static std::atomic<bool> g_stick_on{false};
+static std::atomic<int32_t> g_stick_xy{0};
+void ScriptStickOverride(bool on, int16_t x, int16_t y) {
+  g_stick_xy = int32_t(uint32_t(uint16_t(x)) << 16 | uint16_t(y));
+  g_stick_on = on;
+}
+
 X_RESULT ScriptInputDriver::GetDeviceState(rex::input::DeviceId id, X_INPUT_STATE* out_state) {
   if (id == kExtraDevice && g_extra_pad.load()) {  // (the idle Test Pad: nothing pressed)
     if (out_state) std::memset(out_state, 0, sizeof(*out_state));
@@ -557,6 +565,10 @@ X_RESULT ScriptInputDriver::GetDeviceState(rex::input::DeviceId id, X_INPUT_STAT
     out_state->gamepad.right_trigger = s.right_trigger;
     out_state->gamepad.thumb_lx = s.lx;
     out_state->gamepad.thumb_ly = s.ly;
+    if (g_stick_on.load()) {
+      const uint32_t o = uint32_t(g_stick_xy.load());
+      out_state->gamepad.thumb_lx = int16_t(o >> 16), out_state->gamepad.thumb_ly = int16_t(o & 0xFFFF);
+    }
     out_state->gamepad.thumb_rx = s.rx;
     out_state->gamepad.thumb_ry = s.ry;
   }

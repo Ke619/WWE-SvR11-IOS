@@ -2304,14 +2304,39 @@ REX_HOOK_RAW(sub_8244A128) {
 uint32_t g_key_names = 0;  // guest: 32 x 64 bytes, used in turn (lookups come from two threads)
 std::atomic<uint32_t> g_key_next{0};
 uint32_t KeyAlias(uint8_t* base, const char* n) {
-  if (g_mods.empty()) return 0;
   const char* p = n[0] == '/' ? n + 1 : n;
   char out[64];
   unsigned v = 0, kind = 0;
   const Mod* m = nullptr;
+  // Test aid: SVR2011_TEST_EMD_ASK=<name>=<name> (8 digits each, e.g. 00016102=00016300): that model is asked for
+  // under the other name - an empty pool id's model in a match. SVR2011_TEST_EMD_STANDIN_OFF=1: no stand-in (the crash).
+  static const std::string ask = [] { const char* e = std::getenv("SVR2011_TEST_EMD_ASK"); return std::string(e ? e : ""); }();
+  static const bool standin_off = std::getenv("SVR2011_TEST_EMD_STANDIN_OFF") != nullptr;
+  char asked[16];
+  if (ask.size() == 17 && !std::strncmp(p, "EMD/", 4) && !ask.compare(0, 8, p + 4, strnlen(p + 4, 12))) {
+    std::snprintf(asked, sizeof asked, "EMD/%s", ask.c_str() + 9);
+    p = asked;
+  }
   if (!std::strncmp(p, "EMD/", 4) && strnlen(p, 16) == 12 && std::sscanf(p + 4, "%6u%2u", &v, &kind) == 2) {
-    if (!(m = ModOf(v)) || m->key == v) return 0;
-    std::snprintf(out, sizeof out, "%.*sEMD/%06u%02u", int(p - n), n, m->key, kind);
+    m = ModOf(v);
+    // A pool id with no mod on it has no model in any pac (a save can still name one, from a mod since removed: report
+    // 11ffd2 '/EMD/00016300', every start). The loader then opens a null pac name (sub_826A1D38's request +72) and
+    // crashes in sub_826BB8A0; a failed open only retries, so the name is answered here: the model a match would use
+    // for the disc's own first superstar. (Other kinds - 4 gear, 5, 6 - are optional: the game takes the miss.)
+    if (!m && !standin_off && (kind % 10 == 0 || kind % 10 == 2) &&
+        std::find(std::begin(kPool), std::end(kPool), v) != std::end(kPool)) {
+      static std::atomic<int> said{0};
+      if (said++ < 8)
+        REXLOG_WARN("[svr2011] superstar mods: '/EMD/{:06}{:02}' - no mod on pool id {}: the model of id 139 stands in", v, kind, v);
+      std::snprintf(out, sizeof out, "%.*sEMD/00013902", int(n[0] == '/'), n);
+    } else if (p == asked) {
+      std::snprintf(out, sizeof out, "%.*s%s", int(n[0] == '/'), n, asked);
+    } else {
+      if (!m || m->key == v) return 0;
+      std::snprintf(out, sizeof out, "%.*sEMD/%06u%02u", int(p - n), n, m->key, kind);
+    }
+  } else if (g_mods.empty()) {
+    return 0;
   } else if (p[0] == 'S' && p[1] == 'S' && p[2] == 'F' && p[3] >= 'A' && p[3] <= 'C' && p[4] == '/' &&
              strnlen(p, 16) == 9 && std::sscanf(p + 5, "%4u", &v) == 1) {
     if (!(m = ModOf(v % 1000)) || m->key == v % 1000) return 0;

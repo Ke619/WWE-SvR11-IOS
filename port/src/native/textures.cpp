@@ -659,15 +659,22 @@ uint64_t ContentHash(const xenos::xe_gpu_texture_fetch_t& fetch,
   data.resize(size_t(row_bytes) * blocks_y);
   const uint32_t address = base_page << 12;
   const texture_util::TextureGuestLayout::Level& gl = layout.base;
+  // A texture whose top level sits inside the packed tail (a side of 16 or less) has it away from the start, where
+  // Upload reads it. This used to read the start: other bytes, not the picture. Pack files made from those dumps drew
+  // junk (report 11308c: black rows on the ring mat). These textures' hashes changed with this, so such files do nothing.
+  uint32_t ox = 0, oy = 0, oz = 0;
+  if (layout.packed_level == 0) texture_util::GetPackedMipOffset(width, height, 1, fetch.format, 0, ox, oy, oz);
   if (!fetch.tiled) {
     for (uint32_t by = 0; by < blocks_y; ++by)
-      ReadGuestRun(data.data() + size_t(by) * row_bytes, address + by * gl.row_pitch_bytes, row_bytes, mask);
+      ReadGuestRun(data.data() + size_t(by) * row_bytes, address + (by + oy) * gl.row_pitch_bytes + ox * bpb, row_bytes,
+                   mask);
   } else {
     const uint32_t pitch_blocks = gl.row_pitch_bytes / bpb, bpb_log2 = Log2(bpb);
     uint8_t* out = data.data();
     for (uint32_t by = 0; by < blocks_y; ++by) {
       for (uint32_t bx = 0; bx < blocks_x; ++bx, out += bpb) {
-        const int64_t offset = texture_util::GetTiledOffset2D(int32_t(bx), int32_t(by), pitch_blocks, bpb_log2);
+        const int64_t offset =
+            texture_util::GetTiledOffset2D(int32_t(bx + ox), int32_t(by + oy), pitch_blocks, bpb_log2);
         ReadGuest(out, uint32_t(address + offset), bpb, mask);
       }
     }

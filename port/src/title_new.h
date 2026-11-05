@@ -2,7 +2,7 @@
 // type=title, new=1, name=, champion=, kind=tag; docs/TITLE_MODS.md).
 //
 // The game's titles are a table of 14 rows (0x82EDEB50) and holders in the save (14 x 2 u16). A new title takes an
-// index from 14 up, in folder order, for this run only: nothing keeps the index. The title module's functions
+// index from 32 up, in folder order, for this run only: nothing keeps the index. The title module's functions
 // (title_new.cpp) answer for those indices, and the holders live beside the save, by the mod's folder, in
 // Saves\titles.txt - never in the save itself, so a removed mod takes only its holders with it. With no new
 // title installed each hook is the game's own function.

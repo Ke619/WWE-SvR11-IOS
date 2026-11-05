@@ -75,6 +75,26 @@ bool CosmeticFile(const fs::path& file) {
   return kCosmetic.count(Lower(file.extension().string())) != 0;
 }
 
+std::string ManifestKeyText(const std::string& manifest) {
+  std::string out;
+  for (size_t at = 0; at < manifest.size();) {
+    size_t end = manifest.find('\n', at);
+    if (end == std::string::npos) end = manifest.size();
+    std::string line = manifest.substr(at, end - at);
+    at = end + 1;
+    while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+    if (line.empty()) continue;
+    const std::string key = line.substr(0, line.find('='));
+    const auto is = [&](const char* name) {  // ("name", or "name.<n>" - a media pack's)
+      const size_t n = std::char_traits<char>::length(name);
+      return key.compare(0, n, name) == 0 && (key.size() == n || key[n] == '.');
+    };
+    if (is("theme_gain") || is("theme_gain_auto") || is("movie") || is("video")) continue;
+    out += line + "\n";
+  }
+  return out;
+}
+
 bool ModCanTravel(const fs::path& dir, std::string* unsendable) {
   std::error_code ec;
   std::vector<fs::path> files;

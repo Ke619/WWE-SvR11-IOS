@@ -274,7 +274,9 @@ std::string ManifestValue(const fs::path& manifest, const char* key) {
 bool Cosmetic(const fs::path& p) { return svrfmt::CosmeticFile(p); }
 
 // A mod folder's CRC for the set: its files but the cosmetic ones in a stable order, each one's path and CRC
-// folded (the same for a downloaded copy: mod_transfer.cpp checks it against the host's).
+// folded (the same for a downloaded copy: mod_transfer.cpp checks it against the host's). The manifest by the lines
+// that are the mod's, not this PC's (mod_travel.h): the launcher's level stamp made every bundled mod differ on every
+// PC (report b7e708).
 uint32_t FolderCrc(const fs::path& dir) {
   std::error_code ec;
   std::vector<fs::path> files;
@@ -284,8 +286,16 @@ uint32_t FolderCrc(const fs::path& dir) {
   uint32_t crc = 0;
   for (const fs::path& f : files) {
     uint32_t c = 0;
-    if (!FileCrc(f, false, &c)) continue;
     const std::string rel = fs::relative(f, dir, ec).generic_string();
+    if (rel == "manifest.txt") {
+      std::ifstream in(f, std::ios::binary);
+      if (!in) continue;
+      const std::string text = svrfmt::ManifestKeyText(std::string(std::istreambuf_iterator<char>(in), {}));
+      std::call_once(g_crc_once, CrcInit);
+      c = CrcUpdate(0, reinterpret_cast<const uint8_t*>(text.data()), text.size());
+    } else if (!FileCrc(f, false, &c)) {
+      continue;
+    }
     crc = CrcUpdate(crc, reinterpret_cast<const uint8_t*>(rel.data()), rel.size());
     crc = CrcUpdate(crc, reinterpret_cast<const uint8_t*>(&c), 4);
   }

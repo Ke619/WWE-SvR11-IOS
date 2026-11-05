@@ -347,6 +347,7 @@ bool MappedUsable() {
 // The match report (p2p_match_report): this match's paths, a second at a time.
 struct MatchReport {
   uint32_t seconds = 0, direct = 0, relay = 0, lan = 0;  // (peer-seconds per path)
+  uint32_t ipv6 = 0;                                     // (of direct's: over IPv6)
   double rtt_sum = 0;
   uint32_t rtt_n = 0;
   uint8_t network = 0;  // (the match network it played on: NetMode)
@@ -1331,10 +1332,14 @@ void SendMatchReport(const MatchReport& r) {
   std::string version;
   for (const char c : PortVersion())
     if (std::isalnum(static_cast<unsigned char>(c)) || c == '.' || c == '-') version.push_back(c);
-  const std::string body = fmt::format(R"({{"version":"{}","path":"{}","nat":"{}","step":{},"rtt":{},"network":"{}"}})",
-                                       version.substr(0, 24), path, nat, step, rtt, NetName(r.network));
-  REXLOG_INFO("p2p: match report {} ({} s; peer-seconds direct {}, relay {}, LAN {})", body, r.seconds, r.direct,
-              r.relay, r.lan);
+  // (IPv6: a field of its own beside path "direct": a server before 2.1.10 ignores it and counts a direct match, where
+  // a path value it doesn't know would be refused)
+  const bool ipv6 = !std::strcmp(path, "direct") && r.ipv6 * 2 > r.direct;
+  const std::string body = fmt::format(R"({{"version":"{}","path":"{}",{}"nat":"{}","step":{},"rtt":{},"network":"{}"}})",
+                                       version.substr(0, 24), path, ipv6 ? "\"ipv6\":true," : "", nat, step, rtt,
+                                       NetName(r.network));
+  REXLOG_INFO("p2p: match report {} ({} s; peer-seconds direct {} (IPv6 {}), relay {}, LAN {})", body, r.seconds, r.direct,
+              r.ipv6, r.relay, r.lan);
   std::thread([body] {
     net::ServerRequest("POST", "/api/netreport", body, {{"Content-Type", "application/json"}});
   }).detach();
@@ -1408,6 +1413,7 @@ void PingLoop() {
           if (it == g_peers.end()) continue;
           const Peer& p = it->second;
           ++(!p.tunnel ? g_report.lan : p.relayed ? g_report.relay : g_report.direct);
+          if (p.tunnel && !p.relayed && IsV6(p.route)) ++g_report.ipv6;
           if (const float rtt = p.relayed ? p.rtt_relay : p.rtt_direct; rtt > 0) g_report.rtt_sum += rtt, ++g_report.rtt_n;
         }
       }
@@ -1688,6 +1694,7 @@ void OnPacket(const uint8_t* data, size_t size, Via via) {
       if (!r.ok) break;
       uint32_t fake = 0;
       bool current = true;  // (the round trip of the path game packets take now)
+      const char* how = via.relayed ? "relay" : "direct";
       {
         std::lock_guard lock(g_mutex);
         if (auto it = g_peers.find(mac); it != g_peers.end()) {
@@ -1701,12 +1708,15 @@ void OnPacket(const uint8_t* data, size_t size, Via via) {
             smooth(p.rtt_relay);
             p.relay_ok = now;
             current = p.relayed;
+            how = "relay";
           } else {
             // (the address that answered: the fastest of those answering carries the game)
             const uint32_t from = via.ip == 0x7F000001 ? Be32(p.xnaddr.data()) : via.ip;
             p.direct_ok = p.direct_pong = now;
             AddCandidate(p, from, via.port, kCandHeard);
-            if (Candidate* c = FindCandidate(p, from, via.port)) smooth(c->rtt), c->ok = now;
+            bool on_lan = !p.tunnel;
+            if (Candidate* c = FindCandidate(p, from, via.port)) smooth(c->rtt), c->ok = now, on_lan |= c->kind == kCandLan;
+            how = IsV6(from) ? "IPv6" : on_lan ? "LAN" : "direct";
             if (p.tunnel) Nominate(p, now);
             const bool on_route = from == p.route && via.port == p.route_port;
             if (on_route) smooth(p.rtt_direct);
@@ -1714,7 +1724,7 @@ void OnPacket(const uint8_t* data, size_t size, Via via) {
           }
         }
       }
-      if (current) NetRtt(fake, double(NowUs() - sent_us) / 1000.0, via.relayed);
+      if (current) NetRtt(fake, double(NowUs() - sent_us) / 1000.0, via.relayed, how);
       break;
     }
     case kMods: {  // (online_mods.cpp: the rest is its own)

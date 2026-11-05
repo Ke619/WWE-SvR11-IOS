@@ -11,6 +11,7 @@
 #include <mutex>
 #include <random>
 #include <string>
+#include <string_view>
 #include <thread>
 
 #include <rex/logging.h>
@@ -150,17 +151,19 @@ struct Rtt {
   float last = 0;
   std::vector<std::pair<Clock::time_point, float>> recent;  // (the last 5 s)
   bool relayed = false;
+  const char* how = "";
   std::string name;
 };
 std::mutex g_rtt_mutex;
 std::map<uint32_t, Rtt> g_rtts;
 }  // namespace
 
-void NetRtt(uint32_t peer, double ms, bool relayed) {
+void NetRtt(uint32_t peer, double ms, bool relayed, const char* how) {
   const auto now = Clock::now();
   std::lock_guard lock(g_rtt_mutex);
   Rtt& r = g_rtts[peer];
-  r.last = float(ms), r.relayed = relayed;
+  if (std::string_view(r.how) != how) REXLOG_INFO("net: peer {} pings over {} ({:.0f} ms)", Ip(peer), how, ms);
+  r.last = float(ms), r.relayed = relayed, r.how = how;
   r.recent.emplace_back(now, float(ms));
   std::erase_if(r.recent, [&](const auto& e) { return now - e.first > std::chrono::seconds(5); });
 }
@@ -178,7 +181,7 @@ std::vector<NetLink> NetLinks() {
     std::erase_if(r.recent, [&](const auto& e) { return now - e.first > std::chrono::seconds(5); });
     if (r.recent.empty()) continue;
     NetLink l;
-    l.peer = peer, l.rtt_ms = r.last, l.relayed = r.relayed, l.name = r.name;
+    l.peer = peer, l.rtt_ms = r.last, l.relayed = r.relayed, l.how = r.how, l.name = r.name;
     for (const auto& e : r.recent) l.worst_ms = std::max(l.worst_ms, e.second);
     links.push_back(l);
   }

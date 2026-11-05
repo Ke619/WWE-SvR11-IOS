@@ -143,15 +143,16 @@ static void DrawNativeFailure(ImGuiIO& io) {
 }
 
 // Online: the worst round trip to the other players (net_sim.h), as signal
-// bars and milliseconds at the top right - only while peers answer pings.
+// bars and milliseconds at the top right, with the path it took (direct, IPv6,
+// LAN, relay) - only while peers answer pings.
 static void DrawPing(ImGuiIO& io) {
   if (!REXCVAR_GET(show_ping)) return;
   const auto links = NetLinks();
   if (links.empty()) return;
   float worst = 0;
-  bool relayed = false;
+  const char* how = "";
   for (const auto& l : links) {
-    if (l.rtt_ms >= worst) worst = l.rtt_ms, relayed = l.relayed;
+    if (l.rtt_ms >= worst) worst = l.rtt_ms, how = l.how;
   }
   const int bars = worst < 80 ? 4 : worst < 150 ? 3 : worst < 250 ? 2 : 1;
   const ImVec4 colour = bars >= 3 ? ImVec4(0.45f, 1.0f, 0.45f, 1.0f)
@@ -175,7 +176,7 @@ static void DrawPing(ImGuiIO& io) {
     }
     ImGui::Dummy(ImVec2(4 * (w + 2.0f), h));
     ImGui::SameLine();
-    ImGui::TextColored(colour, "%.0f ms%s", worst, relayed ? " (relay)" : "");
+    ImGui::TextColored(colour, "%.0f ms (%s)", worst, how);
     // (outside a match - the lobby - or with more than one peer: every
     // player and their own ping, so players can see who is far)
     if (links.size() > 1 || !svr2011::InMatch()) {
@@ -185,7 +186,7 @@ static void DrawPing(ImGuiIO& io) {
                          : l.rtt_ms < 250 ? ImVec4(1.0f, 0.85f, 0.3f, 1.0f)
                                           : ImVec4(1.0f, 0.4f, 0.4f, 1.0f);
         const std::string who = l.name.empty() ? "Player" : l.name;
-        ImGui::TextColored(c, "%s  %.0f ms%s", who.c_str(), l.rtt_ms, l.relayed ? " (relay)" : "");
+        ImGui::TextColored(c, "%s  %.0f ms (%s)", who.c_str(), l.rtt_ms, l.how);
       }
     }
   }

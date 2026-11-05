@@ -38,6 +38,12 @@ set-up (`sub_825B7EB0`, `sub_825B1488`, `sub_8243D680`, `sub_8257B268`).
   confirmed that path was taken.
 - Universe's per-title store (`sub_825B6BE0`, P+20776) is 8 rows of 4 B, only for the titles in the list at 0x8206D6BC
   (`sub_828BDA98`). It returns a pointer, so a new title can have its row in a side buffer.
+- Universe (in progress). `brand=raw|smackdown|both` puts a new title in Universe, `like=<key>` picks its rank class
+  (`sub_825B74D0`: 0 world, 1 tag, 2 midcard, 3 women, 4 none). Universe's titles are 0, 1, 4, 5, 7, 11, 12. Its loops over
+  titles run on past 13 to the new ones (`NewTitleLoop_*` in `svr2011_config.toml`). A title's Universe row is in a side
+  buffer, not yet saved. The rankings screens (`sub_8249B208`) show 4 fixed rows per brand; no new row yet.
+- To check: `sub_825C1EA0` lists holders in a 96 B heap block, which many new titles could fill; `sub_824AC5B8` reads a
+  string table by title with no limit on its +296 path.
 - Test aids: `SVR2011_TEST_NEW_TITLES` (the table in the log; =<id> gives the first new title that holder, in memory).
 
 ## The mod

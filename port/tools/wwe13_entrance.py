@@ -77,9 +77,9 @@ TYPES = {S.TYPE_CHAR: 'char', S.TYPE_PROP: 'prop', (0x10000, 0): 'camera', (1, 0
 GENERIC13 = {19202, 10402, 51200, 12502, 13902, 25500}
 GAMES = {'wwe13': dict(name="WWE '13", files=r'(?i)entrance(\d\d|_dlc\d\d)\.pac$', ik=True),
          'wwe12': dict(name="WWE '12", files=r'(?i)nyujyo[0-9a-z]\.pac$', ik=False),
-         'wwe2k14': dict(name='WWE 2K14', files=r'(?i)entrance\d\d\.pac$', ik=True),
-         'wwe2k15': dict(name='WWE 2K15', files=r'(?i)entrance\d\d\.pac$', ik=True, slot788=True),
-         'wwe2k16': dict(name='WWE 2K16', files=r'^\d{5}\.pac$', ik=True, slot788=True, per_file=True),
+         'wwe2k14': dict(name='WWE 2K14', files=r'(?i)entrance(\d\d|_dlc\d\d)\.pac$', ik=True),
+         'wwe2k15': dict(name='WWE 2K15', files=r'(?i)entrance(\d\d|_dlc\d\d[a-z]?)\.pac$', ik=True, slot788=True),
+         'wwe2k16': dict(name='WWE 2K16', files=r'^\d{5}(_dlc\d+)?\.pac$', ik=True, slot788=True, per_file=True),
          'wwe2k17': dict(name='WWE 2K17', files=r'^\d{5}\.pac$', ik=True, slot788=True, per_file=True)}
 XMAGIC = b'\x0f\xf5\x12\xed'
 # slot words (u32 index in the 212-byte slot) holding positions in cm: 2011 = WWE '13 / 10
@@ -221,7 +221,13 @@ def shdc_leaves(b):
 def scene_entries(d):
     """2K16 / 2K17 scene pac -> (EVP bytes, track leaves [(index, bytes)]) or None"""
     evp = evz = None
-    if d[:4] == b'EPAC':
+    if d[:4] == b'EPK8':    # (2K16's DLC packages: 00558_dlc20.pac, where the disc has EPAC)
+        for (t, n), v in epk8_entries(d).items():
+            if t.startswith('EVP'):
+                evp = v
+            elif t.startswith('EVZ'):
+                evz = svrfmt.pach_read(v) if v[:4] == b'PACH' else shdc_leaves(v)
+    elif d[:4] == b'EPAC':
         for (t, n), v in epac16_entries(d).items():
             if t.startswith('EVP') or t.startswith('EVE'):
                 evp = v
@@ -279,12 +285,13 @@ def read_source(src, svrmod, game='wwe13'):
                 evz[int(f[:5])] = r[1]
         return evp, evz
     for f in sorted(pacs):
-        for (g, n), b in epk8_entries(xdec(src.read('pac/evt/' + f), svrmod)).items():
-            if n.isdigit() and int(n) < 10000:
-                if g.startswith('EVP'):
-                    evp[int(n)] = evp_788_to_212(b) if g_.get('slot788') else b
-                elif g.startswith('EVZ'):
-                    evz[int(n)] = b
+        for d in (src.reads('pac/evt/' + f) if hasattr(src, 'reads') else [src.read('pac/evt/' + f)]):
+            for (g, n), b in epk8_entries(xdec(d, svrmod)).items():
+                if n.isdigit() and int(n) < 10000:
+                    if g.startswith('EVP'):
+                        evp[int(n)] = evp_788_to_212(b) if g_.get('slot788') else b
+                    elif g.startswith('EVZ'):
+                        evz[int(n)] = b
     return evp, evz
 
 

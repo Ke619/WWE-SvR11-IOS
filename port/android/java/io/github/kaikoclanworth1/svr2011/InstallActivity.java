@@ -65,8 +65,28 @@ public class InstallActivity extends Activity {
         return false;
     }
 
+    // Files every install has. default.xex alone isn't enough: a folder with it and none of the disc's files offered
+    // Play and the game crashed at once (2.1.9 report 181cb0). Install again keeps what is there, saves and mods too.
+    private static final String[] kMustHave = {"plist360.arc", "pac/_startup.pac", "pac/m.pac", "pac/plist360.h", "sound/System.pck"};
+
+    // The first must-have file the game folder lacks, or null.
+    static String missingFile() {
+        File dir = gameFolder();
+        if (!new File(dir, "default.xex").isFile()) return "default.xex";
+        for (String f : kMustHave)
+            if (!new File(dir, f).isFile()) return f;
+        return null;
+    }
+
     static boolean installed() {
-        return new File(gameFolder(), "default.xex").isFile();
+        return missingFile() == null;
+    }
+
+    // default.xex is there, but not everything: what the player is told.
+    static String incompleteText() {
+        String f = missingFile();
+        if (f == null || f.equals("default.xex")) return null;
+        return "Your install isn't complete (" + f + " is missing). Install again: your saves and mods are kept.";
     }
 
     // The package the launcher made, where the player may have copied it.

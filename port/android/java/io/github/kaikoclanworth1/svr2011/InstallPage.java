@@ -75,7 +75,8 @@ final class InstallPage {
     }
 
     void refresh() {
-        state_.setText(InstallActivity.installed()
+        String incomplete = InstallActivity.incompleteText();
+        state_.setText(incomplete != null ? incomplete : InstallActivity.installed()
             ? "Installed in games/" + InstallActivity.kFolderName + " (" + FileOps.human(free()) + " free)."
             : "Not installed yet.");
     }

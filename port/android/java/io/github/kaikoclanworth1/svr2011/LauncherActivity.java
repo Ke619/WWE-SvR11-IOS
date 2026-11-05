@@ -533,7 +533,8 @@ public class LauncherActivity extends Activity {
 
     void play() {
         if (!InstallActivity.installed()) {
-            status_.setText("The game isn't installed.");
+            String incomplete = InstallActivity.incompleteText();
+            status_.setText(incomplete != null ? incomplete : "The game isn't installed.");
             startActivity(new Intent(this, InstallActivity.class));
             return;
         }

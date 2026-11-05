@@ -55,7 +55,7 @@ struct NewTitle {
   int brand = -1;   // Universe: 0 RAW, 1 SmackDown, 7 both (brand=raw / smackdown / both); -1 not in Universe
   int like = 4;     // the game's title whose rank class it counts in (like=<key>)
   uint32_t holder[2] = {kNoHolder, kNoHolder};
-  uint32_t guest_name = 0, guest_short = 0;  // (in capitals, as the game's lists write titles)
+  uint32_t guest_name = 0, guest_short = 0, guest_champion = 0;  // (in capitals, as the game's lists write titles)
 };
 std::vector<NewTitle> g_new;
 uint32_t g_contenders = 0;  // guest: each new title's Universe row, 4 B
@@ -178,7 +178,7 @@ void InstallNewTitles(rex::memory::Memory* memory) {
       while (!short_name.empty() && short_name.back() == ' ') short_name.pop_back();
       if (short_name.empty()) short_name = t.name;
     }
-    t.guest_name = guest(t.name), t.guest_short = guest(short_name);
+    t.guest_name = guest(t.name), t.guest_short = guest(short_name), t.guest_champion = guest(t.champion);
     g_new.push_back(std::move(t));
   }
 }
@@ -629,6 +629,125 @@ REX_HOOK_RAW(sub_825B6BE0) {
     return;
   }
   __imp__sub_825B6BE0(ctx, base);
+}
+
+// Universe's rankings screen (sub_8249B208): 4 rows a brand, in fixed widgets, the third with two faces for the tag
+// title. The last row carries the new titles of the brand: past it (or back from it) the row shows the next one, the
+// cursor stays. Screen: brand +932, mode +940 (0 the list), cursor +56, holders' ids +2988 (the last row's +3004).
+// A row picked (sub_8249D4B0) opens the title at +2944.
+namespace {
+struct RankRow {
+  uint32_t self = 0, widgets = 0;
+  int pos = 0, last = 0;  // pos 0: the game's own title on the row
+  uint32_t stock_label = 0, stock_holder = 0, stock_id = 0;
+  std::vector<int> titles;  // this brand's new titles (indices in g_new)
+} g_rank;
+uint32_t g_none_text = 0;
+
+// (the widgets of the last row: label, holder's name)
+uint32_t RankLabel(int brand) { return (brand == 0 ? 0x315u : 0x2F4u) * 256 + 216; }
+uint32_t RankHolder(int brand) { return (brand == 0 ? 0x316u : 0x2F5u) * 256 + 216; }
+
+void ShowRank(PPCContext& ctx, uint8_t* base, int pos) {
+  g_rank.pos = pos;
+  const int brand = int(Rd(base, g_rank.self + 932));
+  const uint32_t label = g_rank.widgets + RankLabel(brand), holder = g_rank.widgets + RankHolder(brand);
+  const uint32_t art = g_rank.widgets + (brand == 0 ? 0x30Eu : 0x2EDu) * 256;  // (BG_diva, BG_woman)
+  if (pos == 0) {
+    Wr(base, label, g_rank.stock_label), Wr(base, holder, g_rank.stock_holder);
+    Wr(base, g_rank.self + 3004, g_rank.stock_id);
+    Wr(base, art + 0xD4, 0x3F800000);
+  } else {
+    const NewTitle& t = g_new[size_t(g_rank.titles[size_t(pos - 1)])];
+    const auto saved = ctx;
+    uint32_t name = g_none_text;
+    if (t.holder[0] != kNoHolder && t.holder[0] < 322) {
+      ctx.r3.u64 = t.holder[0];
+      sub_828B6138(ctx, base);
+      name = ctx.r3.u32;
+    }
+    ctx = saved;
+    Wr(base, label, t.guest_champion), Wr(base, holder, name);
+    Wr(base, g_rank.self + 3004, t.holder[0]);
+    Wr(base, art + 0xD4, 0);  // (no art of its own yet)
+    // (no holder: the face widget keeps the last picture; the game only ever turns it on)
+    if (t.holder[0] == kNoHolder) Wr(base, g_rank.widgets + (brand == 0 ? 783u : 750u) * 256 + 196, 1);
+  }
+  REXLOG_INFO("[svr2011] new titles: rankings last row, place {} of {}", pos, g_rank.titles.size());
+}
+}  // namespace
+
+REX_EXTERN(__imp__sub_8249B208);
+REX_HOOK_RAW(sub_8249B208) {
+  const uint32_t self = ctx.r3.u32;
+  __imp__sub_8249B208(ctx, base);
+  if (g_new.empty() || Rd(base, self + 940) != 0) return;
+  const int brand = int(Rd(base, self + 932));
+  if (brand != 0 && brand != 1) return;
+  std::vector<int> titles;
+  for (size_t k = 0; k < g_new.size(); ++k)
+    if (!g_new[k].tag && (g_new[k].brand == brand || g_new[k].brand == 7)) titles.push_back(int(k));
+  const int was = g_rank.self == self ? g_rank.pos : 0;
+  g_rank = RankRow();
+  g_rank.self = self;
+  g_rank.widgets = Rd(base, Rd(base, self + 276) + 8);
+  g_rank.titles = titles;
+  g_rank.stock_label = Rd(base, g_rank.widgets + RankLabel(brand));
+  g_rank.stock_holder = Rd(base, g_rank.widgets + RankHolder(brand));
+  g_rank.stock_id = Rd(base, self + 3004);
+  g_rank.last = int(Rd(base, self + 56));
+  if (!g_none_text) {
+    const auto saved = ctx;
+    ctx.r3.u64 = Rd(base, 0x82E3CD48), ctx.r4.u64 = 281;  // ("NONE")
+    sub_82153EF8(ctx, base);
+    g_none_text = ctx.r3.u32;
+    ctx = saved;
+  }
+  if (was > 0 && size_t(was) <= titles.size()) ShowRank(ctx, base, was);
+}
+
+// Each frame (the holders' faces): the cursor moved past the end.
+REX_EXTERN(__imp__sub_8249B600);
+REX_HOOK_RAW(sub_8249B600) {
+  const uint32_t self = ctx.r3.u32;
+  if (self == g_rank.self && !g_rank.titles.empty() && Rd(base, self + 940) == 0) {
+    const int cursor = int(Rd(base, self + 56)), last = g_rank.last, most = int(g_rank.titles.size());
+    int to = cursor;
+    if (last == 3 && cursor == 0) {  // (down past the last row)
+      if (g_rank.pos < most) ShowRank(ctx, base, g_rank.pos + 1), to = 3;
+      else ShowRank(ctx, base, 0);
+    } else if (last == 3 && cursor == 2 && g_rank.pos > 0) {  // (up, on the row)
+      ShowRank(ctx, base, g_rank.pos - 1), to = 3;
+    } else if (last == 0 && cursor == 3) {  // (up past the first)
+      ShowRank(ctx, base, most);
+    }
+    if (to != cursor) Wr(base, self + 56, uint32_t(to));
+    g_rank.last = to;
+  }
+  ctx.r3.u64 = self;
+  __imp__sub_8249B600(ctx, base);
+}
+
+// The picked title's page is filled (from +2944).
+REX_EXTERN(__imp__sub_8249CAC8);
+REX_HOOK_RAW(sub_8249CAC8) {
+  const uint32_t self = ctx.r3.u32;
+  if (self == g_rank.self && g_rank.pos > 0 && Rd(base, self + 56) == 3)
+    Wr(base, self + 2944, uint32_t(kFirstNew + g_rank.titles[size_t(g_rank.pos - 1)]));
+  __imp__sub_8249CAC8(ctx, base);
+}
+
+// A row picked: on the last row, the new title.
+REX_EXTERN(__imp__sub_8249D4B0);
+REX_HOOK_RAW(sub_8249D4B0) {
+  const uint32_t self = ctx.r3.u32;
+  __imp__sub_8249D4B0(ctx, base);
+  if (self == g_rank.self && g_rank.pos > 0 && Rd(base, self + 56) == 3) {
+    const int k = g_rank.titles[size_t(g_rank.pos - 1)];
+    Wr(base, self + 2944, uint32_t(kFirstNew + k));
+    Wr(base, g_rank.widgets + 0x239D8, g_new[size_t(k)].guest_name);  // (the header)
+    REXLOG_INFO("[svr2011] new titles: rankings opens {}", g_new[size_t(k)].folder);
+  }
 }
 
 // A holder, read from the save: (title, slot).

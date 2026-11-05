@@ -187,7 +187,20 @@ sockaddr_in Sin(uint32_t ip, uint16_t port) {
   return to;
 }
 
+// Test aid: SVR2011_TEST_NAT_BOX=<ip:port> - this game behind a simulated router (tools/dev/nat_box.py): everything
+// on the P2P socket goes to the box, wrapped with the real far end's address (6 bytes), and comes back the same way.
+uint32_t g_box_ip = 0;
+uint16_t g_box_port = 0;
+
 void SendOn(Socket s, uint32_t ip, uint16_t port, const uint8_t* data, size_t size) {
+  if (g_box_ip && s == g_socket) {
+    std::vector<uint8_t> wrapped(6 + size);
+    Put32(wrapped.data(), ip), Put16(wrapped.data() + 4, port);
+    std::memcpy(wrapped.data() + 6, data, size);
+    sockaddr_in box = Sin(g_box_ip, g_box_port);
+    sendto(s, reinterpret_cast<const char*>(wrapped.data()), int(wrapped.size()), 0, reinterpret_cast<sockaddr*>(&box), sizeof(box));
+    return;
+  }
   sockaddr_in to = Sin(ip, port);
   sendto(s, reinterpret_cast<const char*>(data), int(size), 0, reinterpret_cast<sockaddr*>(&to), sizeof(to));
 }
@@ -1466,14 +1479,20 @@ void Receive() {
   for (;;) {
     sockaddr_in from = {};
     socklen_t len = sizeof(from);
-    const int n = int(recvfrom(g_socket, reinterpret_cast<char*>(buf.data()), int(buf.size()), 0,
+    int n = int(recvfrom(g_socket, reinterpret_cast<char*>(buf.data()), int(buf.size()), 0,
                                reinterpret_cast<sockaddr*>(&from), &len));
     if (n <= 0) {
       if (!Reset()) std::this_thread::sleep_for(std::chrono::milliseconds(50));
       continue;
     }
-    const uint32_t ip = ntohl(from.sin_addr.s_addr);
-    const uint16_t port = ntohs(from.sin_port);
+    uint32_t ip = ntohl(from.sin_addr.s_addr);
+    uint16_t port = ntohs(from.sin_port);
+    if (g_box_ip) {  // (test aid: only what the simulated router lets in, from its real sender)
+      if (ip != g_box_ip || port != g_box_port || n < 6) continue;
+      ip = Be32(buf.data()), port = Be16(buf.data() + 4);
+      n -= 6;
+      std::memmove(buf.data(), buf.data() + 6, size_t(n));
+    }
     // (the relay over UDP: its frames without the length)
     if (n >= 6 && Be32(buf.data()) == kRelayMagic && ip == g_udp_relay_ip && port == g_udp_relay_port) {
       if (buf[5] == kWelcome && g_udp_welcome_ms.exchange(NowMs()) == 0) {
@@ -2667,12 +2686,17 @@ void InstallP2P(rex::memory::Memory* memory) {
   for (unsigned char c : id) h = (h ^ c) * 1099511628211ull;
   g_me.mac = {0x02, uint8_t(h >> 32), uint8_t(h >> 24), uint8_t(h >> 16), uint8_t(h >> 8), uint8_t(h)};
   g_me.xuid = std::strtoull(rex::cvar::Query<std::string>("online_xuid").c_str(), nullptr, 16);
+  if (const char* box = std::getenv("SVR2011_TEST_NAT_BOX"); box && *box) {
+    const auto at = Resolve(box, 0);
+    g_box_ip = at.first, g_box_port = at.second;
+    REXLOG_INFO("p2p: test: behind the NAT box at {}:{}", Ip(g_box_ip), g_box_port);
+  }
   std::thread(Receive).detach();
   std::thread(Keepalive).detach();
   std::thread(PingLoop).detach();
   // The router asked to forward the P2P port (port_map.h; not for a test's
-  // second game on this PC, which names its own address)
-  if (REXCVAR_GET(p2p_address).empty() && g_me.lan >> 24 != 127)
+  // second game on this PC, which names its own address - unless it names a test router too)
+  if ((REXCVAR_GET(p2p_address).empty() && g_me.lan >> 24 != 127) || std::getenv("SVR2011_TEST_NATPMP"))
     StartPortMapping(g_me.base, g_me.lan, [](uint32_t ip, uint16_t port) {
       g_mapped_port = port;
       if (ip) g_me.online = ip;

@@ -526,7 +526,11 @@ REX_HOOK_RAW(sub_826B9FB8) {
   const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - r.t0).count();
   // (the cell's extra rule motions - match_types.cpp: Extreme Rules' RUWM read after the cell's own, when heap 16
   // already holds the arena, the stage and the weapons' models - from the fallback memory at once, no 3 s wait)
-  const bool at_once = svr2011::ExtraRuleMotionsPending() && RequestName(base) == svr2011::kExtraRuleMotionsRead;
+  // (nor for a file bigger than the cache's whole heap, with nothing idle left to free: packs' /MOTP/GAME, 30 MB in 20
+  // MB, waited 3 s at every match)
+  const uint32_t heap = Rd32(base, cache + 76), table = Rd32(base, 0x82EC5F48);
+  const bool too_big = heap < 54 && table && r.size > Rd32(base, table + heap * 36 + 4) - Rd32(base, table + heap * 36);
+  const bool at_once = too_big || (svr2011::ExtraRuleMotionsPending() && RequestName(base) == svr2011::kExtraRuleMotionsRead);
   if (s < 3.0 && !at_once) return;
   r.stuck = true;
   r.name = RequestName(base);

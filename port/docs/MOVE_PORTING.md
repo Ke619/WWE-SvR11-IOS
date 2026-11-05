@@ -56,6 +56,13 @@ skip instead; `move_packs` does the same to a pack's keyframe motions when it me
 so existing mods need no new port. Test aids: `SVR2011_TEST_HW_WATCH_MOTION=<person>,<motion>` (who writes the next
 motion), `SVR2011_TEST_FOLLOW_LOG=1` (a jump event's bytes and address).
 
+### 2.3c Templates a match type alone has
+
+A move only in a match type's banks (Rumble's 83xx / 84xx: `MOT/RU*` + `MVMT/RUMB`) has no motions in other matches: both
+wrestlers stand still in it. A template search with no category skips them (`choose_template`). The moveset's rope
+elimination slots (0x026-0x02A, 0x088 and kin, bank RUMB) ask for RUMB by name and rightly get them, so a move in such a
+slot can't be tested with a forced start in a normal match.
+
 ### 2.4 Ids
 
 - **Below every template bank's last id.** A bank's directory is sorted and ends at its highest id (16000 in

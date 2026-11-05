@@ -1483,6 +1483,12 @@ def choose_template(g11, cat, frames, gap=None, allowed=None, paired=True, attac
                     continue
                 if not reversals and 'reversal' in g11.waze[e['id']][1].lower():
                     continue
+                # (no category asked: only a move a one-on-one match has. A move only in a match type's banks - Rumble's
+                # 83xx / 84xx, MOT/RU* + MVMT/RUMB - has no motions in other matches: both wrestlers stand still in it.
+                # A Rumble elimination slot asks for RUMB by name and still gets them)
+                if cats == [''] and not any(p.startswith('MVMT/') and p.split('/')[1].strip() in SINGLES
+                                            for p, kd, ks in g11.banks_of(e['id'])):
+                    continue
                 # (a move from the top rope or onto an opponent seated on the turnbuckle - WAZE situation 9-11, 13,
                 # 14 - only when corner moves are asked for: 2K17's Blue Thunder Bomb, a standing powerbomb, got DDT
                 # 14 (23153, situation 13) through the categories its namesakes voted for)

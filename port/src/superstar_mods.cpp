@@ -4840,6 +4840,30 @@ uint32_t FindInUnsortedBanks(uint8_t* base, uint32_t banks, uint32_t key, uint32
 }
 }  // namespace
 
+// Test aid: SVR2011_TEST_BANK_COPY=1 - each bank the match load copies and trims into heap 42 (sub_82163808: the bank,
+// dest, trimmed size back): where each lands and its size, for what overwrites one (report d10f64).
+REX_EXTERN(__imp__sub_82163808);
+REX_HOOK_RAW(sub_82163808) {
+  static const bool log = std::getenv("SVR2011_TEST_BANK_COPY") != nullptr;
+  const uint32_t src = ctx.r4.u32, dest = ctx.r5.u32, entry = ctx.r6.u32;
+  const uint32_t table = Rd32(GuestAt(base, ctx.r3.u32 + 48));
+  __imp__sub_82163808(ctx, base);
+  // (what this match keeps past the 36 MB buffer's end would land on heap 42's other blocks: said once)
+  if (table) {
+    const uint32_t set = table + 352 * (Rd32(GuestAt(base, table + 704)) ^ 1), buffer = Rd32(GuestAt(base, set + 344));
+    const uint32_t size = Rd32(GuestAt(base, set + 336));
+    static bool told = false;
+    if (!told && dest + ctx.r3.u32 > buffer + size) {
+      told = true;
+      REXLOG_ERROR("[svr2011] motion banks: this match keeps more than the {} MB motion buffer holds (bank at {:08X}, {} bytes)",
+                   size >> 20, dest, ctx.r3.u32);
+    }
+  }
+  if (log)
+    REXLOG_INFO("[svr2011] bank copy: {:08X} ({} bytes) -> {:08X}, {} bytes back, count {}", src, entry, dest, ctx.r3.u32,
+                Rd32(GuestAt(base, dest + 272)));
+}
+
 // The second bank search, at a motion's start: sub_82394740(banks, id, x, y) -> the per-slot byte at banks + 272 + k
 // of the bank k that has the key (0 if none) - it reads each bank as sub_823941F8 does, so a slot that isn't a bank
 // (BankAt) crashed it the same way: then the search here over the good banks.

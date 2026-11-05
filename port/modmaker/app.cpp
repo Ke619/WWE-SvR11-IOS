@@ -2163,7 +2163,13 @@ void LoadSettings() {
   for (const auto& d : Values(t, "my_disc")) {  // <game key>|<disc id>|<path>
     const size_t a = d.find('|'), b = a == std::string::npos ? a : d.find('|', a + 1);
     if (b == std::string::npos) continue;
-    g_settings.my_discs.push_back({d.substr(0, a), d.substr(a + 1, b - a - 1), Wide(d.substr(b + 1))});
+    g_settings.my_discs.push_back({d.substr(0, a), d.substr(a + 1, b - a - 1), Wide(d.substr(b + 1)), L""});
+  }
+  for (const auto& d : Values(t, "my_disc_dlc")) {  // <game key>|<folder>
+    const size_t a = d.find('|');
+    if (a == std::string::npos) continue;
+    for (auto& disc : g_settings.my_discs)
+      if (disc.key == d.substr(0, a)) disc.dlc = Wide(d.substr(a + 1));
   }
   g_settings.discs_seeded = Value(t, "discs_seeded") == "1";
   g_settings.keep_bik = Value(t, "keep_bik") == "1";
@@ -2185,7 +2191,10 @@ void SaveSettings() {
        "\nfont=" + std::to_string(g_settings.font) + "\n";
   for (const auto& f : g_settings.disc_folders) t += "disc_folder=" + Utf8(f) + "\n";
   if (!g_settings.bink2_tool.empty()) t += "bink2_tool=" + Utf8(g_settings.bink2_tool) + "\n";
-  for (const auto& d : g_settings.my_discs) t += "my_disc=" + d.key + "|" + d.id + "|" + Utf8(d.path) + "\n";
+  for (const auto& d : g_settings.my_discs) {
+    t += "my_disc=" + d.key + "|" + d.id + "|" + Utf8(d.path) + "\n";
+    if (!d.dlc.empty()) t += "my_disc_dlc=" + d.key + "|" + Utf8(d.dlc) + "\n";
+  }
   if (g_settings.discs_seeded) t += "discs_seeded=1\n";
   if (g_settings.keep_bik) t += "keep_bik=1\n";
   if (g_settings.moves_warning_off) t += "moves_warning_off=1\n";

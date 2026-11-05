@@ -116,9 +116,9 @@ def missing(rel, src=None):
     """a needed file isn't in the game files: a folder that isn't a whole disc (no default.xex / SYSTEM.CNF) is often
     DLC (2.1.8 report 20261103-040523-d343a2) - what to pick instead"""
     if src and os.path.isdir(src) and not any(os.path.isfile(os.path.join(src, f)) for f in ('default.xex', 'SYSTEM.CNF')):
-        return ('the folder has no %s: it isn\'t a whole game (DLC, or part of a disc?). DLC superstars can\'t be read '
-                'from the DLC alone - use the game\'s disc image or its whole extracted folder (with default.xex); a DLC '
-                'superstar\'s model can come in on its own as One file: its pac/ch/chNNN.pac' % rel)
+        return ('the folder has no %s: it isn\'t a whole game (DLC, or part of a disc?). Use the game\'s disc image or '
+                'its whole extracted folder (with default.xex), and give the DLC as the game\'s DLC folder '
+                '(My game discs: Add DLC folder; --dlc)' % rel)
     return 'the game files have no %s (an incomplete extract? use the whole disc folder or the ISO)' % rel
 
 
@@ -219,13 +219,18 @@ class Src:
         self.cache = cache
         if not self.d.exists('pac') and not any(n.lower().endswith('.pac') for n in self.d.listdir('')):
             raise BadInput('--src has no pac folder: %s' % path)   # (JBI keeps its PACs in the disc root)
+        self.dlc = None   # (--dlc: the game's DLC packages - dlc_src.py - what the disc doesn't have comes from them)
+        if os.environ.get('SVR2011_PORT_DLC'):
+            import dlc_src
+            title = self.info().get('title_id')
+            self.dlc = dlc_src.DlcSet(os.environ['SVR2011_PORT_DLC'], cache, int(title, 16) if title else None)
 
     @property
     def root(self):
         return self.folder or self.cache
 
     def has(self, rel):
-        return self.d.exists(rel)
+        return self.d.exists(rel) or bool(self.dlc and self.dlc.exists(rel))
 
     def no_models(self):
         """a folder of the game's files without any model pac (pac/ch/ch<id>.pac): the Mod Maker's
@@ -241,7 +246,7 @@ class Src:
     def get(self, rel):
         """local path of rel (copied from the image when needed), or None"""
         if not self.d.exists(rel):
-            return None
+            return self.dlc.get(rel) if self.dlc else None
         if self.folder:
             return os.path.join(self.folder, *rel.split('/'))
         dst = os.path.join(self.cache, *rel.split('/'))
@@ -328,6 +333,46 @@ class Game09:
         self._ssf = None
         self._evp = None
 
+    def merge_dlc(self):
+        """--dlc (GameW.merge_dlc): a package's own superstars join the tables; their renders are in its DLC_HD.pac"""
+        self.dlc_ids = set()
+        dlc = self.src.dlc
+        if not dlc:
+            return
+        ssf = self.ssf()
+        for pk in dlc.packages:
+            own = {i for i in pk.models() if not self.src.d.exists('pac/ch/ch%d.pac' % i)}
+            low = pk.etc()
+            if not own or not low:
+                continue
+            h, g, t = svrfmt.epac_read(pk.read(low))
+            ch = {(ty, n): b for ty, es in g for n, b in es}
+            if (b'CHAR', b'DAT ') not in ch:
+                continue
+
+            def pach(b):
+                return {i: ch_tool.unpack(d) for i, d in svrfmt.pach_read(ch_tool.unpack(b))}
+            dat, pro = pach(ch[(b'CHAR', b'DAT ')]), pach(ch.get((b'CHAR', b'PRO '), b''))
+            for i in own & set(dat):
+                self.g.dat[i] = dat[i][4:]
+                if i in pro:
+                    self.g.pro[i] = pro[i]
+                if self.named(i):
+                    self.dlc_ids.add(i)
+            for hd in pk.matching(r'^pac/dlc_hd\.pac$'):
+                before = self._ssf
+                self._ssf = None
+                hd_path = self.src.dlc.get(hd)
+                own_get, self.src.get = self.src.get, lambda rel: hd_path if rel == 'pac/DLC_HD.pac' else own_get(rel)
+                try:
+                    for k, v in self.ssf().items():
+                        if k[1] in own:
+                            before[k] = v
+                finally:
+                    del self.src.get
+                    self._ssf = before
+        self.render_ids = {i for (t, i) in self._ssf if t == 'SSFB'}
+
     # records
     def name(self, i): return self.g.name(i)
     def short(self, i): return self.g.short(i)
@@ -407,7 +452,7 @@ class Game09:
         return self.src.get('movies/titantron/%03d.bik' % n)
 
     def roster(self):
-        return [c for c in sorted(self.g.dat) if 100 <= c < 400 and self.named(c)
+        return [c for c in sorted(self.g.dat) if (100 <= c < 400 or c in getattr(self, "dlc_ids", ())) and self.named(c)
                 and not self.name(c).upper().startswith(('MOTION', 'MOVES', 'EDIT', 'DLC', 'DUMMY', 'MATERIAL', 'LEGEND MOTEST'))
                 and (self.has_chpac(c) or self.src.no_models())]
 
@@ -1171,19 +1216,78 @@ class GameW:
             return {i: MP.unz(d) for i, d in svrfmt.pach_read(MP.unz(b))}
         self.raw_dat = pach(ch[(b'CHAR', b'DAT')])
         self.pro = pach(ch[(b'CHAR', b'PRO')])
-        self.dat = {}
-        for i, r in self.raw_dat.items():   # (laid out as 2011's for the shared helpers)
-            x = bytearray(264)
-            nm = r[self.dat_name:self.dat_name + 32].split(b'\0')[0][:31]
-            x[34:34 + len(nm)] = nm
-            x[170:170 + len(nm)] = nm
-            x[28:30] = r[self.dat_scale:self.dat_scale + 2]
-            x[208], x[209] = r[self.dat_gender], r[self.dat_class]
-            self.dat[i] = bytes(x)
+        self.dat = {i: self._shape(r) for i, r in self.raw_dat.items()}
         self._ssf = None
+        self.dlc_ids = set()
+
+    def _shape(self, r):
+        """a DAT record laid out as 2011's for the shared helpers"""
+        x = bytearray(264)
+        nm = r[self.dat_name:self.dat_name + 32].split(b'\0')[0][:31]
+        x[34:34 + len(nm)] = nm
+        x[170:170 + len(nm)] = nm
+        x[28:30] = r[self.dat_scale:self.dat_scale + 2]
+        x[208], x[209] = r[self.dat_gender], r[self.dat_class]
+        return bytes(x)
+
+    def decode(self, raw):
+        return raw
 
     def pac_bytes(self, rel):
-        return open(self.src.need(rel), 'rb').read()
+        return self.decode(open(self.src.need(rel), 'rb').read())
+
+    def dlc_row_id(self, i, r):
+        """a DLC table row's superstar id"""
+        return i
+
+    def dlc_name(self, pk, x, r):
+        """the 2011-shaped record of a DLC superstar (2K14 and later: its name from the package's strings)"""
+        return x
+
+    def merge_dlc(self):
+        """--dlc: each package's own superstars (a model pac the disc doesn't have) join the tables and the list. A
+        package's chEtc is a whole character table in the disc's format; only the rows of its own models are taken."""
+        dlc = self.src.dlc
+        if not dlc:
+            return
+        ssf = self.ssf()
+        names = {b'SSFA': 'SSFA', b'SSFB': 'SSFB', b'SSFC': 'SSFC', b'SFAG': 'SSFA', b'SFBG': 'SSFB', b'SFCG': 'SSFC'}
+        for pk in dlc.packages:
+            own = {i for i in pk.models() if not self.src.d.exists(self.chpac_rel(i))}
+            low = pk.etc()
+            if not own or not low:
+                continue
+            tables = {}
+            for t, es in self.MP.read_pac(self.decode(pk.read(low))):
+                if t == b'CHAR' or (t[:2] == b'CH' and t[2:4].isdigit()):   # (2K16: CH20 / CH40; '12's CHCM has a DAT too)
+                    for n, b in es:
+                        if n.strip() in (b'DAT', b'PRO'):
+                            tables[n.strip()] = {i: self.MP.unz(d) for i, d in svrfmt.pach_read(self.MP.unz(b))}
+            ids = {i: self.dlc_row_id(i, r) for i, r in tables.get(b'DAT', {}).items() if len(r) >= self.dat_gender + 2}
+            for i, cid in ids.items():
+                if cid not in own:
+                    continue
+                r = tables[b'DAT'][i]
+                x = self.dlc_name(pk, self._shape(r), r)
+                if not x[34:66].strip(b'\0'):
+                    continue
+                self.raw_dat[cid], self.dat[cid] = r, x
+                if i in tables.get(b'PRO', {}):
+                    self.pro[cid] = tables[b'PRO'][i]
+                self.dlc_ids.add(cid)
+            for hd in pk.matching(r'^pac/dlc_hd[^/]*\.pac$'):
+                for t, es in self.MP.read_pac(self.decode(pk.read(hd))):
+                    if t in names:
+                        for n, b in es:
+                            if n.isdigit() and int(n) in self.dlc_ids:
+                                dict.__setitem__(ssf, (names[t], int(n)), b)
+        self.render_ids = {i for (t, i) in ssf if t == 'SSFA'}
+
+    def dlc_pck(self, cid):
+        """a DLC superstar's package sound bank (its theme), or None"""
+        pk = self.src.dlc.package_of(cid) if self.src.dlc and cid in self.dlc_ids else None
+        low = pk.matching(r'^sound/(dlc|sound)[^/]*\.pck$') if pk else []
+        return self.src.dlc.get(low[0]) if low else None
 
     def name(self, i):
         r = self.dat.get(i)
@@ -1225,7 +1329,8 @@ class GameW:
         return ['Play_MUS_%04d_0_0' % m for m in (music, cid) if m]
 
     def roster(self):
-        return [c for c in sorted(self.dat) if 100 <= c < 400 and self.named(c) and (self.has_chpac(c) or self.src.no_models())
+        return [c for c in sorted(self.dat) if (100 <= c < 400 or c in self.dlc_ids) and self.named(c)
+                and (self.has_chpac(c) or self.src.no_models())
                 and not self.name(c).upper().startswith(('MOTION', 'TEST', 'DUMMY'))]
 
 
@@ -1248,8 +1353,7 @@ class GameW13(GameW):
         self.WE = WE
         GameW.__init__(self, src, WE.find_svrmod(svrmod))
 
-    def pac_bytes(self, rel):
-        raw = open(self.src.need(rel), 'rb').read()
+    def decode(self, raw):
         return self.WE.xdec(raw, self.svrmod) if raw[:4] == b'\x0f\xf5\x12\xed' else raw
 
 
@@ -1286,9 +1390,19 @@ class GameW2K14(GameW13):
             x[170:170 + len(nm)] = nm
             self.dat[i] = bytes(x)
 
-    def _names(self):
+    def dlc_name(self, pk, x, r):
+        strings = next((self._names(self.decode(pk.read(s))) for s in pk.matching(r'^pac/string[^/]*\.pac$')), {})
+        nm = strings.get(struct.unpack_from('<H', r, self.dat_name)[0], '').encode('latin1', 'replace')[:31]
+        x = bytearray(x)
+        x[34:66] = bytes(32)
+        x[170:202] = bytes(32)
+        x[34:34 + len(nm)] = nm
+        x[170:170 + len(nm)] = nm
+        return bytes(x)
+
+    def _names(self, raw=None):
         """string.pac SDB 5000 (English) child 0: {u32 0, u32 count, count x {offset, length, id}} -> {id: text}"""
-        g = self.MP.read_pac(self.pac_bytes('pac/string.pac'))
+        g = self.MP.read_pac(raw if raw is not None else self.pac_bytes('pac/string.pac'))
         es = {n: b for t, ents in g for n, b in ents}
         if b'5000' not in es:
             return {}
@@ -1381,6 +1495,9 @@ class GameW2K16(GameW2K15):
         self.dat = {ids[i]: r for i, r in self.dat.items() if i in ids}
         self.pro = {ids[i]: r for i, r in self.pro.items() if i in ids}
 
+    def dlc_row_id(self, i, r):
+        return struct.unpack_from('<H', r, 4)[0]
+
     def theme_events(self, music, cid):
         ev = ['Play_MUS_%04d_%02d_0_0' % (music // 1000, music % 1000)] if 1000 <= music < 1000000 else []
         return ev + ['Play_MUS_%04d_00_0_0' % cid]
@@ -1392,10 +1509,13 @@ class GameW2K16(GameW2K15):
         return self.src.get('sound/game_sound_m.pck')
 
     def roster(self):
-        return [c for c in sorted(self.dat) if 100 <= c < 1000 and self.named(c) and (self.has_chpac(c) or self.src.no_models())
+        return [c for c in sorted(self.dat) if (100 <= c < 1000 or c in self.dlc_ids) and self.named(c)
+                and (self.has_chpac(c) or self.src.no_models())
                 and not self.name(c).upper().startswith(('MOTION', 'TEST', 'DUMMY'))]
 
     def model_entries(self, raw):
+        if raw[:4] == b'EPK8':   # (its DLC's model pacs: 2K15's form, names <id><attire><kind>; the wrestler models, kind 2)
+            return attires(b for t, es in self.MP.read_pac(raw) if t == b'EMD ' for n, b in sorted(es) if n.endswith(b'2'))
         return attires(b for t, es in epac20(raw) if t == b'EMD ' for n, b in es)
 
 
@@ -1790,9 +1910,13 @@ def buildW(cid, outdir, o, rep):
     import wwise
     events = gw.theme_events(music, cid)
     try:
-        ev, why = (wwise.theme(gw.music_pck(), events, os.path.join(mod, 'theme.mp3'), work, o.get('vgmstream'),
-                               stream_pck=gw.stream_pck() if hasattr(gw, 'stream_pck') else None)
-                   if events and gw.music_pck() else (None, getattr(gw, 'theme_missing', 'no theme events')))
+        dlc_bank = gw.dlc_pck(cid) if hasattr(gw, 'dlc_pck') else None
+        ev, why = (wwise.theme(dlc_bank, events, os.path.join(mod, 'theme.mp3'), work, o.get('vgmstream'),
+                               stream_pck=dlc_bank) if events and dlc_bank else (None, ''))
+        if not ev:
+            ev, why = (wwise.theme(gw.music_pck(), events, os.path.join(mod, 'theme.mp3'), work, o.get('vgmstream'),
+                                   stream_pck=gw.stream_pck() if hasattr(gw, 'stream_pck') else None)
+                       if events and gw.music_pck() else (None, getattr(gw, 'theme_missing', 'no theme events')))
     except Exception as e:   # noqa: BLE001
         ev, why = None, str(e)[:160]
     if ev:
@@ -2120,12 +2244,14 @@ def open_game(game, src, svrmod=None):
         g = {'svr2009': Game09, 'svr2008': Game08, 'svr2007': Game07, 'low': GameLoW}[game](src)
         g.render_ids = {i for (t, i) in g.ssf() if t == 'SSFB'}
         g.dat = g.g.dat
+        g.merge_dlc()
         return g
     if game in ('wwe12', 'wwe13', 'wwe2k14', 'wwe2k15', 'wwe2k16', 'wwe2k17'):
         g = {'wwe12': GameW, 'wwe13': GameW13, 'wwe2k14': GameW2K14, 'wwe2k15': GameW2K15, 'wwe2k16': GameW2K16,
              'wwe2k17': GameW2K17}[game]
         g = g(src) if game == 'wwe12' else g(src, svrmod)
         g.render_ids = {i for (t, i) in g.ssf() if t == 'SSFA'}
+        g.merge_dlc()
         return g
     if game.startswith('ps2_'):
         import ps2_port
@@ -2158,7 +2284,9 @@ def cmd_list(a):
         woman = g.gender(c, g11) if hasattr(g, 'gender') else r[208]   # (PS2: also finds the 2011 namesake)
         i11 = g.id11(c) if hasattr(g, 'id11') else c
         same = i11 in play and S.norm(g11.name(i11)) == S.norm(g.name(c))
-        out.append(dict(key=str(c), name=g.name(c), short=g.short(c), gender='female' if woman else 'male',
+        from_dlc = c in getattr(g, 'dlc_ids', ())
+        out.append(dict(key=str(c), name=g.name(c) + (' (DLC)' if from_dlc else ''), short=g.short(c), dlc=from_dlc,
+                        gender='female' if woman else 'male',
                         model=bool(g.has_chpac(c)), render=c in g.render_ids,
                         in_2011=i11 if same else None))
         if hasattr(g, 'pictures'):   # (2K17: renders under hashed names - the user picks one: pictures)
@@ -2702,6 +2830,8 @@ def main(argv):
             print(json.dumps({'error': 'unexpected argument: %s' % k}))
             return 2
     rep_path = None
+    if a.get('dlc'):   # (the source game's DLC packages: every reader of this run and the tools it starts - Src)
+        os.environ['SVR2011_PORT_DLC'] = a['dlc']
     if a.get('svrmod') and os.path.isfile(a['svrmod']) and not os.path.isfile(svrfmt._CLI):
         svrfmt._CLI = os.path.abspath(a['svrmod'])   # (svrfmt's BPE packer, when SVR2011_SVRMOD isn't set)
         os.environ.setdefault('SVR2011_SVRMOD', svrfmt._CLI)

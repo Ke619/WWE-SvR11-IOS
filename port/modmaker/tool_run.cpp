@@ -2,6 +2,7 @@
 #include "tool_run.h"
 
 #include "app.h"
+#include "disc_list.h"
 #include "session_log.h"
 
 #include <algorithm>
@@ -525,9 +526,18 @@ void MovesWarning() {
   ImGui::EndPopup();
 }
 
-bool RunToolJson(const std::wstring& script, const std::vector<std::wstring>& args,
+bool RunToolJson(const std::wstring& script, const std::vector<std::wstring>& args_in,
                  std::function<void(int, const std::string&)> done, const std::wstring& cwd) {
   if (!ConvertersReady()) return false;
+  // (the source game's DLC folder, My game discs: superstar_port reads its superstars beside the disc's)
+  std::vector<std::wstring> args = args_in;
+  if (script == L"superstar_port.py")
+    for (size_t i = 0; i + 1 < args_in.size(); ++i)
+      if (args_in[i] == L"--game") {
+        if (const std::wstring dlc = disc_list::DlcFor(Utf8(args_in[i + 1])); !dlc.empty())
+          args.push_back(L"--dlc"), args.push_back(dlc);
+        break;
+      }
   // moves: the experimental warning first (once a session; a hidden test only when it asks for it)
   if (ConvertsMoves(script, args) && !g_moves_ok && !g_settings.moves_warning_off && (!g_behind || !MovesTestAnswer().empty())) {
     if (g_moves_ask) {

@@ -32,6 +32,10 @@ std::string FullName(const Game& g);
 
 // The disc image or extracted folder set for a game ("" when none is set or it is no longer there).
 std::wstring PathFor(const std::string& key);
+// The folder of the game's DLC packages ("" none or gone): superstar_port reads the DLC's superstars from it, beside
+// the disc (tools/dlc_src.py). Set "" removes it; saved at once. A game needs its disc set first.
+std::wstring DlcFor(const std::string& key);
+void SetDlc(const std::string& key, const std::wstring& folder);
 // Its disc id (the id read when it was added; the game's first id when it couldn't be read).
 std::string IdFor(const std::string& key);
 // Set (path "" removes) / remove a game's disc; saved in the settings at once.

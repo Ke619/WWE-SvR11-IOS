@@ -397,6 +397,7 @@ struct Settings {
   struct MyDisc {
     std::string key, id;
     std::wstring path;
+    std::wstring dlc;  // the game's DLC packages: a folder (superstar_port --dlc), "" none
   };
   std::vector<MyDisc> my_discs;
   bool discs_seeded = false;  // the old disc folders were searched once to fill My game discs

@@ -22,7 +22,10 @@ namespace svr2011 {
 void InstallNewTitles(rex::memory::Memory* memory);
 int NewTitleCount();
 // After the game loads a save (superstar_mods.cpp).
-void NewTitlesLoaded();
+void NewTitlesLoaded(uint8_t* base);
+// Around the game building its save (superstar_threads.cpp): the cards on a new title.
+void NewTitlesBeforeSave(uint8_t* base);
+void NewTitlesAfterSave(uint8_t* base);
 // The holders' file written.
 void NewTitlesForSave();
 // Each frame: the holders written when the save file has changed (the game builds its save

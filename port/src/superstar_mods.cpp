@@ -3410,7 +3410,7 @@ REX_HOOK_RAW(sub_8257A218) {
   svr2011::BigRosterTestCard(base);
   g_moves_checked = false;  // (the save's profiles - its kept edits - get CheckModProfiles' move check too)
   svr2011::UniverseModsLoaded(base);  // (the mods' Universe side table for this save)
-  svr2011::NewTitlesLoaded();  // (new titles' holders: title_new.h)
+  svr2011::NewTitlesLoaded(base);  // (new titles' holders and cards: title_new.h)
   svr2011::NewTitlesTestCheck(ctx, base);
   ctx.r3.u64 = r3;
 }

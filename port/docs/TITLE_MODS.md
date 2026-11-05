@@ -6,6 +6,9 @@ mods are cosmetic: they don't count as mods for online matches).
 
 ## New titles (in progress)
 
+Not available to players yet: the game ignores `new=1` mods (one log line) unless `SVR2011_TEST_NEW_TITLES_ON` is set,
+and the doctor says so. The gate comes out when new titles ship.
+
 A mod with `new=1` adds a title beyond the game's own instead of replacing one: `type=title`, `new=1`,
 `name=`, `champion=`, `short=` (the entrance's banner, where the game adds "CHAMPION" after it; without it the
 holder's form less that word) and `kind=tag` for a tag title. Up to 32.

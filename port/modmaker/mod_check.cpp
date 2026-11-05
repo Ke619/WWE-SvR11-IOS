@@ -1008,7 +1008,7 @@ constexpr const char* kTitleKeys[] = {"IC", "US", "WWE", "WHC", "WWE_TAG", "WORL
 void CheckTitle(const fs::path& dir, std::vector<Problem>& p) {
   const Manifest m = ReadManifest(dir);
   if (Trim(m.Get("new")) == "1") {  // (a new title: title_new.cpp)
-    if (Trim(m.Get("name")).empty()) p.push_back(Error("A new title needs a name=: the game leaves it out.").With("Turn it off", TurnOff(dir)));
+    p.push_back(Warning("New titles aren't supported yet: the game leaves this mod out."));
     return;
   }
   std::string key = Trim(m.Get("title"));

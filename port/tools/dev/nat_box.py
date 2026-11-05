@@ -24,8 +24,12 @@ The config: {"stun": ["127.30.0.1:3478", "127.30.0.2:3478"], "nats": [
                                            its mappings then do nothing)
      "delay": 0, "loss": 0,               (ms and percent on the way out, to anywhere but this PC's own 127.0.0.1 - the
                                            test server's relay: a slow or lossy route between the players)
-     "block_while": "<file>"}]}           (while that file exists, nothing goes out to the players: the relay only - a
+     "block_while": "<file>",             (while that file exists, nothing goes out to the players: the relay only - a
                                            test turns direct on and off in a running match)
+     "v6": "2001:db8:a::1",               (optional: its one game has this IPv6 address, SVR2011_TEST_V6 - no NAT, a
+     "v6_filter": "apf"}]}                 firewall: "apf" / "adf" let in what answers something sent out, "eif" anything.
+                                           The box carries IPv6 between its routers itself. Wrapped as 0xFFFFFFFE, port,
+                                           the 16 bytes)
 
 Names as in RFC 4787: eim + eif = full cone, eim + adf = restricted cone, eim + apf = port-restricted cone,
 apdm = "symmetric" (apdm + preserve is what most Linux routers do: the same port while it's free).
@@ -68,6 +72,12 @@ class Nat:
         self.lan_reach = c.get("lan_reach", True)
         self.delay, self.loss = c.get("delay", 0) / 1000.0, c.get("loss", 0)
         self.block_file = c.get("block_while")
+        self.v6 = socket.inet_pton(socket.AF_INET6, c["v6"]) if c.get("v6") else None
+        self.v6_filter = c.get("v6_filter", "apf")
+        self.v6_sent = {}  # (far address, far port) -> when last sent to: the firewall's state
+        self.v6_client = None
+        if self.v6:
+            box.v6[self.v6] = self
         self.next_port = 40000
         self.maps = {}  # key -> Mapping
         self.by_port = {}
@@ -125,7 +135,38 @@ class Nat:
         self.box.log("%s: map %s:%d -> %s:%d (first to %s:%d)" % (self.name, client[0], client[1], self.outside, p, dst[0], dst[1]))
         return m
 
+    def v6_from_inside(self, data, client):
+        port, dst, payload = struct.unpack(">H", data[4:6])[0], data[6:22], data[22:]
+        self.v6_client = client
+        if not self.v6:
+            self.stats["v6_nowhere"] = self.stats.get("v6_nowhere", 0) + 1
+            return
+        if self.block_file and os.path.exists(self.block_file):
+            self.stats["blocked"] = self.stats.get("blocked", 0) + 1
+            return
+        self.v6_sent[(dst, port)] = time.time()
+        self.stats["v6_out"] = self.stats.get("v6_out", 0) + 1
+        other = self.box.v6.get(dst)
+        if other:
+            other.v6_from_outside(self.v6, client[1], port, payload)
+
+    def v6_from_outside(self, src, src_port, port, payload):
+        now = time.time()
+        if self.v6_filter == "apf":
+            ok = now - self.v6_sent.get((src, src_port), 0) < self.lease
+        elif self.v6_filter == "adf":
+            ok = any(a == src and now - t < self.lease for (a, _), t in self.v6_sent.items())
+        else:
+            ok = True
+        if not ok or not self.v6_client or self.v6_client[1] != port:
+            self.stats["v6_dropped"] = self.stats.get("v6_dropped", 0) + 1
+            return
+        self.stats["v6_in"] = self.stats.get("v6_in", 0) + 1
+        self.inside.sendto(struct.pack(">IH", 0xFFFFFFFE, src_port) + src + payload, self.v6_client)
+
     def from_inside(self, data, client):
+        if len(data) >= 22 and data[:4] == b"\xff\xff\xff\xfe":
+            return self.v6_from_inside(data, client)
         if len(data) < 6:
             return
         dst = (socket.inet_ntoa(data[:4]), struct.unpack(">H", data[4:6])[0])
@@ -216,6 +257,7 @@ class Box:
     def __init__(self, cfg, log=None):
         self.sel = selectors.DefaultSelector()
         self.pending, self.pending_n = [], 0
+        self.v6 = {}  # (an IPv6 address -> its router)
         self.logf = open(log, "a", buffering=1) if log else None
         self.nats = [Nat(self, c) for c in cfg["nats"]]
         self.stun = []

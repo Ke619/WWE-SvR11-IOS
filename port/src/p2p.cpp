@@ -69,6 +69,8 @@ REXCVAR_DEFINE_STRING(p2p_peers, "", "Online",
                       "Addresses searched besides the LAN, comma-separated (host or host:port)");
 REXCVAR_DEFINE_BOOL(p2p_relay, true, "Online",
                     "Matches through the online server's relay when players can't connect directly");
+REXCVAR_DEFINE_BOOL(p2p_ipv6, true, "Online",
+                    "Also connect over IPv6 where both players have it: no router in the way, only its firewall (off: IPv4 only)");
 REXCVAR_DEFINE_STRING(p2p_stun, "stun.l.google.com:19302", "Online",
                       "The STUN server that tells this game its public address (off: none)");
 REXCVAR_DEFINE_BOOL(p2p_force_relay, false, "Online", "Tests: every peer through the relay, never directly");
@@ -133,6 +135,7 @@ uint8_t* Guest(uint32_t address) { return g_memory->TranslateVirtual<uint8_t*>(a
 // addresses (10.64.0.0/16) and this PC (127.x) in full, a LAN address as
 // its network only (192.168.x.x), an internet address not at all.
 std::string Ip(uint32_t ip) {
+  if ((ip >> 24) == 0xF0) return "IPv6";  // (kV6Net)
   const auto part = [ip](int k) { return std::to_string((ip >> (24 - 8 * k)) & 255); };
   if ((ip & 0xFFFF0000) == kFakeNet || (ip >> 24) == 127) return part(0) + "." + part(1) + "." + part(2) + "." + part(3);
   const bool lan = (ip >> 24) == 10 || (ip >> 20) == 0xAC1 || (ip >> 16) == 0xC0A8 || (ip >> 16) == 0xA9FE;
@@ -188,12 +191,69 @@ sockaddr_in Sin(uint32_t ip, uint16_t port) {
   return to;
 }
 
+// IPv6: a far end's address is known everywhere by a number in 240.0.0.0/8 (reserved in IPv4: never a real address),
+// which this table turns back into the address when a packet goes out - peers, candidates and routes stay as they are.
+constexpr uint32_t kV6Net = 0xF0000000;
+using V6 = std::array<uint8_t, 16>;
+std::mutex g_v6_mutex;
+std::vector<V6> g_v6_table;
+Socket g_socket6 = kBadSocket;
+std::atomic<uint32_t> g_my_v6{0};  // (this game's address, as such a number; 0: none)
+bool g_v6_test = false;            // (test aid: an address of SVR2011_TEST_V6's, any kind)
+bool g_v6_real = false;            // (test aid: through the real socket, also behind the NAT box)
+bool IsV6(uint32_t ip) { return (ip >> 24) == (kV6Net >> 24); }
+uint32_t V6Number(const uint8_t* address) {
+  V6 a;
+  std::memcpy(a.data(), address, 16);
+  std::lock_guard lock(g_v6_mutex);
+  const auto it = std::find(g_v6_table.begin(), g_v6_table.end(), a);
+  if (it != g_v6_table.end()) return kV6Net | uint32_t(it - g_v6_table.begin() + 1);
+  if (g_v6_table.size() >= 4096) return 0;
+  g_v6_table.push_back(a);
+  return kV6Net | uint32_t(g_v6_table.size());
+}
+bool V6Of(uint32_t number, V6* out) {
+  std::lock_guard lock(g_v6_mutex);
+  const uint32_t k = number & 0xFFFFFF;
+  if (!k || k > g_v6_table.size()) return false;
+  *out = g_v6_table[k - 1];
+  return true;
+}
+// One place on the internet: global unicast, not a tunnel's (Teredo, 6to4) nor the documentation's.
+bool GlobalV6(const uint8_t* a) {
+  if ((a[0] & 0xE0) != 0x20) return false;
+  if (a[0] == 0x20 && a[1] == 0x01 && a[2] == 0 && a[3] == 0) return false;
+  if (a[0] == 0x20 && a[1] == 0x02) return false;
+  return !(a[0] == 0x20 && a[1] == 0x01 && a[2] == 0x0D && a[3] == 0xB8);
+}
+constexpr uint32_t kBoxV6 = 0xFFFFFFFE;  // (the NAT box: an IPv6 packet's wrapping starts so)
+
 // Test aid: SVR2011_TEST_NAT_BOX=<ip:port> - this game behind a simulated router (tools/dev/nat_box.py): everything
 // on the P2P socket goes to the box, wrapped with the real far end's address (6 bytes), and comes back the same way.
 uint32_t g_box_ip = 0;
 uint16_t g_box_port = 0;
 
 void SendOn(Socket s, uint32_t ip, uint16_t port, const uint8_t* data, size_t size) {
+  if (s == g_socket && IsV6(ip)) {
+    V6 a;
+    if (!V6Of(ip, &a)) return;
+    if (g_box_ip && !g_v6_real) {
+      std::vector<uint8_t> wrapped(22 + size);
+      Put32(wrapped.data(), kBoxV6), Put16(wrapped.data() + 4, port);
+      std::memcpy(wrapped.data() + 6, a.data(), 16);
+      std::memcpy(wrapped.data() + 22, data, size);
+      sockaddr_in box = Sin(g_box_ip, g_box_port);
+      sendto(s, reinterpret_cast<const char*>(wrapped.data()), int(wrapped.size()), 0, reinterpret_cast<sockaddr*>(&box), sizeof(box));
+      return;
+    }
+    if (g_socket6 == kBadSocket) return;
+    sockaddr_in6 to = {};
+    to.sin6_family = AF_INET6;
+    to.sin6_port = htons(port);
+    std::memcpy(&to.sin6_addr, a.data(), 16);
+    sendto(g_socket6, reinterpret_cast<const char*>(data), int(size), 0, reinterpret_cast<sockaddr*>(&to), sizeof(to));
+    return;
+  }
   if (g_box_ip && s == g_socket) {
     std::vector<uint8_t> wrapped(6 + size);
     Put32(wrapped.data(), ip), Put16(wrapped.data() + 4, port);
@@ -345,10 +405,10 @@ const char* NetcodeName(uint8_t m) { return m == 1 ? "rollback" : m == 2 ? "lock
 
 // The addresses a player may be reached at, and which of them answered: every one is tried at once (Probe), and the
 // fastest that answers carries the game (Nominate).
-enum CandidateKind : uint8_t { kCandLan = 1, kCandMapped = 2, kCandStun = 3, kCandEdge = 4, kCandHeard = 5, kCandBase = 6 };
+enum CandidateKind : uint8_t { kCandLan = 1, kCandMapped = 2, kCandStun = 3, kCandEdge = 4, kCandHeard = 5, kCandBase = 6, kCandV6 = 7 };
 const char* CandidateName(uint8_t k) {
   return k == kCandLan ? "LAN" : k == kCandMapped ? "router mapping" : k == kCandStun ? "STUN" : k == kCandEdge ? "relay's view"
-       : k == kCandHeard ? "heard from" : "port base";
+       : k == kCandHeard ? "heard from" : k == kCandV6 ? "IPv6" : "port base";
 }
 struct Candidate {
   uint32_t ip = 0;
@@ -1010,6 +1070,9 @@ void Punch(const Mac& mac) {
 // until one answers; the fastest answering carries the game (Nominate). Pings keep the chosen path's mappings open.
 // Only for players in a session with this game: a list from anyone else is ignored, so no stranger on the relay can
 // have this game send packets at an address it picks.
+// IPv6 is one more address on the list: no NAT, but most routers' firewalls only let in what answers something sent
+// out - the same both-sides-at-once start gets through them. It goes only to the players in the session (a temporary
+// address where the system has one: it picks that for a new connection).
 void BeginProbing(Peer& p, Clock::time_point now) {
   if (p.probing_from == Clock::time_point{}) p.probing_from = now, p.probed = {};
 }
@@ -1025,6 +1088,7 @@ std::vector<Candidate> MyCandidates() {
   const int64_t now = NowMs();
   if (now - g_stun_ms < 90000) add(g_stun_ip, g_stun_port, kCandStun);
   if (now - g_edge_ms < 30000) add(g_edge_ip, g_edge_port, kCandEdge);
+  add(g_my_v6, g_me.base, kCandV6);
   return out;
 }
 
@@ -1033,7 +1097,12 @@ void SendCandidates(const Path& path) {
   Writer w;
   w.b = Header(kCandidates, NewNonce());
   w.u8(uint8_t(mine.size()));
-  for (const Candidate& c : mine) w.u8(c.kind), w.u8(4), w.u32(c.ip), w.u16(c.port);  // (kind, family, address, port)
+  for (const Candidate& c : mine) {  // (kind, family, address, port)
+    w.u8(c.kind), w.u8(IsV6(c.ip) ? 6 : 4);
+    if (V6 a; IsV6(c.ip) && V6Of(c.ip, &a)) w.bytes(a.data(), 16);
+    else w.u32(c.ip);
+    w.u16(c.port);
+  }
   ToRelay(path.mac, w.b.data(), w.b.size());
   if (!path.relayed) SendOn(g_socket, path.ip, path.port, w.b.data(), w.b.size());  // (no relay: a LAN, p2p_peers)
 }
@@ -1052,6 +1121,14 @@ void OnCandidates(const Mac& mac, Reader& r) {
     const uint8_t n = r.u8();
     for (uint8_t k = 0; k < n && k < 12 && r.ok; ++k) {
       const uint8_t kind = r.u8(), family = r.u8();
+      if (family == 6) {
+        V6 a;
+        r.bytes(a.data(), 16);
+        const uint16_t port = r.u16();
+        // (only where this game has IPv6 itself)
+        if (r.ok && g_my_v6 && (g_v6_test || GlobalV6(a.data()))) AddCandidate(p, V6Number(a.data()), port, kind);
+        continue;
+      }
       if (family != 4) break;  // (a kind this version doesn't know: the rest unread)
       const uint32_t ip = r.u32();
       const uint16_t port = r.u16();
@@ -1728,9 +1805,12 @@ void Receive() {
     uint16_t port = ntohs(from.sin_port);
     if (g_box_ip) {  // (test aid: only what the simulated router lets in, from its real sender)
       if (ip != g_box_ip || port != g_box_port || n < 6) continue;
-      ip = Be32(buf.data()), port = Be16(buf.data() + 4);
-      n -= 6;
-      std::memmove(buf.data(), buf.data() + 6, size_t(n));
+      const int wrap = n >= 22 && Be32(buf.data()) == kBoxV6 ? 22 : 6;
+      if (wrap == 22) ip = V6Number(buf.data() + 6);
+      else ip = Be32(buf.data());
+      port = Be16(buf.data() + 4);
+      n -= wrap;
+      std::memmove(buf.data(), buf.data() + wrap, size_t(n));
     }
     // (the relay over UDP: its frames without the length)
     if (n >= 6 && Be32(buf.data()) == kRelayMagic && ip == g_udp_relay_ip && port == g_udp_relay_port) {
@@ -1754,6 +1834,56 @@ void Receive() {
       OnPacket(buf.data(), size_t(n), {ip, port, false});
     }
   }
+}
+
+// The IPv6 socket's: as the other's, with their sender's address as its number.
+void Receive6() {
+  rex::thread::set_current_thread_name("p2p receive 6");
+  std::vector<uint8_t> buf(65536);
+  for (;;) {
+    sockaddr_in6 from = {};
+    socklen_t len = sizeof(from);
+    const int n = int(recvfrom(g_socket6, reinterpret_cast<char*>(buf.data()), int(buf.size()), 0,
+                               reinterpret_cast<sockaddr*>(&from), &len));
+    if (n <= 0) {
+      if (!Reset()) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      continue;
+    }
+    static const bool no_direct = [] {
+      const char* v = std::getenv("SVR2011_TEST_NET_NO_DIRECT");
+      return v && v[0] == '1';
+    }();
+    if (no_direct) continue;
+    if (const uint32_t ip = V6Number(reinterpret_cast<const uint8_t*>(&from.sin6_addr)))
+      OnPacket(buf.data(), size_t(n), {ip, ntohs(from.sin6_port), false});
+  }
+}
+
+// This game's IPv6 address: the one the system would send from (asked by a connect on a UDP socket: nothing is sent);
+// a temporary one where it has them. None behind a tunnel or with no IPv6 on the internet. Test aid
+// SVR2011_TEST_V6=<address>: that one.
+void FindMyV6() {
+  if (!REXCVAR_GET(p2p_ipv6)) return;
+  uint32_t mine = 0;
+  if (const char* t = std::getenv("SVR2011_TEST_V6"); t && *t) {
+    in6_addr a{};
+    if (inet_pton(AF_INET6, t, &a) == 1) mine = V6Number(reinterpret_cast<const uint8_t*>(&a));
+  } else if (g_socket6 != kBadSocket) {
+    Socket s = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
+    if (s != kBadSocket) {
+      sockaddr_in6 to = {};
+      to.sin6_family = AF_INET6;
+      to.sin6_port = htons(53);
+      inet_pton(AF_INET6, "2001:4860:4860::8888", &to.sin6_addr);
+      sockaddr_in6 me = {};
+      socklen_t len = sizeof(me);
+      if (connect(s, reinterpret_cast<sockaddr*>(&to), sizeof(to)) == 0 &&
+          getsockname(s, reinterpret_cast<sockaddr*>(&me), &len) == 0 && GlobalV6(reinterpret_cast<const uint8_t*>(&me.sin6_addr)))
+        mine = V6Number(reinterpret_cast<const uint8_t*>(&me.sin6_addr));
+      CloseSocket(s);
+    }
+  }
+  if (g_my_v6.exchange(mine) != mine) REXLOG_INFO("p2p: IPv6 {}", mine ? "on" : "off (no address on the internet)");
 }
 
 // The relay's frames as they come (the pipe's thread).
@@ -1866,6 +1996,7 @@ void Keepalive() {
   int stun_tries = 0;
   int64_t stun_sent_ms = 0;
   bool was_wanted = false;
+  Clock::time_point v6_checked{};
   std::vector<uint8_t> ticket;  // (the relay over UDP)
   for (;;) {
     const auto now = Clock::now();
@@ -1913,6 +2044,8 @@ void Keepalive() {
         }
       }
     }
+    // (its address: a temporary one changes now and then)
+    if (wanted && (!was_wanted || now - v6_checked >= 60s)) v6_checked = now, FindMyV6();
     was_wanted = wanted;
     if (wanted && (registered == Clock::time_point{} || now - registered >= 15s)) {
       registered = now;
@@ -2956,7 +3089,23 @@ void InstallP2P(rex::memory::Memory* memory) {
     g_box_ip = at.first, g_box_port = at.second;
     REXLOG_INFO("p2p: test: behind the NAT box at {}:{}", Ip(g_box_ip), g_box_port);
   }
+  // The IPv6 socket, on the same port (nothing behind the test's NAT box, unless it asks for the real one).
+  g_v6_real = std::getenv("SVR2011_TEST_V6_REAL") != nullptr;
+  g_v6_test = std::getenv("SVR2011_TEST_V6") != nullptr;
+  if (REXCVAR_GET(p2p_ipv6) && (!g_box_ip || g_v6_real)) {
+    Socket s6 = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
+    if (s6 != kBadSocket) {
+      int only = 1;
+      setsockopt(s6, IPPROTO_IPV6, IPV6_V6ONLY, reinterpret_cast<const char*>(&only), sizeof(only));
+      sockaddr_in6 at = {};
+      at.sin6_family = AF_INET6;
+      at.sin6_port = htons(g_me.base);
+      if (bind(s6, reinterpret_cast<sockaddr*>(&at), sizeof(at)) == 0) g_socket6 = s6;
+      else CloseSocket(s6);
+    }
+  }
   std::thread(Receive).detach();
+  if (g_socket6 != kBadSocket) std::thread(Receive6).detach();
   std::thread(Keepalive).detach();
   std::thread(PingLoop).detach();
   std::thread(ProbeLoop).detach();

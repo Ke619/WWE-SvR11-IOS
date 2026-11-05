@@ -20,14 +20,20 @@ The config: {"stun": ["127.30.0.1:3478", "127.30.0.2:3478"], "nats": [
      "lan": {"37700": "10.1.0.2"},        (client UDP port -> its LAN address: clients here reach each other's LAN address)
      "lan_reach": true,                   (false: LAN addresses go nowhere - separate subnets, a shared CGNAT)
      "natpmp": 37151,                     (optional: answers NAT-PMP there, SVR2011_TEST_NATPMP=127.0.0.1:37151)
-     "natpmp_outside": "192.168.0.2"}]}   (optional: the outside address it claims - a router behind another router;
+     "natpmp_outside": "192.168.0.2",     (optional: the outside address it claims - a router behind another router;
                                            its mappings then do nothing)
+     "delay": 0, "loss": 0,               (ms and percent on the way out, to anywhere but this PC's own 127.0.0.1 - the
+                                           test server's relay: a slow or lossy route between the players)
+     "block_while": "<file>"}]}           (while that file exists, nothing goes out to the players: the relay only - a
+                                           test turns direct on and off in a running match)
 
 Names as in RFC 4787: eim + eif = full cone, eim + adf = restricted cone, eim + apf = port-restricted cone,
 apdm = "symmetric" (apdm + preserve is what most Linux routers do: the same port while it's free).
 """
 import argparse
+import heapq
 import json
+import os
 import random
 import selectors
 import socket
@@ -60,6 +66,8 @@ class Nat:
         self.lease, self.hairpin = c.get("lease", 60), c.get("hairpin", False)
         self.lan = {int(k): v for k, v in c.get("lan", {}).items()}
         self.lan_reach = c.get("lan_reach", True)
+        self.delay, self.loss = c.get("delay", 0) / 1000.0, c.get("loss", 0)
+        self.block_file = c.get("block_while")
         self.next_port = 40000
         self.maps = {}  # key -> Mapping
         self.by_port = {}
@@ -129,11 +137,21 @@ class Nat:
         if dst[0] == self.outside and not self.hairpin:
             self.stats["dropped_hairpin"] += 1
             return
+        if self.block_file and dst[0] != "127.0.0.1" and not dst[0].startswith("127.30.") and os.path.exists(self.block_file):
+            self.stats["blocked"] = self.stats.get("blocked", 0) + 1
+            return
         m = self.get_mapping(client, dst)
         m.used = time.time()
         m.addrs.add(dst[0])
         m.ports.add(dst)
         self.stats["out"] += 1
+        if dst[0] != "127.0.0.1":
+            if self.loss and random.random() * 100 < self.loss:
+                self.stats["lost"] = self.stats.get("lost", 0) + 1
+                return
+            if self.delay:
+                self.box.later(time.time() + self.delay, m.sock, payload, dst)
+                return
         try:
             m.sock.sendto(payload, dst)
         except OSError:
@@ -197,6 +215,7 @@ class Nat:
 class Box:
     def __init__(self, cfg, log=None):
         self.sel = selectors.DefaultSelector()
+        self.pending, self.pending_n = [], 0
         self.logf = open(log, "a", buffering=1) if log else None
         self.nats = [Nat(self, c) for c in cfg["nats"]]
         self.stun = []
@@ -206,6 +225,10 @@ class Box:
             s.bind((ip, int(port)))
             self.sel.register(s, selectors.EVENT_READ, ("stun", s))
             self.stun.append(s)
+
+    def later(self, when, sock, payload, dst):
+        self.pending_n += 1
+        heapq.heappush(self.pending, (when, self.pending_n, sock, payload, dst))
 
     def log(self, t):
         if self.logf:
@@ -219,6 +242,15 @@ class Box:
         s.sendto(struct.pack(">HH", 0x0101, len(attr)) + data[4:20] + attr, src)
 
     def step(self, timeout=0.2):
+        now = time.time()
+        while self.pending and self.pending[0][0] <= now:
+            _, _, sock, payload, dst = heapq.heappop(self.pending)
+            try:
+                sock.sendto(payload, dst)
+            except OSError:
+                pass  # (its mapping expired meanwhile)
+        if self.pending:
+            timeout = min(timeout, max(0.0005, self.pending[0][0] - now))
         for key, _ in self.sel.select(timeout):
             kind, obj = key.data
             try:

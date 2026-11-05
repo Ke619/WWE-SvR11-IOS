@@ -51,6 +51,7 @@ constexpr uint32_t kTable = 0x82EDEB50;
 struct NewTitle {
   std::string folder, name, champion;
   bool tag = false;
+  int belt_of = 4;  // the game's title whose belt model it carries (belt=<key>; a tag title: the WWE tag title's)
   uint32_t holder[2] = {kNoHolder, kNoHolder};
   uint32_t guest_name = 0, guest_short = 0;  // (in capitals, as the game's lists write titles)
 };
@@ -130,6 +131,14 @@ void InstallNewTitles(rex::memory::Memory* memory) {
     t.name = CleanUtf8(Value(man, "name"), 120);
     t.champion = CleanUtf8(Value(man, "champion"), 120);
     t.tag = Value(man, "kind") == "tag";
+    if (t.tag) t.belt_of = 2;
+    {
+      static const char* const kKeys[kStockTitles] = {"WWE", "WHC", "WWE_TAG", "WORLD_TAG", "IC", "US", "CRUISER", "WOMENS", "HARDCORE", "ECW", "WCW", "DIVAS", "UNIFIED_TAG", "MILLION"};
+      std::string key = Value(man, "belt");
+      for (char& c : key) c = char(std::toupper(static_cast<unsigned char>(c)));
+      for (int k = 0; k < kStockTitles; ++k)
+        if (key == kKeys[k]) t.belt_of = k;
+    }
     if (t.name.empty()) {
       REXLOG_WARN("[svr2011] new titles: {} has no name - left out", t.folder);
       continue;
@@ -531,6 +540,13 @@ REX_HOOK_RAW(sub_8244D040) {
     REXLOG_INFO("[svr2011] new titles: picked row {}, title {}", row, Rd(base, ctx.r3.u32 + 628 + row * 4));
   }
   __imp__sub_8244D040(ctx, base);
+}
+
+// A title's belt model: (title, pose 0 / 1 / 2) -> the evtobj.pac SOBJ id, 0 none.
+REX_EXTERN(__imp__sub_827540D8);
+REX_HOOK_RAW(sub_827540D8) {
+  if (const NewTitle* t = Row(ctx.r3.s32)) ctx.r3.u64 = uint64_t(t->belt_of);
+  __imp__sub_827540D8(ctx, base);
 }
 
 // The match's title is set: (select, title, 1).

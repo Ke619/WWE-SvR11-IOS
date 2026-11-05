@@ -10,14 +10,13 @@ Not available to players yet: the game ignores `new=1` mods (one log line) unles
 and the doctor says so. The gate comes out when new titles ship.
 
 A mod with `new=1` adds a title beyond the game's own instead of replacing one: `type=title`, `new=1`,
-`name=`, `champion=`, `short=` (the entrance's banner, where the game adds "CHAMPION" after it; without it the
+`name=`, `champion=`, `belt=<key>` (the game's belt model the holder carries: default IC, a tag title WWE_TAG), `short=` (the entrance's banner, where the game adds "CHAMPION" after it; without it the
 holder's form less that word) and `kind=tag` for a tag title. Up to 32.
 
 **Works so far:** Championship Scramble's title list and a match on the title; the holder's banner in an entrance;
 holders kept beside the save.
 
-**Not yet:** other screens' lists (Universe, title select), a belt or art of its own (the holder walks out without a
-belt and the list shows no art for it), announcer lines, online rules, a Mod Maker page.
+**Not yet:** other screens' lists (Universe, title select), a belt or art of its own (the holder carries a stock belt model and the list shows no art for it), announcer lines, online rules, a Mod Maker page.
 
 Outside Universe titles don't change hands in the game: every holder write is Universe, title settings or the save's
 set-up (`sub_825B7EB0`, `sub_825B1488`, `sub_8243D680`, `sub_8257B268`).

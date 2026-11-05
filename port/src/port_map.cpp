@@ -221,23 +221,38 @@ std::string Between(const std::string& s, const std::string& open, const std::st
   return b == std::string::npos ? std::string() : s.substr(a + open.size(), b - a - open.size());
 }
 
-// SSDP: the routers' description URLs (a 2.5 s search).
-std::vector<std::string> SsdpSearch() {
+// SSDP: the routers' description URLs (a 2.5 s search). From the adapter the game plays on (with a VPN's or a virtual
+// machine's adapter on the PC, the system may pick that one and no router hears it), three times (it's UDP), asking
+// for the device and for its WAN services (some routers only answer one of them).
+std::vector<std::string> SsdpSearch(uint32_t lan_ip) {
   if (const char* t = std::getenv("SVR2011_TEST_UPNP")) return {t};
   std::vector<std::string> found;
   Socket s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
   if (s == kBad) return found;
-  const sockaddr_in to = Sin(0xEFFFFFFA, 1900);  // 239.255.255.250
-  for (const char* st : {"urn:schemas-upnp-org:device:InternetGatewayDevice:1",
-                         "urn:schemas-upnp-org:device:InternetGatewayDevice:2"}) {
-    const std::string req = std::string("M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\n"
-                                         "MX: 2\r\nST: ") + st + "\r\n\r\n";
-    sendto(s, req.data(), int(req.size()), 0, reinterpret_cast<const sockaddr*>(&to), sizeof(to));
+  if (lan_ip) {
+    in_addr from = {};
+    from.s_addr = htonl(lan_ip);
+    setsockopt(s, IPPROTO_IP, IP_MULTICAST_IF, reinterpret_cast<const char*>(&from), sizeof(from));
   }
-  const auto until = Clock::now() + 2500ms;
+  const sockaddr_in to = Sin(0xEFFFFFFA, 1900);  // 239.255.255.250
+  const auto ask = [&] {
+    for (const char* st : {"urn:schemas-upnp-org:device:InternetGatewayDevice:1",
+                           "urn:schemas-upnp-org:device:InternetGatewayDevice:2",
+                           "urn:schemas-upnp-org:service:WANIPConnection:1",
+                           "urn:schemas-upnp-org:service:WANPPPConnection:1"}) {
+      const std::string req = std::string("M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\n"
+                                           "MX: 2\r\nST: ") + st + "\r\n\r\n";
+      sendto(s, req.data(), int(req.size()), 0, reinterpret_cast<const sockaddr*>(&to), sizeof(to));
+    }
+  };
+  ask();
+  int asked = 1;
+  const auto start = Clock::now();
+  const auto until = start + 2500ms;
   char buf[2048];
   while (Clock::now() < until) {
-    Timeout(s, 500);
+    if (asked < 3 && Clock::now() - start >= asked * 500ms) ask(), ++asked;
+    Timeout(s, 250);
     const int n = int(recv(s, buf, sizeof(buf) - 1, 0));
     if (n <= 0) continue;
     std::string reply(buf, size_t(n)), lower = reply;
@@ -354,7 +369,7 @@ bool MapOnce(uint16_t port, uint32_t lan_ip, uint32_t* external) {
       }
     }
   }
-  for (const std::string& location : SsdpSearch()) {
+  for (const std::string& location : SsdpSearch(lan_ip)) {
     const auto igd = FindIgd(location);
     if (!igd) continue;
     const int error = UpnpMap(*igd, port, lan_ip);

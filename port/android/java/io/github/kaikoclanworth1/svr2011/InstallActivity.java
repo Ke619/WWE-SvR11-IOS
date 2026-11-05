@@ -328,7 +328,7 @@ public class InstallActivity extends Activity {
     }
 
     // The player's own: a package made on the PC can carry its saves and mods, and never replaces those here.
-    private static boolean keptIfThere(String name) {
+    static boolean keptIfThere(String name) {
         return name.startsWith("Saves/") || name.startsWith("Mods/") || name.startsWith("UserData/");
     }
 

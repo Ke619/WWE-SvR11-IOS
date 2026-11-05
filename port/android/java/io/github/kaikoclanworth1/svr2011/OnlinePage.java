@@ -12,6 +12,7 @@
 // Friends: the account's list on the server (/api/friends) - who's online (in
 // the game's ONLINE menus) or in an online match, and who added the player;
 // refreshed every 20 seconds while the page shows.
+// Connection: the check (NatCheck) when asked for, and the last match's path from the game's log.
 
 package io.github.kaikoclanworth1.svr2011;
 
@@ -59,6 +60,8 @@ final class OnlinePage {
     private TextView friendsStatus_;
     private boolean friendsBusy_;
     private final android.os.Handler timer_ = new android.os.Handler(android.os.Looper.getMainLooper());
+    private TextView natText_;
+    private Button natCheck_;
 
     OnlinePage(LauncherActivity a) { a_ = a; }
 
@@ -83,6 +86,19 @@ final class OnlinePage {
 
         LinearLayout play = a_.card(c, "Online");
         a_.toggle(play, "Play online", null, "online_enabled", false);
+
+        // Connection: only when the player asks.
+        LinearLayout connection = a_.card(c, "Connection");
+        natText_ = a_.text("Can your phone play other players directly, without the relay?", 14, LauncherActivity.kDim);
+        natText_.setPadding(0, a_.dp(10), 0, a_.dp(10));
+        connection.addView(natText_);
+        natCheck_ = a_.button("Check my connection", LauncherActivity.kCard);
+        natCheck_.setOnClickListener(v -> checkConnection());
+        LinearLayout natRow = new LinearLayout(a_);
+        natRow.setPadding(0, 0, 0, a_.dp(10));
+        natRow.addView(natCheck_, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT));
+        connection.addView(natRow);
 
         // Server: Default / Custom (which one: from the address saved).
         LinearLayout server = a_.card(c, "Server");
@@ -202,6 +218,19 @@ final class OnlinePage {
 
         a_.onRefresh(this::refresh);
         return c;
+    }
+
+    void checkConnection() {
+        natCheck_.setEnabled(false);
+        natText_.setText("Checking your connection\u2026");
+        final String stun = settings().getString("p2p_stun", "");
+        final int port = settings().getInt("p2p_port", 36000);
+        final NatCheck[] result = new NatCheck[1];
+        a_.background(() -> result[0] = NatCheck.run(stun, null, null, null), () -> {
+            natCheck_.setEnabled(true);
+            natCheck_.setText("Check again");
+            natText_.setText(result[0] != null ? result[0].text(port) : "The check couldn't run.");
+        });
     }
 
     // body null: the list; else {"add": name} / {"remove": name}.

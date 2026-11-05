@@ -67,6 +67,9 @@ struct ModLobbyOffer {
   bool relayed = false;
   std::vector<std::string> lacking;
   std::vector<std::string> unsendable;  // (mods this game lacks that the host can't send: "name: file (why)")
+  // (a mod this game has another copy of: "Sabu: you have 1.8, the host has 1.9". A download wouldn't change it - this
+  // game's own of that name plays - so these aren't offered)
+  std::vector<std::string> differ;
 };
 // The newest offer, once (false: none since the last call).
 bool TakeModLobbyOffer(ModLobbyOffer* out);

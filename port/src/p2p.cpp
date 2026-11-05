@@ -49,6 +49,7 @@
 #include <rex/thread.h>
 
 #include "arena_mods.h"
+#include "cpu_difficulty.h"
 #include "frame_rate.h"
 #include "online_files.h"
 #include "online_net.h"
@@ -96,7 +97,7 @@ constexpr uint32_t kContextGameType = 0x0000800A;  // X_CONTEXT_GAME_TYPE (ranke
 constexpr uint32_t kContextGameMode = 0x0000800B;  // X_CONTEXT_GAME_MODE
 // The port's session properties (0x1000F00x, XUSER type 1 ints the host's session carries to joiners):
 // 0x1000F001 PORT RULES (here), 0x1000F002 the WEAPONS page's set (weapons_page.cpp), 0x1000F003 mod weapons
-// (Arena Porting, planned), 0x1000F004 the match network (here), 0x1000F005 the netcode (here; the Online Rollback
+// (Arena Porting, planned), 0x1000F004 the match network (here), 0x1000F006 the CPU tab's settings (cpu_difficulty.cpp), 0x1000F005 the netcode (here; the Online Rollback
 // Netcode chat's modes read P2PNetcode).
 constexpr uint32_t kPortRules = 0x1000F001;        // the port's match rules (match_types: mode << 16 | set)
 constexpr uint32_t kNetMode = 0x1000F004;          // the host's match network (NetMode)
@@ -2487,6 +2488,7 @@ std::optional<uint32_t> Xgi(uint32_t message, uint32_t buffer, uint32_t length) 
       Session& s = local.session;
       s.flags = flags, s.public_slots = u32(8), s.private_slots = u32(12);
       if (local.host) {
+        (void)LocalCpuTuning();  // (its first read publishes the CPU tab's settings: before the properties are copied)
         s.id = NewSessionId();
         s.nonce = NewSessionId();
         s.host = MyXnAddr();

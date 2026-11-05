@@ -8,7 +8,7 @@
 //  - damage (sub_821F32C8: a level's scale 0.75 / 1 / 1 / 1.2 on a move's damage fields), the pin kick-out window
 //    (sub_8221DD88: 15 / 13 / 11 / 9) and the momentum / stamina rates (sub_821F4D90, sub_821F4FA0, sub_821F5FC0):
 //    each reads the byte while it runs - for the call, the byte holds the level chosen here, then its own again.
-// Online the host's values count for everyone (session property 0x1000F005), so every game makes the same rolls.
+// Online the host's values count for everyone (session property 0x1000F006), so every game makes the same rolls.
 #include "cpu_difficulty.h"
 
 #include <algorithm>
@@ -44,7 +44,9 @@ namespace {
 
 constexpr uint32_t kGame = 0x82E3DE00;     // the game block (sub_825740C8)
 constexpr uint32_t kDifficulty = 10342;    // its DIFFICULTY byte
-constexpr uint32_t kProperty = 0x1000F005;  // the host's CpuTuning (Pack)
+// (not 0x1000F005, the netcode's since 2.1.6: a host's session had the netcode there, which reads as no tuning, so the
+// CPU tab did nothing online - report b7e708)
+constexpr uint32_t kProperty = 0x1000F006;  // the host's CpuTuning (Pack)
 
 std::atomic<uint32_t> g_local{0xFFFFFFFFu};  // (packed: Pack)
 

@@ -402,11 +402,23 @@ void SendTable(const svr2011::P2PLobby& lobby) {
   }
 }
 
+// What a player's labels hold of a key's mod under another key: its label, or "a different copy" with the same
+// version ("": nothing of it).
+std::string OtherCopy(const std::string& key, const std::map<std::string, std::string>& labels) {
+  const auto field = [](const std::string& k, size_t n) {  // (id, version, CRC)
+    size_t at = 0;
+    for (; n; --n) at = k.find('\t', at) == std::string::npos ? k.size() : k.find('\t', at) + 1;
+    return k.substr(at, k.find('\t', at) - at);
+  };
+  for (const auto& [k, l] : labels)
+    if (k != key && field(k, 0) == field(key, 0)) return field(k, 1) == field(key, 1) ? "a different copy" : l;
+  return "";
+}
+
 // Who in the lobby lacks a key (the others' names, with what they have of
 // it instead: "EntUp (has Tazz 0.9)"); under g_mutex.
 std::vector<std::string> Lacking(const std::string& key, const std::vector<uint64_t>& members, bool arena) {
   std::vector<std::string> out;
-  const std::string folder = key.substr(0, key.find('\t'));
   for (uint64_t x : members) {
     if (x == MyXuid()) continue;
     const auto it = g_theirs.find(x);
@@ -417,9 +429,7 @@ std::vector<std::string> Lacking(const std::string& key, const std::vector<uint6
     const Theirs& t = it->second;
     const bool has = arena ? t.arenas.count(key) != 0 : t.id_of.count(key) != 0;
     if (has) continue;
-    std::string other;  // (another version of it?)
-    for (const auto& [k, l] : t.label)
-      if (k.substr(0, k.find('\t')) == folder) other = l;
+    const std::string other = OtherCopy(key, t.label);  // (another version of it?)
     out.push_back(t.name + (other.empty() ? "" : " (has " + other + ")"));
   }
   return out;
@@ -751,7 +761,10 @@ void OnlineModsPick(PPCContext& ctx, uint8_t* base, uint32_t msg) {
   }
   if (key.empty()) return;
   std::vector<std::string> lacking;
-  if (mine == kNone) lacking.push_back(rex::cvar::Query<std::string>("online_name") + " (the host)");
+  if (mine == kNone) {
+    const std::string other = OtherCopy(key, MyMods().label);
+    lacking.push_back(rex::cvar::Query<std::string>("online_name") + (other.empty() ? " (the host)" : " (the host, has " + other + ")"));
+  }
   const auto rest = Lacking(key, P2PMatchLobby().members, false);
   lacking.insert(lacking.end(), rest.begin(), rest.end());
   // (the picker itself doesn't count)
@@ -763,8 +776,12 @@ void OnlineModsPick(PPCContext& ctx, uint8_t* base, uint32_t msg) {
   t_refuse = true;
   std::string label = MyMods().label.count(key) ? MyMods().label.at(key) : key.substr(0, key.find('\t'));
   if (auto t = g_theirs.find(from); t != g_theirs.end() && t->second.label.count(key)) label = t->second.label[key];
-  const std::string text = "The user/s in the lobby do not have the mods installed you do.\n" + label + ": " +
-                           Join(lacking) + (lacking.size() == 1 ? " lacks it." : " lack it.");
+  // (everyone it's refused for has another copy of it: that's what to say, not that they lack the mod)
+  const bool copies = std::all_of(lacking.begin(), lacking.end(),
+                                  [](const std::string& s) { return s.find(" has ") != std::string::npos || s.find("(has ") != std::string::npos; });
+  const std::string text = copies ? "Not everyone in the lobby has the same copy of this mod.\n" + label + ": " + Join(lacking) + "."
+                                  : "The user/s in the lobby do not have the mods installed you do.\n" + label + ": " +
+                                        Join(lacking) + (lacking.size() == 1 ? " lacks it." : " lack it.");
   REXLOG_INFO("online mods: the pick of {} by {} refused - {}", label, name, Join(lacking));
   if (!from || from == MyXuid()) {
     ShowNotice(text, 8.0f);
@@ -847,7 +864,10 @@ std::vector<std::string> OnlineModsLackedFromHost() {
   if (it != g_theirs.end()) {
     const Mine& m = MyMods();
     for (const auto& [key, id] : it->second.id_of)
-      if (!m.id_of.count(key)) out.push_back(it->second.label.count(key) ? it->second.label.at(key) : key);
+      if (!m.id_of.count(key)) {
+        const std::string other = OtherCopy(key, m.label);
+        out.push_back((it->second.label.count(key) ? it->second.label.at(key) : key) + (other.empty() ? "" : " (you have " + other + ")"));
+      }
   }
   if (!g_arena_lacking.empty()) out.push_back(g_arena_lacking);
   return out;

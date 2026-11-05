@@ -714,6 +714,11 @@ bool OnlineOverlay::ModsDialog(ImGuiIO& io) {
              "You don't have: " + NameList(offer.lacking) + ".\n\nMods only come straight from the host's game, and "
              "your connection to the host goes through the relay, so they can't be downloaded. You can stay, but "
              "you can't play with them.");
+      } else if (offer.mods.empty() && offer.unsendable.empty()) {
+        open(kModsRelay, "YOU AND THE HOST HAVE DIFFERENT COPIES OF A MOD",
+             NameList(offer.differ) + "\n\nNobody can pick " + (offer.differ.size() == 1 ? "it" : "them") +
+                 " in this session unless you both have the same copy: update the game, or install the mod again "
+                 "from the same place. You can stay and play with everything else.");
       } else if (offer.mods.empty()) {
         open(kModsRelay, "THIS MATCH USES MODS THE HOST CAN'T SEND",
              NameList(offer.unsendable) + "\n\nOnly the game's and mods' own kinds of files travel. You can stay, "
@@ -721,8 +726,9 @@ bool OnlineOverlay::ModsDialog(ImGuiIO& io) {
       } else {
         std::vector<std::string> names;
         for (const ModOffer& m : offer.mods) names.push_back(m.name.empty() ? m.id : m.name);
-        const std::string cant = offer.unsendable.empty() ? std::string()
-                                                          : "\n\nThe host can't send: " + NameList(offer.unsendable) + ".";
+        std::string cant = offer.unsendable.empty() ? std::string()
+                                                    : "\n\nThe host can't send: " + NameList(offer.unsendable) + ".";
+        if (!offer.differ.empty()) cant += "\n\nDifferent copies, which nobody can pick: " + NameList(offer.differ) + ".";
         open(kModsAsk,
              "THIS MATCH USES " + std::to_string(offer.mods.size()) + (offer.mods.size() == 1 ? " MOD" : " MODS") +
                  " YOU DON'T HAVE (" + Megabytes(offer.bytes) + ")",

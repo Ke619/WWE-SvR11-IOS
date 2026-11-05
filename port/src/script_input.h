@@ -75,6 +75,9 @@ using namespace rex::input;  // X_INPUT_* types and button bits
 // (svr2011_app.cpp; adding a sink later races the threads' logging).
 void InstallScriptLogSink();
 
+// Test aids: the scripted pad's left stick held at x, y whatever the script says (on false: the script's again).
+void ScriptStickOverride(bool on, int16_t x, int16_t y);
+
 class ScriptInputDriver final : public rex::input::InputDriver {
  public:
   explicit ScriptInputDriver(std::filesystem::path command_file);

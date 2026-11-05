@@ -58,6 +58,8 @@ int WorldPassesThisFrame();
 
 // A guest address in readable memory (a mapped, accessible page) - is a word a pointer?
 bool GuestReadable(uint32_t address);
+// Test aid (Windows): the hardware write watch of SVR2011_TEST_HW_WATCH on this guest word, from now on (once a run).
+void HwWatchOn(uint8_t* base, uint32_t guest);
 
 // Chooses the frame rate, at once (GRAPHICS -> FRAME RATE).
 void SetTargetFrameRate(int fps);

@@ -331,7 +331,7 @@ void CheckGameFilesThere() {
   // (test aid SVR2011_TEST_FILES_LOG_ONLY=1: logged only, as on Android - the game runs on to DiscReadError)
   const bool stop = !std::getenv("SVR2011_TEST_FILES_LOG_ONLY");
 #else
-  const bool stop = false;  // (no box this early on Android: the game stops at its first read of one, DiscReadError)
+  const bool stop = false;  // (no box this early on Android: the game stops at its first read of one - the disc read error's notice)
 #endif
   REXLOG_ERROR("game files: {} of the disc's files missing from the game folder ({} the game can't start without): {}"
                " - {} (reinstall from the Xbox 360 disc image: launcher Install, then Verify game files)",
@@ -363,8 +363,7 @@ void CheckGameFilesThere() {
 // the still running render and audio threads: a SIGSEGV in native::OnLoadShaderConstants or a SIGABRT in the audio
 // worker seconds later (2.1.9 report edcc87, Android: pac/m.pac missing). Instead the missing files are named on
 // screen, the log is flushed and the game ends without destructors.
-REX_HOOK_RAW(sub_82904DB8) {
-  (void)ctx, (void)base;
+[[noreturn]] static void EndForMissingFiles() {
   static std::atomic<bool> ending{false};
   if (ending.exchange(true))
     for (;;) std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -399,6 +398,23 @@ REX_HOOK_RAW(sub_82904DB8) {
   TerminateProcess(GetCurrentProcess(), 4);
 #endif
   std::_Exit(4);
+}
+
+REX_HOOK_RAW(sub_82904DB8) {
+  (void)ctx, (void)base;
+  EndForMissingFiles();
+}
+
+// The game's first pac read: with pac/_startup.pac missing it never reaches the disc read error above - its loader
+// reads guest 0x28 from the file it didn't get, a crash 1 s in (2.1.9 report 181cb0, Android: a folder with default.xex
+// but none of the disc's files; on Windows the start check stops first, unless SVR2011_TEST_FILES_LOG_ONLY=1).
+REX_EXTERN(__imp__sub_826A7C58);
+REX_HOOK_RAW(sub_826A7C58) {
+  static std::atomic<bool> checked{false};
+  if (!checked.exchange(true) && g_disc_data_beside)
+    for (const auto& m : svr2011::MissingGameFiles())
+      if (m.path == "pac\\_startup.pac") EndForMissingFiles();
+  __imp__sub_826A7C58(ctx, base);
 }
 
 namespace {

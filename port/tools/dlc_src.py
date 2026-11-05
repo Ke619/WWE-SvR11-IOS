@@ -162,6 +162,81 @@ class DlcSet:
         return dst
 
 
+class SourceView:
+    """A disc reader (discfs: exists / isdir / listdir / read / size / walk / info) with the game's packages beside it:
+    what the disc lacks comes from them. `reads` gives every copy of a file: two packages can hold the same name
+    (WWE '12's Pack 3 and Pack 4 both have pac/evt/NyujyoC.pac, each with its own entrances)."""
+
+    def __init__(self, disc, dlc):
+        self.disc, self.dlc = disc, dlc
+
+    def __getattr__(self, name):
+        return getattr(self.disc, name)
+
+    @staticmethod
+    def _low(path):
+        return path.replace('\\', '/').strip('/').lower()
+
+    def _copies(self, path):
+        low = self._low(path)
+        return [p for p in self.dlc.packages if low in p.files]
+
+    def exists(self, path):
+        return self.disc.exists(path) or bool(self._copies(path)) or self.isdir(path)
+
+    def isdir(self, path):
+        pre = self._low(path) + '/'
+        return (hasattr(self.disc, 'isdir') and self.disc.isdir(path)) or any(
+            low.startswith(pre) for p in self.dlc.packages for low in p.files)
+
+    def listdir(self, path=''):
+        try:
+            names = list(self.disc.listdir(path))
+        except (OSError, KeyError, ValueError):
+            names = []
+        seen = {n.lower() for n in names}
+        pre = self._low(path) + '/' if self._low(path) else ''
+        for p in self.dlc.packages:
+            for low, (rel, _, _) in p.files.items():
+                if low.startswith(pre) and '/' not in low[len(pre):] and low[len(pre):] not in seen:
+                    seen.add(low[len(pre):])
+                    names.append(rel.rsplit('/', 1)[-1])
+        return names
+
+    def read(self, path, off=None, size=None):
+        if self.disc.exists(path):
+            return self.disc.read(path) if off is None else self.disc.read(path, off, size)
+        copies = self._copies(path)
+        if not copies:
+            return self.disc.read(path)
+        d = copies[0].read(self._low(path))
+        return d if off is None else d[off:off + (len(d) - off if size is None else size)]
+
+    def reads(self, path):
+        """every copy of the file: the disc's, then each package's"""
+        out = [self.disc.read(path)] if self.disc.exists(path) else []
+        return out + [p.read(self._low(path)) for p in self._copies(path)]
+
+    def size(self, path):
+        if self.disc.exists(path):
+            return self.disc.size(path)
+        copies = self._copies(path)
+        return copies[0].files[self._low(path)][1] if copies else self.disc.size(path)
+
+
+def view(disc):
+    """a disc reader with SVR2011_PORT_DLC's packages beside it (superstar_port --dlc), or the reader itself"""
+    folder = os.environ.get('SVR2011_PORT_DLC')
+    if not folder:
+        return disc
+    try:
+        title = disc.info().get('title_id')
+    except (AttributeError, OSError, ValueError):
+        title = None
+    dlc = DlcSet(folder, '', int(title, 16) if title else None)
+    return SourceView(disc, dlc) if dlc else disc
+
+
 def main(argv):
     title = int(argv[2], 16) if len(argv) > 2 else None
     s = DlcSet(argv[1], '', title)

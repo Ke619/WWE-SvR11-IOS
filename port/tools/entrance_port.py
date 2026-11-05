@@ -126,7 +126,8 @@ def open_source(path):
         raise InputError('--src not found: %s' % path)
     try:
         import discfs  # (the Mod Maker's disc reader, D1: folders, X360 XDVDFS, PS2 ISO 9660)
-        return discfs.open(path)
+        import dlc_src  # (superstar_port --dlc: the game's packages beside the disc)
+        return dlc_src.view(discfs.open(path))
     except ImportError:
         if os.path.isdir(path):
             return FolderSource(path)
@@ -924,14 +925,15 @@ def old_entrances(src, files, want=None):
     for f in src.listdir('pac/evt'):
         if not any(re.match(rx, f, re.I) for rx in files):
             continue
-        for (g, n), raw in pac_entries(src.read('pac/evt/' + f), want).items():
-            if n.isdigit() and int(n) < 9999:
-                (evp if g.startswith('EVP') else evt if g.startswith('EVT') else {})[int(n)] = raw
+        for d in (src.reads('pac/evt/' + f) if hasattr(src, 'reads') else [src.read('pac/evt/' + f)]):
+            for (g, n), raw in pac_entries(d, want).items():
+                if n.isdigit() and int(n) < 9999:
+                    (evp if g.startswith('EVP') else evt if g.startswith('EVT') else {})[int(n)] = raw
     return evp, evt
 
 
 SRC07 = (r'evt[12]\.pac$',)
-SRC09 = (r'nyujyo\d\.pac$',)
+SRC09 = (r'nyujyo[0-9a-z]\.pac$',)   # (its DLC: NyujyoD.pac)
 
 
 def old_list(files):

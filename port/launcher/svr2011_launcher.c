@@ -507,6 +507,20 @@ static int is_game_folder(const WCHAR *dir)
     return dir[0] && join(a, dir, L"default.xex") && file_exists(a);
 }
 
+/* The first file every install has that the game folder lacks, or NULL. default.xex alone isn't enough: a folder with
+   it and none of the disc's files could press Play (2.1.9 report 181cb0, Android). Install again keeps what is there. */
+static const WCHAR *install_missing(const WCHAR *dir)
+{
+    static const WCHAR *must[] = { L"plist360.arc", L"pac\\_startup.pac", L"pac\\m.pac", L"pac\\plist360.h",
+                                   L"sound\\System.pck" };
+    WCHAR a[MAX_PATH];
+    int i;
+    for (i = 0; i < (int)(sizeof must / sizeof must[0]); i++)
+        if (!join(a, dir, must[i]) || !file_exists(a))
+            return must[i];
+    return NULL;
+}
+
 static int has_program(const WCHAR *dir)
 {
     WCHAR a[MAX_PATH];
@@ -977,6 +991,7 @@ static DWORD WINAPI bundled_thread(LPVOID arg)
 }
 
 static void refresh_play(void);
+static void show_tab(int t);
 
 static void start_bundled(void)
 {
@@ -2836,6 +2851,8 @@ static void refresh_play(void)
         t = L"The game folder does not exist. Choose another one, or install the game on the Install tab.";
     else if (!is_game_folder(s_game_dir))
         t = L"Game files not installed \x2014 use the Install tab.";
+    else if (install_missing(s_game_dir))
+        t = L"Your install isn't complete - install again";  /* (the status line's room; the start opens the Install tab) */
     else if (!has_program(s_game_dir))
         t = GAME_EXE L" is missing from the game folder \x2014 copy the port's program files into it, "
             L"or install again from the Install tab.";
@@ -2934,6 +2951,11 @@ static void play_with(int no_mods)
     }
     if (s_busy) {  /* (an install or repair is running: Play is disabled then - a click that got through says why) */
         set_text(ID_PLAY_STATUS, L"An install is running - Play when it's done.");
+        return;
+    }
+    if (is_game_folder(s_game_dir) && install_missing(s_game_dir)) {
+        refresh_play();
+        show_tab(TAB_INSTALL);
         return;
     }
     if (!is_game_folder(s_game_dir) || !has_program(s_game_dir)) {
@@ -10308,7 +10330,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         WritePrivateProfileStringW(L"Launcher", L"SetupShown", L"1", s_launcher_ini);
         capture_tab = TAB_SETUP;
     }
-    show_tab(capture_tab >= 0 ? capture_tab : (is_game_folder(s_game_dir) ? TAB_PLAY : TAB_INSTALL));
+    show_tab(capture_tab >= 0 ? capture_tab
+                             : (is_game_folder(s_game_dir) && !install_missing(s_game_dir) ? TAB_PLAY : TAB_INSTALL));
     if (capture_file) {
         /* Drawn off-screen, never activated (tests run beside the user's work). */
         SetWindowPos(s_wnd, NULL, -8000, -8000, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);

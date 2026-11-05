@@ -45,6 +45,11 @@ set-up (`sub_825B7EB0`, `sub_825B1488`, `sub_8243D680`, `sub_8257B268`).
   the tag title, so the last row carries the brand's new titles: moving past it shows the next one (`sub_8249B600`), and
   picking it opens that title's page (`sub_8249CAC8`, from +2944). Tag titles have no row yet. No art: the row hides it;
   the title's page still shows the row's stock belt.
+- Universe's cards (save + 0x364B4 + 14942, 66 x 88 B: +1 the title, +2 people, +4 bit 0 a title match). A card on a new
+  title is saved as a plain match, with a `#card` row in `Saves\titles.txt`; it comes back on a load if the mod is there,
+  and stays a plain match if not. A Universe title with no holder gets one the first time Universe is asked: of the
+  brand, in the roster, holding nothing, lowest id first (to improve: by rank). Contenders are saved in the row.
+- Universe's match screen shows a title match's picture from a stack list by title; a new title has its `belt=` title's.
 - To check: `sub_825C1EA0` lists holders in a 96 B heap block, which many new titles could fill; `sub_824AC5B8` reads a
   string table by title with no limit on its +296 path.
 - Test aids: `SVR2011_TEST_NEW_TITLES` (the table in the log; =<id> gives the first new title that holder, in memory).

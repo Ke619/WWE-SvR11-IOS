@@ -103,6 +103,12 @@ longjmp_address = 0x82BC95F0
 # entry per record index; each hook does nothing while the cvar is off.
 
 [[midasm_hook]]
+name = "NewTitleArt_824998F8"
+address = 0x824998F8
+registers = ["r5", "r8", "r9"]
+after_instruction = true
+
+[[midasm_hook]]
 name = "NewTitleLoop_824AC0BC"
 address = 0x824AC0BC
 registers = ["cr6", "xer", "r31"]

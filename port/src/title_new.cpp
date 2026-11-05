@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include <fmt/format.h>
 #include <rex/filesystem.h>
 #include <rex/hook.h>
 #include <rex/logging.h>
@@ -58,6 +59,20 @@ struct NewTitle {
   uint32_t guest_name = 0, guest_short = 0, guest_champion = 0;  // (in capitals, as the game's lists write titles)
 };
 std::vector<NewTitle> g_new;
+uint8_t* g_base_for_sites = nullptr;  // (guest memory, for the mid-function sites)
+bool g_pick_holders = false;  // (after a save load: Universe titles with no holder get one the first time Universe asks)
+std::vector<std::pair<uint32_t, std::string>> g_card_rows;  // the saved cards on a new title: card, the mod's folder
+std::vector<std::pair<uint32_t, uint8_t>> g_cards_live;     // while the game builds its save: address, title
+constexpr uint32_t kCards = 66;  // Universe's cards: save + 0x364B4 + 14942, 88 B each, +1 the title, +2 people, +4 bit 0 a title match
+uint32_t CardAddress(const uint8_t* base, uint32_t k) {
+  const uint8_t* p = base + 0x82E407B4;
+  const uint32_t save = uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3];
+  return save ? save + 0x364B4 + 14942 + k * 88 : 0;
+}
+void CardTitle(uint8_t* base, uint32_t k, uint8_t title) {
+  const uint32_t a = k < kCards ? CardAddress(base, k) : 0;
+  if (a && base[a + 1] == 255 && !(base[a + 4] & 1)) base[a + 1] = title, base[a + 4] |= 1;
+}
 uint32_t g_contenders = 0;  // guest: each new title's Universe row, 4 B
 rex::memory::Memory* g_memory = nullptr;
 uint32_t Be32(const uint8_t* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; }
@@ -183,7 +198,9 @@ void InstallNewTitles(rex::memory::Memory* memory) {
   }
 }
 
-void NewTitlesLoaded() {
+void NewTitlesLoaded(uint8_t* base) {
+  g_pick_holders = true;
+  g_base_for_sites = base;
   for (NewTitle& t : g_new) t.holder[0] = t.holder[1] = kNoHolder;
   if (g_memory && !g_contenders && !g_new.empty()) g_contenders = g_memory->SystemHeapAlloc(uint32_t(g_new.size()) * 4);
   if (g_memory && g_contenders)
@@ -198,10 +215,24 @@ void NewTitlesLoaded() {
   for (std::string l; std::getline(in, l);) {
     while (!l.empty() && l.back() == '\r') l.pop_back();
     std::istringstream row(l);
-    std::string folder, a, b;
+    std::string folder, a, b, c;
     if (!std::getline(row, folder, '\t') || !std::getline(row, a, '\t') || !std::getline(row, b, '\t')) continue;
-    for (NewTitle& t : g_new)
-      if (t.folder == folder) t.holder[0] = HolderOf(a), t.holder[1] = HolderOf(b), ++n;
+    if (folder == "#card") {  // (a card on a new title: the save has it with no title)
+      for (size_t k = 0; k < g_new.size(); ++k)
+        if (g_new[k].folder == b) CardTitle(base, uint32_t(std::strtoul(a.c_str(), nullptr, 10)), uint8_t(kFirstNew + k));
+      continue;
+    }
+    std::getline(row, c, '\t');
+    for (size_t k = 0; k < g_new.size(); ++k)
+      if (g_new[k].folder == folder) {
+        NewTitle& t = g_new[k];
+        t.holder[0] = HolderOf(a), t.holder[1] = HolderOf(b), ++n;
+        if (g_memory && g_contenders && !c.empty()) {
+          const uint32_t id = HolderOf(c);
+          uint8_t* p = g_memory->TranslateVirtual<uint8_t*>(g_contenders + uint32_t(k) * 4);
+          p[0] = uint8_t(id >> 8), p[1] = uint8_t(id);
+        }
+      }
   }
   REXLOG_INFO("[svr2011] new titles: {} of {} have saved holders", n, g_new.size());
 }
@@ -216,7 +247,7 @@ void NewTitlesForSave() {
     for (std::string l; std::getline(in, l);) {
       while (!l.empty() && l.back() == '\r') l.pop_back();
       const std::string folder = l.substr(0, l.find('\t'));
-      if (!folder.empty() && std::none_of(g_new.begin(), g_new.end(), [&](const NewTitle& t) { return t.folder == folder; }))
+      if (!folder.empty() && folder != "#card" && std::none_of(g_new.begin(), g_new.end(), [&](const NewTitle& t) { return t.folder == folder; }))
         keep.push_back(l);
     }
   }
@@ -227,13 +258,52 @@ void NewTitlesForSave() {
   {
     std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
     for (const std::string& l : keep) out << l << '\n';
-    for (const NewTitle& t : g_new) out << t.folder << '\t' << HolderText(t.holder[0]) << '\t' << HolderText(t.holder[1]) << '\n';
+    for (size_t k = 0; k < g_new.size(); ++k) {
+      const NewTitle& t = g_new[k];
+      uint32_t contender = kNoHolder;
+      if (g_memory && g_contenders) {
+        const uint8_t* p = g_memory->TranslateVirtual<const uint8_t*>(g_contenders + uint32_t(k) * 4);
+        contender = uint32_t(p[0]) << 8 | p[1];
+      }
+      out << t.folder << '\t' << HolderText(t.holder[0]) << '\t' << HolderText(t.holder[1]) << '\t' << HolderText(contender) << '\n';
+    }
+    for (const auto& [card, folder] : g_card_rows) out << "#card\t" << card << '\t' << folder << '\n';
   }
   fs::rename(tmp, file, ec);
   if (ec) REXLOG_WARN("[svr2011] new titles: the holders could not be saved ({})", ec.message());
 }
 
+// Around the game building its save: a card on a new title goes in with no title (the index is only for this run, and
+// the mod may not be there next time); which card and which mod go beside it, in the holders' file.
+void NewTitlesBeforeSave(uint8_t* base) {
+  if (g_new.empty()) return;
+  g_card_rows.clear();
+  g_cards_live.clear();
+  for (uint32_t k = 0; k < kCards; ++k) {
+    const uint32_t a = CardAddress(base, k);
+    if (!a) return;
+    const NewTitle* t = Row(base[a + 1]);
+    if (!t) continue;
+    g_card_rows.emplace_back(k, t->folder);
+    g_cards_live.emplace_back(a, base[a + 1]);
+    base[a + 1] = 255, base[a + 4] &= uint8_t(~1);  // (saved as a plain match)
+  }
+}
+
+void NewTitlesAfterSave(uint8_t* base) {
+  for (const auto& [a, title] : g_cards_live) base[a + 1] = title, base[a + 4] |= 1;
+  g_cards_live.clear();
+}
+
 void NewTitlesTestCheck(PPCContext& ctx, uint8_t* base) {
+  if (std::getenv("SVR2011_TEST_NEW_TITLE_CARD") && !g_new.empty()) {  // (every two-person match: a title match on the first new title)
+    int n = 0;
+    for (uint32_t k = 0; k < kCards; ++k) {
+      const uint32_t a = CardAddress(base, k);
+      if (a && base[a + 1] != 255 && base[a + 2] == 2) base[a + 1] = uint8_t(kFirstNew), base[a + 4] |= 1, ++n;
+    }
+    REXLOG_INFO("[svr2011] new titles: test - {} cards on the new title", n);
+  }
   if (std::getenv("SVR2011_TEST_NEW_TITLES")) TestCheck(ctx, base);
 }
 
@@ -601,6 +671,57 @@ NEW_TITLE_LOOP(825B53E4)
 NEW_TITLE_LOOP(825C1FF0)
 NEW_TITLE_LOOP(825CA2B0)
 NEW_TITLE_GUARD(825ADBE4)
+
+// Universe is asked (its object is made): a Universe title with no holder gets one, as the game's own start with one: of
+// the brand, in the roster, holding nothing yet; again if the holder's mod has gone.
+REX_EXTERN(__imp__sub_825AC1E8);
+REX_HOOK_RAW(sub_825AC1E8) {
+  if (g_pick_holders) {
+    g_pick_holders = false;
+    const auto saved = ctx;
+    for (size_t k = 0; k < g_new.size(); ++k) {
+      NewTitle& t = g_new[k];
+      if (t.brand < 0 || t.tag || t.holder[0] != kNoHolder) continue;
+      const uint32_t title = uint32_t(kFirstNew + k);
+      for (uint32_t id = 0; id < 322; ++id) {
+        ctx.r3.u64 = id;
+        sub_828C1288(ctx, base);
+        if (ctx.r3.u32 == 0) continue;
+        ctx.r3.u64 = id;
+        sub_828B7E70(ctx, base);
+        if (ctx.r3.u32 == 0) continue;
+        ctx.r3.u64 = id, ctx.r4.u64 = 1;
+        sub_825B75A8(ctx, base);
+        if (ctx.r3.u32 == 0) continue;
+        ctx.r3.u64 = id, ctx.r4.u64 = 1;
+        sub_828B8038(ctx, base);
+        if (t.brand != 7 && ctx.r3.s32 != t.brand) continue;
+        ctx.r3.u64 = id, ctx.r4.u64 = title, ctx.r5.u64 = 1;
+        sub_828BD9D0(ctx, base);
+        if (ctx.r3.u32 == 0) continue;
+        static const uint32_t list = g_memory ? g_memory->SystemHeapAlloc(64) : 0;  // (the titles it holds)
+        if (!list) continue;
+        ctx.r3.u64 = id, ctx.r4.u64 = list, ctx.r5.u64 = 2, ctx.r6.u64 = 0;
+        sub_828BDB38(ctx, base);
+        if (ctx.r3.s32 != 0) continue;
+        t.holder[0] = id;
+        REXLOG_INFO("[svr2011] new titles: {} starts with holder {}", t.folder, id);
+        break;
+      }
+    }
+    ctx = saved;
+  }
+  __imp__sub_825AC1E8(ctx, base);
+}
+
+// Universe's match screen (sub_824990E8): a title match's picture, from a stack list of 14 by title (r9 + r8): a new
+// title has the picture of the title whose belt it carries.
+void NewTitleArt_824998F8(PPCRegister& r5, PPCRegister& r8, PPCRegister& r9) {
+  if (const NewTitle* t = Row(int64_t(r8.u32) / 4)) {
+    const uint8_t* p = g_base_for_sites + r9.u32 + uint32_t(t->belt_of) * 4;
+    r5.u64 = uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3];
+  }
+}
 
 // Is the title one of Universe's: (title).
 REX_EXTERN(__imp__sub_828BDA98);

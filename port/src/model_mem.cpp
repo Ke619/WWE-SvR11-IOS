@@ -33,6 +33,7 @@
 #include "frame_rate.h"
 #include "native/native_renderer.h"
 #include "fps_overlay.h"
+#include "match_box.h"
 #include "mem_trace.h"
 #include "generated/default/svr2011_init.h"
 #include "../modmaker/svrfmt/bytes.h"
@@ -88,6 +89,7 @@ uint32_t g_block_ptr[2] = {};   // (the block heap's blocks now, from XMemAlloc:
 std::atomic<bool> g_blocks_all{false};  // (every window held or in the block heap's use: nothing to try)
 thread_local bool t_block_request = false;  // (inside the block heap's XMemAlloc)
 using svrfmt::Rd32;
+using svrfmt::Wr32;
 
 bool BlockReserveOn() {
   static const bool on = std::getenv("SVR2011_TEST_BLOCKHEAP_RESERVE_OFF") == nullptr;
@@ -647,4 +649,189 @@ REX_HOOK_RAW(sub_826A2D78) {
       g_motion_file_blocks.erase(g_motion_file_blocks.begin() + long(i));
       break;
     }
+}
+
+// -- A heap's free list ---------------------------------------------------------
+//
+// The game's heaps (sub_8269AAD8 frees; a critical section per heap, 28 bytes each from 0x82EC55B0; the table at
+// 0x82EC5F48, 36 bytes each: +0 start, +4 end). A block is 16 bytes of header in units of 16 bytes from the start:
+// +0 the next block by address (low 28 bits), +4 the one before, +8 the next free block (0 while it's in use), the
+// byte at +15 its heap. The free list starts at start + 8 and goes up by address, to a number at or past the end.
+// sub_8269AAD8 walks it with no limit, holding the heap's lock: when something has overwritten a link, it runs for
+// ever (reports 228dce, 73e349, 57b79b: "world update stuck in pass 20", the logic thread at a full core, the black
+// screen after a match). This is a safety net and not a fix: whatever wrote over the list isn't found. The block
+// being freed is left in use, the list made again from the blocks by address (the free ones have a next: alloc and
+// free walk it too; if the address links are bad too, the list ends at the bad link and what's after it is lost), and
+// the log says all it can see.
+// Test aids: SVR2011_TEST_FREE_LIST=<heap>,<n>[,loop|double|junk] - the <n>th free on that heap (99: on any) meets that damage;
+// SVR2011_TEST_FREE_GUARD_OFF=1 - the game's walk alone.
+namespace {
+constexpr uint32_t kHeapLocks = 0x82EC55B0, kHeapTable = 0x82EC5F48, kHeapEntrySize = 36, kHeapLockSize = 28;
+constexpr uint32_t kHeapCount = 64;
+
+std::string HeapWords(const uint8_t* base, uint32_t at, uint32_t count, uint32_t start, uint32_t end) {
+  std::string s;
+  for (uint32_t i = 0; i < count; ++i) {
+    const uint32_t a = at + i * 4;
+    if (a < start || a + 4 > end) break;
+    s += fmt::format(" {:08X}", Rd32(base, a));
+  }
+  return s.empty() ? " (outside the heap)" : s;
+}
+
+std::string HeapCallers(const uint8_t* base, const PPCContext& ctx) {
+  std::string s = fmt::format("{:08X}", uint32_t(ctx.lr));
+  uint32_t sp = ctx.r1.u32;
+  const uint32_t top = sp + 0x40000;
+  for (int i = 0; i < 12 && sp >= 0x70000000 && sp < 0x80000000; ++i) {
+    const uint32_t prev = Rd32(base, sp);
+    if (prev <= sp || prev >= top) break;
+    s += fmt::format(" {:08X}", Rd32(base, prev - 8));
+    sp = prev;
+  }
+  return s;
+}
+
+// The free list again, from the blocks in address order; false if those links are bad as well (nothing changed).
+bool RebuildFreeList(uint8_t* base, uint32_t start, uint32_t size, uint32_t* kept) {
+  std::vector<uint32_t> free_blocks;
+  uint32_t cur = Rd32(base, start) & 0x0FFFFFFF;
+  while (cur < size) {
+    const uint32_t node = start + (cur << 4), to = Rd32(base, node) & 0x0FFFFFFF;
+    if (to <= cur || to > size) return false;
+    if (Rd32(base, node + 8)) free_blocks.push_back(cur);
+    cur = to;
+  }
+  uint32_t link = start + 8;
+  for (const uint32_t b : free_blocks) {
+    Wr32(base, link, b);
+    link = start + (b << 4) + 8;
+  }
+  Wr32(base, link, size);
+  *kept = uint32_t(free_blocks.size());
+  return true;
+}
+
+struct HeapDamage {
+  const char* what = nullptr;
+  uint32_t node = 0, next = 0, steps = 0, free_units = 0;  // (node: the list's block with the bad link, 0 none)
+};
+
+void TellHeapDamage(const uint8_t* base, const PPCContext& ctx, uint32_t heap, uint32_t p, uint32_t start, uint32_t end,
+                    const HeapDamage& d) {
+  static std::atomic<int> told{0};
+  const int n = ++told;
+  if (n > 8) {
+    if (n == 9) REXLOG_ERROR("[svr2011] heap free list: more damage - not told again this run");
+    return;
+  }
+  const uint32_t block = p - 16;
+  REXLOG_ERROR("[svr2011] heap free list: heap {}, freeing {:08X}: {} - the block stays in use (callers {})", heap, p, d.what,
+               HeapCallers(base, ctx));
+  REXLOG_ERROR("[svr2011] heap free list:   heap {:08X}-{:08X}, list head {}, {} free blocks ({} KB) walked before it stopped",
+               start, end, Rd32(base, start + 8), d.steps, d.free_units / 64);
+  REXLOG_ERROR("[svr2011] heap free list:   the block's header and start:{}", HeapWords(base, block, 12, start, end));
+  const uint32_t before = start + (Rd32(base, block + 4) << 4), after = start + ((Rd32(base, block) & 0x0FFFFFFF) << 4);
+  REXLOG_ERROR("[svr2011] heap free list:   the block before it {:08X}:{}", before, HeapWords(base, before, 12, start, end));
+  REXLOG_ERROR("[svr2011] heap free list:   the block after it {:08X}:{}", after, HeapWords(base, after, 12, start, end));
+  if (d.node) {
+    const uint32_t b4 = start + (Rd32(base, d.node + 4) << 4);
+    REXLOG_ERROR("[svr2011] heap free list:   the bad link: free block {:08X} (unit {}) says next {}:{}", d.node,
+                 (d.node - start) >> 4, d.next, HeapWords(base, d.node, 12, start, end));
+    REXLOG_ERROR("[svr2011] heap free list:   the 16 words before that block (a writer running on?):{}",
+                 HeapWords(base, d.node - 64, 16, start, end));
+    REXLOG_ERROR("[svr2011] heap free list:   the block before it by address {:08X} (what it holds says its owner):{}", b4,
+                 HeapWords(base, b4, 12, start, end));
+  }
+  svr2011::MatchBoxLog("a heap's free list was damaged");
+}
+}  // namespace
+
+REX_EXTERN(__imp__sub_8269AAD8);
+REX_HOOK_RAW(sub_8269AAD8) {
+  static const bool off = std::getenv("SVR2011_TEST_FREE_GUARD_OFF") != nullptr;
+  const uint32_t p = ctx.r3.u32;
+  const uint32_t table = p ? Rd32(base, kHeapTable) : 0;
+  if (!table || p < 0x10000) {
+    __imp__sub_8269AAD8(ctx, base);
+    return;
+  }
+  const uint32_t heap = base[p - 1];
+  const uint32_t entry = table + heap * kHeapEntrySize;
+  const uint32_t start = heap < kHeapCount ? Rd32(base, entry) : 0, end = heap < kHeapCount ? Rd32(base, entry + 4) : 0;
+  if (!start || p - 16 < start || p >= end) {  // (not one of these heaps' blocks: as the game)
+    __imp__sub_8269AAD8(ctx, base);
+    return;
+  }
+  const PPCContext saved = ctx;
+  ctx.r3.u64 = kHeapLocks + heap * kHeapLockSize;
+  REX_CALL_INDIRECT_FUNC(0x82D4753Cu);  // (RtlEnterCriticalSection: the game's own takes it again inside)
+  const uint32_t block = p - 16, self = (block - start) >> 4, size = (end - start) >> 4;
+
+  // Test aid: this free meets the damage.
+  static const struct TestDamage {
+    int heap = -1, at = 0;
+    std::string kind;
+  } test = [] {
+    TestDamage t;
+    if (const char* v = std::getenv("SVR2011_TEST_FREE_LIST")) {
+      char kind[16] = "loop";
+      if (std::sscanf(v, "%d,%d,%15s", &t.heap, &t.at, kind) >= 2) t.kind = kind;
+    }
+    return t;
+  }();
+  bool test_double = false;
+  if (test.heap == int(heap) || test.heap == 99) {  // (99: any heap)
+    static int count = 0;
+    if (++count == test.at) {
+      const uint32_t first = Rd32(base, start + 8);
+      REXLOG_WARN("[svr2011] heap free list: test - {} at free {} of heap {}", test.kind, count, heap);
+      if (test.kind == "double") test_double = true;
+      else if (test.kind == "junk") Wr32(base, block + 4, 0x03220B94);
+      else if (first < size) Wr32(base, start + (first << 4) + 8, first);
+    }
+  }
+
+  HeapDamage d;
+  const uint32_t to_next = Rd32(base, block) & 0x0FFFFFFF, to_before = Rd32(base, block + 4);
+  if (off) {
+  } else if (to_next > size || to_next <= self || to_before >= size || (self && to_before >= self)) {
+    d.what = "its header isn't a block's";
+  } else if (Rd32(base, block + 8) != 0) {
+    d.what = "it is free already (a second free)";
+  } else {
+    for (uint32_t cur = Rd32(base, start + 8); cur <= self;) {
+      const uint32_t node = start + (cur << 4), next = Rd32(base, node + 8);
+      if (next <= cur) {
+        d.what = "the free list has a bad link", d.node = node, d.next = next;
+        break;
+      }
+      const uint32_t to = Rd32(base, node) & 0x0FFFFFFF;
+      if (to > cur && to <= size) d.free_units += to - cur;
+      ++d.steps;
+      cur = next;
+    }
+  }
+  if (d.what) {
+    ctx = saved;
+    TellHeapDamage(base, ctx, heap, p, start, end, d);
+    if (d.node) {
+      uint32_t kept = 0;
+      if (RebuildFreeList(base, start, size, &kept)) {
+        REXLOG_ERROR("[svr2011] heap free list:   list made again from the address links: {} free blocks", kept);
+      } else {
+        Wr32(base, d.node + 8, size);
+        REXLOG_ERROR("[svr2011] heap free list:   the address links are bad too: the list ends at the bad link");
+      }
+    }
+  } else {
+    ctx = saved;
+    __imp__sub_8269AAD8(ctx, base);
+    if (test_double) {
+      ctx = saved;
+      sub_8269AAD8(ctx, base);
+    }
+  }
+  ctx.r3.u64 = kHeapLocks + heap * kHeapLockSize;
+  REX_CALL_INDIRECT_FUNC(0x82D4754Cu);  // (RtlLeaveCriticalSection)
 }

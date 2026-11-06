@@ -323,7 +323,7 @@ index 1645848..41e9238 100644
      spdlog::flush_every(std::chrono::seconds(flush_interval));
  }
 diff --git a/src/core/threading_posix.cpp b/src/core/threading_posix.cpp
-index 6d9e384..dd4b35b 100644
+index 6d9e384..c737267 100644
 --- a/src/core/threading_posix.cpp
 +++ b/src/core/threading_posix.cpp
 @@ -30,7 +30,11 @@ static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only")
@@ -617,9 +617,9 @@ index 6d9e384..dd4b35b 100644
 -#if !REX_PLATFORM_ANDROID
 +#if REX_PLATFORM_SWITCH
 +  {
-+    // Spread over the three cores a game gets, each free to move. 0x3B is the
-+    // priority where same-core threads share time: at 0x2C one starves the other
-+    // (measured), and guest code spins.
++    // Spread over the three game cores, each free to move, until the game's threads are
++    // placed (nx_profile.cpp). 0x3B is the priority where threads on those cores share
++    // time: at 0x2C one starves the other (measured), and guest code spins.
 +    static std::atomic<int> s_next{0};
 +    svcSetThreadCoreMask(CUR_THREAD_HANDLE, s_next.fetch_add(1) % 3, 0x7);
 +    svcSetThreadPriority(CUR_THREAD_HANDLE, 0x3B);

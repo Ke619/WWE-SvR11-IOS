@@ -65,6 +65,10 @@ volatile u64 g_main_id = 0;
 
 void Sampler(void*) {
   const u64 base = reinterpret_cast<u64>(&_start);
+  // (Each sample pauses a busy thread, about 300 a second: only when this file exists.)
+  FILE* wanted = fopen("/SvR2011/nx_profile_samples.txt", "r");
+  if (!wanted) return;
+  fclose(wanted);
   FILE* f = fopen("/SvR2011/logs/nx_samples.txt", "w");
   if (!f) return;
   // Window 0 is the start-up (40 s, the main thread first), window 1 the Start Screen's
@@ -196,18 +200,43 @@ void Monitor(void*) {
         g_top_id[t] = best[t] >= 0 ? static_cast<u32>(g_snap[best[t]].id) : 0;
       }
       g_in_game = total > 150.0;
-      // In the game the two busiest threads get a core each; the rest prefer the third and
-      // spill over when one is idle.
-      static u64 pinned[2];
-      if (g_in_game && best[0] >= 0 && best[1] >= 0 &&
-          (g_snap[best[0]].id != pinned[0] || g_snap[best[1]].id != pinned[1])) {
-        pinned[0] = g_snap[best[0]].id;
-        pinned[1] = g_snap[best[1]].id;
+      // In the game the three busiest threads get a core each, and nothing else runs there
+      // but the rest's overflow on the third. The rest prefer the fourth core at priority 63:
+      // the only one where threads there share time, and it never holds up the three.
+      static u64 pinned[3];
+      u64 cores = 0;
+      svcGetInfo(&cores, InfoType_CoreMask, CUR_PROCESS_HANDLE, 0);
+      int top[3] = {-1, -1, -1};
+      for (int t = 0, k = 0; t < kTop && k < 3; t++) {
+        if (best[t] >= 0 && g_snap[best[t]].id != g_main_id) top[k++] = best[t];
+      }
+      bool changed = false;
+      for (int k = 0; k < 3; k++) {
+        const u64 id = top[k] >= 0 ? g_snap[top[k]].id : 0;
+        if (id != pinned[k]) pinned[k] = id, changed = true;
+      }
+      static int placed_threads = 0;
+      if (n != placed_threads) changed = true;  // (a thread started since)
+      if (g_in_game && changed && (cores & 8)) {
+        placed_threads = n;
         for (int i = 0; i < n; i++) {
           const Snapshot& c = g_snap[i];
           if (!c.id || c.handle == self) continue;
-          svcSetThreadCoreMask(c.handle, i == best[0] ? 0 : i == best[1] ? 1 : 2, 0x7);
+          if (c.id == g_main_id) {  // (it presents: its own priority, away from the three)
+            svcSetThreadCoreMask(c.handle, 3, 0x8);
+            continue;
+          }
+          const int core = i == top[0] ? 0 : i == top[1] ? 1 : i == top[2] ? 2 : 3;
+          if (core < 3) {
+            svcSetThreadCoreMask(c.handle, core, 1 << core);
+            svcSetThreadPriority(c.handle, 0x3B);
+          } else {
+            svcSetThreadCoreMask(c.handle, 3, 0xC);
+            svcSetThreadPriority(c.handle, 0x3F);
+          }
         }
+        fprintf(f, "== placed: core mask %llx, %llu %llu %llu on cores 0-2\n", (unsigned long long)cores,
+                (unsigned long long)pinned[0], (unsigned long long)pinned[1], (unsigned long long)pinned[2]);
       }
     }
     u64 used = 0;
@@ -246,12 +275,15 @@ void NxProfileStart(void) {
   g_top[0] = envGetMainThreadHandle();
   svcGetThreadId(const_cast<u64*>(&g_main_id), envGetMainThreadHandle());
   g_top_id[0] = static_cast<u32>(g_main_id);
+  u64 cores = 0;
+  svcGetInfo(&cores, InfoType_CoreMask, CUR_PROCESS_HANDLE, 0);
+  const int own_core = (cores & 8) ? 3 : 2;
   static Thread t;
-  if (R_SUCCEEDED(threadCreate(&t, Monitor, nullptr, nullptr, 0x8000, 0x2C, 2))) {
+  if (R_SUCCEEDED(threadCreate(&t, Monitor, nullptr, nullptr, 0x8000, 0x2C, own_core))) {
     __real_threadStart(&t);
   }
   static Thread sampler;
-  if (R_SUCCEEDED(threadCreate(&sampler, Sampler, nullptr, nullptr, 0x8000, 0x2C, 2))) {
+  if (R_SUCCEEDED(threadCreate(&sampler, Sampler, nullptr, nullptr, 0x8000, 0x2C, own_core))) {
     __real_threadStart(&sampler);
   }
 }

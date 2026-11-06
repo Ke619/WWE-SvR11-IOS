@@ -51,6 +51,11 @@ class Package:
         return self.files[low][2]()
 
 
+def notice(text):
+    """a line for the player: the Mod Maker shows it on screen when the job ends (tool_run.cpp)"""
+    print('notice ' + text.replace('\n', ' '), file=sys.stderr, flush=True)
+
+
 def _stfs_package(path):
     s = stfs.Stfs(path)
     p = Package(path, os.path.basename(path), s.title_id, s.display_name)
@@ -107,7 +112,7 @@ def find_packages(folder):
                 try:
                     out.append(_stfs_package(full))
                 except (ValueError, OSError, IndexError, UnicodeError):
-                    pass   # (damaged or not really a package: the others still count)
+                    notice('DLC: %s can\'t be read (damaged?): left out.' % n)   # (the others still count)
     walk(folder, 0)
     return out
 
@@ -121,6 +126,8 @@ class DlcSet:
         # (an unpacked package has no title id: it counts; another game's package in the same folder doesn't)
         self.packages = [p for p in every if title is None or p.title is None or p.title == title]
         self.others = len(every) - len(self.packages)
+        if self.others and not self.packages:
+            notice('DLC folder: its %d package(s) belong to another game: none used.' % self.others)
         self._by_model = {}
         for p in self.packages:
             for i in p.models():

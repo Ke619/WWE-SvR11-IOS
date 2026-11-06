@@ -1104,11 +1104,15 @@ def main(argv):
     p.add_argument('--base', type=int)
     p.add_argument('--name')
     p.add_argument('--pac11')
+    for k in ('list', 'scan', 'convert'):   # (the source game's DLC packages: read beside the disc)
+        sub.choices[k].add_argument('--dlc')
     try:
         a = ap.parse_args(argv)
     except SystemExit:
         print(json.dumps({'ok': False, 'error': 'bad arguments'}))
         return 2
+    if getattr(a, 'dlc', None):
+        os.environ['SVR2011_PORT_DLC'] = a.dlc
     if a.cmd == 'games':
         print(json.dumps(GAMES))
         return 0

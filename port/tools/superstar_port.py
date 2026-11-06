@@ -1263,8 +1263,8 @@ class GameW:
             try:
                 etc = self.MP.read_pac(self.decode(pk.read(low)))
             except (ValueError, IndexError, KeyError, OSError, struct.error) as e:
-                print('DLC package %s: its character table can\'t be read (%s): its superstars are left out' % (pk.name, e),
-                      file=sys.stderr)
+                print('DLC package %s: its character table can\'t be read (%s)' % (pk.name, e), file=sys.stderr)
+                __import__('dlc_src').notice('DLC package %s: its character table can\'t be read: its superstars are left out.' % pk.display)
                 continue
             for t, es in etc:
                 if t == b'CHAR' or (t[:2] == b'CH' and t[2:4].isdigit()):   # (2K16: CH20 / CH40; '12's CHCM has a DAT too)

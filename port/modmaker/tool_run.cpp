@@ -246,6 +246,7 @@ int RunCapture(const std::wstring& cmdline, const std::wstring& cwd) {
 
 // The running converter's job object (it and every process it starts): CancelTool ends them all.
 std::mutex g_job_mutex;
+std::string g_notices;  // (g_job_mutex: the running tool's `notice <text>` lines)
 HANDLE g_job = nullptr;
 std::atomic<bool> g_cancelled{false};
 
@@ -296,6 +297,10 @@ int RunCaptureJson(const std::wstring& cmdline, const std::wstring& cwd, std::st
       if (line.rfind("progress ", 0) == 0) {
         const size_t sp = line.find(' ', 9);
         Progress(sp == std::string::npos ? line.substr(9) : line.substr(9, sp - 9) + "%  " + line.substr(sp + 1, 110));
+      } else if (line.rfind("notice ", 0) == 0) {  // (for the player: on screen when the job ends, RunToolJson)
+        Log("  " + line.substr(7));
+        std::lock_guard lock(g_job_mutex);
+        g_notices += (g_notices.empty() ? "" : "  ") + line.substr(7);
       } else if (!line.empty()) {
         Log("  " + line), NoteHint(line);
       }
@@ -529,9 +534,11 @@ void MovesWarning() {
 bool RunToolJson(const std::wstring& script, const std::vector<std::wstring>& args_in,
                  std::function<void(int, const std::string&)> done, const std::wstring& cwd) {
   if (!ConvertersReady()) return false;
-  // (the source game's DLC folder, My game discs: superstar_port reads its superstars beside the disc's)
+  // (the source game's DLC folder, My game discs: the porters read its files beside the disc's)
   std::vector<std::wstring> args = args_in;
-  if (script == L"superstar_port.py")
+  // (not twice: an accepted move warning comes back here with these args)
+  if ((script == L"superstar_port.py" || script == L"moves_port.py" || script == L"entrance_port.py" || script == L"arena_port.py") &&
+      std::find(args_in.begin(), args_in.end(), L"--dlc") == args_in.end())
     for (size_t i = 0; i + 1 < args_in.size(); ++i)
       if (args_in[i] == L"--game") {
         if (const std::wstring dlc = disc_list::DlcFor(Utf8(args_in[i + 1])); !dlc.empty())
@@ -583,9 +590,15 @@ bool RunToolJson(const std::wstring& script, const std::vector<std::wstring>& ar
     NoteHint(out);  // (a JSON error naming what's missing)
     std::string hint = TakeHint();
     if (code == 0) hint.clear();
-    OnUiThread([done, code, out, hint] {
+    std::string notices;
+    {
+      std::lock_guard lock(g_job_mutex);
+      notices.swap(g_notices);
+    }
+    OnUiThread([done, code, out, hint, notices] {
       if (!hint.empty()) OpenToolsPanel("Missing: " + hint + " - install now?");
       if (done) done(code, out);
+      if (!notices.empty()) Status(notices);  // (after done: its own status would cover it)
     });
   });
   return true;

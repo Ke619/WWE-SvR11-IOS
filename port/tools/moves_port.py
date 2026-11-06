@@ -2206,6 +2206,8 @@ def main(argv):
         else:
             print(json.dumps({'error': 'unexpected argument: %s' % k}))
             return 2
+    if a.get('dlc'):   # (the source game's DLC packages: Src reads them beside the disc)
+        os.environ['SVR2011_PORT_DLC'] = a['dlc']
     rep = dict(ok=False, out=None, folder=None, opens='moves', warnings=[], dropped=[], notes=[])
     rep_path = None
     try:

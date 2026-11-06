@@ -220,6 +220,44 @@ index 9149c3f..9f85d99 100644
    // [svr2011] The executable is the system's app_process; the app's folder
    // (the game files) is passed by its Java activity.
    if (auto dir = rex::platform::env::get("REX_APP_FOLDER")) {
+diff --git a/src/core/logging.cpp b/src/core/logging.cpp
+index 1645848..41e9238 100644
+--- a/src/core/logging.cpp
++++ b/src/core/logging.cpp
+@@ -136,7 +136,11 @@ std::shared_ptr<spdlog::logger> CreateCategoryLogger(const std::string& name) {
+   auto sinks = BuildCategorySinks(name);
+   auto logger = std::make_shared<spdlog::logger>(name, sinks.begin(), sinks.end());
+   logger->set_level(ResolveCategoryLevel(name));
++#if REX_PLATFORM_SWITCH
++  logger->flush_on(spdlog::level::off);
++#else
+   logger->flush_on(g_config.flush_level);
++#endif
+   spdlog::register_logger(logger);
+   return logger;
+ }
+@@ -184,7 +188,11 @@ void InitLogging(const LogConfig& config) {
+       if (!entry.logger)
+         continue;
+       entry.logger->set_level(ResolveCategoryLevel(entry.name));
++#if REX_PLATFORM_SWITCH
++      entry.logger->flush_on(spdlog::level::off);
++#else
+       entry.logger->flush_on(config.flush_level);
++#endif
+       if (g_config.category_levels.count(entry.name))
+         entry.has_explicit_level = true;
+     }
+@@ -258,6 +266,9 @@ void InitLogging(const LogConfig& config) {
+ 
+   // Periodic flush
+   int flush_interval = REXCVAR_GET(log_flush_interval);
++#if REX_PLATFORM_SWITCH
++  flush_interval = 2;
++#endif
+   if (flush_interval > 0)
+     spdlog::flush_every(std::chrono::seconds(flush_interval));
+ }
 diff --git a/src/core/threading_posix.cpp b/src/core/threading_posix.cpp
 index 6d9e384..dd4b35b 100644
 --- a/src/core/threading_posix.cpp

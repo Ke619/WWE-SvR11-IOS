@@ -207,6 +207,18 @@ static void SetFileId(const char* path, struct stat* out) {
 // empty ("Load Failed"), and the game then wrote a blank one.
 int __wrap_fchmod(int, mode_t) { return 0; }
 
+// How much time loading spends in file reads (nx_ab.cpp logs it).
+volatile u64 g_nx_read_ticks = 0, g_nx_read_bytes = 0, g_nx_read_calls = 0;
+_ssize_t __real__read_r(struct _reent* r, int fd, void* buf, size_t n);
+_ssize_t __wrap__read_r(struct _reent* r, int fd, void* buf, size_t n) {
+  const u64 start = armGetSystemTick();
+  const _ssize_t got = __real__read_r(r, fd, buf, n);
+  __atomic_fetch_add(&g_nx_read_ticks, armGetSystemTick() - start, __ATOMIC_RELAXED);
+  if (got > 0) __atomic_fetch_add(&g_nx_read_bytes, static_cast<u64>(got), __ATOMIC_RELAXED);
+  __atomic_fetch_add(&g_nx_read_calls, 1, __ATOMIC_RELAXED);
+  return got;
+}
+
 // POSIX rename replaces the target; Horizon refuses. Saves and settings rely on it.
 int __real_rename(const char* from, const char* to);
 int __wrap_rename(const char* from, const char* to) {

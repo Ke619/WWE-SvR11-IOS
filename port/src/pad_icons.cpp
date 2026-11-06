@@ -582,6 +582,11 @@ void InstallPadIconsKeys(rex::ui::Window* window) {
 void InstallPadIcons(rex::memory::Memory* memory) {
   g_memory = memory;
   g_base = memory->TranslateVirtual<uint8_t*>(0);
+#if defined(__SWITCH__)
+  // PlayStation and keyboard pictures don't apply, and these hooks take locks on every
+  // 2D command and texture bind: left off.
+  return;
+#endif
   // (the native renderer draws them; it is the only renderer)
   if (!Load()) {
     REXLOG_INFO("[svr2011] pad icons: no pad_icons/pad_icons.txt - Xbox icons only");

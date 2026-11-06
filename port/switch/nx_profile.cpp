@@ -59,21 +59,26 @@ Sample g_samples[kMaxSamples];
 volatile Handle g_top[kTop];
 volatile u32 g_top_id[kTop];
 volatile bool g_in_game = false;
+volatile u64 g_main_id = 0;
 
 void Sampler(void*) {
   const u64 base = reinterpret_cast<u64>(&_start);
   FILE* f = fopen("/SvR2011/logs/nx_samples.txt", "w");
   if (!f) return;
-  for (int window = 0; window < 10;) {
-    svcSleepThread(1000000000ll);
-    if (!g_in_game) continue;
+  // Window 0 is the start-up (40 s, the main thread first), then three in the game.
+  for (int window = 0; window < 4;) {
+    if (window > 0) {
+      svcSleepThread(1000000000ll);
+      if (!g_in_game) continue;
+    }
     int n = 0;
     const u64 start = armGetSystemTick();
-    while (n < kMaxSamples - kTop && armGetSystemTick() - start < 20ull * 19200000ull) {
+    const u64 length = (window == 0 ? 40ull : 20ull) * 19200000ull;
+    while (n < kMaxSamples - kTop && armGetSystemTick() - start < length) {
       for (int i = 0; i < kTop && n < kMaxSamples; i++) {
         const Handle h = g_top[i];
         if (!h) continue;
-        svcSleepThread(3300000);
+        svcSleepThread(window == 0 ? 6600000 : 3300000);
         if (R_FAILED(svcSetThreadActivity(h, ThreadActivity_Paused))) continue;
         static ThreadContext ctx;
         if (R_SUCCEEDED(svcGetThreadContext3(&ctx, h))) {
@@ -183,6 +188,19 @@ void Monitor(void*) {
         g_top_id[t] = best[t] >= 0 ? static_cast<u32>(g_snap[best[t]].id) : 0;
       }
       g_in_game = total > 150.0;
+      // In the game the two busiest threads get a core each; the rest prefer the third and
+      // spill over when one is idle.
+      static u64 pinned[2];
+      if (g_in_game && best[0] >= 0 && best[1] >= 0 &&
+          (g_snap[best[0]].id != pinned[0] || g_snap[best[1]].id != pinned[1])) {
+        pinned[0] = g_snap[best[0]].id;
+        pinned[1] = g_snap[best[1]].id;
+        for (int i = 0; i < n; i++) {
+          const Snapshot& c = g_snap[i];
+          if (!c.id || c.handle == self) continue;
+          svcSetThreadCoreMask(c.handle, i == best[0] ? 0 : i == best[1] ? 1 : 2, 0x7);
+        }
+      }
     }
     u64 used = 0;
     fprintf(f, "== round %d, %.1f s, %d threads\n", round, span / 19200000.0, n);
@@ -217,6 +235,9 @@ Result __wrap_threadStart(Thread* t) {
 void NxProfileStart(void) {
   mutexInit(&g_lock);
   Register(envGetMainThreadHandle());
+  g_top[0] = envGetMainThreadHandle();
+  svcGetThreadId(const_cast<u64*>(&g_main_id), envGetMainThreadHandle());
+  g_top_id[0] = static_cast<u32>(g_main_id);
   static Thread t;
   if (R_SUCCEEDED(threadCreate(&t, Monitor, nullptr, nullptr, 0x8000, 0x2C, 2))) {
     __real_threadStart(&t);

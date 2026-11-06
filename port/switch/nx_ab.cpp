@@ -9,6 +9,8 @@
 
 #include "frame_rate.h"
 
+extern "C" volatile u64 g_nx_read_ticks, g_nx_read_bytes, g_nx_read_calls;
+
 namespace {
 
 u32 Rate(ClkrstSession* s) {
@@ -31,9 +33,16 @@ void Run() {
     }
   };
   log_clocks();
-  for (;;) {
-    std::this_thread::sleep_for(std::chrono::seconds(30));
-    log_clocks();
+  u64 ticks = 0, bytes = 0, calls = 0;
+  for (int i = 0;; i++) {
+    std::this_thread::sleep_for(std::chrono::seconds(5));
+    if (i % 6 == 5) log_clocks();
+    const u64 t = g_nx_read_ticks, b = g_nx_read_bytes, c = g_nx_read_calls;
+    if (c != calls) {
+      REXLOG_INFO("[nx] reads in 5 s: {} calls, {} MB, {} ms in the reads", c - calls, (b - bytes) >> 20,
+                  (t - ticks) / 19200);
+    }
+    ticks = t, bytes = b, calls = c;
   }
 }
 

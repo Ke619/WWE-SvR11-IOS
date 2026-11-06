@@ -178,6 +178,9 @@ REXCVAR_DEFINE_STRING(native_renderer, "main", "GPU",
 
 namespace texture_util = rex::graphics::texture_util;
 
+#if defined(__SWITCH__)
+#include <plume_vulkan.h>  // (the GPU time per pass)
+#endif
 namespace plume {
 extern std::atomic<uint32_t> g_svr_render_passes;  // (plume_vulkan.cpp: render passes begun)
 extern std::atomic<uint64_t> g_svr_render_pass_pixels;
@@ -2138,6 +2141,22 @@ void UpdateTitle(Renderer* r) {
       const uint64_t pixels = plume::g_svr_render_pass_pixels.exchange(0);
       REXLOG_INFO("native perf: render passes per frame {:.1f} ({:.1f} Mpixels loaded and stored)", passes / f,
                   pixels / f / 1e6);
+#if defined(__SWITCH__)
+      if (plume::g_svr_gpu_frame.ready.load(std::memory_order_acquire)) {
+        // One frame's passes on the GPU: size, draws, ms (+ms since the pass before).
+        const auto& gpu = plume::g_svr_gpu_frame;
+        std::string line;
+        double busy = 0;
+        for (uint32_t i = 0; i < gpu.count; i++) {
+          const auto& p = gpu.passes[i];
+          busy += p.ms;
+          line += fmt::format(" {}x{}/{}:{:.2f}", p.width, p.height, p.draws, p.ms);
+          if (p.gap_ms >= 0.05) line += fmt::format("(+{:.2f})", p.gap_ms);
+        }
+        REXLOG_INFO("native perf: gpu passes: {:.2f} ms first to last, {:.2f} in {} passes:{}", gpu.total_ms, busy, gpu.count, line);
+        plume::g_svr_gpu_frame.ready.store(false, std::memory_order_release);
+      }
+#endif
     }
 #if defined(_WIN32)
     if (SlotTables()) {

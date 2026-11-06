@@ -200,9 +200,10 @@ void Monitor(void*) {
         g_top_id[t] = best[t] >= 0 ? static_cast<u32>(g_snap[best[t]].id) : 0;
       }
       g_in_game = total > 150.0;
-      // In the game the three busiest threads get a core each, and nothing else runs there
-      // but the rest's overflow on the third. The rest prefer the fourth core at priority 63:
-      // the only one where threads there share time, and it never holds up the three.
+      // In the game the three busiest threads get a core each. The rest prefer the fourth
+      // core at priority 63, the only one where threads there share time, and may run on any
+      // core that is idle: the three take their core back at once. Kept to the fourth, five
+      // helpers filled it and a woken one could wait 10 ms slices while the frame waited for it.
       static u64 pinned[3];
       u64 cores = 0;
       svcGetInfo(&cores, InfoType_CoreMask, CUR_PROCESS_HANDLE, 0);
@@ -231,7 +232,7 @@ void Monitor(void*) {
             svcSetThreadCoreMask(c.handle, core, 1 << core);
             svcSetThreadPriority(c.handle, 0x3B);
           } else {
-            svcSetThreadCoreMask(c.handle, 3, 0xC);
+            svcSetThreadCoreMask(c.handle, 3, 0xF);
             svcSetThreadPriority(c.handle, 0x3F);
           }
         }

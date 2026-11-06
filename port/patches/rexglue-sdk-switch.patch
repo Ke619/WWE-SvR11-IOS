@@ -788,10 +788,25 @@ index 353bff0..1ba44bf 100644
        static std::atomic<int> reported{0};
        if (!handled && reported.fetch_add(1) < 3) {
 diff --git a/src/system/xam/content_manager.cpp b/src/system/xam/content_manager.cpp
-index 9de17d2..f6c3791 100644
+index 9de17d2..b4952c3 100644
 --- a/src/system/xam/content_manager.cpp
 +++ b/src/system/xam/content_manager.cpp
-@@ -261,6 +261,7 @@ X_RESULT ContentManager::WriteContentHeaderFile(uint64_t xuid, XCONTENT_AGGREGAT
+@@ -16,6 +16,14 @@
+ 
+ #include <fmt/format.h>
+ 
++#include <rex/platform.h>
++#if REX_PLATFORM_SWITCH
++#include <fcntl.h>
++#include <unistd.h>
++#include <chrono>
++#include <vector>
++#endif
++
+ #if defined(_WIN32)
+ #ifndef WIN32_LEAN_AND_MEAN
+ #define WIN32_LEAN_AND_MEAN
+@@ -261,6 +269,7 @@ X_RESULT ContentManager::WriteContentHeaderFile(uint64_t xuid, XCONTENT_AGGREGAT
  
    auto file = rex::filesystem::OpenFile(header_path, "wb");
    if (!file) {
@@ -799,17 +814,64 @@ index 9de17d2..f6c3791 100644
      return X_ERROR_FILE_NOT_FOUND;
    }
    fwrite(&data, 1, sizeof(XCONTENT_AGGREGATE_DATA), file);
-@@ -691,6 +692,9 @@ void ContentManager::PrepareFlatMount(const std::string& name) {
+@@ -631,6 +640,41 @@ void ShowFolder(const std::filesystem::path& p) {
+ #endif
+ }
+ 
++#if REX_PLATFORM_SWITCH
++// [switch] copy_file goes through stdio's 1 KB buffer here: 20 s for a 3 MB save on the
++// card, each time a save is opened.
++void CopyWhole(const std::filesystem::path& from, const std::filesystem::path& to, std::error_code& ec) {
++  ec.clear();
++  const auto start = std::chrono::steady_clock::now();
++  const int in = open(from.c_str(), O_RDONLY);
++  const int out = in >= 0 ? open(to.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666) : -1;
++  bool ok = in >= 0 && out >= 0;
++  size_t total = 0;
++  std::vector<char> buffer(1024 * 1024);
++  while (ok) {
++    const ssize_t got = read(in, buffer.data(), buffer.size());
++    if (got <= 0) {
++      ok = got == 0;
++      break;
++    }
++    for (ssize_t done = 0; ok && done < got;) {
++      const ssize_t put = write(out, buffer.data() + done, size_t(got - done));
++      ok = put > 0;
++      if (ok) done += put;
++    }
++    total += size_t(got);
++  }
++  if (in >= 0) close(in);
++  if (out >= 0 && close(out) != 0) ok = false;
++  if (!ok) {
++    ec = std::make_error_code(std::errc::io_error);
++    return;
++  }
++  REXSYS_INFO("Flat saves: {} KB copied to the mount folder in {} ms", total >> 10,
++              std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count());
++}
++#endif
++
+ std::string ReadSmallText(const std::filesystem::path& p) {
+   std::string text;
+   if (!std::filesystem::exists(p)) {
+@@ -690,7 +734,14 @@ void ContentManager::PrepareFlatMount(const std::string& name) {
+   std::filesystem::create_hard_link(file, link, ec);
    if (ec) {
      // No hard links on this drive: work on a copy, moved back on close.
++#if REX_PLATFORM_SWITCH
++    CopyWhole(file, link, ec);
++#else
      std::filesystem::copy_file(file, link, std::filesystem::copy_options::overwrite_existing, ec);
++#endif
 +    if (ec) {
 +      REXSYS_WARN("Flat saves: could not copy {} to its mount folder ({})", name, ec.message());
 +    }
    }
  }
  
-@@ -712,7 +716,12 @@ void ContentManager::CommitFlatMount(const std::string& name) {
+@@ -712,7 +763,12 @@ void ContentManager::CommitFlatMount(const std::string& name) {
    }
    if (files.size() == 1 && !has_dirs) {
      const auto inner = files[0];
@@ -822,7 +884,7 @@ index 9de17d2..f6c3791 100644
        // A new file (or a copy): it becomes the save.
        std::filesystem::rename(inner, file, ec);
        if (ec) {
-@@ -752,6 +761,7 @@ void ContentManager::CommitFlatMount(const std::string& name) {
+@@ -752,6 +808,7 @@ void ContentManager::CommitFlatMount(const std::string& name) {
  
  void ContentManager::DeleteFlat(const std::string& name) {
    std::error_code ec;

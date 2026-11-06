@@ -15,10 +15,34 @@
 
 namespace {
 
-// An uncaught C++ exception: its text, then the normal way out.
+extern "C" void _start(void);
+
+// Return addresses on the stack, nearest first (nm / addr2line on svr2011.elf name them).
+void DumpStack(FILE* f, const void* from) {
+  const u64 base = reinterpret_cast<u64>(&_start);
+  const u64* sp = static_cast<const u64*>(from);
+  MemoryInfo info{};
+  u32 page = 0;
+  fprintf(f, "  stack words inside the image:\n");
+  if (R_FAILED(svcQueryMemory(&info, &page, reinterpret_cast<u64>(sp))) || !(info.perm & Perm_R)) {
+    return;
+  }
+  const u64 end = info.addr + info.size;
+  int shown = 0;
+  for (int i = 0; i < 16384 && reinterpret_cast<u64>(sp + i + 1) <= end && shown < 48; i++) {
+    if (sp[i] > base + 0x1000 && sp[i] < base + (1ull << 28)) {
+      fprintf(f, "  +%llx\n", (unsigned long long)(sp[i] - base));
+      shown++;
+    }
+  }
+}
+
+// An uncaught C++ exception: its text, where, then the normal way out. (The stack
+// isn't unwound when nothing catches it, so the thrower's frames are still there.)
 void OnTerminate() {
   FILE* f = fopen(SVR_GAME_DIR "/logs/nx_crash.txt", "a");
   if (f) {
+    DumpStack(f, __builtin_frame_address(0));
     fprintf(f, "terminate: ");
     if (std::exception_ptr e = std::current_exception()) {
       try {

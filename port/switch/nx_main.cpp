@@ -97,18 +97,47 @@ u64 __nx_exception_stack_size = sizeof(__nx_exception_stack);
 void NxProfileStart(void);
 void NxAbStart(void);
 
+// Settings 2 to 3: 30 fps became the Switch's default. Only that line changes (the rest are the
+// player's), once; GRAPHICS -> FRAME RATE can set 60 again afterwards.
+static void DefaultTo30Fps() {
+  std::string text, line;
+  if (FILE* old = fopen(SVR_GAME_DIR "/svr2011.toml", "r")) {
+    char buffer[512];
+    while (fgets(buffer, sizeof(buffer), old)) {
+      line = buffer;
+      if (line.rfind("# switch settings 2", 0) == 0) {
+        line = "# switch settings 3\n";
+      } else if (line.rfind("frame_rate", 0) == 0) {
+        continue;
+      }
+      text += line;
+    }
+    fclose(old);
+  }
+  if (!text.empty() && text.back() != '\n') text += '\n';
+  text += "frame_rate = 30\n";
+  if (FILE* f = fopen(SVR_GAME_DIR "/svr2011.toml", "w")) {
+    fputs(text.c_str(), f);
+    fclose(f);
+  }
+}
+
 // First settings, written once; after that the GRAPHICS page owns the file.
 static void WriteSettings() {
   char first[64] = {};
   if (FILE* old = fopen(SVR_GAME_DIR "/svr2011.toml", "r")) {
     fgets(first, sizeof(first), old);
     fclose(old);
-    if (strstr(first, "switch settings 2")) return;  // the player's, from now on
+    if (strstr(first, "switch settings 3")) return;  // the player's, from now on
+    if (strstr(first, "switch settings 2")) {
+      DefaultTo30Fps();
+      return;
+    }
   }
   FILE* f = fopen(SVR_GAME_DIR "/svr2011.toml", "w");
   if (!f) return;
   fputs(
-      "# switch settings 2\n"
+      "# switch settings 3\n"
       "gpu_plugin = \"xenos\"\n"
       "gpu_backend = \"vulkan\"\n"
       "native_renderer = \"main\"\n"
@@ -120,7 +149,7 @@ static void WriteSettings() {
       "vsync = true\n"
       "window_width = 1280\n"
       "window_height = 720\n"
-      "frame_rate = 60\n"
+      "frame_rate = 30\n"
       "mnk_mode = false\n"
       "p2p_port_mapping = false\n"
       "native_aa = 1\n"

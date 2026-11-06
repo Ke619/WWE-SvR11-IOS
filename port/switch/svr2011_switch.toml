@@ -1,0 +1,17 @@
+# First settings for the Switch build (copied to sdmc:/SvR2011/svr2011.toml).
+gpu_plugin = "xenos"
+gpu_backend = "vulkan"
+native_renderer = "main"
+input_backend = "sdl"
+audio_backend = "sdl"
+resolution = "720p"
+resolution_scale = 1
+fullscreen = true
+vsync = true
+window_width = 1280
+window_height = 720
+frame_rate = 30
+mnk_mode = false
+p2p_port_mapping = false
+native_scale_effects = false
+native_record_thread = true

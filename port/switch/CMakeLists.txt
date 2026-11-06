@@ -44,7 +44,7 @@ target_compile_options(svr2011_recomp PRIVATE -O2 -g0 -fno-math-errno -fno-trapp
 # ---- the game's own code: the same list as port/CMakeLists.txt ----
 file(READ "${SVR_PORT}/CMakeLists.txt" SVR_TOP)
 string(REGEX MATCH "set\\(SVR2011_SOURCES[^)]*\\)" SVR_LIST "${SVR_TOP}")
-string(REGEX MATCHALL "src/[A-Za-z0-9_/]+\\.cpp" SVR_FILES "${SVR_LIST}")
+string(REGEX MATCHALL "(src|modmaker/svrfmt)/[A-Za-z0-9_/]+\\.cpp" SVR_FILES "${SVR_LIST}")
 list(APPEND SVR_FILES
   src/model_mem.cpp src/mem_trace.cpp
   src/native/gpu.cpp src/native/backend_vulkan.cpp src/native/recording_list.cpp
@@ -60,7 +60,10 @@ list(APPEND SVR_SOURCES
   ${REXSDK_DIR}/src/graphics/pipeline/texture/info_formats.cpp
   ${REXSDK_DIR}/src/ui/windowed_app_main_sdl.cpp
   ${REXSDK_DIR}/src/ui/rex_app.cpp
+  ${SVR_PORT}/launcher/bink_decode.c
+  ${SVR_PORT}/launcher/bink_encode.c
   ${CMAKE_CURRENT_SOURCE_DIR}/nx_main.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/nx_stubs.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/sdl3_nx/sdl_nx.cpp
   ${PLUME_DIR}/plume_vulkan.cpp)
 

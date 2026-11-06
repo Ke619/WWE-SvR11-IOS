@@ -207,6 +207,8 @@ Measured on the user's console (original unpatched, FW 22.1.0, AMS 1.12.1), from
 
 **Installed NSP with the loader (nx-hbloader as `main`, game as NRO, measured):** 3285 MB total, own process handle given by the loader, one 1792 MB pool with 8000 pieces at 3 views passes 3 rounds (24,000 mappings, with a 32 MB `system_resource_size` in the NPDM; without it the limit was about 10,000), 2 GB held, Vulkan 60.3 fps over 10 s with 30 MB of heap for the driver in the triangle test, romfs read 78 MB/s against SD read 80 MB/s, SD write 38 MB/s. Exiting through the loader's unload path showed "the software was closed"; the loader now leaves straight away (retest pending). Getting the process handle directly from an NSO returned 0 in my attempt and was dropped.
 
+**First boot (6 Nov 2026, measured on the console):** the game runs from an installed NSP (`svr2011.nsp`, program in romfs, game data on the SD card). The menus run at 60 fps. In a match it runs at about 7 fps at 1x, also at 360p with 30 fps forced. Performance work starts from here.
+
 **Compiler:** devkitA64's GCC compiled one generated file (`svr2011_recomp.101.cpp`, 1 MB source, 420 KB code at `-O2`, `-std=gnu++23`) once the SDK headers had stand-ins for Linux, `sys/syscall.h` and `ucontext.h`. So GCC is the first choice, and the SDK's Clang-only check must go. `ucontext.h` doesn't exist on Horizon, so fibers need another way if the game uses them.
 
 **Step 3 (PC count of alias use) is dropped:** aliases work on the console, so it no longer decides anything.

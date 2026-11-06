@@ -144,6 +144,19 @@ def name13to11(n):
     return n  # face bones share names
 
 
+def cloth_root(nodes, i):
+    """A physics chain that doesn't hang from the head - cloth, as Rikishi 2K17's tassels on the thighs: the bone it
+    hangs from, so its vertices stay with that. name13to11 takes every kami_ for hair and the head's: skinned between
+    his hips and his head, the tassels stretched into long strands. Any other bone: itself. (The tie, kami_b15: as
+    name13to11 has it.)"""
+    if not nodes[i]['name'].startswith('kami_') or nodes[i]['name'].startswith('kami_b15'):
+        return i
+    k = i
+    while k >= 0 and nodes[k]['name'].startswith('kami_'):
+        k = nodes[k]['parent']
+    return k if k >= 0 and nodes[k]['name'] != 'Bip Head' else i
+
+
 # bones whose WWE '13 position sets the 2011 node's (one per node)
 PRIMARY = {'Bip Pelvis', 'Bip Spine', 'Bip Spine1', 'Bip Neck', 'Neck_x', 'Bip Head', 'd_kuchi_t'}
 
@@ -226,7 +239,7 @@ def hair_chains(m13):
         while '%s_%02d' % (root, k) in names:
             chain.append(names['%s_%02d' % (root, k)])
             k += 1
-        if len(chain) >= 3:
+        if len(chain) >= 3 and cloth_root(m13['nodes'], chain[0]) == chain[0]:
             out[root] = chain
     return out
 
@@ -414,7 +427,7 @@ class Conv:
         # 13 -> 11 index map (walking up the parents when a bone has no 2011 node)
         nmap = {}
         for i, nd in enumerate(n13):
-            k = i
+            k = cloth_root(n13, i)
             while True:
                 n11 = name13to11(n13[k]['name'])
                 if n11 in self.tindex:
@@ -525,7 +538,7 @@ class Conv:
                 if i in chain_idx:
                     sub_map[i] = chain_idx[i]
                     continue
-                k = i
+                k = cloth_root(m13['nodes'], i)
                 while k >= 0:
                     nm = m13['nodes'][k]['name']
                     if nm in body_names:
@@ -759,7 +772,7 @@ def _sub_map(m13, body13, nodes, nmap):
     idx11 = {nd['name']: j for j, nd in enumerate(nodes)}
     out = {}
     for i in range(len(m13['nodes'])):
-        k = i
+        k = cloth_root(m13['nodes'], i)
         while k >= 0:
             nm = m13['nodes'][k]['name']
             if nm in body_names:

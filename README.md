@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <img src="Banner.png" width="350">
+  <img src="Screenshots/Banner.png" width="350">
 </p>
 
 
@@ -16,7 +16,7 @@ This is an unofficial iOS port of the 2010 Xbox 360 game *WWE SmackDown vs. Raw 
 <br>
 
 <p align="center">
-  <img src="Art.png" width="700">
+  <img src="Screenshots/Art.png" width="700">
 </p>
 
 > [!IMPORTANT]

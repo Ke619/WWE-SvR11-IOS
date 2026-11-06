@@ -764,6 +764,47 @@ REX_HOOK_RAW(sub_825B2710) {
   ctx = saved;
 }
 
+// A show's cards are built (scripts: sub_825C6BD8, with no list of titles to add to): a plain one on one with a new
+// title's holder in it can be a defence, one time in two. sub_825B3738 is asked until its job has copied the cards: its
+// job is at *(this + 4), and it returns 0 then.
+REX_EXTERN(__imp__sub_825B3738);
+REX_HOOK_RAW(sub_825B3738) {
+  const uint32_t job = Rd(base, ctx.r3.u32 + 4);
+  const bool had_job = job && Rd(base, job) != 0;
+  __imp__sub_825B3738(ctx, base);
+  if (g_new.empty() || !had_job || ctx.r3.u32 != 0) return;
+  const auto saved = ctx;
+  ctx.r1.u64 -= 256;
+  const uint32_t list = ctx.r1.u32 + 80;
+  ctx.r3.u64 = list;
+  sub_825AC1E8(ctx, base);
+  ctx.r3.u64 = list;
+  sub_825AC908(ctx, base);
+  const uint32_t cards = ctx.r3.u32;
+  const bool always = std::getenv("SVR2011_TEST_NEW_TITLE_BOOK") != nullptr;
+  std::vector<bool> booked(g_new.size(), false);
+  for (uint32_t k = 0; k < cards && k < kCards; ++k) {
+    ctx.r3.u64 = list, ctx.r4.u64 = k;
+    sub_825AC5D0(ctx, base);
+    const uint32_t c = ctx.r3.u32;
+    if (always && c) REXLOG_INFO("[svr2011] new titles: test - card {}: rule {} title {} people {} flags {:02X} ids {} {}", k, base[c], base[c + 1], base[c + 2], base[c + 4], uint32_t(base[c + 16]) << 8 | base[c + 17], uint32_t(base[c + 28]) << 8 | base[c + 29]);
+    if (!c || base[c] != 0 || base[c + 2] != 2 || base[c + 3] == 2 || (base[c + 4] & 1)) continue;  // (a one on one to play, for no title)
+    const uint32_t a = uint32_t(base[c + 16]) << 8 | base[c + 17], b = uint32_t(base[c + 28]) << 8 | base[c + 29];
+    for (size_t n = 0; n < g_new.size(); ++n) {
+      const NewTitle& t = g_new[n];
+      if (booked[n] || t.brand < 0 || t.tag || t.holder[0] == kNoHolder || (t.holder[0] != a && t.holder[0] != b)) continue;
+      booked[n] = true;
+      if (!always && ((c >> 3) + a + b + n) % 2) continue;
+      base[c + 1] = uint8_t(kFirstNew + n), base[c + 4] |= 1;
+      REXLOG_INFO("[svr2011] new titles: {} defended on card {}: {} and {}", t.folder, k, a, b);
+      break;
+    }
+  }
+  ctx.r3.u64 = list;
+  sub_825AC248(ctx, base);
+  ctx = saved;
+}
+
 // sub_825C1EA0 lists the show's people and the holders of every title in a heap block of 96 B: room for the new titles' too.
 void NewTitleList_825C1EF8(PPCRegister& r3) { r3.u64 += uint64_t(g_new.size()) * 4; }
 

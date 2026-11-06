@@ -56,12 +56,19 @@ title takes that route in a real Universe match wasn't settled: the one stock ru
   title is saved as a plain match, with a `#card` row in `Saves\titles.txt`; it comes back on a load if the mod is there,
   and stays a plain match if not. A Universe title with no holder gets one the first time Universe is asked: of the
   brand, in the roster, holding nothing, lowest id first (to improve: by rank). Contenders are saved in the row.
+- AI bookings: cards come from scripts with fixed titles (`sub_825C6BD8`), with no list to add to, and `sub_825C7480` only
+  serves a special case from `sub_825B5700`. So `sub_825B3738`'s hook, once its job has copied a show's cards (it runs on
+  opening Universe too), makes a plain one on one to play with a new title's holder in it a defence, one time in two,
+  kept the same for a card between loads. A holder not booked that show doesn't defend.
+- A superstar mod holding a title, the mod gone: the title has no holder, and a new one is picked on opening Universe.
 - Universe's match screen shows a title match's picture from a stack list by title; a new title has its `belt=` title's.
 - `sub_825C1EA0` lists holders in a 96 B heap block: it grows by 4 B a new title (`NewTitleList_825C1EF8`). `sub_824AC5B8` reads a
   string table by title: a new title goes through as its `belt=` title, with its own name swapped in (`NewTitleSay_*`, not reached in a test).
 - Test aids: `SVR2011_TEST_NEW_TITLES` (the table in the log; =<id> gives the first new title that holder, in memory),
   `SVR2011_TEST_NEW_TITLE_CARD` (every two-person card a title match: =1 the first new title, =s<n> stock title n),
   `SVR2011_TEST_NEW_TITLE_HOLDER=<id>[,<title>]` (after a load, that superstar holds it).
+  `SVR2011_TEST_NEW_TITLE_BOOK` (every chance is a defence; the show's cards in the log). `SVR2011_TEST_LOSE` doesn't
+  decide the winner reliably: read the result on the "after the match" line.
 
 ## The mod
 

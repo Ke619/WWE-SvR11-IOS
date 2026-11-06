@@ -8997,7 +8997,7 @@ static int step_at(POINT pt)
    page's own underlined in red. */
 static void paint_steps(HDC dc)
 {
-    static const WCHAR *const names[N_STEPS] = { L"This PC", L"The game", L"DLC", L"Tools", L"Android", L"Switch" };
+    static const WCHAR *const names[N_STEPS] = { L"This PC", L"Game", L"DLC", L"Tools", L"Android", L"Switch" };
     const int cur = setup_step(s_cur_tab), x0 = SB_W + PAD + X0, w = 93;
     int i;
     RECT line = { S(x0), S(DY + 42), S(x0 + 560), S(DY + 43) };

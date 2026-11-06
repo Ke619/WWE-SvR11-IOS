@@ -276,12 +276,10 @@ int switch_package(const WCHAR *game_dir, const WCHAR *nsp, const WCHAR *out_fol
     uint8_t *buf = NULL;
     int i, ok = 0;
 
-    /* (The top of a card comes as "H:\\": without its slash, like any other folder.) */
+    /* (The top of a card comes with a slash on the end: without its slash, like any other folder.) */
     wcscpy_s(out_dir, MAX_PATH, out_folder);
-    while (wcslen(out_dir) > 2 && out_dir[wcslen(out_dir) - 1] == L'\')
+    while (wcslen(out_dir) > 2 && out_dir[wcslen(out_dir) - 1] == L'\\')
         out_dir[wcslen(out_dir) - 1] = 0;
-    if (wcslen(out_dir) == 3 && out_dir[2] == L'\')
-        out_dir[2] = 0;
     ZeroMemory(&j, sizeof j);
     j.out = out_dir;
     j.cancel = cancel;
@@ -290,7 +288,7 @@ int switch_package(const WCHAR *game_dir, const WCHAR *nsp, const WCHAR *out_fol
 
     /* The game's own folder can't be the target: the copy would feed itself. */
     i = (int)wcslen(game_dir);
-    if (!_wcsnicmp(out_dir, game_dir, (size_t)i) && (out_dir[i] == 0 || out_dir[i] == L'\')) {
+    if (!_wcsnicmp(out_dir, game_dir, (size_t)i) && (out_dir[i] == 0 || out_dir[i] == L'\\')) {
         swprintf_s(err, errn, L"Choose a place outside the game folder.");
         return 0;
     }

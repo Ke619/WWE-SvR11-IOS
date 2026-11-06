@@ -81,8 +81,6 @@ codegen() {
   local gen="$WORK/gen"
   mkdir -p "$gen/assets"
   cp "$NX_XEX" "$gen/assets/default.xex"
-  mkdir -p "$PORT/assets"
-  [ -f "$PORT/assets/default.xex" ] || cp "$NX_XEX" "$PORT/assets/default.xex"
   bash "$HERE/nx_codegen.sh" "$PORT" "$gen" "$NX_REXGLUE"
   rm -rf "$WORK/generated"
   mkdir -p "$WORK/generated"

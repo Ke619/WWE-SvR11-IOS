@@ -51,6 +51,19 @@ fetch_tar() {  # url commit folder
   git -C "$3" checkout -q "$2"
 }
 
+# Git on Windows checks symbolic links out as small text files holding the target's path (libmspack has some that
+# are source files). They become copies of their targets.
+resolve_links() {  # folder
+  git -C "$1" ls-files -s | awk -F'	' '$1 ~ /^120000/ {print $2}' | while IFS= read -r f; do
+    local path="$1/$f"
+    [ -f "$path" ] && [ "$(wc -c < "$path")" -lt 512 ] || continue
+    local target="$(dirname "$path")/$(cat "$path")"
+    [ -e "$target" ] || continue
+    rm "$path"
+    cp -r "$target" "$path"
+  done
+}
+
 apply_once() {  # folder patch
   local mark="$1/.svr2011_$(basename "$2").applied"
   [ -f "$mark" ] && return 0
@@ -61,6 +74,9 @@ apply_once() {  # folder patch
 sources() {
   mkdir -p "$WORK"
   fetch_repo "$REX_URL" "$REX_COMMIT" "$WORK/rex"
+  git -C "$WORK/rex" submodule status --recursive | awk '{print $2}' | while IFS= read -r sub; do
+    resolve_links "$WORK/rex/$sub"
+  done
   apply_once "$WORK/rex" "$PORT/patches/rexglue-sdk-svr2011.patch"
   apply_once "$WORK/rex" "$PORT/patches/rexglue-sdk-switch.patch"
   apply_once "$WORK/rex/thirdparty/FFmpeg" "$PORT/patches/ffmpeg-switch.patch"

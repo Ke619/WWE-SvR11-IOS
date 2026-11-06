@@ -19,7 +19,12 @@ holders kept beside the save.
 **Online:** new titles aren't offered: `sub_8244C9B0`'s hook leaves them off the list while `P2POnlineMode()`. A new title's
 index is its place in this game's folders, so two games can't agree on one, and the other may not have the mod.
 
-**Not yet:** other screens' lists (title select), a belt or art of its own (the holder carries a stock belt model and the list shows no art for it), tag titles in Universe's rankings, announcer lines, a Mod Maker page.
+**Announcer and match screens:** a Universe match on a new title plays as a plain match for everything that reads the setup's
+person title (`sub_828BA010`, +468: 255, as nothing stakes it): no title lines, no title intro, no "new champion" moment. The
+title changes hands after the match.
+
+**Not yet:** other screens' lists (title select), a belt or art of its own (the holder carries a stock belt model; screens show the
+`belt=` title's picture or none), a tag title's own two-face rankings row and page layout, a Mod Maker page.
 
 Holder writes: `sub_825B7EB0` (a finished Universe card), `sub_825B1488` (titles outside Universe's list, after a
 simulated match), `sub_8243D680` (end of match, from the setup's people) and `sub_8257B268` (a superstar removed).
@@ -55,7 +60,9 @@ title takes that route in a real Universe match wasn't settled: the one stock ru
   titles run on past 13 to the new ones (`NewTitleLoop_*` in `svr2011_config.toml`). A title's Universe row is in a side
   buffer, not yet saved. The rankings screens (`sub_8249B208`) show 4 fixed rows per brand, the third with two faces for
   the tag title, so the last row carries the brand's new titles: moving past it shows the next one (`sub_8249B600`), and
-  picking it opens that title's page (`sub_8249CAC8`, from +2944). Tag titles have no row yet. No art: the row hides it;
+  picking it opens that title's page (`sub_8249CAC8`, from +2944). A tag title is on that row too, both names on the line
+  and one face (its own row of two faces, the third, isn't used). A tag title starts with the game's two-person team (`sub_828C02C0`,
+  70 x 270 B) of the brand with the most points, and is defended on a four-person card with both holders on one side. No art: the row hides it;
   the title's page still shows the row's stock belt.
 - Universe's cards (save + 0x364B4 + 14942, 66 x 88 B: +1 the title, +2 people, +4 bit 0 a title match). A card on a new
   title is saved as a plain match, with a `#card` row in `Saves\titles.txt`; it comes back on a load if the mod is there,

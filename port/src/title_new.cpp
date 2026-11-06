@@ -704,44 +704,61 @@ REX_HOOK_RAW(sub_825AC1E8) {
     __imp__sub_825AC1E8(ctx, base);
     for (size_t k = 0; k < g_new.size(); ++k) {
       NewTitle& t = g_new[k];
-      if (t.brand < 0 || t.tag || t.holder[0] != kNoHolder) continue;
+      if (t.brand < 0 || t.holder[0] != kNoHolder) continue;
       const uint32_t title = uint32_t(kFirstNew + k);
       ctx.r3.u64 = title;
       sub_825B74D0(ctx, base);
       const uint32_t rank_class = ctx.r3.u32;
-      uint32_t best = kNoHolder, best_points = 0;
-      for (uint32_t id = 0; id < 322; ++id) {
+      // (of the brand, in the roster, can hold the title, holding nothing of this kind; its points, -1 if not)
+      const auto points_of = [&](uint32_t id) -> int64_t {
         ctx.r3.u64 = id;
         sub_828C1288(ctx, base);
-        if (ctx.r3.u32 == 0) continue;
+        if (ctx.r3.u32 == 0) return -1;
         ctx.r3.u64 = id;
         sub_828B7E70(ctx, base);
-        if (ctx.r3.u32 == 0) continue;
+        if (ctx.r3.u32 == 0) return -1;
         ctx.r3.u64 = id, ctx.r4.u64 = 1;
         sub_825B75A8(ctx, base);
-        if (ctx.r3.u32 == 0) continue;
+        if (ctx.r3.u32 == 0) return -1;
         ctx.r3.u64 = id, ctx.r4.u64 = 1;
         sub_828B8038(ctx, base);
-        if (t.brand != 7 && ctx.r3.s32 != t.brand) continue;
+        if (t.brand != 7 && ctx.r3.s32 != t.brand) return -1;
         ctx.r3.u64 = id, ctx.r4.u64 = title, ctx.r5.u64 = 1;
         sub_828BD9D0(ctx, base);
-        if (ctx.r3.u32 == 0) continue;
+        if (ctx.r3.u32 == 0) return -1;
         static const uint32_t list = g_memory ? g_memory->SystemHeapAlloc(64) : 0;  // (the titles it holds)
-        if (!list) continue;
-        ctx.r3.u64 = id, ctx.r4.u64 = list, ctx.r5.u64 = 2, ctx.r6.u64 = 0;
+        if (!list) return -1;
+        ctx.r3.u64 = id, ctx.r4.u64 = list, ctx.r5.u64 = t.tag ? 1 : 0, ctx.r6.u64 = 0;
         sub_828BDB38(ctx, base);
-        if (ctx.r3.s32 != 0) continue;
-        uint32_t points = 0;
-        if (rank_class < 4) {
-          ctx.r3.u64 = ranks, ctx.r4.u64 = id, ctx.r5.u64 = rank_class;
-          sub_825ADE20(ctx, base);
-          points = ctx.r3.u32 & 0xFFFF;
+        if (ctx.r3.s32 != 0) return -1;
+        if (rank_class >= 4) return 0;
+        ctx.r3.u64 = ranks, ctx.r4.u64 = id, ctx.r5.u64 = rank_class;
+        sub_825ADE20(ctx, base);
+        return int64_t(ctx.r3.u32 & 0xFFFF);
+      };
+      int64_t best_points = -1;
+      uint32_t best[2] = {kNoHolder, kNoHolder};
+      if (t.tag) {
+        for (uint32_t team = 0; team < 70; ++team) {  // (the game's tag teams: 270 B, +2 and +4 the first two people)
+          ctx.r3.u64 = team;
+          sub_828C02C0(ctx, base);
+          const uint32_t r = ctx.r3.u32;
+          if (!r || (base[r] == 0 && base[r + 1] == 0)) continue;
+          const uint32_t a = uint32_t(base[r + 2]) << 8 | base[r + 3], b = uint32_t(base[r + 4]) << 8 | base[r + 5];
+          const uint32_t c = uint32_t(base[r + 6]) << 8 | base[r + 7];
+          if (a >= 322 || b >= 322 || c != kNoHolder) continue;  // (two people)
+          const int64_t pa = points_of(a), pb = pa < 0 ? -1 : points_of(b);
+          if (pb >= 0 && pa + pb > best_points) best_points = pa + pb, best[0] = a, best[1] = b;
         }
-        if (best == kNoHolder || points > best_points) best = id, best_points = points;
+      } else {
+        for (uint32_t id = 0; id < 322; ++id) {
+          const int64_t points = points_of(id);
+          if (points > best_points) best_points = points, best[0] = id;
+        }
       }
-      if (best != kNoHolder) {
-        t.holder[0] = best;
-        REXLOG_INFO("[svr2011] new titles: {} starts with holder {} ({} points)", t.folder, best, best_points);
+      if (best[0] != kNoHolder) {
+        t.holder[0] = best[0], t.holder[1] = best[1];
+        REXLOG_INFO("[svr2011] new titles: {} starts with holder {} {} ({} points)", t.folder, best[0], best[1], best_points);
       }
     }
     ctx.r3.u64 = ranks;
@@ -812,11 +829,28 @@ REX_HOOK_RAW(sub_825B3738) {
     sub_825AC5D0(ctx, base);
     const uint32_t c = ctx.r3.u32;
     if (always && c) REXLOG_INFO("[svr2011] new titles: test - card {}: rule {} title {} people {} flags {:02X} ids {} {}", k, base[c], base[c + 1], base[c + 2], base[c + 4], uint32_t(base[c + 16]) << 8 | base[c + 17], uint32_t(base[c + 28]) << 8 | base[c + 29]);
-    if (!c || base[c] != 0 || base[c + 2] != 2 || base[c + 3] == 2 || (base[c + 4] & 1)) continue;  // (a one on one to play, for no title)
+    if (!c || base[c + 3] == 2 || (base[c + 4] & 1)) continue;  // (to play, for no title)
+    const uint32_t people = base[c + 2];
+    const bool singles = base[c] == 0 && people == 2;
+    if (!singles && people != 4) continue;
     const uint32_t a = uint32_t(base[c + 16]) << 8 | base[c + 17], b = uint32_t(base[c + 28]) << 8 | base[c + 29];
     for (size_t n = 0; n < g_new.size(); ++n) {
       const NewTitle& t = g_new[n];
-      if (booked[n] || t.brand < 0 || t.tag || t.holder[0] == kNoHolder || (t.holder[0] != a && t.holder[0] != b)) continue;
+      if (booked[n] || t.brand < 0 || t.holder[0] == kNoHolder) continue;
+      if (t.tag != !singles) continue;
+      if (singles) {
+        if (t.holder[0] != a && t.holder[0] != b) continue;
+      } else {  // (a tag match: both holders, on one side, two people a side)
+        int side[2] = {-1, -1}, count[2] = {0, 0};
+        for (uint32_t i = 0; i < 4; ++i) {
+          const uint32_t id = uint32_t(base[c + 16 + i * 12]) << 8 | base[c + 17 + i * 12];
+          const int sd = int(int8_t(base[c + 19 + i * 12]));
+          if (id == t.holder[0]) side[0] = sd;
+          if (id == t.holder[1]) side[1] = sd;
+          ++count[sd & 1];
+        }
+        if (side[0] < 0 || side[0] != side[1] || count[0] != 2 || count[1] != 2) continue;
+      }
       booked[n] = true;
       if (!always && ((c >> 3) + a + b + n) % 2) continue;
       base[c + 1] = uint8_t(kFirstNew + n), base[c + 4] |= 1;
@@ -871,7 +905,7 @@ REX_EXTERN(__imp__sub_825B6BE0);
 REX_HOOK_RAW(sub_825B6BE0) {
   const int64_t k = int64_t(ctx.r4.s32) - kFirstNew;
   if (k >= 0 && k < int64_t(g_new.size())) {
-    ctx.r3.u64 = g_new[size_t(k)].brand >= 0 ? g_contenders + uint32_t(k) * 4 : 0;
+    ctx.r3.u64 = g_new[size_t(k)].brand >= 0 ? g_contenders + uint32_t(k) * 4 + (ctx.r5.u32 & 1) * 2 : 0;
     return;
   }
   __imp__sub_825B6BE0(ctx, base);
@@ -911,6 +945,18 @@ void ShowRank(PPCContext& ctx, uint8_t* base, int pos) {
       ctx.r3.u64 = t.holder[0];
       sub_828B6138(ctx, base);
       name = ctx.r3.u32;
+      if (t.tag && t.holder[1] != kNoHolder && t.holder[1] < 322 && g_memory) {  // (a tag title: both names on the line)
+        const std::string first(reinterpret_cast<const char*>(base + name));
+        ctx.r3.u64 = t.holder[1];
+        sub_828B6138(ctx, base);
+        const std::string both = first + " & " + reinterpret_cast<const char*>(base + ctx.r3.u32);
+        static uint32_t text = g_memory->SystemHeapAlloc(160);
+        if (text) {
+          std::memcpy(base + text, both.c_str(), std::min<size_t>(both.size() + 1, 159));
+          base[text + 159] = 0;
+          name = text;
+        }
+      }
     }
     ctx = saved;
     Wr(base, label, t.guest_champion), Wr(base, holder, name);
@@ -932,7 +978,7 @@ REX_HOOK_RAW(sub_8249B208) {
   if (brand != 0 && brand != 1) return;
   std::vector<int> titles;
   for (size_t k = 0; k < g_new.size(); ++k)
-    if (!g_new[k].tag && (g_new[k].brand == brand || g_new[k].brand == 7)) titles.push_back(int(k));
+    if (g_new[k].brand == brand || g_new[k].brand == 7) titles.push_back(int(k));
   const int was = g_rank.self == self ? g_rank.pos : 0;
   g_rank = RankRow();
   g_rank.self = self;

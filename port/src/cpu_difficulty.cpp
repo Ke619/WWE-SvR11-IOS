@@ -11,6 +11,9 @@
 // Online the host's values count for everyone (session property 0x1000F006), so every game makes the same rolls.
 #include "cpu_difficulty.h"
 
+#include <thread>
+#include <mutex>
+#include <chrono>
 #include <algorithm>
 #include <atomic>
 #include <cstdlib>
@@ -265,4 +268,62 @@ REX_HOOK_RAW(sub_821F4FA0) {
 REX_EXTERN(__imp__sub_821F5FC0);
 REX_HOOK_RAW(sub_821F5FC0) {
   svr2011::WithLevel(base, svr2011::EffectiveCpuTuning().momentum, [&] { __imp__sub_821F5FC0(ctx, base); });
+}
+
+// The grid object's worker and its rebuild. A worker thread (sub_827EB1E8 -> sub_827F1998) steps sub_8281B168, which
+// stamps circles into the object's cell grid (+32) and reads +32 afresh for every cell (sub_8281C540). The main thread,
+// loading the next match, rebuilds the object (sub_8281E398: sub_8281BC50 frees the grid and nulls +32, then a new one):
+// the worker read through the null (SIGSEGV at guest 0xE9, 0x279: cell * 10 + 3; report d4c066, a Fold run on main, 1 ms
+// after "a match loads"). The rebuild now waits for the worker's step, and a step that finds a rebuild running is skipped.
+// Also the free at a match load (sub_8281BC50 directly). Test aids: SVR2011_TEST_GRID_SLOW_MS=<ms>, SVR2011_TEST_GRID_GUARD_OFF=1.
+namespace {
+std::recursive_mutex g_grid_mutex;
+bool GridGuardOff() {
+  static const bool off = std::getenv("SVR2011_TEST_GRID_GUARD_OFF") != nullptr;
+  return off;
+}
+}  // namespace
+
+REX_EXTERN(__imp__sub_8281B168);
+REX_HOOK_RAW(sub_8281B168) {
+  if (GridGuardOff()) {
+    __imp__sub_8281B168(ctx, base);
+    return;
+  }
+  std::unique_lock lock(g_grid_mutex, std::try_to_lock);
+  if (!lock.owns_lock()) {
+    static std::atomic<int> skipped{0};
+    if (++skipped == 1) REXLOG_INFO("[svr2011] grid: a worker step skipped - the grid is being rebuilt");
+    return;
+  }
+  __imp__sub_8281B168(ctx, base);
+}
+
+REX_EXTERN(__imp__sub_8281E398);
+REX_HOOK_RAW(sub_8281E398) {
+  if (GridGuardOff()) {
+    __imp__sub_8281E398(ctx, base);
+    return;
+  }
+  std::lock_guard lock(g_grid_mutex);
+  __imp__sub_8281E398(ctx, base);
+}
+
+REX_EXTERN(__imp__sub_8281BC50);
+REX_HOOK_RAW(sub_8281BC50) {
+  if (GridGuardOff()) {
+    __imp__sub_8281BC50(ctx, base);
+    return;
+  }
+  std::lock_guard lock(g_grid_mutex);
+  __imp__sub_8281BC50(ctx, base);
+}
+
+// (the test aid: each circle starts that much later, so a free lands inside the walk)
+REX_EXTERN(__imp__sub_8281C540);
+REX_HOOK_RAW(sub_8281C540) {
+  static const int slow = [] { const char* v = std::getenv("SVR2011_TEST_GRID_SLOW_MS"); return v ? std::atoi(v) : 0; }();
+  static int calls = 0;  // (every 16th: the world still runs)
+  if (slow > 0 && ++calls % 16 == 0) std::this_thread::sleep_for(std::chrono::milliseconds(slow));
+  __imp__sub_8281C540(ctx, base);
 }

@@ -73,6 +73,7 @@ alignas(16) u8 __nx_exception_stack[0x8000];
 u64 __nx_exception_stack_size = sizeof(__nx_exception_stack);
 
 void NxProfileStart(void);
+void NxAbStart(void);
 
 // Bring-up settings: written at each start, so a test build needs no card access.
 static void WriteSettings() {
@@ -98,6 +99,7 @@ static void WriteSettings() {
       "native_max_scale = 1\n"
       "native_scale_effects = false\n"
       "native_record_thread = true\n"
+      "native_compact_tables = true\n"
       "show_fps = true\n"
       "perf_log_seconds = 10\n",
       f);
@@ -119,6 +121,7 @@ void userAppInit(void) {
   std::set_terminate(OnTerminate);
   WriteSettings();
   NxProfileStart();
+  NxAbStart();
   // Start-up marks, flushed at once: this works even if logging never starts.
   FILE* f = fopen(SVR_GAME_DIR "/logs/nx_start.txt", "w");
   if (f) {

@@ -23,6 +23,7 @@ void userAppInit(void) {
   mkdir(SVR_GAME_DIR, 0777);
   mkdir(SVR_GAME_DIR "/logs", 0777);
   setenv("REX_APP_FOLDER", SVR_GAME_DIR, 1);
+  setenv("HOME", SVR_GAME_DIR, 1);  // (the SDK asks for a user folder)
   chdir(SVR_GAME_DIR);
   // Start-up marks, flushed at once: this works even if logging never starts.
   FILE* f = fopen(SVR_GAME_DIR "/logs/nx_start.txt", "w");
@@ -40,12 +41,12 @@ void userAppExit(void) { socketExit(); }
 
 // A fault in any thread: where it was, for the first test runs.
 void __libnx_exception_handler(ThreadExceptionDump* ctx) {
-  extern char __start__;
+  extern void _start(void);
   FILE* f = fopen(SVR_GAME_DIR "/logs/nx_crash.txt", "a");
   if (f) {
     u64 tid = 0;
     svcGetThreadId(&tid, CUR_THREAD_HANDLE);
-    u64 base = reinterpret_cast<u64>(&__start__);
+    u64 base = reinterpret_cast<u64>(&_start);
     fprintf(f, "crash: type %u, thread %llu, pc %llx (image+%llx), lr %llx (image+%llx), sp %llx, far %llx, esr %x\n",
             ctx->error_desc, (unsigned long long)tid, (unsigned long long)ctx->pc.x,
             (unsigned long long)(ctx->pc.x - base), (unsigned long long)ctx->lr.x,

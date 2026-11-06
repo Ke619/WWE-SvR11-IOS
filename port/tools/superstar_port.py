@@ -1258,7 +1258,15 @@ class GameW:
             if not own or not low:
                 continue
             tables = {}
-            for t, es in self.MP.read_pac(self.decode(pk.read(low))):
+            # (a package whose table this game's reader can't read - 2K17 keeps its chEtc as an HSPC, and no package of
+            # it has been seen here - leaves out its superstars, not the whole list: report de65e8)
+            try:
+                etc = self.MP.read_pac(self.decode(pk.read(low)))
+            except (ValueError, IndexError, KeyError, OSError, struct.error) as e:
+                print('DLC package %s: its character table can\'t be read (%s): its superstars are left out' % (pk.name, e),
+                      file=sys.stderr)
+                continue
+            for t, es in etc:
                 if t == b'CHAR' or (t[:2] == b'CH' and t[2:4].isdigit()):   # (2K16: CH20 / CH40; '12's CHCM has a DAT too)
                     for n, b in es:
                         if n.strip() in (b'DAT', b'PRO'):

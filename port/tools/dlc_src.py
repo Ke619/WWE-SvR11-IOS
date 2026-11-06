@@ -180,6 +180,13 @@ class SourceView:
     def __getattr__(self, name):
         return getattr(self.disc, name)
 
+    def __enter__(self):
+        self.disc.__enter__()
+        return self
+
+    def __exit__(self, *a):
+        return self.disc.__exit__(*a)
+
     @staticmethod
     def _low(path):
         return path.replace('\\', '/').strip('/').lower()

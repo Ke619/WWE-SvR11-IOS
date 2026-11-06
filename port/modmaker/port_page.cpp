@@ -557,6 +557,7 @@ struct NativePac {
   std::string name;  // bgNN.pac
   int entry = -1;    // in the disc (-1: g_folder file)
   uint64_t size = 0;
+  std::wstring file;  // (a DLC package's, copied out by the converter's list: its dlc_file)
 };
 std::string g_native_for;
 std::vector<NativePac> g_native;
@@ -621,6 +622,13 @@ void NativeArenas(int k, const std::string& game, const std::string& game_name) 
     std::sort(g_native.begin(), g_native.end(), [](const NativePac& a, const NativePac& b) { return a.name < b.name; });
   }
   if (g_list_for != std::to_string(k) + "|" + want) List(k, game);  // (the converter's list: only each pac's status)
+  for (const Json& it : g_list.items)  // (the game's DLC packages have arenas too: arena_port --dlc)
+    if (const std::string f = it["dlc_file"].Str(); !f.empty()) {
+      const std::string name = ItemKey(it) + ".pac";
+      bool have = false;
+      for (const NativePac& np : g_native) have = have || Lower(np.name) == Lower(name);
+      if (!have) g_native.push_back({name, -1, 0, Wide(f)});
+    }
   if (g_embedded) ImGui::TextWrapped("The Mod Maker converts %s arenas itself: pick the arena.", game_name.c_str());
   else ImGui::TextWrapped("The Mod Maker converts %s arenas itself: pick the arena's pac, then finish below (extracted files) "
                           "(host arena, options, Convert).", game_name.c_str());
@@ -751,7 +759,9 @@ void NativeArenas(int k, const std::string& game, const std::string& game_name) 
     Progress("Copying " + p.name + " off the disc ...");
     Bytes b;
     bool ok = false;
-    if (p.entry >= 0) {
+    if (!p.file.empty()) {
+      ok = svrfmt::ReadFile(Utf8(p.file), b);
+    } else if (p.entry >= 0) {
       svrfmt::Disc disc;
       ok = disc.Open(image) && disc.ReadAll(p.entry, b);
     } else {

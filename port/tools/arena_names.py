@@ -91,9 +91,26 @@ def _hspc_blocks(d):
 
 
 def strings(disc, svrmod=None):
-    """the English string table of a WWE '12 - 2K17 disc that holds the arena names -> (strings, base)"""
-    for rel in ('pac/string.pac', 'pac/string_360.pac'):
-        if not disc.exists(rel):
+    """the English string table of a WWE '12 - 2K17 disc that holds the arena names -> (strings, base); a DLC package's
+    string table (dlc_src.SourceView) fills the numbers the disc's has no name for: its arenas"""
+    t, base = _strings(disc, ('pac/string.pac', 'pac/string_360.pac'), svrmod)
+    if base is not None:
+        for pk in getattr(getattr(disc, 'dlc', None), 'packages', []):
+            for rel in pk.matching(r'^pac/string[^/]*\.pac$'):
+                t2, base2 = _strings(pk, (rel,), svrmod)
+                if base2 is not None:
+                    for n in range(100):
+                        v = t2.get(base2 + n, '')
+                        if v.strip() and v.strip().lower() not in ('(null)', '-') and not t.get(base + n, '').strip():
+                            t[base + n] = v
+    return t, base
+
+
+def _strings(disc, rels, svrmod=None):
+    for rel in rels:
+        if hasattr(disc, 'files') and rel not in disc.files:
+            continue
+        if not hasattr(disc, 'files') and not disc.exists(rel):
             continue
         raw = _xdec(disc.read(rel), svrmod)
         tables = []

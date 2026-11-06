@@ -3,7 +3,7 @@ S="$(cygpath -u 'D:/Xbox Games Ports/WWE Smackdown Vs Raw 2011/.claude/worktrees
 glslangValidator -V --vn tri_vert -o v.h tri.vert >/dev/null; glslangValidator -V --vn tri_frag -o f.h tri.frag >/dev/null; cat v.h f.h > shaders.h; rm v.h f.h tri.vert tri.frag
 cd /work/nsptest; make -j4 SVR_DEFS=-DSVR_NSP > make.log 2>&1; grep -E "error|undefined" make.log | cut -c1-170 | head; ls -la nsptest.nro | cut -c24-
 rm -rf /work/hbl; mkdir -p /work/hbl; tar -xzf "$(cygpath -u 'C:\Users\Ranger\AppData\Local\Temp\hbl_src\s.tgz')" -C /work/hbl --strip-components=1; cd /work/hbl; grep -n -E "DEFAULT_NRO" source/main.c Makefile | cut -c1-110 | head -5
-sed -i "s|\"sdmc:/hbmenu.nro\"|\"sdmc:/switch/svr_loaded.nro\"|" source/main.c; awk -f /hbl_patch.awk source/main.c > m.c && mv m.c source/main.c; make -j4 > make.log 2>&1; tail -3 make.log | cut -c1-150; ls *.nso *.elf 2>/dev/null
+bash /hbl_patch.sh; make -j4 > make.log 2>&1; tail -3 make.log | cut -c1-150; ls *.nso *.elf 2>/dev/null
 cd /work/nsptest; rm -rf pk; mkdir -p pk/exefs pk/control pk/romfs; elf2nso /work/hbl/hbl.elf pk/exefs/main; npdmtool nsp.json pk/exefs/main.npdm 2>/dev/null; nacptool --create "SvR 2011 NSP test" "SvR 2011 port" "0.0.2" pk/control/control.nacp --titleid=0500565220110000
 dd if=/dev/urandom of=pk/romfs/speed.bin bs=1M count=64 2>/dev/null; ls -la pk/exefs pk/romfs | cut -c24-
 cd pk; /work/hbp/hacbrewpack.exe -k 'C:\Users\Ranger\.switch\prod.keys' --titleid 0500565220110000 --nologo --exefsdir exefs --romfsdir romfs --controldir control --nspdir nsp 2>&1 | sed -E 's/[0-9A-Fa-f]{32,}/[hidden]/g' | cut -c1-100 | tail -5; ls -la nsp | cut -c24-

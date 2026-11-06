@@ -43,6 +43,74 @@ void Register(Handle h) {
   mutexUnlock(&g_lock);
 }
 
+// Where the busy threads spend their time, in the game: 50 samples a second of the six
+// busiest threads for 20 s, then a pause, in logs/nx_samples.txt (nx_samples.py names them).
+// A thread is paused only for the moment its registers and stack are read; nothing that
+// could need a lock it holds runs meanwhile.
+constexpr int kTop = 6;
+constexpr int kSampleWords = 8;
+struct Sample {
+  u32 tid;
+  u32 pc, lr;
+  u32 words[kSampleWords];
+};
+constexpr int kMaxSamples = 6100;
+Sample g_samples[kMaxSamples];
+volatile Handle g_top[kTop];
+volatile u32 g_top_id[kTop];
+volatile bool g_in_game = false;
+
+void Sampler(void*) {
+  const u64 base = reinterpret_cast<u64>(&_start);
+  FILE* f = fopen("/SvR2011/logs/nx_samples.txt", "w");
+  if (!f) return;
+  for (int window = 0; window < 10;) {
+    svcSleepThread(1000000000ll);
+    if (!g_in_game) continue;
+    int n = 0;
+    const u64 start = armGetSystemTick();
+    while (n < kMaxSamples - kTop && armGetSystemTick() - start < 20ull * 19200000ull) {
+      for (int i = 0; i < kTop && n < kMaxSamples; i++) {
+        const Handle h = g_top[i];
+        if (!h) continue;
+        svcSleepThread(3300000);
+        if (R_FAILED(svcSetThreadActivity(h, ThreadActivity_Paused))) continue;
+        static ThreadContext ctx;
+        if (R_SUCCEEDED(svcGetThreadContext3(&ctx, h))) {
+          Sample& o = g_samples[n];
+          o = Sample{};
+          o.tid = g_top_id[i];
+          o.pc = static_cast<u32>(ctx.pc.x - base);
+          o.lr = static_cast<u32>(ctx.lr - base);
+          MemoryInfo info{};
+          u32 page = 0;
+          if (R_SUCCEEDED(svcQueryMemory(&info, &page, ctx.sp)) && (info.perm & Perm_R)) {
+            const u64* sp = reinterpret_cast<const u64*>(ctx.sp);
+            const u64 end = info.addr + info.size;
+            int got = 0;
+            for (int w = 0; w < 512 && reinterpret_cast<u64>(sp + w + 1) <= end && got < kSampleWords; w++) {
+              if (sp[w] > base + 0x1000 && sp[w] < base + (1ull << 27)) o.words[got++] = static_cast<u32>(sp[w] - base);
+            }
+          }
+          n++;
+        }
+        svcSetThreadActivity(h, ThreadActivity_Runnable);
+      }
+    }
+    fprintf(f, "== window %d at %.0f s, %d samples\n", window, double(armGetSystemTick()) / 19200000.0, n);
+    for (int i = 0; i < n; i++) {
+      const Sample& o = g_samples[i];
+      fprintf(f, "%u %x %x", o.tid, o.pc, o.lr);
+      for (int w = 0; w < kSampleWords && o.words[w]; w++) fprintf(f, " %x", o.words[w]);
+      fputc('\n', f);
+    }
+    fflush(f);
+    window++;
+    svcSleepThread(30000000000ll);
+  }
+  fclose(f);
+}
+
 void Monitor(void*) {
   FILE* f = fopen(SVR_THREADS_FILE, "w");
   if (!f) return;
@@ -53,7 +121,7 @@ void Monitor(void*) {
   FILE* flag = fopen("/SvR2011/nx_profile_stacks.txt", "r");
   const bool pause = flag != nullptr;  // g_pause
   if (flag) fclose(flag);
-  for (int round = 0; round < 40; round++) {
+  for (int round = 0; round < 120; round++) {
     svcSleepThread(round < 4 ? 5000000000ll : 15000000000ll);
     const u64 now = armGetSystemTick();
     const double span = double(now - before);
@@ -93,6 +161,29 @@ void Monitor(void*) {
       svcSetThreadActivity(s.handle, ThreadActivity_Runnable);
     }
     mutexUnlock(&g_lock);
+    {
+      // The busiest threads, for the sampler.
+      double total = 0;
+      int best[kTop];
+      for (int t = 0; t < kTop; t++) best[t] = -1;
+      for (int i = 0; i < n; i++) {
+        const Snapshot& c = g_snap[i];
+        if (!c.id) continue;
+        total += double(c.ticks) * 100.0 / span;
+        for (int t = 0; t < kTop; t++) {
+          if (best[t] < 0 || c.ticks > g_snap[best[t]].ticks) {
+            for (int m = kTop - 1; m > t; m--) best[m] = best[m - 1];
+            best[t] = i;
+            break;
+          }
+        }
+      }
+      for (int t = 0; t < kTop; t++) {
+        g_top[t] = best[t] >= 0 ? g_snap[best[t]].handle : 0;
+        g_top_id[t] = best[t] >= 0 ? static_cast<u32>(g_snap[best[t]].id) : 0;
+      }
+      g_in_game = total > 150.0;
+    }
     u64 used = 0;
     fprintf(f, "== round %d, %.1f s, %d threads\n", round, span / 19200000.0, n);
     for (int i = 0; i < n; i++) {
@@ -129,6 +220,10 @@ void NxProfileStart(void) {
   static Thread t;
   if (R_SUCCEEDED(threadCreate(&t, Monitor, nullptr, nullptr, 0x8000, 0x2C, 2))) {
     __real_threadStart(&t);
+  }
+  static Thread sampler;
+  if (R_SUCCEEDED(threadCreate(&sampler, Sampler, nullptr, nullptr, 0x8000, 0x2C, 2))) {
+    __real_threadStart(&sampler);
   }
 }
 

@@ -1591,6 +1591,7 @@ class GameW2K17(GameW2K16):
         import wwe13_entrance as WE
         self.MP, self.WE, self.src = MP, WE, src
         self.svrmod = WE.find_svrmod(svrmod)
+        self.dlc_ids = set()   # (its own constructor: no DLC is read for 2K17, and roster() asks)
         sets = [[(i, ch_tool.unpack(x)) for i, x in shdc(b)] for _, b in hspc(self.pac_bytes('pac/ch/chEtc.pac'))
                 if b[:4] == b'SHDC']
         dat = max((s for s in sets if s and len(s[0][1]) == self.dat_size), key=len)

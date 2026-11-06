@@ -160,6 +160,7 @@ Settings are saved in `svr2011.toml` in the game folder (the app's **Documents**
 | Paint Tool | ⚠️ Not available in the Launcher yet, Works in-game. |
 | Custom Main Menu Backgrounds | ⚠️ Not available in the Launcher yet, Can be added manually and setup in-game. |
 | Mod Maker | ➖ Not part of this port. |
+| In-Game `REPORT A PROBLEM` tab | ⛔️ Removed (Exclusive to Kaiko’s PC/android port). |
 ---
 
 ## Building from source

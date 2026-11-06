@@ -181,6 +181,29 @@ registers = ["cr6", "xer", "r29"]
 after_instruction = true
 
 [[midasm_hook]]
+name = "NewTitleList_825C1EF8"
+address = 0x825C1EF8
+registers = ["r3"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "NewTitleSay_824AC5FC"
+address = 0x824AC5FC
+registers = ["r30"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "NewTitleSay_824AC63C"
+address = 0x824AC63C
+registers = ["r11"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "NewTitleSay_824AC680"
+address = 0x824AC680
+registers = ["r30"]
+
+[[midasm_hook]]
 name = "NewTitleGuard_825ADBE4"
 address = 0x825ADBE4
 registers = ["cr6", "xer", "r5"]

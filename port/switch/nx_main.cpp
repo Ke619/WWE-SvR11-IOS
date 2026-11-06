@@ -2,6 +2,10 @@
 #include <switch.h>
 
 #include <cerrno>
+#include <mutex>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <dirent.h>
 #include <fcntl.h>
 #include <cstdio>
@@ -206,17 +210,68 @@ int __wrap_lstat(const char* path, struct stat* out) {
   return r;
 }
 
-// Folders the NSP has are listed from the NSP (the card's copy of one would hide its
-// files); the rest (Saves, Mods, logs) from the card.
+// A folder's listing is the card's and the NSP's together, the card's first; a name in
+// both is listed once.
+namespace {
+struct MergedDir {
+  std::string second;              // the NSP's folder, still to list
+  DIR* second_dir = nullptr;
+  std::unordered_set<std::string> seen;
+};
+std::mutex g_dirs_lock;
+std::unordered_map<DIR*, MergedDir> g_dirs;
+}  // namespace
+
 DIR* __real_opendir(const char* path);
+struct dirent* __real_readdir(DIR* dir);
+int __real_closedir(DIR* dir);
+
 DIR* __wrap_opendir(const char* path) {
   char other[768];
-  if (InRomfs(path, other, sizeof(other))) {
-    if (DIR* d = __real_opendir(other)) return d;
-  }
+  const bool has_other = InRomfs(path, other, sizeof(other));
   DIR* d = __real_opendir(path);
   if (!d && errno == ENODEV) errno = ENOENT;
+  if (!has_other) return d;
+  if (!d) {
+    return __real_opendir(other);
+  }
+  // Only worth tracking when the NSP has this folder too.
+  if (DIR* o = __real_opendir(other)) {
+    std::lock_guard<std::mutex> lock(g_dirs_lock);
+    MergedDir& m = g_dirs[d];
+    m.second_dir = o;
+  }
   return d;
+}
+
+struct dirent* __wrap_readdir(DIR* dir) {
+  MergedDir* m = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(g_dirs_lock);
+    auto it = g_dirs.find(dir);
+    if (it != g_dirs.end()) m = &it->second;
+  }
+  if (!m) return __real_readdir(dir);
+  if (struct dirent* e = __real_readdir(dir)) {
+    m->seen.insert(e->d_name);
+    return e;
+  }
+  while (struct dirent* e = __real_readdir(m->second_dir)) {
+    if (!m->seen.count(e->d_name)) return e;
+  }
+  return nullptr;
+}
+
+int __wrap_closedir(DIR* dir) {
+  {
+    std::lock_guard<std::mutex> lock(g_dirs_lock);
+    auto it = g_dirs.find(dir);
+    if (it != g_dirs.end()) {
+      if (it->second.second_dir) __real_closedir(it->second.second_dir);
+      g_dirs.erase(it);
+    }
+  }
+  return __real_closedir(dir);
 }
 
 // Every deliberate stop goes through here: aborts in libnx, newlib and the driver

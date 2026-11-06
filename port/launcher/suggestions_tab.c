@@ -5,7 +5,7 @@
  * rate limit and checks are the reports' (5 in 10 minutes from one address). Its receipt is kept in
  * UserData\suggestions.json, apart from the reports'. Below, "Your suggestions": each one sent, and our answer
  * from the server (POST /api/reports/status, asked when the tab opens and on Refresh); the selected one's line
- * under the list ("Sure - we plan to add this: ...", "No, not planned: ...", "Done in 2.1.10: ..."). */
+ * under the list ("Sure - we plan to add this: ...", "No, not planned: ...", "Done in 2.2.0: ..."). */
 #include "suggestions_tab.h"
 #include "report_urls.h"
 

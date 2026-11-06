@@ -236,7 +236,7 @@ tab), `manifest.txt`:
     guard and prints what it did.
 - A `disabled` file in the folder turns it off.
 
-- DLC superstars and DLC attires (2.1.10). The installed DLC packages (unpacked by dlc.cpp to
+- DLC superstars and DLC attires (2.2.0). The installed DLC packages (unpacked by dlc.cpp to
   `<user data>\0000000000000000\5451085D\00000002\<package>`, only ever read) hold model pacs
   `pac\ch\ch<id>_dlcNN.pac`: the DLC superstars' own (Vol. 2 ch51-56, Vol. 3 ch57 / ch58 - Lex Luger 51,
   British Bulldog 52, ...) and extra attires of disc superstars (Vol. 2 ch145 / ch178, Vol. 3 ch131 / ch279).

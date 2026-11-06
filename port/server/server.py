@@ -1160,7 +1160,7 @@ class Service:
             rtt = max(0, int(body.get("rtt") or 0))
             version = re.sub(r"[^0-9A-Za-z.\-]", "", str(body.get("version") or ""))[:24] or "?"
             network = str(body.get("network") or "")  # (2.1.4 on: the match network it played on)
-            # (2.1.10 on: "ipv6": true beside path "direct". A server before that doesn't know the field and counts a
+            # (2.2.0 on: "ipv6": true beside path "direct". A server before that doesn't know the field and counts a
             # direct match; a path it doesn't know it would refuse, and the report would be lost)
             if path == "direct" and body.get("ipv6") is True:
                 path = "ipv6"

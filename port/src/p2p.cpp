@@ -1333,7 +1333,7 @@ void SendMatchReport(const MatchReport& r) {
   std::string version;
   for (const char c : PortVersion())
     if (std::isalnum(static_cast<unsigned char>(c)) || c == '.' || c == '-') version.push_back(c);
-  // (IPv6: a field of its own beside path "direct": a server before 2.1.10 ignores it and counts a direct match, where
+  // (IPv6: a field of its own beside path "direct": a server before 2.2.0 ignores it and counts a direct match, where
   // a path value it doesn't know would be refused)
   const bool ipv6 = !std::strcmp(path, "direct") && r.ipv6 * 2 > r.direct;
   const std::string body = fmt::format(R"({{"version":"{}","path":"{}",{}"nat":"{}","step":{},"rtt":{},"network":"{}"}})",

@@ -24,7 +24,7 @@ PICTURES = {'WWE': 'belt_WWE', 'WHC': 'belt_WorldHeavy', 'WWE_TAG': 'belt_WWETag
 
 # The title's art on the championship screens (Championship Scramble's title list: the picture beside the holder):
 # BG_<title> in menuHD / menuSD, outside the texture bundles this reads - hashes from a texture dump's name index
-# (UserData\cache\texture_names.txt, 2.1.10). The tag titles have none.
+# (UserData\cache\texture_names.txt, 2.2.0). The tag titles have none.
 ART = {'IC': [('menuHD', 'BG_IC', 'b34ce61d31865f30'), ('menuSD', 'BG_IC', 'c35503e3bf96890c')],
        'US': [('menuHD', 'BG_US', '1ef9e3192ab48caf'), ('menuSD', 'BG_US', 'b15124f114fceb9f')],
        'WWE': [('menuHD', 'BG_wwe', '52bd9dcc80684d9d'), ('menuSD', 'BG_wwe', 'b412066623c7f4ad')],

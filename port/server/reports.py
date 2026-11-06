@@ -1272,7 +1272,7 @@ def main():
         python reports.py --data <data folder> mark <id | signature> --looking | --done | --duplicate | --reopen
         python reports.py --data <data folder> delete <report id>
         python reports.py --data <data folder> mark <suggestion id> --planned ["a note"] | --not-planned ["a note"]
-                          | --fixed "a note" --version 2.1.10   (a suggestion: Sure / No, not planned / Done in)
+                          | --fixed "a note" --version 2.2.0   (a suggestion: Sure / No, not planned / Done in)
         python reports.py --data <data folder> list [--fixed] [--kind report | suggestion] [--who NAME] [--anthology]
                           (SvR Anthology's reports are listed only with --anthology, and then only they are)
         python reports.py --data <data folder> show <report id>   (its fields, the answers, the sender's edits)

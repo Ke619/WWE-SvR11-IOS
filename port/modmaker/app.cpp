@@ -3660,7 +3660,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     }
     else if (!wcscmp(argv[i], L"--simple-arena") && more) arena_page::TestSimple(_wtoi(argv[++i])), g_page = PageId::kArena;  // Simple arena at <step>
     else if (!wcscmp(argv[i], L"--simple-arena-start") && more) arena_page::TestSimpleStart(Utf8(argv[++i])), g_page = PageId::kArena;  // tile:<n> | empty:<n> | disc:<key>[:<bgNN>[:<host>]]
-    else if (!wcscmp(argv[i], L"--discs-find") && more) disc_list::TestFind(argv[++i]), g_page = PageId::kDiscs;  // <folder>[,<report>]: Find my discs
+    else if (!wcscmp(argv[i], L"--discs-allstars") && more) {  // <from>,<to>
+      const std::wstring v = argv[++i];
+      const size_t comma = v.find(L',');
+      disc_list::TestAllStars(v.substr(0, comma), comma == std::wstring::npos ? L"" : v.substr(comma + 1));
+      g_page = PageId::kDiscs;
+    } else if (!wcscmp(argv[i], L"--discs-find") && more) disc_list::TestFind(argv[++i]), g_page = PageId::kDiscs;  // <folder>[,<report>]: Find my discs
     else if (!wcscmp(argv[i], L"--simple-port") && more) {  // <entrance|moves|taunts|import>,<game key>[,<item>[,<step>[,add]]]
       const std::string spec = Utf8(argv[++i]);
       simple_port::TestStart(spec);

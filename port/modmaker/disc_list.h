@@ -73,6 +73,7 @@ bool Scanning();
 void Draw();
 // Test aid --discs-find <folder>[,<report.txt>]: Find my discs at start; with a report, the list is written there
 // when the search ends, and the Mod Maker quits.
+void TestAllStars(const std::wstring& from, const std::wstring& to);  // (--discs-allstars)
 void TestFind(const std::wstring& spec);
 
 }  // namespace disc_list

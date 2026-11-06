@@ -274,18 +274,13 @@ packages can hold the same name.
 | SvR 2009 | `pac/evt/NyujyoD.pac` (`entrance_port` lists it; `superstar_port` takes 2011's by name, as for its disc superstars) | `NNN.bik`: Bink 1, as it is |
 | WWE '12 | `pac/evt/NyujyoC.pac`, same name in Pack 3 and Pack 4, each with its own entrances | `.bik`: as it is |
 | WWE '13 | `Entrance_dlc<nn>.pac` | `NNN.bik2`: early Bink 2 (KB2d), neither RAD Video Tools nor FFmpeg can open it, so no titantron |
-| WWE 2K14 | `Entrance_dlc<nn>.pac` | `NNN.bik2`: Bink 2 (KB2f) |
+| WWE 2K14 | `Entrance_dlc<nn>.pac` | `NNN.bik2`: Bink 2 (KB2f), needs the player's decoder |
 | WWE 2K15 | `entrance_dlc<nn>[b].pac` | `ent_NNNN_V_0.bk2`: Bink 2, needs the player's decoder |
 | WWE 2K16 | `<5 digits>_dlc<nn>.pac`, EPK8 where the disc has EPAC | `ent_NNNN_V_0.bk2`: as 2K15 |
 
-Props the DLC entrance uses that 2011's `evtobj.pac` lacks don't show, and the conversion warns about them, as for a
-disc entrance; the packages' own `evtobj_dlc<nn>.pac` aren't read. SvR 2007 / 2008 /
 Props a DLC entrance uses that 2011's `evtobj.pac` lacks come from the packages' `evtobj_dlc<nn>.pac` (2K16: `pac/prop/<id>_dlc<nn>.pac`): the model
 goes through `svrmod wwe13prop` and the pack adds it under its own id. '13: 1 prop, 2K14: 3, 2K16: 5. Props no package holds don't show, and the conversion
-warns, as for a disc entrance. Not read from a package yet: moves whose motions only
-the DLC has (their slots keep the base's move), and the Moves & entrances tab doesn't get the DLC folder. SvR 2007 / 2008 /
-Legends use the 2009 reader but no package has been tried. WWE All Stars isn't a source game; its packages are skipped.
-Legends use the 2009 reader but no package has been tried.
+warns, as for a disc entrance. SvR 2007 / 2008 / Legends use the 2009 reader but no package has been tried.
 
 WWE All Stars isn't a source game (Unreal Engine 3 packages, nothing of it converts) and needs no disc for this: its DLC's 13
 jumbotrons (`phase<n>/<nnn>_JumboTron.bik`, Bink 1, 512 x 512) work as a superstar mod's entrance movie as they are. My game

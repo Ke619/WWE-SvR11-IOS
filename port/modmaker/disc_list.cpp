@@ -214,6 +214,8 @@ void PickFor(const Game& g, bool folder) {
 }
 
 
+static std::wstring g_test_stars_from, g_test_stars_to;
+
 // An archive right in the folder or a level down: the porters read packages, not what they were downloaded in.
 static bool HoldsArchives(const std::wstring& folder, int depth = 0) {
   std::error_code ec;
@@ -596,10 +598,25 @@ void TestFind(const std::wstring& spec) {
   g_test_pending = true;
 }
 
+static void GetAllStarsMovies(const std::wstring& from, const std::wstring& to) {
+  RunToolJson(L"dlc_src.py", {L"movies", from, L"54510866", to}, [from, to](int code, const std::string& out) {
+    const size_t found = out.find("\"ok\": true");
+    if (code == 0 && found != std::string::npos) Status("WWE All Stars' jumbotrons saved in " + Utf8(to) + ": use one as a superstar's entrance movie.");
+    else if (HoldsArchives(from)) Status("That folder has .rar / .7z / .zip files: unpack them first, then pick the folder they unpacked to.");
+    else Status("No WWE All Stars DLC movies found in " + Utf8(from) + ".");
+  });
+}
+
+void TestAllStars(const std::wstring& from, const std::wstring& to) { g_test_stars_from = from, g_test_stars_to = to; }
+
 void Draw() {
   if (g_test_pending) {
     g_test_pending = false;
     FindIn(g_test_folder);
+  }
+  if (!g_test_stars_from.empty() && !Busy()) {  // (--discs-allstars <from>,<to>: the button's job)
+    GetAllStarsMovies(g_test_stars_from, g_test_stars_to);
+    g_test_stars_from.clear();
   }
   const float top = ImGui::GetCursorPosY();
   Heading("My game discs", "Your other WWE games, set once: every From another game tab and Moves & entrances read them. Disc "
@@ -661,13 +678,7 @@ void Draw() {
     const std::wstring from = PickFolder(L"The folder with WWE All Stars' DLC packages", L"");
     if (!from.empty()) {
       const std::wstring to = PickFolder(L"Where to save the jumbotrons (.bik)", L"");
-      if (!to.empty())
-        RunToolJson(L"dlc_src.py", {L"movies", from, L"54510866", to}, [from, to](int code, const std::string& out) {
-          const size_t found = out.find("\"ok\": true");
-          if (code == 0 && found != std::string::npos) Status("WWE All Stars' jumbotrons saved in " + Utf8(to) + ": use one as a superstar's entrance movie.");
-          else if (HoldsArchives(from)) Status("That folder has .rar / .7z / .zip files: unpack them first, then pick the folder they unpacked to.");
-          else Status("No WWE All Stars DLC movies found in " + Utf8(from) + ".");
-        });
+      if (!to.empty()) GetAllStarsMovies(from, to);
     }
   }
   ImGui::Spacing();

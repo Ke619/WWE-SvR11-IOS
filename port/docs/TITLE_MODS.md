@@ -16,7 +16,10 @@ holder's form less that word) and `kind=tag` for a tag title. Up to 32.
 **Works so far:** Championship Scramble's title list and a match on the title; the holder's banner in an entrance;
 holders kept beside the save.
 
-**Not yet:** other screens' lists (Universe, title select), a belt or art of its own (the holder carries a stock belt model and the list shows no art for it), announcer lines, online rules, a Mod Maker page.
+**Online:** new titles aren't offered: `sub_8244C9B0`'s hook leaves them off the list while `P2POnlineMode()`. A new title's
+index is its place in this game's folders, so two games can't agree on one, and the other may not have the mod.
+
+**Not yet:** other screens' lists (title select), a belt or art of its own (the holder carries a stock belt model and the list shows no art for it), tag titles in Universe's rankings, announcer lines, a Mod Maker page.
 
 Holder writes: `sub_825B7EB0` (a finished Universe card), `sub_825B1488` (titles outside Universe's list, after a
 simulated match), `sub_8243D680` (end of match, from the setup's people) and `sub_8257B268` (a superstar removed).
@@ -101,6 +104,9 @@ py tools/title_port.py titles
 py tools/title_port.py make --title IC --out <dir> --name "SvR PC Championship" --picture <png>
     --set 2002_01=<png> --set 2002_02=<png> ... --svrmod
 ```
+
+A new title (behind the gate): `py tools/title_port.py make --new --name "SvR PC Championship" --out <dir> --belt US --like US
+--brand raw --svrmod`.
 
 `titles` lists each title's belt textures and menu pictures (names, sizes). `make` writes the mod
 folder and, with `--svrmod`, the file to install (launcher Mods tab, or copy the folder into

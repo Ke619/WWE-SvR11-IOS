@@ -20,6 +20,7 @@
 
 #include "generated/default/svr2011_init.h"
 #include "no_mods.h"
+#include "p2p.h"
 #include "superstar_mods.h"
 #include "text_guard.h"
 
@@ -482,8 +483,10 @@ void ShowFrom(uint8_t* base, int top) {
 REX_HOOK_RAW(sub_8244C9B0) {
   const uint32_t self = ctx.r3.u32;
   __imp__sub_8244C9B0(ctx, base);
-  if (g_new.empty()) return;
   g_list = TitleList();
+  // (online, none: a new title's index is this game's alone - its place in this game's folders - so the two sides can't
+  // agree on one, and the other side may not have it)
+  if (g_new.empty() || svr2011::P2POnlineMode()) return;
   g_list.self = self;
   g_list.widgets = Rd(base, Rd(base, Rd(base, 0x82EDE628) + 56) + 8);
   for (int i = 0; i < kListRows; ++i) {

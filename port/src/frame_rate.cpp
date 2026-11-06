@@ -32,6 +32,7 @@
 #include "fast_loads.h"
 #include "fast_start.h"
 #include "pad_icons.h"
+#include "pad_map.h"
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -920,6 +921,7 @@ REX_HOOK_RAW(sub_82905058) {
     svr2011::ReportPagePad(base, base + out);  // (the pause menu's REPORT A PROBLEM: report_page.h)
   }
   if (out && ctx.r3.u32 == 0) svr2011::PadIconsInput(user, base + out);  // (who pressed last: pad_icons.h)
+  if (out && ctx.r3.u32 == 0) svr2011::PadMapApply(base, user, base + out);  // (the player's layout, in play: pad_map.h)
   if (out) {  // (a replay: the recording's pad this frame - match_record.h)
     uint32_t result = ctx.r3.u32;
     if (svr2011::MatchReplayPad(user, result, base + out)) ctx.r3.u64 = result;

@@ -2,6 +2,8 @@
 
 #include "report_page.h"
 
+#include <chrono>
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -48,6 +50,7 @@
 #include "generated/default/svr2011_init.h"
 
 #include "frame_rate.h"
+#include "match_diag.h"
 #include "match_record.h"
 #include "native/native_renderer.h"
 
@@ -993,6 +996,7 @@ constexpr uint32_t kQuitLabel = 0x094B;
 constexpr uint32_t kReportLabel = 0x0FA0B202;  // (menu_hooks.cpp gives its text)
 constexpr uint32_t kMaxRows = 16;
 std::atomic<uint32_t> g_pause{0}, g_pause_items{0}, g_pause_row{0};
+std::atomic<uint32_t> g_pause_any{0};  // (also online, where it gets no REPORT A PROBLEM: PauseMenuUp)
 uint16_t g_last_pad = 0;
 
 bool PauseShown(uint8_t* base, uint32_t* cursor) {
@@ -1011,6 +1015,7 @@ REX_HOOK_RAW(sub_824271E8) {
   const uint32_t o = ctx.r3.u32;
   __imp__sub_824271E8(ctx, base);
   if (!o || Rd32(base + o) != kPauseVtable || !g_memory) return;
+  g_pause_any = o;
   if (svr2011::Lockstep()) return;  // (online: the match doesn't pause - no REPORT A PROBLEM there)
   const uint32_t items = Rd32(base + o + 40), count = Rd32(base + o + 44);
   if (!items || count == 0 || count + 1 > kMaxRows) return;
@@ -1056,6 +1061,28 @@ REX_HOOK_RAW(sub_824068A8) {
 }
 
 namespace svr2011 {
+
+bool PauseMenuUp(uint8_t* base) {
+  const uint32_t o = g_pause_any.load();
+  if (!o || !base || Rd32(base + o) != kPauseVtable) return false;
+  const uint32_t state = Rd32(base + o + 16);
+  static const bool log = std::getenv("SVR2011_TEST_PAD_MAP_LOG") != nullptr;
+  static uint32_t logged = ~0u;
+  if (log && state != logged) {
+    logged = state;
+    REXLOG_INFO("[svr2011] pause screen {:08X} state {}", o, state);
+  }
+  // (a row chosen: 3, then 5 - for a page the game opens from it and, for good, once back in the match; 0 on the way
+  // back from that page. Until the match clock runs again it's still the pause. A page like CONTROL SETTINGS keeps the
+  // clock running, so it counts as play: its buttons and their icons both follow the layout.)
+  using Clock = std::chrono::steady_clock;
+  static uint32_t clock_was = 0;
+  static Clock::time_point moved_at{};
+  const uint32_t clock = MatchClock(base);
+  if (clock != clock_was) clock_was = clock, moved_at = Clock::now();
+  if (state == 1 || state == 2) return true;
+  return Clock::now() - moved_at > std::chrono::milliseconds(150);
+}
 
 void ReportPagePad(uint8_t* base, uint8_t* state) {
   if (!base || !state) return;

@@ -1202,4 +1202,13 @@ void TouchInject(uint32_t pointer, int action, float x, float y) {
   });
 }
 
+void TouchControlsHeld(uint16_t* buttons, uint8_t* left_trigger, uint8_t* right_trigger) {
+  std::lock_guard lock(g_mutex);
+  uint16_t held = uint16_t(g_pad.buttons);
+  const auto now = std::chrono::steady_clock::now();
+  for (int b = 0; b < 16; ++b)
+    if (now < g_hold_until[b]) held |= uint16_t(1u << b);
+  *buttons = held, *left_trigger = uint8_t(g_pad.left_trigger), *right_trigger = uint8_t(g_pad.right_trigger);
+}
+
 }  // namespace svr2011

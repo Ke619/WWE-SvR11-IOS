@@ -43,5 +43,7 @@ bool ReportPageHoldsInput();
 // XINPUT_STATE): A on the pause menu's REPORT A PROBLEM opens the page instead (the game never sees it); START in a
 // match keeps a screenshot of the frame before the pause.
 void ReportPagePad(uint8_t* base, uint8_t* state);
+// The pause menu is up (online too). Not the game's pages opened from it: the match clock runs there (see the .cpp).
+bool PauseMenuUp(uint8_t* base);
 
 }  // namespace svr2011

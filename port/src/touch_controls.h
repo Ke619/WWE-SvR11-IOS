@@ -66,6 +66,8 @@ float TouchControlsSideInset(bool right, float top, float bottom);
 // True while the editor or the controls sheet is open (the game then sees
 // an idle controller).
 bool TouchControlsHoldInput();
+// What the on-screen controller holds down now (pad_map.h leaves it out of a controller layout).
+void TouchControlsHeld(uint16_t* buttons, uint8_t* left_trigger, uint8_t* right_trigger);
 
 // Game state (any thread): a match (entrances, then the match) or a menu.
 void TouchGameInMatch(bool in_match);

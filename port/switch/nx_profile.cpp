@@ -5,6 +5,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <unistd.h>
 
 #define SVR_THREADS_FILE "/SvR2011/logs/nx_threads.txt"
 
@@ -66,6 +67,7 @@ void Monitor(void*) {
       s.ticks = ticks - g_threads[i].last_ticks;
       g_threads[i].last_ticks = ticks;
       svcGetThreadId(&s.id, s.handle);
+      if (double(s.ticks) * 100.0 / span < 2.0 && (round % 4) != 3) continue;
       if (R_FAILED(svcSetThreadActivity(s.handle, ThreadActivity_Paused))) continue;
       static ThreadContext ctx;
       if (R_SUCCEEDED(svcGetThreadContext3(&ctx, s.handle))) {
@@ -99,6 +101,7 @@ void Monitor(void*) {
       fprintf(f, "\n");
     }
     fflush(f);
+    fsync(fileno(f));
     (void)used;
   }
   fclose(f);

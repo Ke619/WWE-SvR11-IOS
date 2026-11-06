@@ -98,7 +98,8 @@ static void WriteSettings() {
       "native_max_scale = 1\n"
       "native_scale_effects = false\n"
       "native_record_thread = true\n"
-      "show_fps = true\n",
+      "show_fps = true\n"
+      "perf_log_seconds = 10\n",
       f);
   fclose(f);
 }

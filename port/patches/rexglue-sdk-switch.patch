@@ -275,6 +275,42 @@ index 01e1ac6..4742ffe 100644
  elseif(UNIX)
      target_link_libraries(rexcore PRIVATE pthread rt dl)
  endif()
+diff --git a/src/core/clock_posix.cpp b/src/core/clock_posix.cpp
+index 00f2382..2ab7b14 100644
+--- a/src/core/clock_posix.cpp
++++ b/src/core/clock_posix.cpp
+@@ -18,10 +18,19 @@ static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only")
+ #include <mach/mach_time.h>
+ #endif
+ 
++#if REX_PLATFORM_SWITCH
++#include <switch.h>
++#endif
++
+ namespace rex::chrono {
+ 
+ uint64_t Clock::host_tick_frequency_platform() {
+-#ifdef __APPLE__
++#if REX_PLATFORM_SWITCH
++  // [svr2011 switch] The hardware counter, in both functions: libnx's reported
++  // resolution doesn't match the nanoseconds clock_gettime returns, which made
++  // guest time run many times too fast.
++  return 19200000;
++#elif defined(__APPLE__)
+   mach_timebase_info_data_t info;
+   mach_timebase_info(&info);
+   return (uint64_t)((1000000000ull * (uint64_t)info.denom) / (uint64_t)info.numer);
+@@ -37,7 +46,9 @@ uint64_t Clock::host_tick_frequency_platform() {
+ }
+ 
+ uint64_t Clock::host_tick_count_platform() {
+-#ifdef __APPLE__
++#if REX_PLATFORM_SWITCH
++  return armGetSystemTick();
++#elif defined(__APPLE__)
+   // mach_absolute_time() returns raw hardware ticks; host_tick_frequency_platform()
+   // expresses the rate of these same ticks via mach_timebase_info.
+   // clock_gettime(CLOCK_MONOTONIC_RAW) returns nanoseconds, which would be
 diff --git a/src/core/exception_handler_switch.cpp b/src/core/exception_handler_switch.cpp
 new file mode 100644
 index 0000000..cf589a7

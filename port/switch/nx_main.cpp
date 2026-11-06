@@ -2,6 +2,8 @@
 #include <switch.h>
 
 #include <cerrno>
+#include <dirent.h>
+#include <fcntl.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -72,6 +74,7 @@ u64 __nx_exception_stack_size = sizeof(__nx_exception_stack);
 
 void userAppInit(void) {
   socketInitializeDefault();
+  romfsMountFromCurrentProcess("romfs");  // (fails harmlessly without one)
   mkdir(SVR_GAME_DIR, 0777);
   mkdir(SVR_GAME_DIR "/logs", 0777);
   setenv("REX_APP_FOLDER", SVR_GAME_DIR, 1);
@@ -96,19 +99,87 @@ void userAppInit(void) {
 
 void userAppExit(void) { socketExit(); }
 
+// The game's files are read-only inside the NSP (romfs:/game); what the game writes
+// goes to the SD card. A file on the card wins, so mods and small updates need no
+// reinstall. Everything asks for /SvR2011/... or a relative path (the folder is the
+// current one), which these wrappers look for on the card first, then in the NSP.
+static bool InRomfs(const char* path, char* out, size_t size) {
+  static const char kRoot[] = SVR_GAME_DIR "/";
+  const char* rest = nullptr;
+  if (!strncmp(path, kRoot, sizeof(kRoot) - 1)) {
+    rest = path + sizeof(kRoot) - 1;
+  } else if (!strcmp(path, SVR_GAME_DIR)) {
+    rest = "";
+  } else if (path[0] != '/' && !strchr(path, ':')) {
+    rest = path;
+  } else {
+    return false;
+  }
+  while (rest[0] == '.' && rest[1] == '/') rest += 2;
+  return snprintf(out, size, "romfs:/game/%s", rest) < static_cast<int>(size);
+}
+
+// A write to a folder that so far exists only in the NSP.
+static void MakeParents(const char* path) {
+  char dir[768];
+  if (snprintf(dir, sizeof(dir), "%s", path) >= static_cast<int>(sizeof(dir))) return;
+  for (char* c = dir + 1; *c; c++) {
+    if (*c == '/') {
+      *c = 0;
+      mkdir(dir, 0777);
+      *c = '/';
+    }
+  }
+}
+
+int __real__open_r(struct _reent* r, const char* path, int flags, int mode);
+int __wrap__open_r(struct _reent* r, const char* path, int flags, int mode) {
+  const bool writes = (flags & O_ACCMODE) != O_RDONLY || (flags & O_CREAT);
+  int fd = __real__open_r(r, path, flags, mode);
+  if (fd >= 0) return fd;
+  char other[768];
+  if (r->_errno != ENOENT || !InRomfs(path, other, sizeof(other))) return fd;
+  if (writes) {
+    MakeParents(path);
+    return __real__open_r(r, path, flags, mode);
+  }
+  return __real__open_r(r, other, flags, mode);
+}
+
 // A path naming no device here ("C:\\Windows\\...") fails with ENODEV, and
 // std::filesystem throws on anything but "not found". It is simply not there.
 int __real_stat(const char* path, struct stat* out);
 int __wrap_stat(const char* path, struct stat* out) {
   int r = __real_stat(path, out);
+  if (r != 0 && errno == ENOENT) {
+    char other[768];
+    if (InRomfs(path, other, sizeof(other))) r = __real_stat(other, out);
+  }
   if (r != 0 && errno == ENODEV) errno = ENOENT;
   return r;
 }
 int __real_lstat(const char* path, struct stat* out);
 int __wrap_lstat(const char* path, struct stat* out) {
   int r = __real_lstat(path, out);
+  if (r != 0 && errno == ENOENT) {
+    char other[768];
+    if (InRomfs(path, other, sizeof(other))) r = __real_stat(other, out);
+  }
   if (r != 0 && errno == ENODEV) errno = ENOENT;
   return r;
+}
+
+// Folders the NSP has are listed from the NSP (the card's copy of one would hide its
+// files); the rest (Saves, Mods, logs) from the card.
+DIR* __real_opendir(const char* path);
+DIR* __wrap_opendir(const char* path) {
+  char other[768];
+  if (InRomfs(path, other, sizeof(other))) {
+    if (DIR* d = __real_opendir(other)) return d;
+  }
+  DIR* d = __real_opendir(path);
+  if (!d && errno == ENODEV) errno = ENOENT;
+  return d;
 }
 
 // Every deliberate stop goes through here: aborts in libnx, newlib and the driver

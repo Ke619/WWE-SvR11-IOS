@@ -22,6 +22,7 @@
 // the wait before a clip; no scene is made yet in either) the step is done -
 // the game's own "no highlights" path - and the recorder's state is logged.
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -247,6 +248,40 @@ REX_EXTERN(__imp__sub_821DC110);
 REX_HOOK_RAW(sub_821DC110) {
   NoteHistoryEvent(base, "compaction", 0, 0, 0, uint32_t(ctx.lr));
   __imp__sub_821DC110(ctx, base);
+}
+
+// A replay track's step (sub_82252898, for each of the 140 in sub_821A0A48, from the recorder's queued callback on its
+// own thread) reads its block at +64 unchecked when +72 is set - but a clip change frees that block (sub_822523A8:
+// +64 0, +72 left as it was), which can happen just before the callback runs: a read of guest 0 at a clip change
+// (report 684e56, Android, match-end highlights). Nothing to step then.
+// Test aids: SVR2011_TEST_TRACK_GONE=<n> - the n-th step of a track with a block finds it gone, once;
+// SVR2011_TEST_TRACK_GUARD_OFF=1 - no check (with the other: the crash).
+REX_EXTERN(__imp__sub_82252898);
+REX_HOOK_RAW(sub_82252898) {
+  const uint32_t track = ctx.r3.u32;
+  auto at = [&](uint32_t a) { return Rd32(base + a + REX_PHYS_HOST_OFFSET(a)); };
+  static const int test_gone = [] { const char* v = std::getenv("SVR2011_TEST_TRACK_GONE"); return v ? std::atoi(v) : 0; }();
+  static const bool guard_off = std::getenv("SVR2011_TEST_TRACK_GUARD_OFF") != nullptr;
+  static std::atomic<int> steps{0};
+  const bool used = track && at(track + 36) && at(track + 72);
+  uint32_t kept = 0;
+  if (test_gone > 0 && used && at(track + 64) && steps.fetch_add(1) + 1 == test_gone) {
+    kept = at(track + 64);
+    Wr32(base + track + 64 + REX_PHYS_HOST_OFFSET(track + 64), 0);
+    REXLOG_WARN("[svr2011] replay: test - track {:08X} loses its block (SVR2011_TEST_TRACK_GONE)", track);
+  }
+  if (used && !guard_off) {
+    const uint32_t block = at(track + 64);
+    if (!block || !at(block)) {
+      static std::atomic<int> skipped{0};
+      const int n = skipped.fetch_add(1) + 1;
+      if (n <= 3 || n % 500 == 0) REXLOG_WARN("[svr2011] replay: a track's block is gone (track {:08X}) - not stepped ({} times)", track, n);
+      if (kept) Wr32(base + track + 64 + REX_PHYS_HOST_OFFSET(track + 64), kept);
+      return;
+    }
+  }
+  __imp__sub_82252898(ctx, base);
+  if (kept) Wr32(base + track + 64 + REX_PHYS_HOST_OFFSET(track + 64), kept);
 }
 
 REX_EXTERN(__imp__sub_8225DC88);

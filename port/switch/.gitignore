@@ -1,0 +1,5 @@
+out/
+tests/*/build/
+tests/*/*.elf
+tests/*/*.nro
+tests/*/*.nacp

@@ -209,6 +209,8 @@ Measured on the user's console (original unpatched, FW 22.1.0, AMS 1.12.1), from
 
 **First boot (6 Nov 2026, measured on the console):** the game runs from an installed NSP (`svr2011.nsp`, program in romfs, game data on the SD card). The menus run at 60 fps. In a match it runs at about 7 fps at 1x, also at 360p with 30 fps forced. Performance work starts from here.
 
+**Compact shaders (6 Nov 2026, measured, handheld at stock clocks: CPU 1020, GPU 307, memory 1331 MHz):** uniform-buffer constants took the GPU wait from 109 ms to about 9 ms a frame. A full 1v1 played at 20-27 fps. It is now CPU-limited (264% of a core, about 44 ms a frame); entrances run 13-16 fps at 2,500-3,000 draws. Turning shadows off gave 23 fps against 19. Largest CPU costs seen: lock contention in `multi_wait`, the native draw path, driver copies at render pass ends, and yield spins. Docked, boost and compiler optimisation are still untried.
+
 **Compiler:** devkitA64's GCC compiled one generated file (`svr2011_recomp.101.cpp`, 1 MB source, 420 KB code at `-O2`, `-std=gnu++23`) once the SDK headers had stand-ins for Linux, `sys/syscall.h` and `ucontext.h`. So GCC is the first choice, and the SDK's Clang-only check must go. `ucontext.h` doesn't exist on Horizon, so fibers need another way if the game uses them.
 
 **Step 3 (PC count of alias use) is dropped:** aliases work on the console, so it no longer decides anything.

@@ -1411,6 +1411,7 @@ bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>
   for (size_t i = 0; i < nb; ++i) skin[i] = Mul(posed[i], InvAffine(bind[i]));
   const fs::path fbx_dir = fs::u8path(fbx_path).parent_path();
   std::vector<OutMesh> meshes;
+  int bad_influences = 0, lost_vertices = 0;
   std::map<std::string, const ufbx_material*> tex_material;  // texture key -> a material using it
   std::vector<uint32_t> tri(64);
   for (size_t ni = 0; ni < scene->nodes.count; ++ni) {
@@ -1485,6 +1486,11 @@ bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>
         double sum = 0;
         auto add = [&](int b, double w, const V3& wp, const V3& wn) {
           const V3 q = Apply(skin[size_t(b)], wp), qn = ApplyDir(skin[size_t(b)], wn);
+          // (a bone whose bind can't be inverted - scaled to nothing to hide a part - gives no position: not an influence)
+          if (!std::isfinite(q[0]) || !std::isfinite(q[1]) || !std::isfinite(q[2])) {
+            ++bad_influences;
+            return;
+          }
           for (int k = 0; k < 3; ++k) p[k] += w * q[k], nn[k] += w * qn[k];
           w2011[bone_id(wbone[size_t(b)])] += w;
           sum += w;
@@ -1503,6 +1509,10 @@ bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>
         if (sum <= 0) {  // (no weights: rides on its node's bone)
           const int b = rigid >= 0 ? rigid : src_of["root"];
           add(b, 1.0, Apply(geo_world, g), ApplyDir(geo_world, n));
+        }
+        if (sum <= 0) {  // (nothing usable at all: on the root, not NaN - it would make the whole file unreadable)
+          add(src_of["root"], 1.0, V3{0, 0, 0}, V3{0, 0, 1});
+          ++lost_vertices;
         }
         for (int k = 0; k < 3; ++k) p[k] /= sum;
         om.pos.push_back(out_pos(p));
@@ -1575,6 +1585,9 @@ bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>
       for (auto& v : m.pos) v = {v[0] * scale, v[1] * scale, v[2] * scale};
   }
   rep.scale = scale;
+  if (bad_influences || lost_vertices)
+    rep.warnings.push_back(std::to_string(bad_influences) + " vertex weight(s) on bones with no usable bind (scaled to nothing?) left out, " +
+                           std::to_string(lost_vertices) + " vertices put at the root: check those parts of the model");
   // Reduce detail (only when asked: max_vertices > 0 - it used to cut every model over the budget, a face too,
   // crumpled - user report 21 Oct): fewer vertices on the big meshes (eyes and lashes are left as they are);
   // keep_face: vertices that are mostly the head's (atama and the bones under it) stay

@@ -72,6 +72,37 @@ u32 __nx_applet_type = AppletType_Application;
 alignas(16) u8 __nx_exception_stack[0x8000];
 u64 __nx_exception_stack_size = sizeof(__nx_exception_stack);
 
+void NxProfileStart(void);
+
+// Bring-up settings: written at each start, so a test build needs no card access.
+static void WriteSettings() {
+  FILE* f = fopen(SVR_GAME_DIR "/svr2011.toml", "w");
+  if (!f) return;
+  fputs(
+      "gpu_plugin = \"xenos\"\n"
+      "gpu_backend = \"vulkan\"\n"
+      "native_renderer = \"main\"\n"
+      "input_backend = \"sdl\"\n"
+      "audio_backend = \"sdl\"\n"
+      "resolution = \"720p\"\n"
+      "resolution_scale = 1\n"
+      "fullscreen = true\n"
+      "vsync = true\n"
+      "window_width = 1280\n"
+      "window_height = 720\n"
+      "frame_rate = 30\n"
+      "mnk_mode = false\n"
+      "p2p_port_mapping = false\n"
+      "native_aa = 1\n"
+      "native_2x_msaa = false\n"
+      "native_max_scale = 1\n"
+      "native_scale_effects = false\n"
+      "native_record_thread = true\n"
+      "show_fps = true\n",
+      f);
+  fclose(f);
+}
+
 void userAppInit(void) {
   socketInitializeDefault();
   romfsMountFromCurrentProcess("romfs");  // (fails harmlessly without one)
@@ -85,6 +116,8 @@ void userAppInit(void) {
     setvbuf(stderr, nullptr, _IOLBF, 1024);
   }
   std::set_terminate(OnTerminate);
+  WriteSettings();
+  NxProfileStart();
   // Start-up marks, flushed at once: this works even if logging never starts.
   FILE* f = fopen(SVR_GAME_DIR "/logs/nx_start.txt", "w");
   if (f) {

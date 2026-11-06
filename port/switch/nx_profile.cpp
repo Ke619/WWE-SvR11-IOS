@@ -1,0 +1,127 @@
+// Bring-up profiler for the Switch: every few seconds each thread's CPU share and
+// where it is (pc, lr, return addresses on its stack), in logs/nx_threads.txt.
+// Offsets are from the program's start: tools name them from svr2011.elf.
+#include <switch.h>
+
+#include <cstdio>
+#include <cstring>
+
+#define SVR_THREADS_FILE "/SvR2011/logs/nx_threads.txt"
+
+extern "C" void _start(void);
+
+namespace {
+
+constexpr int kMax = 192;
+constexpr int kWords = 10;
+
+struct Entry {
+  Handle handle;
+  u64 last_ticks;
+};
+Entry g_threads[kMax];
+volatile int g_count = 0;
+Mutex g_lock;
+
+struct Snapshot {
+  Handle handle;
+  u64 ticks, id, pc, lr, sp;
+  u64 words[kWords];
+  int nwords;
+  bool ok;
+};
+Snapshot g_snap[kMax];
+
+void Register(Handle h) {
+  mutexLock(&g_lock);
+  if (g_count < kMax) {
+    g_threads[g_count].handle = h;
+    g_threads[g_count].last_ticks = 0;
+    g_count = g_count + 1;
+  }
+  mutexUnlock(&g_lock);
+}
+
+void Monitor(void*) {
+  FILE* f = fopen(SVR_THREADS_FILE, "w");
+  if (!f) return;
+  const u64 base = reinterpret_cast<u64>(&_start);
+  u64 before = armGetSystemTick();
+  Handle self = threadGetCurHandle();
+  for (int round = 0; round < 40; round++) {
+    svcSleepThread(round < 4 ? 5000000000ll : 15000000000ll);
+    const u64 now = armGetSystemTick();
+    const double span = double(now - before);
+    before = now;
+    mutexLock(&g_lock);
+    const int n = g_count;
+    for (int i = 0; i < n; i++) {
+      Snapshot& s = g_snap[i];
+      s.handle = g_threads[i].handle;
+      s.ok = false;
+      s.nwords = 0;
+      s.id = 0;
+      u64 ticks = 0;
+      if (s.handle == self || R_FAILED(svcGetInfo(&ticks, InfoType_ThreadTickCount, s.handle, UINT64_MAX))) continue;
+      s.ticks = ticks - g_threads[i].last_ticks;
+      g_threads[i].last_ticks = ticks;
+      svcGetThreadId(&s.id, s.handle);
+      if (R_FAILED(svcSetThreadActivity(s.handle, ThreadActivity_Paused))) continue;
+      static ThreadContext ctx;
+      if (R_SUCCEEDED(svcGetThreadContext3(&ctx, s.handle))) {
+        s.pc = ctx.pc.x;
+        s.lr = ctx.lr;
+        s.sp = ctx.sp;
+        s.ok = true;
+        MemoryInfo info{};
+        u32 page = 0;
+        if (R_SUCCEEDED(svcQueryMemory(&info, &page, ctx.sp)) && (info.perm & Perm_R)) {
+          const u64* sp = reinterpret_cast<const u64*>(ctx.sp);
+          const u64 end = info.addr + info.size;
+          for (int w = 0; w < 2048 && reinterpret_cast<u64>(sp + w + 1) <= end && s.nwords < kWords; w++) {
+            if (sp[w] > base + 0x1000 && sp[w] < base + (1ull << 27)) s.words[s.nwords++] = sp[w] - base;
+          }
+        }
+      }
+      svcSetThreadActivity(s.handle, ThreadActivity_Runnable);
+    }
+    mutexUnlock(&g_lock);
+    u64 used = 0;
+    fprintf(f, "== round %d, %.1f s, %d threads\n", round, span / 19200000.0, n);
+    for (int i = 0; i < n; i++) {
+      const Snapshot& s = g_snap[i];
+      if (!s.id) continue;
+      fprintf(f, "t%llu %5.1f%%", (unsigned long long)s.id, double(s.ticks) * 100.0 / span);
+      if (s.ok) {
+        fprintf(f, " pc +%llx lr +%llx :", (unsigned long long)(s.pc - base), (unsigned long long)(s.lr - base));
+        for (int w = 0; w < s.nwords; w++) fprintf(f, " %llx", (unsigned long long)s.words[w]);
+      }
+      fprintf(f, "\n");
+    }
+    fflush(f);
+    (void)used;
+  }
+  fclose(f);
+}
+
+}  // namespace
+
+extern "C" {
+
+Result __real_threadStart(Thread* t);
+Result __wrap_threadStart(Thread* t) {
+  Result rc = __real_threadStart(t);
+  if (R_SUCCEEDED(rc)) Register(t->handle);
+  return rc;
+}
+
+void NxProfileStart(void) {
+  mutexInit(&g_lock);
+  Register(envGetMainThreadHandle());
+  static Thread t;
+  if (R_SUCCEEDED(threadCreate(&t, Monitor, nullptr, nullptr, 0x8000, 0x2C, 2))) {
+    __real_threadStart(&t);
+  }
+}
+
+}  // extern "C"

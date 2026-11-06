@@ -873,6 +873,9 @@ bool SceneTarget(uint32_t width, uint32_t height) {
 
 // Host pixels per guest pixel for a target of this guest size.
 uint32_t TargetScale(uint32_t width, uint32_t height) {
+  // (EFFECT DETAIL off, the scene at 2x or more: the floor shadows only show with the shadow map and the 320 x 180
+  // target at the scene's scale too - tried at 2x and 3x. Either alone, or a bigger map at 1x: no shadows. Why not known.)
+  if ((width == 1120 && height == 1120) || (width == 320 && height == 180)) return g_scale;
   if (g_scale_effects) return g_scale;
   return width >= 1152 && height >= 640 ? g_scale : 1;  // (the scene: 1280 x 720)
 }
@@ -2290,6 +2293,7 @@ ColorTarget* GetColorTarget(Renderer* r, uint32_t base, uint32_t pitch, uint32_t
   const TargetFormat f = ColorFormat(format);
   const uint32_t scale = TargetScale(pitch, height);
   const uint32_t host_w = HostWidth(pitch, height, scale), host_h = HostHeight(pitch, height, scale);
+  if (pitch == 1120 && height == 1120) REXLOG_INFO("native renderer: shadow map {}x{}", host_w, host_h);
   plume::RenderTextureDesc d = plume::RenderTextureDesc::Texture2D(
       host_w, host_h, 1, f.resource, plume::RenderTextureFlag::RENDER_TARGET);
   d.committed = true;

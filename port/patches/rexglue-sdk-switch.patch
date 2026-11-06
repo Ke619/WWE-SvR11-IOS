@@ -208,7 +208,7 @@ index 3fa5fa0..8f8a20a 100644
    auto* f = new Fiber();  // (its sp_ is set by the first switch away)
    f->is_thread_fiber_ = true;
 diff --git a/src/core/filesystem_posix.cpp b/src/core/filesystem_posix.cpp
-index 9149c3f..76eacea 100644
+index 9149c3f..a68b155 100644
 --- a/src/core/filesystem_posix.cpp
 +++ b/src/core/filesystem_posix.cpp
 @@ -100,7 +100,7 @@ std::filesystem::path GetExecutablePath() {
@@ -220,14 +220,16 @@ index 9149c3f..76eacea 100644
    // [svr2011] The executable is the system's app_process; the app's folder
    // (the game files) is passed by its Java activity.
    if (auto dir = rex::platform::env::get("REX_APP_FOLDER")) {
-@@ -274,9 +274,61 @@ bool GetInfo(const std::filesystem::path& path, FileInfo* out_info) {
+@@ -274,9 +274,63 @@ bool GetInfo(const std::filesystem::path& path, FileInfo* out_info) {
    return false;
  }
  
 +#if REX_PLATFORM_SWITCH
-+}  // namespace rex::filesystem
++}  // namespace filesystem
++}  // namespace rex
 +extern "C" bool NxListSdFolder(const char* path, void (*entry)(void*, const char*, bool, uint64_t), void* user);
-+namespace rex::filesystem {
++namespace rex {
++namespace filesystem {
 +
 +// The game's folder: the card's listing in one request per 64 entries, then what only the
 +// NSP has (the card's file wins). Timestamps are left at 0: nothing here reads them.

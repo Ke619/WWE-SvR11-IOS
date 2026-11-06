@@ -10,7 +10,8 @@
 #include <unistd.h>
 
 // The game's folder on the SD card (rex::filesystem::GetExecutableFolder).
-#define SVR_GAME_DIR "sdmc:/SvR2011"
+// (no device name: std::filesystem only treats paths from the root as absolute)
+#define SVR_GAME_DIR "/SvR2011"
 
 namespace {
 

@@ -24,43 +24,6 @@
 static FILE *g_log;
 static Handle g_self;
 
-#ifdef SVR_NSP
-/* Installed title: no loader hands us our own process handle or a heap, so ask
-   the kernel for the handle the way nx-hbloader does (ISC licence, same steps):
-   send it to ourselves over a private session. */
-static Handle g_received;
-
-static void handle_receive_thread(void *arg)
-{
-    Handle session = (Handle)(uintptr_t)arg;
-    s32 idx = 0;
-    hipcMakeRequestInline(armGetTls());
-    svcReplyAndReceive(&idx, &session, 1, INVALID_HANDLE, UINT64_MAX);
-    HipcParsedRequest r = hipcParseRequest(armGetTls());
-    g_received = r.data.copy_handles[0];
-    hipcMakeRequestInline(armGetTls());
-    svcReplyAndReceive(&idx, &session, 0, session, 0);
-    svcCloseHandle(session);
-}
-
-static Handle get_own_process_handle(void)
-{
-    Handle server, client;
-    if (R_FAILED(svcCreateSession(&server, &client, 0, 0)))
-        return INVALID_HANDLE;
-    Thread t;
-    if (R_FAILED(threadCreate(&t, handle_receive_thread, (void *)(uintptr_t)server, NULL, 0x1000, 0x20, 0)))
-        return INVALID_HANDLE;
-    threadStart(&t);
-    hipcMakeRequestInline(armGetTls(), .send_pid = false, .num_copy_handles = 1).copy_handles[0] = CUR_PROCESS_HANDLE;
-    svcSendSyncRequest(client);
-    svcCloseHandle(client);
-    threadWaitForExit(&t);
-    threadClose(&t);
-    return g_received;
-}
-#endif
-
 static void say(const char *fmt, ...)
 {
     if (!g_log)
@@ -241,7 +204,7 @@ static void test_read_speed(void)
     u8 *buf = malloc(size);
     if (!buf)
         return;
-    Result rc = romfsInit();
+    Result rc = romfsMountFromCurrentProcess("romfs");
     say("romfs mount rc=0x%x", rc);
     if (R_SUCCEEDED(rc)) {
         FILE *f = fopen("romfs:/speed.bin", "rb");
@@ -540,7 +503,7 @@ int main(void)
     padInitializeDefault(&pad);
 
 #ifdef SVR_NSP
-    say("SvR 2011 Switch test 3: installed NSP");
+    say("SvR 2011 Switch test 3, round 2: NRO started by our loader in the installed NSP");
 #endif
     say("applet type %d, total %llu MB, used %llu MB, system resource %llu MB", appletGetAppletType(),
         info(InfoType_TotalMemorySize) / MB, info(InfoType_UsedMemorySize) / MB, info(InfoType_SystemResourceSizeTotal) / MB);
@@ -548,11 +511,7 @@ int main(void)
     if (appletGetAppletType() != AppletType_Application) {
         say("NOT TITLE MODE: hold R while starting a game.");
     } else {
-#ifdef SVR_NSP
-        g_self = get_own_process_handle();
-#else
         g_self = envGetOwnProcessHandle();
-#endif
         say("own process handle 0x%x", g_self);
         virtmemLock();
         u8 *w = (u8 *)virtmemFindAslr(WINDOW_SIZE + BLOCK, PAGE);

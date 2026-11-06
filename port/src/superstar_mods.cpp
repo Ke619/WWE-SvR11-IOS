@@ -4944,6 +4944,29 @@ REX_HOOK_RAW(sub_823941F8) {
     static const bool off = std::getenv("SVR2011_TEST_YMBS_SEARCH_OFF") != nullptr;  // (test aid: the game's search only)
     if (!off) ctx.r3.u64 = FindInUnsortedBanks(base, banks, id << 16 | x << 8 | y, out);
   }
+  // A weapon's motions go by its grip (x = the settings table's type) and a match loads only some grips (plain matches
+  // MOT/WEAT, Extreme Rules MOT/WEAP): none for a sack in a plain match (a107ed), a fire extinguisher or dumbbell in
+  // Extreme Rules; and no bank has the pull from under the ring (15481) for a drink cup, dumbbell, baseball bat or tire
+  // (d88915). With no motion the wrestler stood there until someone hit him. Those play the steel chair's (grip 3, in
+  // every match): the game's own weapons' probes for motions they don't have stay misses.
+  static const bool grip_off = std::getenv("SVR2011_TEST_GRIP_FALLBACK_OFF") != nullptr;
+  if (!ctx.r3.u32 && banks && out && !grip_off && y <= 1 && x >= 2 && x <= 63 && x != 3 && id >= 14000 && id < 16000) {
+    auto find = [&](uint32_t want_id, uint32_t want_x, uint32_t want_y, uint32_t want_out) {
+      ctx.r3.u64 = banks, ctx.r4.u64 = want_id, ctx.r5.u64 = want_x, ctx.r6.u64 = want_y, ctx.r7.u64 = want_out;
+      __imp__sub_823941F8(ctx, base);
+      return ctx.r3.u32;
+    };
+    if (BadBankSlot(base, banks) < 0 && (id == 15481 || !find(15080, x, 0, out))) {
+      if (find(id, 3, y, out)) {
+        static std::atomic<uint64_t> told{0};
+        if (!(told.fetch_or(1ull << x) >> x & 1))
+          REXLOG_INFO("[svr2011] weapons: no motion {} for grip {} in this match - the steel chair's instead", id, x);
+      }
+    } else {
+      ctx.r3.u64 = 0;
+    }
+    ctx.r4.u64 = id, ctx.r5.u64 = x, ctx.r6.u64 = y, ctx.r7.u64 = out;
+  }
   if (banks && y <= 1) svr2011::MatchBoxMotionLooked(id, ctx.r3.u32 != 0);  // (a body track found or not: match_box.h)
   // Test aid: SVR2011_TEST_BANK_DUMP=<id>[,<id>] - at a lookup of that id (x 0, y 0), once per id and bank
   // list: each bank in the list (its slot, magic, count, first / last key, whether the key is in its directory)

@@ -61,7 +61,10 @@ static void DrawNotice(ImGuiIO& io) {
                                  ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
   if (ImGui::Begin("##svr2011_notice", nullptr, flags)) {
     ImGui::SetWindowFontScale(1.4f);
+    // (a long notice wraps instead of running off the screen: "Game files missing: ..." on a phone lost its end)
+    ImGui::PushTextWrapPos(io.DisplaySize.x * 0.88f);
     ImGui::TextUnformatted(text.c_str());
+    ImGui::PopTextWrapPos();
   }
   ImGui::End();
 }

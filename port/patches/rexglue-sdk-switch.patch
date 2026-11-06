@@ -55,6 +55,33 @@ index e90418d..38333d4 100644
  #elif defined(__gnu_linux__)
  #define REX_PLATFORM_GNU_LINUX 1
  #define REX_PLATFORM_LINUX 1
+diff --git a/include/rex/ppc/context.h b/include/rex/ppc/context.h
+index 0ede542..4633908 100644
+--- a/include/rex/ppc/context.h
++++ b/include/rex/ppc/context.h
+@@ -177,6 +177,14 @@ struct FPSCRRegister {
+     setcsr(csr);
+   }
+ 
++#ifdef __SWITCH__
++  // Every change between the guest's vector and float code is an msr fpcr, which
++  // serializes. Here the mode stays as it starts: denormals kept.
++  inline void enableFlushModeUnconditional() noexcept {}
++  inline void disableFlushModeUnconditional() noexcept {}
++  inline void enableFlushMode() noexcept {}
++  inline void disableFlushMode() noexcept {}
++#else
+   inline void enableFlushModeUnconditional() noexcept {
+     csr |= FlushMask;
+     setcsr(csr);
+@@ -200,6 +208,7 @@ struct FPSCRRegister {
+       setcsr(csr);
+     }
+   }
++#endif
+ 
+   inline void InitHost() noexcept {
+     csr = getcsr();
 diff --git a/include/rex/thread/fiber.h b/include/rex/thread/fiber.h
 index f1f277a..a7acad7 100644
 --- a/include/rex/thread/fiber.h

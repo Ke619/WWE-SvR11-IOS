@@ -79,3 +79,21 @@ if '[switch] plain memory' not in s:
         f.write(s)
     print('header macros changed:', n)
 print('files', files, 'sync barriers', sync, 'loop barriers', loops)
+
+# The GCC form of DEFINE_REX_FUNC: without it the sub_ aliases aren't emitted and nothing links.
+with open(p, encoding='utf-8', newline='') as f:
+    s = f.read()
+nl = '\r\n' if '\r\n' in s else '\n'
+GCC_MARK = '// switch: GCC ignores attributes before extern "C"'
+if GCC_MARK not in s:
+    anchor = '#else' + nl + '#define DEFINE_REX_FUNC(name)'
+    assert s.count(anchor) == 1
+    s = s.replace(anchor, nl.join([
+        '#elif defined(__GNUC__) && !defined(__clang__) ' + GCC_MARK,
+        '#define DEFINE_REX_FUNC(name)                                       \\',
+        '  extern "C" __attribute__((alias("__imp__" #name), weak, noinline)) REX_FUNC(name); \\',
+        '  REX_EXTERN(__imp__##name)',
+        anchor]))
+    with open(p, 'w', encoding='utf-8', newline='') as f:
+        f.write(s)
+    print('GCC function form added')

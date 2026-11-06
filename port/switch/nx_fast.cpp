@@ -6,6 +6,13 @@
 #include <cstring>
 
 #include <rex/logging.h>
+#include <rex/ppc/context.h>
+
+// The caller's saved register for a hook: src/caller_nv.h.
+namespace svr2011 {
+thread_local uint32_t t_caller_nv = 0;
+}
+void NxCallerNv(PPCRegister& r) { svr2011::t_caller_nv = r.u32; }
 
 // One request for many entries, with their sizes. stat() is about five requests a file, and
 // the game's folder holds thousands. False: not read this way (ListFiles then does it the

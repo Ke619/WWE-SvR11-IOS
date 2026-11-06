@@ -27,7 +27,8 @@ endif()
 
 # What the SDK's own folders are built with (its settings don't reach this one).
 add_compile_definitions(REX_PLATFORM_SWITCH=1 REX_PLATFORM_LINUX=1 NDEBUG REXGLUE_BUILD_CONFIG="Release")
-add_compile_options(-fno-strict-aliasing -w
+# (-fPIE after CMake's -fPIC: nothing here is interposed, so calls can inline and own data needs no table.)
+add_compile_options(-fno-strict-aliasing -w -fPIE -fno-semantic-interposition
   "$<$<COMPILE_LANGUAGE:C,CXX>:SHELL:-include ${REXSDK_DIR}/compat_nx/rex_nx_compat.h>")
 include_directories(BEFORE SYSTEM ${REXSDK_DIR}/compat_nx)
 get_filename_component(SVR_GENERATED_PARENT "${SVR_GENERATED}" DIRECTORY)

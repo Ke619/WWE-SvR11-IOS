@@ -1,0 +1,47 @@
+# Switch only: appended to svr2011_config.toml by tools/nx_codegen.sh (the options go first).
+#
+# Saved registers as locals. r0, r2, r11 and r12 stay in ctx (non_argument_as_local is off):
+# about 260 functions, the exception clean-up ones, take a frame pointer in r12.
+#
+# Every call below is one whose callee's hook reads the caller's register: src/caller_nv.h.
+
+[[midasm_hook]]
+name = "NxCallerNv"
+address = 0x826A1F18  # sub_826A1D38 -> sub_826A1C70 (model_mem.cpp: the request)
+registers = ["r31"]
+
+[[midasm_hook]]
+name = "NxCallerNv"
+address = 0x82167A78  # -> sub_8215A8C0 (replay_worker.cpp: the worker)
+registers = ["r31"]
+
+[[midasm_hook]]
+name = "NxCallerNv"
+address = 0x82466E3C  # sub_82466830 -> sub_828B6CD0 (superstar_mods.cpp: the badge cursor)
+registers = ["r31"]
+
+# sub_825AD850's callers (superstar_mods.cpp PairTable: the rivalry table's object)
+[[midasm_hook]]
+name = "NxCallerNv"
+address = 0x825AF928  # sub_825AF908
+registers = ["r31"]
+
+[[midasm_hook]]
+name = "NxCallerNv"
+address = 0x825AED2C  # sub_825AECE8
+registers = ["r27"]
+
+[[midasm_hook]]
+name = "NxCallerNv"
+address = 0x825AD9E4  # sub_825AD9C8
+registers = ["r31"]
+
+[[midasm_hook]]
+name = "NxCallerNv"
+address = 0x825AD974  # sub_825AD950
+registers = ["r31"]
+
+[[midasm_hook]]
+name = "NxCallerNv"
+address = 0x825AD904  # sub_825AD8E0
+registers = ["r30"]

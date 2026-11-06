@@ -388,7 +388,26 @@ bool AddObject(fbx::Document& doc, const ArenaModel& am, const std::string& onam
     };
     const std::string color = tex("texDiffuse"), normal = tex("texNormal");
     if (!color.empty()) {
-      LinkTexture(doc, out_dir, color, matid, "DiffuseColor");
+      // (a model the game draws solid: its picture's alpha is a gloss mask or nothing, but other programs take it as
+      // opacity, so it links a copy with no alpha)
+      std::string shown = color;
+      if (!blended && !added && !Word(flags, "c")) {
+        shown = color + "_opaque";
+        const std::string file = P8(fs::u8path(out_dir) / "textures" / fs::u8path(shown + ".png"));
+        std::error_code ec;
+        if (!fs::exists(fs::u8path(file), ec)) {
+          Image img;
+          bool any = false;
+          if (LoadImageFile(P8(fs::u8path(out_dir) / "textures" / fs::u8path(color + ".png")), img))
+            for (size_t i = 3; i < img.rgba.size(); i += 4) {
+              any |= img.rgba[i] != 255;
+              img.rgba[i] = 255;
+            }
+          if (any) SavePng(file, img);
+          else shown = color;
+        }
+      }
+      LinkTexture(doc, out_dir, shown, matid, "DiffuseColor");
       if (blended) LinkTexture(doc, out_dir, color, matid, "TransparentColor");  // (see-through by the picture's alpha)
       if (added) {  // (a copy whose alpha is its brightness: the nearest other programs have to additive)
         const std::string glow = color + "_glow";
@@ -440,7 +459,8 @@ void AddLight(fbx::Document& doc, const std::string& name, const Key& k, ArenaFu
     fbx::Node& p = na.Add("Properties70");
     p.Add("P").S("LightType").S("enum").S("").S("").I(1);  // (directional)
     fbx::PVec(p, "Color", "Color", std::min(1.0f, k.v[6]), std::min(1.0f, k.v[7]), std::min(1.0f, k.v[8]));
-    fbx::PDouble(p, "Intensity", 100.0);
+    fbx::PDouble(p, "Intensity", 300.0);
+    p.Add("P").S("CastShadow").S("bool").S("").S("").I(0);  // (as the game's: the arena's roof would block them)
   }
   fbx::Node& mo = doc.objects->Add("Model");
   mo.L(id).S(fbx::ObjName(name, "Model")).S("Light");
@@ -520,7 +540,7 @@ bool ExportArenaFull(const Arena& a, const std::string& out_dir, const std::stri
   static const struct {
     int channel;
     const char* name;
-  } kChannels[] = {{0, "fill_ground"}, {1, "fill_sky"}, {10, "dir_1"}, {11, "dir_2"}, {12, "dir_3"}, {13, "dir_4"}};
+  } kChannels[] = {{0, "fill_1"}, {1, "fill_2"}, {10, "dir_1"}, {11, "dir_2"}, {12, "dir_3"}, {13, "dir_4"}};
   for (const auto& c : kChannels) {
     const auto t = lights.find({100, c.channel});
     if (t != lights.end()) AddLight(doc, std::string("light100_") + c.name, t->second, rep);

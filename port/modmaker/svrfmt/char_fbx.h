@@ -29,7 +29,11 @@ bool IsSecondaryBoneName(const std::string& name);
 // the game's spring cloth chains.
 bool IsClothBoneName(const std::string& name);
 
-bool ExportCharacterFbx(const Bytes& pac, int attire, const std::string& out_dir, const std::string& name, CharExportReport& rep);
+// opaque_colour: a colour picture's alpha is a shine level unless the mesh is a cut-out, but other programs take it as
+// opacity (Blender: a see-through superstar), so those meshes link <texture>_opaque.png, the picture with no alpha; the
+// FBX import takes the alpha as shine only when asked, so nothing is lost coming back.
+bool ExportCharacterFbx(const Bytes& pac, int attire, const std::string& out_dir, const std::string& name, CharExportReport& rep,
+                        bool opaque_colour = false);
 
 // An FBX's skeleton: every bone node (a skeleton node, or one a skin cluster uses), parent index (-1: none), in
 // file order, and for each its world rest position; false with err when the file doesn't read.

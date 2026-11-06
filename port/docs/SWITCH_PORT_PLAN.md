@@ -203,7 +203,9 @@ Measured on the user's console (original unpatched, FW 22.1.0, AMS 1.12.1), from
 | Cores and threads | Cores 0-2 only; at priority 0x2C same-core threads don't share time, at 0x3B they do |
 | Vulkan (mesa-switch, commit 0ff52079ca9e) | 1.4 on GM20B, triangle at 60.5 fps, worst frame 17.2 ms; BDA, int64, descriptor indexing, BC textures present; heap 2391 MB |
 
-**Not measured yet:** driver memory use (the used-memory figure is flat because the loader reserves the heap up front), real game shaders, and the installed NSP route.
+**Not measured yet:** real game shaders, and driver memory with the real renderer.
+
+**Installed NSP with the loader (nx-hbloader as `main`, game as NRO, measured):** 3285 MB total, own process handle given by the loader, one 1792 MB pool with 8000 pieces at 3 views passes 3 rounds (24,000 mappings, with a 32 MB `system_resource_size` in the NPDM; without it the limit was about 10,000), 2 GB held, Vulkan 60.3 fps over 10 s with 30 MB of heap for the driver in the triangle test, romfs read 78 MB/s against SD read 80 MB/s, SD write 38 MB/s. Exiting through the loader's unload path showed "the software was closed"; the loader now leaves straight away (retest pending). Getting the process handle directly from an NSO returned 0 in my attempt and was dropped.
 
 **Compiler:** devkitA64's GCC compiled one generated file (`svr2011_recomp.101.cpp`, 1 MB source, 420 KB code at `-O2`, `-std=gnu++23`) once the SDK headers had stand-ins for Linux, `sys/syscall.h` and `ucontext.h`. So GCC is the first choice, and the SDK's Clang-only check must go. `ucontext.h` doesn't exist on Horizon, so fibers need another way if the game uses them.
 

@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cstring>
 #include <map>
+#include <cwctype>
 #include <mutex>
 #include <thread>
 
@@ -212,6 +213,22 @@ void PickFor(const Game& g, bool folder) {
 }
 
 
+// An archive right in the folder or a level down: the porters read packages, not what they were downloaded in.
+static bool HoldsArchives(const std::wstring& folder, int depth = 0) {
+  std::error_code ec;
+  for (fs::directory_iterator it(fs::path(folder), fs::directory_options::skip_permission_denied, ec), end; !ec && it != end; it.increment(ec)) {
+    std::error_code e2;
+    if (it->is_directory(e2)) {
+      if (depth < 1 && HoldsArchives(it->path().wstring(), depth + 1)) return true;
+    } else {
+      std::wstring x = it->path().extension().wstring();
+      for (auto& c : x) c = wchar_t(towlower(c));
+      if (x == L".rar" || x == L".7z" || x == L".zip") return true;
+    }
+  }
+  return false;
+}
+
 // Any DLC under the folder, as tools/dlc_src.py looks (its MAX_DEPTH): a console package file, or a folder holding pac\\ch.
 static bool HoldsDlc(const std::wstring& folder, int depth = 0) {
   std::error_code ec;
@@ -271,7 +288,9 @@ void GameRow(const Game& g) {
       if (!p.empty()) {
         SetDlc(g.key, p);
         Status(FullName(g) + " DLC: " + Utf8(p) +
-               (HoldsDlc(p) ? "" : " - no DLC packages found there (console package files, or unpacked ones holding pac\\ch)."));
+               (HoldsDlc(p) ? ""
+                : HoldsArchives(p) ? " - this folder has .rar / .7z / .zip files: unpack them first, then pick the folder they unpacked to."
+                                   : " - no DLC packages found there (console package files, or unpacked ones holding pac\\ch)."));
       }
     }
     if (!dlc.empty()) {

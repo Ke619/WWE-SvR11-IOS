@@ -1483,6 +1483,8 @@ def main(argv):
         return 2
     global SVRMOD
     SVRMOD = opt(argv, '--svrmod')
+    if opt(argv, '--dlc'):   # (the source game's DLC packages: open_source reads them beside the disc)
+        os.environ['SVR2011_PORT_DLC'] = opt(argv, '--dlc')
     cmd = {'games': cmd_games, 'detect': cmd_detect, 'list': cmd_list, 'convert': cmd_convert,
            'free-numbers': cmd_free}.get(argv[0])
     if not cmd:

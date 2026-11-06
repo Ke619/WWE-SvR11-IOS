@@ -6,6 +6,8 @@
 // text - sub_823D1E98, 2 picture); +196 non-zero: not drawn. Its place, as the text draw works it out:
 //   x = e[+160] + L[+144] + e[+4] * L[+160],  y = e[+164] + L[+148] + e[+8] * L[+164]
 // Test aid SVR2011_TEST_MENU_TOUCH_LOG=1: each new element drawn, once.
+#include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -22,6 +24,7 @@
 #include <rex/logging.h>
 #include <rex/ppc.h>
 
+#include "generated/default/svr2011_init.h"
 #include "graphics_page.h"
 #include "keyboard_typing.h"
 #include "menu_touch.h"
@@ -78,13 +81,16 @@ void LogElement(const uint8_t* base, uint32_t layout, uint32_t element) {
               RdF(e + 12), RdF(e + 16), group, row, type == 1 ? GuestText(base, Rd32(e + 216)) : "");
 }
 
+std::atomic<bool> g_shot_again{false};
+
 // Test aid SVR2011_TEST_MENU_TOUCH_SHOT=<path prefix>: a frame (PPM) 3 s after each menu group change - a hidden test
 // game has no window to capture. Called on the draw thread.
 void ShotAid() {
   static const char* prefix = std::getenv("SVR2011_TEST_MENU_TOUCH_SHOT");
   if (!prefix) return;
-  static uint32_t shown = ~0u, pending = ~0u;
+  static uint32_t shown = ~0u, pending = ~0u, taps = 0;
   static bool asked = false;
+  if (g_shot_again.exchange(false)) shown = ~0u, pending = ~0u, ++taps;
   static std::chrono::steady_clock::time_point since;
   uint32_t group = 0, row = 0;
   svr2011::ScriptMenuState(&group, &row);
@@ -99,7 +105,7 @@ void ShotAid() {
   uint32_t w = 0, h = 0;
   if (asked && svr2011::native::TakeFrameCapture(rgb, w, h)) {
     shown = pending;
-    const std::string file = std::string(prefix) + "_" + std::to_string(pending) + ".ppm";
+    const std::string file = std::string(prefix) + "_" + std::to_string(pending) + "_" + std::to_string(taps) + ".ppm";
     if (FILE* f = std::fopen(file.c_str(), "wb")) {
       std::fprintf(f, "P6\n%u %u\n255\n", w, h);
       std::fwrite(rgb.data(), 1, rgb.size(), f);
@@ -148,16 +154,152 @@ void NoteText(const uint8_t* base, uint32_t layout, uint32_t element) {
   d.text[n] = 0;
 }
 
+// The character select's panels, by player. The tiles aren't layout elements: a fixed table, 21 x 3 tiles of 24 x 30
+// from (66.7, 192) of 640 x 360; the wide ones are 2 columns of one kind.
+constexpr uint32_t kSelectGroup = 0x7D0, kGridCols = 21, kGridRows = 3;
+constexpr float kGridX = 66.7f, kGridY = 192, kTileW = 24, kTileH = 29.7f;
+constexpr uint32_t kCharacterTile = 5;
+constexpr uint32_t kPanelPlayer = 284, kPanelCol = 88, kPanelRow = 72, kPanelListMode = 28916, kPanelScreen = 272;
+constexpr uint32_t kPanelState = 268;   // (2: it has a cursor; 0: not yet, or its pick is settled)
+constexpr uint32_t kPanelPicking = 84;  // (0 once a superstar is chosen: "READY / ADVANCED", no cursor on the grid)
+struct Panel {
+  uint32_t cursor = 0, col = 0, row = 0, mode = 0, state = 0, picking = 0;
+  Clock::time_point seen, moved;
+};
+std::mutex g_panel_mutex;
+Panel g_panels[6];
+uint32_t g_kinds[kGridRows][kGridCols];
+uint32_t g_kinds_screen = 0;
+uint8_t* g_base = nullptr;
+// A tile for a panel's cursor (done on the guest's thread, at the panel's next draw). wake: player 1 has no cursor yet -
+// the first A brings it up on a tile of the game's choosing; this waits for that.
+struct Pending {
+  uint32_t cursor = 0, col = 0, row = 0;
+  bool wake = false;
+  Clock::time_point at;
+  svr2011::MenuTouchPress press = nullptr;
+} g_pending;
+
+void Wr32(uint8_t* p, uint32_t v) {
+  p[0] = uint8_t(v >> 24), p[1] = uint8_t(v >> 16), p[2] = uint8_t(v >> 8), p[3] = uint8_t(v);
+}
+
+// The tile under a tap on the grid: first the cursor goes there, a second tap on it presses A.
+bool GridTap(float x, float y, svr2011::MenuTouchPress press) {
+  if (x < kGridX || y < kGridY) return false;
+  const uint32_t col = uint32_t((x - kGridX) / kTileW), row = uint32_t((y - kGridY) / kTileH);
+  if (col >= kGridCols || row >= kGridRows) return false;
+  std::lock_guard lock(g_panel_mutex);
+  // The panel player 1's pad works: their own, then (a computer's slot, once theirs is settled) the next with a cursor.
+  const auto now = Clock::now();
+  const auto here = [&](const Panel& p) { return p.cursor && now - p.seen < kRecent; };
+  Panel& first = g_panels[0];
+  if (!here(first) || !g_base) return false;
+  Panel* in_play = nullptr;
+  if (first.state == 2) {
+    in_play = &first;
+  } else {
+    for (Panel& p : g_panels)
+      if (!in_play && &p != &first && here(p) && p.state == 2) in_play = &p;
+  }
+  if (!in_play && first.state == 0 && first.col == 0 && first.row == 0 && first.moved == Clock::time_point{}) in_play = &first;
+  if (!in_play || in_play->mode != 0) return false;  // (a list is open: not yet)
+  if (in_play->state == 2 && !in_play->picking) return false;  // (READY: the pad's A or X)
+  const uint32_t kind = g_kinds[row][col];
+  if (in_play->state != 2) {
+    REXLOG_INFO("[svr2011] menu touch: tile {},{} kind {} panel {:08X}: A brings the cursor up", col, row, kind, in_play->cursor);
+    g_pending = Pending{in_play->cursor, col, row, true, now, press};
+    if (press) press(0x1000);  // (A)
+    return true;
+  }
+  bool same = in_play->row == row && in_play->col == col;
+  if (!same && in_play->row == row && in_play->col < kGridCols && kind != kCharacterTile && g_kinds[row][in_play->col] == kind) {
+    const uint32_t lo = std::min(col, in_play->col), hi = std::max(col, in_play->col);
+    same = hi - lo == 1;  // (the other half of a wide tile)
+  }
+  REXLOG_INFO("[svr2011] menu touch: tile {},{} kind {} panel {:08X}: {}", col, row, kind, in_play->cursor, same ? "A" : "moved there");
+  if (same) {
+    if (press) press(0x1000);  // (A)
+    return true;
+  }
+  g_pending = Pending{in_play->cursor, col, row, false, now, press};
+  return true;
+}
+
 }  // namespace
 
 namespace svr2011 {
 
+// A character select panel about to draw (pad_icons' hook: on the guest's thread). cursor: its player object.
+void MenuTouchPanel(PPCContext& ctx, uint8_t* base, uint32_t cursor) {
+  g_base = base;
+  const uint8_t* c = base + cursor;
+  const uint32_t player = Rd32(c + kPanelPlayer), col = Rd32(c + kPanelCol), row = Rd32(c + kPanelRow);
+  const uint32_t mode = Rd32(c + kPanelListMode), state = Rd32(c + kPanelState);
+  const auto now = Clock::now();
+  bool apply = false;
+  uint32_t apply_col = 0, apply_row = 0;
+  MenuTouchPress apply_press = nullptr;
+  {
+    std::lock_guard lock(g_panel_mutex);
+    if (player < 6) {
+      Panel& p = g_panels[player];
+      if (p.cursor != cursor || now - p.seen > std::chrono::seconds(1)) {  // (a new screen)
+        p = Panel{};
+        p.cursor = cursor, p.col = col, p.row = row, p.mode = mode;
+      }
+      if (p.col != col || p.row != row || p.mode != mode) {
+        if (g_log)
+          REXLOG_INFO("[svr2011] menu touch: panel of player {} at {},{} list mode {} (was {},{} / {})", player, col, row, mode, p.col, p.row, p.mode);
+        p.col = col, p.row = row, p.mode = mode, p.moved = now;
+      }
+      p.seen = now;
+      p.state = state, p.picking = Rd32(c + kPanelPicking);
+    }
+    if (g_pending.cursor == cursor) {
+      if (now - g_pending.at > std::chrono::seconds(2)) {
+        g_pending.cursor = 0;
+      } else if (!g_pending.wake || state == 2) {
+        apply = true, apply_col = g_pending.col, apply_row = g_pending.row, apply_press = g_pending.press;
+        g_pending.cursor = 0;
+      }
+    }
+  }
+  // The cursor's place alone leaves the last superstar as the pick: only the game's own move brings the tile's. So the
+  // cursor goes next to the tile (above or below it: those are never wide), and one press of the d-pad moves it on.
+  if (apply) {
+    const bool from_above = apply_row > 0;
+    Wr32(base + cursor + kPanelCol, apply_col);
+    Wr32(base + cursor + kPanelRow, from_above ? apply_row - 1 : apply_row + 1);
+    if (apply_press) apply_press(from_above ? 0x0002 : 0x0001);  // (d-pad down, up)
+  }
+  // What each tile is (sub_8244C710: wide tiles are several columns of one kind), once a screen.
+  const uint32_t screen = Rd32(c + kPanelScreen);
+  if (screen != g_kinds_screen) {
+    g_kinds_screen = screen;
+    const auto saved = ctx;
+    for (uint32_t r = 0; r < kGridRows; ++r) {
+      std::string line;
+      for (uint32_t k = 0; k < kGridCols; ++k) {
+        ctx.r3.u64 = screen, ctx.r4.u64 = k, ctx.r5.u64 = r;
+        sub_8244C710(ctx, base);
+        g_kinds[r][k] = ctx.r3.u32;
+        line += std::to_string(ctx.r3.u32) + " ";
+      }
+      if (g_log) REXLOG_INFO("[svr2011] menu touch: tile kinds row {}: {}", r, line);
+    }
+    ctx = saved;
+  }
+}
+
 bool MenuTouchTap(float fx, float fy, MenuTouchPress press) {
   if (fx < 0 || fx > 1 || fy < 0 || fy > 1) return false;
+  g_shot_again = true;
   if (GuestPagesHoldInput() || GameKeyboardOpen()) return false;
   uint32_t group = 0, cursor = 0;
   if (!ScriptMenuState(&group, &cursor)) return false;
   const float x = fx * 640, y = fy * 360;
+  if (group == kSelectGroup) return GridTap(x, y, press);
   std::vector<Drawn> drawn;
   {
     const auto now = Clock::now();

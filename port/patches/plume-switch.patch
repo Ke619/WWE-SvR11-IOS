@@ -1,0 +1,44 @@
+diff --git a/plume_render_interface_types.h b/plume_render_interface_types.h
+index 9d5874e..acf119c 100644
+--- a/plume_render_interface_types.h
++++ b/plume_render_interface_types.h
+@@ -37,6 +37,8 @@ namespace plume {
+ #if defined(_WIN32)
+     // Native HWND handle to the target window.
+     typedef HWND RenderWindow;
++#elif defined(__SWITCH__)
++    typedef void* RenderWindow;  // (the SDK owns the swap chain on Switch)
+ #elif defined(__ANDROID__)
+     typedef ANativeWindow* RenderWindow;
+ #elif defined(PLUME_SDL_VULKAN_ENABLED)
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+index 79a2e21..0261e37 100644
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -51,6 +51,7 @@ namespace plume {
+ #   endif
+ #   if defined(_WIN32)
+         VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
++#   elif defined(__SWITCH__)
+ #   elif defined(__ANDROID__)
+         VK_KHR_ANDROID_SURFACE_EXTENSION_NAME,
+ #   elif defined(__linux__)
+@@ -2152,6 +2153,9 @@ namespace plume {
+             fprintf(stderr, "SDL_Vulkan_CreateSurface failed with error %s.\n", SDL_GetError());
+             return;
+         }
++#   elif defined(__SWITCH__)
++        fprintf(stderr, "plume: no swap chains on Switch\n");
++        return;
+ #   elif defined(__ANDROID__)
+         assert(desc.renderWindow != nullptr);
+         VkAndroidSurfaceCreateInfoKHR surfaceCreateInfo = {};
+@@ -2515,6 +2519,8 @@ namespace plume {
+         dstHeight = rect.bottom - rect.top;
+ #   elif defined(PLUME_SDL_VULKAN_ENABLED)
+         SDL_GetWindowSizeInPixels(desc.renderWindow, (int *)(&dstWidth), (int *)(&dstHeight));
++#   elif defined(__SWITCH__)
++        dstWidth = dstHeight = 0;
+ #   elif defined(__ANDROID__)
+         dstWidth = ANativeWindow_getWidth(desc.renderWindow);
+         dstHeight = ANativeWindow_getHeight(desc.renderWindow);

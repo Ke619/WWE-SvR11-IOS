@@ -1109,25 +1109,10 @@ index 353bff0..1ba44bf 100644
        static std::atomic<int> reported{0};
        if (!handled && reported.fetch_add(1) < 3) {
 diff --git a/src/system/xam/content_manager.cpp b/src/system/xam/content_manager.cpp
-index 9de17d2..6daf154 100644
+index 9de17d2..7958f71 100644
 --- a/src/system/xam/content_manager.cpp
 +++ b/src/system/xam/content_manager.cpp
-@@ -682,6 +682,14 @@ void ContentManager::PrepareFlatMount(const std::string& name) {
-   if (!std::filesystem::is_regular_file(file)) {
-     return;
-   }
-+#if REX_PLATFORM_SWITCH
-+  // [switch] an empty save is one an earlier build lost: the game would call it damaged.
-+  if (std::filesystem::file_size(file, ec) == 0) {
-+    std::filesystem::remove(file, ec);
-+    std::filesystem::remove(FlatInfoPath(name, ".header"), ec);
-+    return;
-+  }
-+#endif
-   std::string inner = ReadSmallText(FlatInfoPath(name, ".file"));
-   if (inner.empty()) {
-     inner = kFlatDefaultInner;
-@@ -712,7 +720,12 @@ void ContentManager::CommitFlatMount(const std::string& name) {
+@@ -712,7 +712,12 @@ void ContentManager::CommitFlatMount(const std::string& name) {
    }
    if (files.size() == 1 && !has_dirs) {
      const auto inner = files[0];

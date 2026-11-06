@@ -109,10 +109,23 @@ void RestoreHeaders(const fs::path& saves) {
   std::error_code ec;
   const fs::path info = saves / ".info";
   fs::create_directories(info, ec);
+#if defined(__SWITCH__)
+  std::vector<fs::path> empties;
+#endif
   for (const auto& e : fs::directory_iterator(saves, ec)) {
     const std::string file = e.path().filename().string();
     if (file.empty() || file[0] == '.') continue;
     const fs::path header = info / (file + ".header");
+#if defined(__SWITCH__)
+    // An empty save is one an early Switch build lost; the game would call it damaged.
+    // (Here, before the game lists its saves.)
+    if (e.is_regular_file(ec) && e.file_size(ec) == 0) {
+      fs::path gone = e.path();
+      empties.push_back(gone);
+      fs::remove(header, ec);
+      continue;
+    }
+#endif
     if (fs::exists(header)) continue;
     uint8_t h[328] = {};
     h[3] = 1;  // device_id
@@ -128,6 +141,12 @@ void RestoreHeaders(const fs::path& saves) {
       REXLOG_INFO("[svr2011] saves: rebuilt the missing header of {} (\"{}\")", file, name);
     }
   }
+#if defined(__SWITCH__)
+  for (const fs::path& p : empties) {
+    fs::remove(p, ec);
+    REXLOG_INFO("[svr2011] saves: removed the empty save {}", p.filename().string());
+  }
+#endif
 }
 
 }  // namespace

@@ -2,6 +2,7 @@
 // user's files, the crash reporter), and the few C library calls newlib lacks on
 // Horizon. Crash reports for now: __libnx_exception_handler in nx_main.cpp.
 #include <fcntl.h>
+#include <pthread.h>
 #include <switch.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -72,6 +73,10 @@ ssize_t pwrite(int fd, const void* buffer, size_t size, off_t offset) {
   lseek(fd, saved, SEEK_SET);
   return done;
 }
+
+// libnx has no thread detach: pthread_detach fails, and std::thread::detach throws.
+// The finished thread keeps its small stack until the game exits.
+int __wrap_pthread_detach(pthread_t) { return 0; }
 
 int creat(const char* path, mode_t mode) { return open(path, O_CREAT | O_WRONLY | O_TRUNC, mode); }
 

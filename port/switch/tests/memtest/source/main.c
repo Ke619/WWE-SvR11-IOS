@@ -19,6 +19,7 @@
 #define KB 1024ull
 #define MB (1024ull * 1024ull)
 #define PAGE 0x1000ull
+#define BLOCK (2ull * MB)
 
 static FILE *g_log;
 static Handle g_self;
@@ -68,10 +69,12 @@ static u8 *g_window;
 static int reserve_window(void)
 {
     virtmemLock();
-    g_window = (u8 *)virtmemFindAslr(WINDOW_SIZE, PAGE);
+    g_window = (u8 *)virtmemFindAslr(WINDOW_SIZE + BLOCK, PAGE);
     if (g_window)
-        virtmemAddReservation(g_window, WINDOW_SIZE);
+        virtmemAddReservation(g_window, WINDOW_SIZE + BLOCK);
     virtmemUnlock();
+    /* Same 2 MB alignment on both sides lets the kernel map whole blocks. */
+    g_window = (u8 *)(((u64)g_window + BLOCK - 1) & ~(BLOCK - 1));
     say("window %p size 0x%llx", g_window, WINDOW_SIZE);
     return g_window != NULL;
 }
@@ -88,12 +91,13 @@ static Result backing_make(Backing *b, u64 size)
     Result rc;
     memset(b, 0, sizeof(*b));
     b->size = size;
-    b->heap = memalign(PAGE, size);
+    b->heap = memalign(BLOCK, size);
     if (!b->heap)
         return MAKERESULT(Module_Libnx, LibnxError_OutOfMemory);
     memset(b->heap, 0, size);
     virtmemLock();
-    b->alias = (u64)virtmemFindCodeMemory(size, PAGE);
+    b->alias = (u64)virtmemFindCodeMemory(size + BLOCK, PAGE);
+    b->alias = (b->alias + BLOCK - 1) & ~(BLOCK - 1);
     rc = b->alias ? svcMapProcessCodeMemory(g_self, b->alias, (u64)b->heap, size)
                   : MAKERESULT(Module_Libnx, LibnxError_OutOfMemory);
     virtmemUnlock();
@@ -186,7 +190,7 @@ static void test_shared_views(void)
 {
     const u64 size = 16 * MB;
     Handle h = INVALID_HANDLE;
-    Result rc = svcCreateSharedMemory(&h, size, Perm_Rw, Perm_None);
+    Result rc = svcCreateSharedMemory(&h, size, Perm_Rw, Perm_Rw);
     say("B: create shared rc=0x%x", rc);
     if (R_FAILED(rc)) {
         result("B shared memory views", 0, "create refused");
@@ -205,82 +209,97 @@ static void test_shared_views(void)
     result("B shared memory views", ok, NULL);
 }
 
-/* C: transfer memory mapped twice in the same process. */
-static void test_transfer_views(void)
+/* D: the design we want. One big pool made once, then small pieces mapped at
+   3 views on demand, as the guest's commits would do, and given back. */
+static void test_pool(u64 pool, int want)
 {
-    const u64 size = 16 * MB;
-    void *heap = memalign(PAGE, size);
-    if (!heap) {
-        result("C transfer memory views", 0, "no heap");
-        return;
-    }
-    Handle h = INVALID_HANDLE;
-    Result rc = svcCreateTransferMemory(&h, heap, size, Perm_Rw);
-    say("C: create rc=0x%x", rc);
-    int ok = 0;
-    if (R_SUCCEEDED(rc)) {
-        u8 *v[2] = { g_window, g_window + 0x40000000ull };
-        Result r0 = svcMapTransferMemory(h, v[0], size, Perm_Rw);
-        Result r1 = R_SUCCEEDED(r0) ? svcMapTransferMemory(h, v[1], size, Perm_Rw) : r0;
-        say("C: map rc=0x%x 0x%x", r0, r1);
-        ok = R_SUCCEEDED(r0) && R_SUCCEEDED(r1) && views_agree(v, 2, size);
-        if (R_SUCCEEDED(r1))
-            svcUnmapTransferMemory(h, v[1], size);
-        if (R_SUCCEEDED(r0))
-            svcUnmapTransferMemory(h, v[0], size);
-        svcCloseHandle(h);
-    }
-    free(heap);
-    result("C transfer memory views", ok, NULL);
-}
-
-/* D: many small mappings with gaps, as on-demand commits make. How many fit? */
-static void test_many_small(void)
-{
-    const u64 pool = 256 * MB, piece = 64 * KB;
+    const u64 piece = 64 * KB;
     Backing b;
+    u64 t0 = armGetSystemTick();
     Result rc = backing_make(&b, pool);
+    say("D: pool %llu MB rc=0x%x in %.0f ms, used %llu MB", pool / MB, rc, ms_since(t0),
+        info(InfoType_UsedMemorySize) / MB);
     if (R_FAILED(rc)) {
-        result("D many small views", 0, "no backing");
+        result("D pool", 0, "no pool");
         return;
     }
-    const int want = 4000;
-    int done = 0;
-    u64 t0 = armGetSystemTick();
-    for (; done < want; done++) {
-        /* two views per piece, a hole between pieces so nothing can merge */
-        u8 *a = g_window + (u64)done * piece * 2;
-        u8 *c = g_window + 0x80000000ull + (u64)done * piece * 2;
-        u64 src = b.alias + (u64)done * piece;
-        rc = svcMapProcessMemory(a, g_self, src, piece);
-        if (R_FAILED(rc))
-            break;
-        rc = svcMapProcessMemory(c, g_self, src, piece);
-        if (R_FAILED(rc)) {
-            svcUnmapProcessMemory(a, g_self, src, piece);
-            break;
+    const u64 base[3] = { 0, 0x40000000ull, 0x80000000ull };
+    int ok = 1;
+    for (int round = 0; round < 3 && ok; round++) {
+        int done = 0;
+        t0 = armGetSystemTick();
+        for (; done < want; done++) {
+            u64 src = b.alias + (u64)done * piece * 3 % pool;
+            int v = 0;
+            for (; v < 3; v++) {
+                rc = svcMapProcessMemory(g_window + base[v] + (u64)done * piece * 2, g_self, src, piece);
+                if (R_FAILED(rc))
+                    break;
+            }
+            if (v < 3) {
+                while (v-- > 0)
+                    svcUnmapProcessMemory(g_window + base[v] + (u64)done * piece * 2, g_self, src, piece);
+                break;
+            }
         }
+        double map_ms = ms_since(t0);
+        for (int i = 0; i < done && ok; i += 97) {
+            u8 *v[3];
+            for (int k = 0; k < 3; k++)
+                v[k] = g_window + base[k] + (u64)i * piece * 2;
+            ok = views_agree(v, 3, piece);
+        }
+        for (int i = done - 1; i >= 0; i--) {
+            u64 src = b.alias + (u64)i * piece * 3 % pool;
+            for (int k = 0; k < 3; k++)
+                svcUnmapProcessMemory(g_window + base[k] + (u64)i * piece * 2, g_self, src, piece);
+        }
+        say("D: round %d: %d of %d pieces x3 views, %.1f us per map, stop rc=0x%x, agree %d", round, done, want,
+            done ? map_ms * 1000.0 / (done * 3) : 0.0, rc, ok);
+        if (done < want)
+            ok = 0;
     }
-    double map_ms = ms_since(t0);
-    say("D: %d pieces, 2 views each, %.1f ms, %.1f us per map, stop rc=0x%x", done, map_ms,
-        done ? map_ms * 1000.0 / (done * 2) : 0.0, rc);
-    t0 = armGetSystemTick();
-    for (int i = done - 1; i >= 0; i--) {
-        u64 src = b.alias + (u64)i * piece;
-        svcUnmapProcessMemory(g_window + (u64)i * piece * 2, g_self, src, piece);
-        svcUnmapProcessMemory(g_window + 0x80000000ull + (u64)i * piece * 2, g_self, src, piece);
-    }
-    say("D: unmapped in %.1f ms", ms_since(t0));
     backing_free(&b);
     char note[64];
-    snprintf(note, sizeof(note), "%d of %d", done, want);
-    result("D many small views", done == want, note);
+    snprintf(note, sizeof(note), "%llu MB pool, %d pieces, 3 rounds", pool / MB, want);
+    result("D pool", ok, note);
 }
 
-/* E: how much real memory can we hold, with 2 views? Then give it all back. */
-static void test_big(void)
+/* E: how big can one pool be, with 3 full views at aligned addresses? */
+static u64 test_one_block(void)
 {
-    enum { MAX_CHUNKS = 200 };
+    static const u64 sizes[] = { 2816, 2560, 2304, 2048, 1792, 1536, 1024 };
+    u64 best = 0;
+    for (unsigned n = 0; n < sizeof(sizes) / sizeof(sizes[0]) && !best; n++) {
+        const u64 size = sizes[n] * MB;
+        Backing b;
+        u64 t0 = armGetSystemTick();
+        Result rc = backing_make(&b, size);
+        say("E: %llu MB block rc=0x%x, %.0f ms", sizes[n], rc, ms_since(t0));
+        if (R_FAILED(rc))
+            continue;
+        /* the window has room for one 2.8 GB view plus aliases of the top part */
+        u8 *v0 = g_window;
+        rc = svcMapProcessMemory(v0, g_self, b.alias, size);
+        say("E: view rc=0x%x", rc);
+        if (R_SUCCEEDED(rc)) {
+            u8 *v[2] = { (u8 *)b.alias, v0 };
+            if (views_agree(v, 2, size))
+                best = sizes[n];
+            svcUnmapProcessMemory(v0, g_self, b.alias, size);
+        }
+        backing_free(&b);
+    }
+    char note[64];
+    snprintf(note, sizeof(note), "%llu MB", best);
+    result("E one big block", best >= 1536, note);
+    return best;
+}
+
+/* H: on-demand chunks, aligned this time (test 1 stopped at 1488 MB unaligned). */
+static void test_chunks(void)
+{
+    enum { MAX_CHUNKS = 176 };
     static Backing chunks[MAX_CHUNKS];
     const u64 chunk = 16 * MB;
     int n = 0;
@@ -295,118 +314,15 @@ static void test_big(void)
             backing_free(&chunks[n]);
             break;
         }
-        rc = svcMapProcessMemory(g_window + 0x80000000ull + n * chunk, g_self, chunks[n].alias, chunk);
-        if (R_FAILED(rc)) {
-            svcUnmapProcessMemory(g_window + n * chunk, g_self, chunks[n].alias, chunk);
-            backing_free(&chunks[n]);
-            break;
-        }
     }
-    say("E: held %llu MB in %.0f ms, stop rc=0x%x, used %llu MB", n * chunk / MB, ms_since(t0), rc,
-        info(InfoType_UsedMemorySize) / MB);
-    int good = 1;
-    for (int i = 0; i < n; i++) {
-        *(volatile u32 *)(g_window + i * chunk + 64) = 0xC0DE0000u + i;
-        if (*(volatile u32 *)(g_window + 0x80000000ull + i * chunk + 64) != 0xC0DE0000u + (u32)i)
-            good = 0;
-    }
+    say("H: aligned chunks, 1 view: %llu MB in %.0f ms, stop rc=0x%x", n * chunk / MB, ms_since(t0), rc);
     for (int i = n - 1; i >= 0; i--) {
-        svcUnmapProcessMemory(g_window + 0x80000000ull + i * chunk, g_self, chunks[i].alias, chunk);
         svcUnmapProcessMemory(g_window + i * chunk, g_self, chunks[i].alias, chunk);
         backing_free(&chunks[i]);
     }
     char note[64];
     snprintf(note, sizeof(note), "%llu MB", n * chunk / MB);
-    result("E big memory", good && n * chunk >= 1536 * MB, note);
-}
-
-/* F: threads. Which cores? Do same-priority threads share a core by themselves? */
-typedef struct Spin {
-    volatile u64 count;
-    volatile int *stop;
-} Spin;
-
-static void spin_fn(void *arg)
-{
-    Spin *s = (Spin *)arg;
-    while (!*s->stop)
-        s->count++;
-}
-
-static void test_spin(int prio)
-{
-    static volatile int stop;
-    Spin a = { 0, &stop }, b = { 0, &stop };
-    Thread ta, tb;
-    stop = 0;
-    Result r0 = threadCreate(&ta, spin_fn, &a, NULL, 0x4000, prio, 1);
-    Result r1 = threadCreate(&tb, spin_fn, &b, NULL, 0x4000, prio, 1);
-    if (R_FAILED(r0) || R_FAILED(r1)) {
-        say("F: priority 0x%x: thread create rc=0x%x 0x%x", prio, r0, r1);
-        return;
-    }
-    threadStart(&ta);
-    threadStart(&tb);
-    svcSleepThread(1000000000ll);
-    stop = 1;
-    threadWaitForExit(&ta);
-    threadWaitForExit(&tb);
-    threadClose(&ta);
-    threadClose(&tb);
-    say("F: priority 0x%x, 2 spinners on core 1: %llu and %llu loops (%s)", prio, a.count, b.count,
-        b.count && a.count ? "shared" : "one starved");
-}
-
-static void noop_fn(void *arg)
-{
-    *(volatile int *)arg = svcGetCurrentProcessorNumber() + 1;
-}
-
-static void test_cores(void)
-{
-    u64 mask = 0;
-    Result rm = svcGetInfo(&mask, InfoType_CoreMask, CUR_PROCESS_HANDLE, 0);
-    say("F: core mask rc=0x%x 0x%llx; main thread on core %d, priority range mask 0x%llx", rm, mask,
-        svcGetCurrentProcessorNumber(), info(InfoType_PriorityMask));
-    for (int core = 0; core < 4; core++) {
-        volatile int ran = 0;
-        Thread t;
-        Result rc = threadCreate(&t, noop_fn, (void *)&ran, NULL, 0x4000, 0x3B, core);
-        if (R_SUCCEEDED(rc)) {
-            threadStart(&t);
-            threadWaitForExit(&t);
-            threadClose(&t);
-        }
-        say("F: thread on core %d: rc=0x%x, ran on core %d", core, rc, ran - 1);
-    }
-}
-
-/* G: CPU and memory speed, single thread, for the frame budget sums. */
-static void test_speed(void)
-{
-    u64 t0 = armGetSystemTick();
-    volatile u32 sink = 0;
-    u32 x = 1;
-    for (u32 i = 0; i < 200000000u; i++)
-        x = x * 3 + i;
-    sink = x;
-    say("G: integer loop %.0f ms (%u)", ms_since(t0), sink);
-
-    const u64 size = 128 * MB;
-    u8 *a = (u8 *)memalign(PAGE, size), *b = (u8 *)memalign(PAGE, size);
-    if (a && b) {
-        memset(a, 1, size);
-        t0 = armGetSystemTick();
-        memcpy(b, a, size);
-        say("G: memcpy %.0f MB/s", (double)size / MB / (ms_since(t0) / 1000.0));
-        u64 s = 0;
-        t0 = armGetSystemTick();
-        for (u64 i = 0; i < size; i += 8)
-            s += *(volatile u64 *)(a + i);
-        say("G: read %.0f MB/s (%llu)", (double)size / MB / (ms_since(t0) / 1000.0), s);
-    }
-    free(a);
-    free(b);
+    result("H aligned chunks", n * chunk > 1488 * MB, note);
 }
 
 int main(void)
@@ -417,7 +333,7 @@ int main(void)
     padInitializeDefault(&pad);
     g_log = fopen("sdmc:/svr_memtest.log", "w");
 
-    say("SvR 2011 Switch memory test 1");
+    say("SvR 2011 Switch memory test 1, round 2");
     say("applet type %d (Application = title mode, needed for full memory)", appletGetAppletType());
     say("total %llu MB, used %llu MB, system resource %llu MB", info(InfoType_TotalMemorySize) / MB,
         info(InfoType_UsedMemorySize) / MB, info(InfoType_SystemResourceSizeTotal) / MB);
@@ -439,13 +355,9 @@ int main(void)
     else {
         test_process_views();
         test_shared_views();
-        test_transfer_views();
-        test_many_small();
-        test_big();
-        test_cores();
-        test_spin(0x2C);
-        test_spin(0x3B);
-        test_speed();
+        test_one_block();
+        test_pool(2048 * MB, 8000);
+        test_chunks();
     }
 
     say("DONE: %d passed, %d failed. Log: sdmc:/svr_memtest.log", g_pass, g_fail);

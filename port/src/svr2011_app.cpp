@@ -417,6 +417,17 @@ REX_HOOK_RAW(sub_826A7C58) {
   __imp__sub_826A7C58(ctx, base);
 }
 
+// The pac loader asked to open a null name (sub_826A1D38's request +72): a pac it wanted isn't there. With an essential
+// file really missing (pac/com.pac renamed on a phone, not one of the launcher's must-haves) that is the missing file: the
+// notice, not the crash in here. With none missing (report 11ffd2's kind) the game goes on as before.
+REX_EXTERN(__imp__sub_826BB8A0);
+REX_HOOK_RAW(sub_826BB8A0) {
+  if (!ctx.r4.u32 && g_disc_data_beside)
+    for (const auto& m : svr2011::MissingGameFiles())
+      if (m.essential) EndForMissingFiles();
+  __imp__sub_826BB8A0(ctx, base);
+}
+
 namespace {
 
 // A Mac through Wine / CrossOver (Wine's ntdll says the host is Darwin): its Vulkan is MoltenVK, which lacks what the

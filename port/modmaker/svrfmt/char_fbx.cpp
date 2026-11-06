@@ -111,6 +111,7 @@ struct Bone {
 struct Part {
   std::string name, texture;
   std::string normal_texture;  // (texNormal: its alpha is a skin's shine mask - exported as the material's NormalMap)
+  bool cutout = false;         // (render flags 0x100: the colour's alpha is opacity)
   std::vector<std::array<double, 3>> pos, nrm;
   std::vector<std::array<double, 2>> uv;
   std::vector<std::array<std::pair<int, double>, 4>> inf;  // (bone, weight), weight 0 = none
@@ -193,6 +194,7 @@ bool ReadCharacter(const Bytes& pac, int attire, Character& ch, std::string& err
       p.texture = slot >= 0 && slot < int(m.textures.size()) ? m.textures[size_t(slot)] : "";
       const int nslot = DiffuseSlot(s, "texNormal");
       p.normal_texture = nslot >= 0 && nslot < int(m.textures.size()) ? m.textures[size_t(nslot)] : "";
+      p.cutout = s.raw.size() >= 0x8C && (s.raw[0x8A] & 1) != 0;
       auto bone_of = [&](int palette_slot) {
         if (palette_slot < 0 || palette_slot >= int(s.palette.size())) return 0;
         const int local = s.palette[size_t(palette_slot)] - 1;
@@ -404,7 +406,8 @@ bool IsHairBoneName(const std::string& name) {
   return false;
 }
 
-bool ExportCharacterFbx(const Bytes& pac, int attire, const std::string& out_dir, const std::string& name, CharExportReport& rep) {
+bool ExportCharacterFbx(const Bytes& pac, int attire, const std::string& out_dir, const std::string& name, CharExportReport& rep,
+                        bool opaque_colour) {
   Character ch;
   std::string err;
   if (!ReadCharacter(pac, attire, ch, err)) {
@@ -549,7 +552,18 @@ bool ExportCharacterFbx(const Bytes& pac, int attire, const std::string& out_dir
           t = w;
       return t;
     };
-    for (const auto& [tex, slot_name] : {std::make_pair(written_name(part.texture), "DiffuseColor"),
+    std::string colour = written_name(part.texture);
+    if (opaque_colour && !colour.empty() && !part.cutout) {
+      Image img;
+      const std::string opaque = colour + "_opaque";
+      if (written.count(opaque)) {
+        colour = opaque;
+      } else if (LoadImageFile(PathStr(fs::u8path(out_dir) / "textures" / fs::u8path(colour + ".png")), img)) {
+        for (size_t i = 3; i < img.rgba.size(); i += 4) img.rgba[i] = 255;
+        if (SavePng(PathStr(fs::u8path(out_dir) / "textures" / fs::u8path(opaque + ".png")), img)) written.insert(opaque), colour = opaque;
+      }
+    }
+    for (const auto& [tex, slot_name] : {std::make_pair(colour, "DiffuseColor"),
                                          std::make_pair(written_name(part.normal_texture), "NormalMap")}) {
       if (tex.empty()) continue;
       const std::string rel = "textures/" + tex + ".png";

@@ -378,7 +378,7 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/launcher/svr2011_launcher.c")
         set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${doc_path}")
     endforeach()
     add_executable(svr2011_modmaker WIN32
-        modmaker/app.cpp launcher/report_send.c launcher/update_log.c launcher/report_receipts.c modmaker/arena_page.cpp modmaker/star_page.cpp modmaker/threads_page.cpp modmaker/simple_star.cpp modmaker/simple_steps.cpp modmaker/simple_arena.cpp modmaker/simple_port.cpp modmaker/disc_list.cpp modmaker/mod_check.cpp modmaker/signs_page.cpp modmaker/title_page.cpp modmaker/backgrounds_page.cpp
+        modmaker/app.cpp launcher/report_send.c launcher/update_log.c launcher/report_receipts.c modmaker/arena_page.cpp modmaker/star_page.cpp modmaker/threads_page.cpp modmaker/simple_star.cpp modmaker/simple_steps.cpp modmaker/simple_arena.cpp modmaker/simple_port.cpp modmaker/disc_list.cpp modmaker/mod_check.cpp modmaker/signs_page.cpp modmaker/forfun_page.cpp modmaker/title_page.cpp modmaker/backgrounds_page.cpp
         modmaker/media_page.cpp modmaker/full_preview.cpp modmaker/audio_out.cpp modmaker/video_mf.cpp modmaker/hair_sim.cpp modmaker/model_materials.cpp modmaker/material_panel.cpp modmaker/moves_page.cpp modmaker/move_check.cpp modmaker/anims_page.cpp modmaker/assets_page.cpp
         modmaker/icons_page.cpp modmaker/caw_page.cpp modmaker/help_page.cpp modmaker/other_page.cpp modmaker/match_page.cpp
         modmaker/tool_run.cpp modmaker/session_log.cpp launcher/movie_maker.c launcher/bink_encode.c launcher/caw_import.c launcher/stfs.c launcher/move_warning.c
@@ -386,7 +386,7 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/launcher/svr2011_launcher.c")
         modmaker/svrfmt/wwe13.cpp ${REXSDK_DIR}/thirdparty/libmspack/libmspack/mspack/lzxd.c modmaker/editor.cpp modmaker/char_preview.cpp modmaker/svrfmt/ring_kit.cpp modmaker/svrfmt/arena_build.cpp
         modmaker/svrfmt/pac.cpp modmaker/svrfmt/archive.cpp modmaker/svrfmt/texture.cpp modmaker/svrfmt/jboy.cpp modmaker/svrfmt/mod_travel.cpp modmaker/svrfmt/disc.cpp modmaker/pac_editor.cpp modmaker/loudness.cpp modmaker/port_page.cpp modmaker/attire_page.cpp
         modmaker/pac_attires.cpp modmaker/installed_page.cpp modmaker/svrfmt/char_fbx.cpp modmaker/rig_map.cpp launcher/unzip.c
-        modmaker/svrfmt/fbx_write.cpp modmaker/svrfmt/png.cpp modmaker/svrfmt/arena.cpp
+        modmaker/svrfmt/fbx_write.cpp modmaker/svrfmt/png.cpp modmaker/svrfmt/arena.cpp modmaker/svrfmt/arena_full.cpp
         modmaker/svrfmt/arena_import.cpp modmaker/svrfmt/model_objects.cpp modmaker/svrfmt/zip_write.cpp
         modmaker/third_party/ufbx/ufbx.c launcher/bink_decode.c
         ${IMGUI_SRC}/imgui.cpp ${IMGUI_SRC}/imgui_draw.cpp ${IMGUI_SRC}/imgui_tables.cpp

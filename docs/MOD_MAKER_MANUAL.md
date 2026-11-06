@@ -245,6 +245,17 @@ to a superstar mod (Superstar > More > Move pack folder).
 writes the folder. The game merges every enabled pack into copies of its
 files when it starts (a few seconds the first time). Format: docs/MOVE_PACKS.md.
 
+## For Fun
+
+The whole arena or a whole superstar out to FBX and PNG, from your game into a folder of yours. Each list starts on
+what's open on the Arena or Superstar page and can pick any other.
+
+- **Full arena:** every object where the game shows it, with the ring put together and the light rigs in place, the
+  default lights, and every texture as a PNG with normal maps linked. Video screens are plain white: the game fills
+  them with video. It's for other programs; to edit an arena and bring it back, use Export to Blender on the Arena page.
+- **Full superstar:** skeleton, skin weights, one attire, and colour and normal maps. It comes back in: on the
+  Superstar page, pick the FBX as the model and Make it.
+
 ## Media
 
 Crowd signs, menu backgrounds and the game's media, one tab each; Belts &

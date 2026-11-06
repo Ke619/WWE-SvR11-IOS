@@ -2371,6 +2371,7 @@ const PageDesc kPages[] = {
     {PageId::kAssets, "Game assets", "Look", nullptr, assets_page::Draw},
     {PageId::kAnims, "Animations", "", nullptr, anims_page::Draw},
     {PageId::kInstalled, "Installed mods", "", nullptr, installed_page::Draw},
+    {PageId::kForFun, "For Fun", "", nullptr, forfun_page::Draw},
     {PageId::kIcons, "Icons & renders", "", nullptr, icons_page::Draw},
     {PageId::kHelp, "Manual", "Help", nullptr, help_page::Draw},
     {PageId::kStarPort, "Superstar from another game", "", nullptr,
@@ -2431,6 +2432,7 @@ const Group kGroups[] = {
     {"Animations", "", {{"Animations", PageId::kAnims}}},
     {"Installed mods", "", {{"Installed mods", PageId::kInstalled}}},
     {"Icons & renders", "", {{"Icons & renders", PageId::kIcons}}},
+    {"For Fun", "", {{"For Fun", PageId::kForFun}}},
     {"Manual", "Help", {{"Manual", PageId::kHelp}}},
 };
 constexpr int kGroupCount = int(sizeof kGroups / sizeof kGroups[0]);
@@ -2569,7 +2571,7 @@ bool PageByName(const std::wstring& name, PageId& page) {
       {L"port-taunts", PageId::kPortTaunts, -1}, {L"taunts", PageId::kPortTaunts, -1},
       {L"superstar-port", PageId::kStarPort, -1}, {L"arena-port", PageId::kArenaPort, -1},
       {L"moves-port", PageId::kMovesPort, -1}, {L"belts", PageId::kBelts, -1}, {L"threads", PageId::kThreads, -1},
-      {L"titles", PageId::kTitle, -1}};
+      {L"titles", PageId::kTitle, -1}, {L"forfun", PageId::kForFun, -1}};
   for (const auto& n : kNames)
     if (name == n.name) {
       page = n.page;
@@ -3298,6 +3300,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   int star_entrance = 0;
   int star_victory = 0;
   std::wstring title_spec, title_save;
+  std::wstring forfun_arena, forfun_star;
   std::wstring star_model, star_song, star_movie, star_picture, star_voice, star_save, sign_save, media_save, media_video;
   std::string star_name;
   std::vector<std::wstring> sign_files, media_pictures, background_files;
@@ -3748,6 +3751,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--star-name") && more) star_name = Utf8(argv[++i]);
     else if (!wcscmp(argv[i], L"--sign") && more) sign_files.push_back(argv[++i]);
     else if (!wcscmp(argv[i], L"--test-sign-save") && more) sign_save = argv[++i];
+    else if (!wcscmp(argv[i], L"--forfun-arena") && more) forfun_arena = argv[++i];
+    else if (!wcscmp(argv[i], L"--forfun-star") && more) forfun_star = argv[++i];
     else if (!wcscmp(argv[i], L"--title-test") && more) title_spec = argv[++i];
     else if (!wcscmp(argv[i], L"--test-title-save") && more) title_save = argv[++i];
     else if (!wcscmp(argv[i], L"--background") && more) background_files.push_back(argv[++i]);
@@ -3842,6 +3847,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   if (star_victory) star_page::TestVictory(star_victory);
   signs_page::TestStart(sign_files, sign_save);
   backgrounds_page::TestStart(background_files, background_save);
+  forfun_page::TestStart(forfun_arena, forfun_star);
   title_page::TestStart(title_spec, title_save);
   media_page::TestStart(media_arena, media_video, media_pictures, media_save);
   arena_page::SetTestSave(test_save, test_lib);

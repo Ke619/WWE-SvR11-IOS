@@ -343,7 +343,7 @@ struct ProjectIn {
 
 // The project's type is its page. Pages the rail shows.
 enum class PageId { kArena, kEditor, kBackstage, kStar, kMoves, kSigns, kBackgrounds, kMedia, kMatch, kOther, kCaw, kAssets, kAnims, kIcons, kHelp, kPort, kAttire, kInstalled, kDiscs, kPortEntrance, kPortMoves, kPortTaunts,
-                    kStarPort, kArenaPort, kMovesPort, kBelts, kThreads, kTitle, kCount };  // (the last four: "From another game" / belt tabs)
+                    kStarPort, kArenaPort, kMovesPort, kBelts, kThreads, kTitle, kForFun, kCount };  // (the last four: "From another game" / belt tabs)
 // What only a project holds (materials, the FBX steps, Reduce detail, gear picks, an arena's camera...) for a mod:
 // the page's project keys without its files, every absolute path cut to its file name (nothing of the author's
 // folders goes out with a shared mod). UI thread (it reads the page). "" for a page with no project keys.
@@ -498,6 +498,7 @@ namespace media_page { extern PageHooks hooks; void SetTab(int tab); int Tab(); 
                        const std::vector<std::wstring>& pictures, const std::wstring& save); }
 namespace moves_page { extern PageHooks hooks; void OpenPack(const std::wstring& folder); void TestPut(const std::wstring& spec); void TestOpen(const std::wstring& folder); void TestSave(const std::wstring& file); }
 namespace caw_page { void Draw(); void TestStart(int index, int attire, const std::wstring& picture, bool save); void TestAnnouncer(const std::string& clip); }
+namespace forfun_page { void Draw(); void TestStart(const std::wstring& arena, const std::wstring& star); }
 namespace other_page { void Draw();
                        // only the tabs in mask, for the "From another game" tabs
                        enum : unsigned { kW13Arena = 1, kStarFile = 2, kW13Star = 4, kSvr10Star = 8, kSvr10Moves = 16, kSvr08 = 32 };

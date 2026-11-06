@@ -16,6 +16,7 @@
 #include <string>
 
 #include "svrfmt/archive.h"
+#include "svrfmt/arena_full.h"
 #include "svrfmt/arena.h"
 #include "svrfmt/arena_import.h"
 #include "svrfmt/jboy.h"
@@ -100,6 +101,19 @@ int Roundtrip(int argc, char** argv) {
 }
 
 }  // namespace
+
+int ExportFull(const char* pac, const char* out) {
+  Arena a;
+  std::string err;
+  if (!a.Load(pac, &err)) { std::printf("%s: %s\n", pac, err.c_str()); return 1; }
+  ArenaFullReport rep;
+  const bool ok = ExportArenaFull(a, out, pac, rep);
+  std::printf("%s: %d objects (%d placed by motion, %d mirrored copies, %d ring parts, %d models not drawn left out), %d meshes, %d triangles, %d textures (%d failed), %d normal map links, %d lights (%d sets in lights.json)\n",
+              ok ? "exported" : "FAILED", rep.objects, rep.placed, rep.mirrored, rep.ring_parts, rep.not_drawn, rep.meshes, rep.triangles, rep.textures, rep.textures_failed,
+              rep.normal_maps, rep.lights, rep.light_sets);
+  for (const auto& w : rep.warnings) std::printf("  %s\n", w.c_str());
+  return ok ? 0 : 1;
+}
 
 int Export(const char* pac, const char* out) {
   Arena a;
@@ -777,6 +791,7 @@ int main(int argc, char** argv) {
   if (argc >= 3 && !std::strcmp(argv[1], "bpetest")) return BpeTest(argv[2], argc >= 4 ? argv[3] : nullptr);
   if (argc >= 3 && !std::strcmp(argv[1], "roundtrip")) return Roundtrip(argc - 2, argv + 2);
   if (argc == 4 && !std::strcmp(argv[1], "export")) return Export(argv[2], argv[3]);
+  if (argc == 4 && !std::strcmp(argv[1], "export-full")) return ExportFull(argv[2], argv[3]);
   if (argc == 4 && !std::strcmp(argv[1], "banner")) {
     // any picture -> the arena select banner: 256 x 128 DXT5, one level
     Image img;

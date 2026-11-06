@@ -211,6 +211,29 @@ void PickFor(const Game& g, bool folder) {
   }
 }
 
+
+// Any DLC under the folder, as tools/dlc_src.py looks (its MAX_DEPTH): a console package file, or a folder holding pac\\ch.
+static bool HoldsDlc(const std::wstring& folder, int depth = 0) {
+  std::error_code ec;
+  const fs::path dir(folder);
+  if (fs::is_directory(dir / L"pac" / L"ch", ec)) return true;
+  if (depth > 5) return false;
+  for (fs::directory_iterator it(dir, fs::directory_options::skip_permission_denied, ec), end; !ec && it != end; it.increment(ec)) {
+    std::error_code e2;
+    if (it->is_directory(e2)) {
+      if (HoldsDlc(it->path().wstring(), depth + 1)) return true;
+    } else if (it->is_regular_file(e2) && it->file_size(e2) >= 0x1000) {
+      char magic[4] = {};
+      if (FILE* f = _wfopen(it->path().c_str(), L"rb")) {
+        std::fread(magic, 1, 4, f);
+        std::fclose(f);
+      }
+      if (!std::memcmp(magic, "LIVE", 4) || !std::memcmp(magic, "PIRS", 4) || !std::memcmp(magic, "CON ", 4)) return true;
+    }
+  }
+  return false;
+}
+
 void GameRow(const Game& g) {
   ImGui::PushID(g.key);
   ImGui::TableNextRow();
@@ -245,7 +268,11 @@ void GameRow(const Game& g) {
     ImGui::SameLine();
     if (ImGui::SmallButton(dlc.empty() ? "Add DLC folder..." : "Change DLC...")) {
       const std::wstring p = PickFolder(L"The folder with this game's DLC packages", dlc);
-      if (!p.empty()) SetDlc(g.key, p), Status(FullName(g) + " DLC: " + Utf8(p));
+      if (!p.empty()) {
+        SetDlc(g.key, p);
+        Status(FullName(g) + " DLC: " + Utf8(p) +
+               (HoldsDlc(p) ? "" : " - no DLC packages found there (console package files, or unpacked ones holding pac\\ch)."));
+      }
     }
     if (!dlc.empty()) {
       ImGui::SameLine();

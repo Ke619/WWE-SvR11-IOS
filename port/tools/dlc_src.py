@@ -19,7 +19,7 @@ import stfs
 
 MODEL = re.compile(r'^pac/ch/ch(\d+)(?:_dlc\d+)?\.pac$')
 ETC = re.compile(r'^pac/ch/chetc(?:_dlc\d+)?\.pac$')
-MAX_DEPTH = 3
+MAX_DEPTH = 5   # (Xenia's content folder: <profile>/<title id>/00000002/<package>/pac/ch; the console's Content folder too)
 
 
 class Package:

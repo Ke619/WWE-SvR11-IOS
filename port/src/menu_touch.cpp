@@ -7,6 +7,7 @@
 //   x = e[+160] + L[+144] + e[+4] * L[+160],  y = e[+164] + L[+148] + e[+8] * L[+164]
 // Test aid SVR2011_TEST_MENU_TOUCH_LOG=1: each new element drawn, once.
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -21,6 +22,9 @@
 #include <rex/logging.h>
 #include <rex/ppc.h>
 
+#include "graphics_page.h"
+#include "keyboard_typing.h"
+#include "menu_touch.h"
 #include "native/native_renderer.h"
 #include "script_input.h"
 
@@ -105,11 +109,88 @@ void ShotAid() {
   }
 }
 
+// The text elements drawn lately, by element address (a slot per element; two sharing one take turns, and a tap only
+// looks at the ones seen in the last moments).
+using Clock = std::chrono::steady_clock;
+struct Drawn {
+  uint32_t element = 0;
+  float x = 0, y = 0;
+  Clock::time_point seen, moved;
+  char text[48] = {};
+};
+constexpr uint32_t kSlots = 512;
+constexpr auto kRecent = std::chrono::milliseconds(300);   // (slow phones draw at 30 or less)
+constexpr auto kSettled = std::chrono::milliseconds(100);  // (a column sliding in isn't a place to tap yet)
+Drawn g_drawn[kSlots];
+std::mutex g_drawn_mutex;
+
+void NoteText(const uint8_t* base, uint32_t layout, uint32_t element) {
+  const uint8_t* L = base + layout;
+  const uint8_t* e = base + element;
+  const uint32_t desc = Rd32(e + 192);
+  if (desc < 0x10000 || Rd32(e + 196) || Rd32(base + desc + 4) != 1) return;
+  const uint32_t text = Rd32(e + 216);
+  if (text < 0x10000) return;
+  const float x = RdF(e + 160) + RdF(L + 144) + RdF(e + 4) * RdF(L + 160);
+  const float y = RdF(e + 164) + RdF(L + 148) + RdF(e + 8) * RdF(L + 164);
+  const auto now = Clock::now();
+  std::lock_guard lock(g_drawn_mutex);
+  Drawn& d = g_drawn[(element >> 8 ^ layout >> 6) & (kSlots - 1)];
+  if (d.element != element || std::fabs(d.x - x) > 0.5f || std::fabs(d.y - y) > 0.5f) d.moved = now;
+  d.element = element, d.x = x, d.y = y, d.seen = now;
+  // (as ScriptMenuRow's labels: control codes, such as MY WWE's logo, are left out)
+  size_t n = 0;
+  for (uint32_t k = 0; k < 48 && n + 1 < sizeof(d.text); ++k) {
+    const uint8_t c = base[text + k];
+    if (!c) break;
+    if (c >= 0x20) d.text[n++] = char(c);
+  }
+  d.text[n] = 0;
+}
+
 }  // namespace
+
+namespace svr2011 {
+
+bool MenuTouchTap(float fx, float fy, MenuTouchPress press) {
+  if (fx < 0 || fx > 1 || fy < 0 || fy > 1) return false;
+  if (GuestPagesHoldInput() || GameKeyboardOpen()) return false;
+  uint32_t group = 0, cursor = 0;
+  if (!ScriptMenuState(&group, &cursor)) return false;
+  const float x = fx * 640, y = fy * 360;
+  std::vector<Drawn> drawn;
+  {
+    const auto now = Clock::now();
+    std::lock_guard lock(g_drawn_mutex);
+    for (const Drawn& d : g_drawn)
+      if (d.element && d.text[0] && now - d.seen < kRecent && now - d.moved > kSettled) drawn.push_back(d);
+  }
+  // The nearest row of this menu under the finger: rows are 18 apart, and text elsewhere isn't one of its labels.
+  int best = -1;
+  float best_d = 11;
+  std::string label;
+  for (const Drawn& d : drawn) {
+    const float width = float(std::strlen(d.text)) * 10;
+    if (x < d.x - 16 || x > d.x + width + 16) continue;
+    const float distance = std::fabs(y - (d.y + 8));
+    if (distance >= best_d) continue;
+    const int row = ScriptMenuRow(group, d.text, nullptr);
+    if (row < 0) continue;
+    best = row, best_d = distance, label = d.text;
+  }
+  if (best < 0) return false;
+  REXLOG_INFO("[svr2011] menu touch: tap {:.0f},{:.0f} -> group {:X} row {} ({}), cursor was {}", x, y, group, best, label, cursor);
+  if (uint32_t(best) != cursor) ScriptMenuSetRow(uint32_t(best));
+  if (press) press(0x1000);  // (A)
+  return true;
+}
+
+}  // namespace svr2011
 
 REX_EXTERN(__imp__sub_823D4008);
 REX_HOOK_RAW(sub_823D4008) {
   if (g_log) LogElement(base, ctx.r3.u32, ctx.r4.u32);
+  NoteText(base, ctx.r3.u32, ctx.r4.u32);
   ShotAid();
   __imp__sub_823D4008(ctx, base);
 }

@@ -60,6 +60,7 @@ namespace svr2011 {
 // entry named label in that group (-1: none) and the group's row count; the
 // group's names; how many entries have been chosen (and the last one).
 bool ScriptMenuState(uint32_t* group, uint32_t* row);
+void ScriptMenuSetRow(uint32_t row);  // (menu_touch: the cursor, directly)
 int ScriptMenuRow(uint32_t group, const std::string& label, int* rows);
 std::string ScriptMenuTexts(uint32_t group);
 uint32_t ScriptMenuSelects(uint32_t* group, uint32_t* row);

@@ -1514,13 +1514,14 @@ void InstallGraphicsPage(rex::ui::ImGuiDrawer* drawer, rex::ui::Window* window,
   });
   if (input) {
     // (one hold for the port's pages: this one, ACHIEVEMENTS, JUKEBOX and BACKGROUNDS)
-    input->SetGuestInputHold(
-        [] {
-          return g_open.load() || g_wait_release.load() || AchievementsPageHoldsInput() || JukeboxPageHoldsInput() ||
-                 BackgroundsPageHoldsInput() || WeaponsPageHoldsInput() || TouchControlsHoldInput() || OnlineOverlayHoldsInput() ||
-                 MysteryOpponentHoldsInput() || ReportPageHoldsInput();
-        });
+    input->SetGuestInputHold([] { return GuestPagesHoldInput(); });
   }
+}
+
+bool GuestPagesHoldInput() {
+  return g_open.load() || g_wait_release.load() || AchievementsPageHoldsInput() || JukeboxPageHoldsInput() ||
+         BackgroundsPageHoldsInput() || WeaponsPageHoldsInput() || TouchControlsHoldInput() || OnlineOverlayHoldsInput() ||
+         MysteryOpponentHoldsInput() || ReportPageHoldsInput();
 }
 
 void SetGraphicsPageFonts(ImFont* menu, ImFont* title) {

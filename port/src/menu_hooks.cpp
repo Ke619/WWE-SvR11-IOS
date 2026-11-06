@@ -231,6 +231,12 @@ bool ScriptMenuState(uint32_t* group, uint32_t* row) {
   return true;
 }
 
+void ScriptMenuSetRow(uint32_t row) {
+  if (!g_menu) return;
+  g_menu[kMenuCursor] = uint8_t(row >> 24), g_menu[kMenuCursor + 1] = uint8_t(row >> 16);
+  g_menu[kMenuCursor + 2] = uint8_t(row >> 8), g_menu[kMenuCursor + 3] = uint8_t(row);
+}
+
 int ScriptMenuRow(uint32_t group, const std::string& label, int* rows) {
   auto norm = [](std::string s) {
     std::string out;

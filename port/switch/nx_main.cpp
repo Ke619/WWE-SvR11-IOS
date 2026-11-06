@@ -1,6 +1,7 @@
 // Switch start-up: services and folders before main, and a crash report for faults.
 #include <switch.h>
 
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -69,6 +70,21 @@ void userAppInit(void) {
 }
 
 void userAppExit(void) { socketExit(); }
+
+// A path naming no device here ("C:\\Windows\\...") fails with ENODEV, and
+// std::filesystem throws on anything but "not found". It is simply not there.
+int __real_stat(const char* path, struct stat* out);
+int __wrap_stat(const char* path, struct stat* out) {
+  int r = __real_stat(path, out);
+  if (r != 0 && errno == ENODEV) errno = ENOENT;
+  return r;
+}
+int __real_lstat(const char* path, struct stat* out);
+int __wrap_lstat(const char* path, struct stat* out) {
+  int r = __real_lstat(path, out);
+  if (r != 0 && errno == ENODEV) errno = ENOENT;
+  return r;
+}
 
 // Every deliberate stop goes through here: aborts in libnx, newlib and the driver
 // (these leave no CPU fault for the handler below).

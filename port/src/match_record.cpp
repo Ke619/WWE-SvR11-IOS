@@ -7,6 +7,7 @@
 // when the session object (sub_82573F18) +0 is set, else the next byte of the table at 0x82037B98 by the counters at
 // 0x82EC6A2C / +1 (loaded.txt). The C runtime's rand() (sub_828F2430, its state per thread) is used besides, about 20
 // places in a match (replay research: SVR2011_TEST_RAND_LOG / SVR2011_TEST_RAND_FIXED).
+#include "superstar_mods.h"
 #include "match_record.h"
 
 #include <algorithm>
@@ -712,6 +713,7 @@ void MatchRecordMatchLoads() {
   g_load_frame = g_updates;
   if (g_base) std::memcpy(g_load_table.data(), g_base + kTableIndexes, 4);
   REXLOG_INFO("[svr2011] record: a match loads - its rand() seed {:08X}", seed);
+  svr2011::CaeMenuLoads();
 }
 
 void MatchRecordUpdate(PPCContext& ctx, uint8_t* base) {

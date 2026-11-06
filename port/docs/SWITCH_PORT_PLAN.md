@@ -229,3 +229,22 @@ Measured on the user's console (original unpatched, FW 22.1.0, AMS 1.12.1), from
 - FFmpeg nvtegra: https://ffmpeg.org/pipermail/ffmpeg-devel/2024-May/328549.html
 - Clocks: https://www.gamebrew.org/wiki/Horizon_OC_Switch and https://wccftech.com/overclocked-nintendo-switch-tested-by-digital-foundry-tegra-x1-gets-significant-performance-boost/
 - Forwarder and signature-patch notes: https://pypi.org/project/nton/
+
+## Optimization notes, 6 Nov (none of this has been run on the console yet)
+
+The practice ring is CPU-limited at stock: 720p 27.9 fps, 480p 28.6, GPU at 768 MHz 27.7, all clocks raised 50.7.
+
+Built from the thread profile (`logs/nx_samples.txt`, named with `svr2011.sym` of the same build):
+- Pad icon hooks off, test wrappers off, match recordings off.
+- The recording worker sleeps between larger batches instead of spinning.
+- The game's memcpy runs natively (`nx_fast.cpp`).
+- The log is written every 2 s instead of per line.
+- The two busiest threads each prefer their own core.
+
+For load times:
+- Read-ahead for read-only files (`nx_readahead.h`, tested by `tests/ra_test.cpp` on a PC). C++ streams and stdio read 1 KB at a time here.
+- string.pac is patched once, then a stamp file skips the 30 MB read and search.
+- `fast_loads` on by default.
+- The system's CPU boost mode while loading.
+
+Clocks (`nx_ab.cpp`): at 60 fps the game asks for CPU 1785 / GPU 768 / memory 1600 MHz, at 30 fps the normal clocks. Cvar `switch_boost_60` turns this off.

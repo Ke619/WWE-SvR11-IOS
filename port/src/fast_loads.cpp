@@ -27,7 +27,14 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 
-REXCVAR_DEFINE_BOOL(fast_loads, false, "Gameplay",
+#if defined(__SWITCH__)
+constexpr bool kFastLoadsDefault = true;
+extern "C" void NxBootDone(void);
+extern "C" void NxLoadBoost(bool on);
+#else
+constexpr bool kFastLoadsDefault = false;
+#endif
+REXCVAR_DEFINE_BOOL(fast_loads, kFastLoadsDefault, "Gameplay",
                     "Faster loading screens: the game runs faster while one is up (their animations play faster)");
 
 namespace {
@@ -88,6 +95,10 @@ void LogTasks(uint8_t* base) {
 namespace svr2011 {
 
 void FastLoadsStartScreen(bool start_taken) {
+#if defined(__SWITCH__)
+  NxBootDone();  // (the Start Screen is up)
+  if (start_taken) NxLoadBoost(true);
+#endif
   if (start_taken && !g_start_taken.exchange(true) && REXCVAR_GET(fast_loads))
     REXLOG_INFO("fast loads: the Start Screen's loading - {} updates a frame", kTicks);
 }
@@ -97,6 +108,9 @@ int FastLoadsTicks(uint8_t* base) {
   if (task_log) LogTasks(base);
   if (g_start_taken.load() && !TaskRunning(base, kStartScreenTask)) {  // (the Start Screen gone: its loading is over)
     g_start_taken = false;
+#if defined(__SWITCH__)
+    NxLoadBoost(false);
+#endif
     if (REXCVAR_GET(fast_loads)) REXLOG_INFO("fast loads: the Start Screen's loading over - the usual speed");
   }
   if (!REXCVAR_GET(fast_loads)) return 0;

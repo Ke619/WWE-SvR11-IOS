@@ -12,7 +12,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <sys/reent.h>
 #include <sys/stat.h>
+
+#include "nx_readahead.h"
 #include <unistd.h>
 
 // The game's folder on the SD card (rex::filesystem::GetExecutableFolder).
@@ -22,6 +25,21 @@
 namespace {
 
 extern "C" void _start(void);
+
+// Read-ahead for read-only files (nx_readahead.h).
+extern "C" off_t __real__lseek_r(struct _reent*, int, off_t, int);
+extern "C" _ssize_t __real__read_r(struct _reent*, int, void*, size_t);
+static struct _reent* RaReent() { return _REENT; }
+struct RaOps {
+  static int64_t Seek(int fd, int64_t off, int whence) { return __real__lseek_r(RaReent(), fd, off, whence); }
+  static long Read(int fd, void* p, size_t n) { return __real__read_r(RaReent(), fd, p, n); }
+};
+struct RaLock {
+  Mutex m = 0;
+  void lock() { mutexLock(&m); }
+  void unlock() { mutexUnlock(&m); }
+};
+static nx_ra::Table<RaOps, RaLock> g_ra;
 
 // Return addresses on the stack, nearest first (nm / addr2line on svr2011.elf name them).
 void DumpStack(FILE* f, const void* from) {
@@ -182,16 +200,43 @@ static void MakeParents(const char* path) {
 
 int __real__open_r(struct _reent* r, const char* path, int flags, int mode);
 int __wrap__open_r(struct _reent* r, const char* path, int flags, int mode) {
-  const bool writes = (flags & O_ACCMODE) != O_RDONLY || (flags & O_CREAT);
+  const bool writes = (flags & O_ACCMODE) != O_RDONLY || (flags & (O_CREAT | O_TRUNC | O_APPEND));
   int fd = __real__open_r(r, path, flags, mode);
-  if (fd >= 0) return fd;
-  char other[768];
-  if (r->_errno != ENOENT || !InRomfs(path, other, sizeof(other))) return fd;
-  if (writes) {
-    MakeParents(path);
-    return __real__open_r(r, path, flags, mode);
+  if (fd < 0) {
+    char other[768];
+    if (r->_errno != ENOENT || !InRomfs(path, other, sizeof(other))) return fd;
+    if (writes) {
+      MakeParents(path);
+      fd = __real__open_r(r, path, flags, mode);
+    } else {
+      fd = __real__open_r(r, other, flags, mode);
+    }
   }
-  return __real__open_r(r, other, flags, mode);
+  if (fd >= 0) {
+    if (writes) {
+      g_ra.Wrote();  // (it may empty a file another handle is reading)
+    } else {
+      g_ra.Opened(fd);
+    }
+  }
+  return fd;
+}
+
+int __real__close_r(struct _reent* r, int fd);
+int __wrap__close_r(struct _reent* r, int fd) {
+  g_ra.Closed(fd);
+  return __real__close_r(r, fd);
+}
+
+off_t __wrap__lseek_r(struct _reent* r, int fd, off_t off, int whence) {
+  if (g_ra.Tracked(fd)) return g_ra.Seek(fd, off, whence);
+  return __real__lseek_r(r, fd, off, whence);
+}
+
+_ssize_t __real__write_r(struct _reent* r, int fd, const void* p, size_t n);
+_ssize_t __wrap__write_r(struct _reent* r, int fd, const void* p, size_t n) {
+  g_ra.Wrote();
+  return __real__write_r(r, fd, p, n);
 }
 
 // The card reports file id 0 for every file, so std::filesystem took any two files for
@@ -209,10 +254,9 @@ int __wrap_fchmod(int, mode_t) { return 0; }
 
 // How much time loading spends in file reads (nx_ab.cpp logs it).
 volatile u64 g_nx_read_ticks = 0, g_nx_read_bytes = 0, g_nx_read_calls = 0;
-_ssize_t __real__read_r(struct _reent* r, int fd, void* buf, size_t n);
 _ssize_t __wrap__read_r(struct _reent* r, int fd, void* buf, size_t n) {
   const u64 start = armGetSystemTick();
-  const _ssize_t got = __real__read_r(r, fd, buf, n);
+  const _ssize_t got = g_ra.Tracked(fd) ? g_ra.Read(fd, buf, n) : __real__read_r(r, fd, buf, n);
   __atomic_fetch_add(&g_nx_read_ticks, armGetSystemTick() - start, __ATOMIC_RELAXED);
   if (got > 0) __atomic_fetch_add(&g_nx_read_bytes, static_cast<u64>(got), __ATOMIC_RELAXED);
   __atomic_fetch_add(&g_nx_read_calls, 1, __ATOMIC_RELAXED);

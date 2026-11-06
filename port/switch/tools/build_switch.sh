@@ -74,7 +74,7 @@ apply_once() {  # folder patch
 sources() {
   mkdir -p "$WORK"
   fetch_repo "$REX_URL" "$REX_COMMIT" "$WORK/rex"
-  git -C "$WORK/rex" submodule status --recursive | awk '{print $2}' | while IFS= read -r sub; do
+  git config -f "$WORK/rex/.gitmodules" --get-regexp '\.path$' | cut -d' ' -f2- | while IFS= read -r sub; do
     resolve_links "$WORK/rex/$sub"
   done
   apply_once "$WORK/rex" "$PORT/patches/rexglue-sdk-svr2011.patch"

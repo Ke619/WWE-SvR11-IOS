@@ -20,6 +20,11 @@ REXCVAR_DEFINE_BOOL(switch_boost_60, true, "GPU", "Switch: higher clocks when th
 REXCVAR_DECLARE(int32_t, frame_rate);
 
 extern "C" volatile u64 g_nx_read_ticks, g_nx_read_bytes, g_nx_read_calls;
+struct NxFileStat {
+  char path[96];
+  u64 ticks, bytes, calls;
+};
+extern "C" NxFileStat g_nx_files[256];
 
 namespace {
 
@@ -92,6 +97,21 @@ void Run() {
                     (t - ticks) / 19200);
       }
       ticks = t, bytes = b, calls = c;
+      // The file with the most read time since the last line.
+      static NxFileStat last[256];
+      int best = -1;
+      u64 best_ticks = 0;
+      for (int i = 0; i < 256; i++) {
+        const u64 spent = g_nx_files[i].ticks >= last[i].ticks ? g_nx_files[i].ticks - last[i].ticks : g_nx_files[i].ticks;
+        if (spent > best_ticks) best_ticks = spent, best = i;
+      }
+      if (best >= 0 && best_ticks > 19200 * 50) {
+        const NxFileStat& file = g_nx_files[best];
+        const u64 count = file.calls >= last[best].calls ? file.calls - last[best].calls : file.calls;
+        const u64 size = file.bytes >= last[best].bytes ? file.bytes - last[best].bytes : file.bytes;
+        REXLOG_INFO("[nx] most read: {} - {} calls, {} KB, {} ms", file.path, count, size >> 10, best_ticks / 19200);
+      }
+      for (int i = 0; i < 256; i++) last[i] = g_nx_files[i];
     }
     if (step % 120 == 60) {
       if (clocks) {

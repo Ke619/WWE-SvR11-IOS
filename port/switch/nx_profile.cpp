@@ -11,6 +11,7 @@
 
 extern "C" void _start(void);
 extern "C" bool NxStartLoading(void);
+extern "C" volatile Handle g_nx_reader;
 
 namespace {
 
@@ -81,7 +82,9 @@ void Sampler(void*) {
     const u64 length = (window == 0 ? 40ull : 20ull) * 19200000ull;
     while (n < kMaxSamples - kTop && armGetSystemTick() - start < length) {
       for (int i = 0; i < kTop && n < kMaxSamples; i++) {
-        const Handle h = g_top[i];
+        // (The start-up and the Start Screen's loading: the sixth slot is whoever read a file last.)
+        const bool reader_slot = i == kTop - 1 && window < 2 && g_nx_reader != 0;
+        const Handle h = reader_slot ? g_nx_reader : g_top[i];
         if (!h) continue;
         svcSleepThread(window == 0 ? 6600000 : 3300000);
         if (R_FAILED(svcSetThreadActivity(h, ThreadActivity_Paused))) continue;
@@ -89,7 +92,7 @@ void Sampler(void*) {
         if (R_SUCCEEDED(svcGetThreadContext3(&ctx, h))) {
           Sample& o = g_samples[n];
           o = Sample{};
-          o.tid = g_top_id[i];
+          o.tid = reader_slot ? 1 : g_top_id[i];
           o.pc = static_cast<u32>(ctx.pc.x - base);
           o.lr = static_cast<u32>(ctx.lr - base);
           MemoryInfo info{};

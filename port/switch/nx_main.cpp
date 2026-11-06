@@ -199,6 +199,13 @@ static void MakeParents(const char* path) {
   }
 }
 
+// Per file, for the log (bring-up): which files the small reads are, and the thread reading.
+struct NxFileStat {
+  char path[96];
+  u64 ticks, bytes, calls;
+};
+NxFileStat g_nx_files[256];
+volatile Handle g_nx_reader = 0;
 int __real__open_r(struct _reent* r, const char* path, int flags, int mode);
 int __wrap__open_r(struct _reent* r, const char* path, int flags, int mode) {
   const bool writes = (flags & O_ACCMODE) != O_RDONLY || (flags & (O_CREAT | O_TRUNC | O_APPEND));
@@ -214,6 +221,11 @@ int __wrap__open_r(struct _reent* r, const char* path, int flags, int mode) {
     }
   }
   if (fd >= 0) {
+    if (fd < 256) {
+      NxFileStat& file = g_nx_files[fd];
+      file.ticks = file.bytes = file.calls = 0;
+      snprintf(file.path, sizeof(file.path), "%s", strlen(path) < sizeof(file.path) ? path : path + strlen(path) - (sizeof(file.path) - 1));
+    }
     if (writes) {
       g_ra.Wrote();  // (it may empty a file another handle is reading)
     } else {
@@ -258,6 +270,13 @@ volatile u64 g_nx_read_ticks = 0, g_nx_read_bytes = 0, g_nx_read_calls = 0;
 _ssize_t __wrap__read_r(struct _reent* r, int fd, void* buf, size_t n) {
   const u64 start = armGetSystemTick();
   const _ssize_t got = g_ra.Tracked(fd) ? g_ra.Read(fd, buf, n) : __real__read_r(r, fd, buf, n);
+  if (fd >= 0 && fd < 256) {
+    NxFileStat& file = g_nx_files[fd];
+    file.ticks += armGetSystemTick() - start;
+    if (got > 0) file.bytes += static_cast<u64>(got);
+    file.calls++;
+    g_nx_reader = threadGetCurHandle();
+  }
   __atomic_fetch_add(&g_nx_read_ticks, armGetSystemTick() - start, __ATOMIC_RELAXED);
   if (got > 0) __atomic_fetch_add(&g_nx_read_bytes, static_cast<u64>(got), __ATOMIC_RELAXED);
   __atomic_fetch_add(&g_nx_read_calls, 1, __ATOMIC_RELAXED);

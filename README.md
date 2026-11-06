@@ -145,7 +145,7 @@ Settings are saved in `svr2011.toml` in the game folder (the app's **Documents**
 |---|---|
 | Native Renderer, 60 fps | ✅ Working |
 | Touch Controls | ✅ Working |
-| Save Manager | ⚠️ Working, Not available in the Launcher yet. |
+| Save Manager | ✅ Working |
 | Wide-screen Matches and Entrances | ✅ Working |
 | Custom Titantrons/Movies | ⚠️ Works only when media is bundled into ⁠`.svrmod⁠` files. You cannot manually import standalone video or audio files using the Launcher yet. |
 | DLC | ✅ Working |

@@ -2077,6 +2077,7 @@ bool BeginFrame(Renderer* r) {
   r->hidden_frame = g_half_frames.load() && !g_half_suspended.load() && (r->frames & 1);
   r->frame_stats = {};
   r->texture_context = TextureContext(r);
+  if (!r->hidden_frame) textures::UploadChanging(r->texture_context);
   g_resolved_this_frame = false;
   return true;
 }

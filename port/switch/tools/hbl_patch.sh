@@ -2,7 +2,7 @@
 # a newer one at sdmc:/SvR2011/update/svr2011.nro wins, which is how updates arrive.
 # When the game exits the process leaves at once: returning through the loader's
 # unload path ended in "the software was closed".
-f=/work/hbl/source/main.c
+f="${HBL_DIR:-/work/hbl}/source/main.c"
 sed -i 's|"sdmc:/hbmenu.nro"|"sdmc:/SvR2011/update/svr2011.nro"|' "$f"
 n=$(grep -n '^void loadNro(void)' "$f" | cut -d: -f1)
 [ -n "$n" ] || { echo "PATCH POINT NOT FOUND"; exit 1; }

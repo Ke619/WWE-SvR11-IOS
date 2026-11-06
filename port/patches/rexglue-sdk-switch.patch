@@ -38,6 +38,124 @@ index 6975ea2..9288e1c 100644
      $<$<CONFIG:DEBUG>:-g>
      $<$<CONFIG:DEBUG>:-O0>
      $<$<CONFIG:RELEASE>:-O3>
+diff --git a/compat_nx/dlfcn.h b/compat_nx/dlfcn.h
+new file mode 100644
+index 0000000..10d34fd
+--- /dev/null
++++ b/compat_nx/dlfcn.h
+@@ -0,0 +1,13 @@
++// [svr2011 switch] No dynamic loading on Horizon: everything is linked statically.
++#pragma once
++#define RTLD_NOW 2
++#define RTLD_LAZY 1
++#define RTLD_LOCAL 0
++#define RTLD_GLOBAL 0
++#define RTLD_DEFAULT ((void*)0)
++static inline void* dlopen(const char*, int) { return 0; }
++static inline int dlclose(void*) { return 0; }
++static inline void* dlsym(void*, const char*) { return 0; }
++static inline const char* dlerror(void) { return "no dynamic loading on Horizon"; }
++typedef struct { const char* dli_fname; void* dli_fbase; const char* dli_sname; void* dli_saddr; } Dl_info;
++static inline int dladdr(const void*, Dl_info*) { return 0; }
+diff --git a/compat_nx/endian.h b/compat_nx/endian.h
+new file mode 100644
+index 0000000..033226a
+--- /dev/null
++++ b/compat_nx/endian.h
+@@ -0,0 +1,2 @@
++#pragma once
++#include <machine/endian.h>
+diff --git a/compat_nx/netinet/ip.h b/compat_nx/netinet/ip.h
+new file mode 100644
+index 0000000..31baf76
+--- /dev/null
++++ b/compat_nx/netinet/ip.h
+@@ -0,0 +1,3 @@
++// [svr2011 switch] libnx has netinet/in.h only.
++#pragma once
++#include <netinet/in.h>
+diff --git a/compat_nx/rex_nx_compat.h b/compat_nx/rex_nx_compat.h
+new file mode 100644
+index 0000000..20eb627
+--- /dev/null
++++ b/compat_nx/rex_nx_compat.h
+@@ -0,0 +1,43 @@
++// [svr2011 switch] Force-included everywhere: names Linux code expects.
++#pragma once
++#if defined(__cplusplus) && !defined(_GNU_SOURCE)
++#define _GNU_SOURCE 1
++#endif
++#include <stdio.h>
++#include <sys/types.h>
++#include <time.h>
++#include <unistd.h>
++#ifndef CLOCK_MONOTONIC_RAW
++#define CLOCK_MONOTONIC_RAW CLOCK_MONOTONIC
++#endif
++typedef off_t off64_t;
++#define fseeko64 fseeko
++#define ftello64 ftello
++#define ftruncate64 ftruncate
++#define stat64 stat
++#define fstat64 fstat
++#define lseek64 lseek
++
++// newlib has no timegm.
++static inline time_t rex_nx_timegm(struct tm* t) {
++  long long y = (long long)t->tm_year + 1900;
++  int m = t->tm_mon + 1;
++  y -= m <= 2;
++  long long era = (y >= 0 ? y : y - 399) / 400;
++  unsigned yoe = (unsigned)(y - era * 400);
++  unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + t->tm_mday - 1;
++  unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
++  long long days = era * 146097 + (long long)doe - 719468;
++  return (time_t)(days * 86400 + t->tm_hour * 3600 + t->tm_min * 60 + t->tm_sec);
++}
++#define timegm rex_nx_timegm
++#define SPDLOG_NO_TZ_OFFSET 1
++#define VULKAN_HPP_ENABLE_DYNAMIC_LOADER_TOOL 0
++
++// Linux calls the game makes for its worker threads: no meaning on Horizon.
++#define PRIO_PROCESS 0
++#define SYS_gettid 0
++static inline int setpriority(int, unsigned, int) { return 0; }
++static inline long rex_nx_syscall(long, ...) { return 0; }
++#define syscall rex_nx_syscall
++static inline pid_t gettid(void) { return 0; }
+diff --git a/compat_nx/sys/syscall.h b/compat_nx/sys/syscall.h
+new file mode 100644
+index 0000000..269d2db
+--- /dev/null
++++ b/compat_nx/sys/syscall.h
+@@ -0,0 +1,2 @@
++// [svr2011 switch] Linux syscalls do not exist on Horizon.
++#pragma once
+diff --git a/compat_nx/sys/utsname.h b/compat_nx/sys/utsname.h
+new file mode 100644
+index 0000000..bb71b78
+--- /dev/null
++++ b/compat_nx/sys/utsname.h
+@@ -0,0 +1,10 @@
++// [svr2011 switch] uname for the log's platform line.
++#pragma once
++#include <string.h>
++struct utsname { char sysname[32], nodename[32], release[32], version[32], machine[32]; };
++static inline int uname(struct utsname* u) {
++  memset(u, 0, sizeof(*u));
++  strcpy(u->sysname, "Horizon");
++  strcpy(u->machine, "aarch64");
++  return 0;
++}
+diff --git a/compat_nx/ucontext.h b/compat_nx/ucontext.h
+new file mode 100644
+index 0000000..ee3df4d
+--- /dev/null
++++ b/compat_nx/ucontext.h
+@@ -0,0 +1,3 @@
++// [svr2011 switch] Horizon has no ucontext; only the type name is needed by headers.
++#pragma once
++typedef struct ucontext_t { void* unused; } ucontext_t;
 diff --git a/include/rex/platform.h b/include/rex/platform.h
 index e90418d..38333d4 100644
 --- a/include/rex/platform.h
@@ -121,6 +239,14 @@ index 246fe22..ff2a702 100644
  #if REX_PLATFORM_ANDROID
  #ifndef VK_USE_PLATFORM_ANDROID_KHR
  #define VK_USE_PLATFORM_ANDROID_KHR
+diff --git a/include/rex/ui/vulkan/functions/instance_nn_vi_surface.inc b/include/rex/ui/vulkan/functions/instance_nn_vi_surface.inc
+new file mode 100644
+index 0000000..0700f66
+--- /dev/null
++++ b/include/rex/ui/vulkan/functions/instance_nn_vi_surface.inc
+@@ -0,0 +1,2 @@
++// VK_NN_vi_surface functions used in the Switch build.
++XE_UI_VULKAN_FUNCTION(vkCreateViSurfaceNN)
 diff --git a/include/rex/ui/vulkan/instance.h b/include/rex/ui/vulkan/instance.h
 index 283fc75..ed355ff 100644
 --- a/include/rex/ui/vulkan/instance.h
@@ -212,6 +338,21 @@ index 00f2382..2ab7b14 100644
    // mach_absolute_time() returns raw hardware ticks; host_tick_frequency_platform()
    // expresses the rate of these same ticks via mach_timebase_info.
    // clock_gettime(CLOCK_MONOTONIC_RAW) returns nanoseconds, which would be
+diff --git a/src/core/exception_handler_switch.cpp b/src/core/exception_handler_switch.cpp
+new file mode 100644
+index 0000000..cf589a7
+--- /dev/null
++++ b/src/core/exception_handler_switch.cpp
+@@ -0,0 +1,9 @@
++// [svr2011 switch] Faults are not resumed on Horizon. The MMIO path is the
++// recompiler's REX_MM_LOAD / STORE macros, and no emulated GPU watches pages, so
++// the handler list only has to exist. Crash reports: port/switch/nx_main.cpp.
++#include <rex/exception_handler.h>
++
++namespace rex::arch {
++void ExceptionHandler::Install(Handler, void*) {}
++void ExceptionHandler::Uninstall(Handler, void*) {}
++}  // namespace rex::arch
 diff --git a/src/core/fiber_posix.cpp b/src/core/fiber_posix.cpp
 index 3fa5fa0..8f8a20a 100644
 --- a/src/core/fiber_posix.cpp
@@ -349,6 +490,315 @@ index 1645848..41e9238 100644
    if (flush_interval > 0)
      spdlog::flush_every(std::chrono::seconds(flush_interval));
  }
+diff --git a/src/core/mapped_memory_switch.cpp b/src/core/mapped_memory_switch.cpp
+new file mode 100644
+index 0000000..5257523
+--- /dev/null
++++ b/src/core/mapped_memory_switch.cpp
+@@ -0,0 +1,44 @@
++// [svr2011 switch] No mmap on Horizon: a read-mapped file is read into memory.
++#include <cstdio>
++#include <cstdlib>
++
++#include <rex/logging.h>
++#include <rex/memory/mapped_memory.h>
++
++namespace rex::memory {
++
++class HeapMappedMemory : public MappedMemory {
++ public:
++  HeapMappedMemory(void* data, size_t size) : MappedMemory(data, size) {}
++  ~HeapMappedMemory() override { std::free(data_); }
++};
++
++std::unique_ptr<MappedMemory> MappedMemory::Open(const std::filesystem::path& path, Mode mode, size_t offset,
++                                                 size_t length) {
++  if (mode != Mode::kRead) {
++    REXLOG_ERROR("Switch: writable file mapping is not supported: {}", path.string());
++    return nullptr;
++  }
++  FILE* f = std::fopen(path.string().c_str(), "rb");
++  if (!f) {
++    return nullptr;
++  }
++  std::fseek(f, 0, SEEK_END);
++  long total = std::ftell(f);
++  size_t size = length ? length : size_t(total) - offset;
++  void* data = std::malloc(size ? size : 1);
++  std::fseek(f, long(offset), SEEK_SET);
++  size_t got = data ? std::fread(data, 1, size, f) : 0;
++  std::fclose(f);
++  if (got != size) {
++    std::free(data);
++    return nullptr;
++  }
++  return std::unique_ptr<MappedMemory>(new HeapMappedMemory(data, size));
++}
++
++std::unique_ptr<ChunkedMappedMemoryWriter> ChunkedMappedMemoryWriter::Open(const std::filesystem::path&, size_t, bool) {
++  return nullptr;
++}
++
++}  // namespace rex::memory
+diff --git a/src/core/memory_switch.cpp b/src/core/memory_switch.cpp
+new file mode 100644
+index 0000000..7fa1e2c
+--- /dev/null
++++ b/src/core/memory_switch.cpp
+@@ -0,0 +1,233 @@
++/**
++ * [svr2011 switch] Guest memory on Horizon (the memory_posix.cpp of the Switch).
++ *
++ * The guest address space is views of one "file": several guest ranges show the
++ * same physical pages. Horizon has no file mappings, so:
++ *  - MapFileView only records the view; the window of address space is reserved.
++ *  - Backing comes from slabs of heap, each turned into mappable code-alias
++ *    memory (svcMapProcessCodeMemory + RW), made as they are needed, so only
++ *    what the game commits is real memory.
++ *  - Committing a range gives its file offsets granules from the slabs, and maps
++ *    each granule into every view that shows that offset (svcMapProcessMemory).
++ *
++ * Measured on the console (port/docs/SWITCH_PORT_PLAN.md): one block at several
++ * addresses works, writes show through all of them; 24,000 mappings with a 32 MB
++ * system_resource_size in the NPDM; 2 MB aligned mappings are far cheaper.
++ *
++ * Page protection isn't tracked: everything mapped is read/write.
++ */
++
++#include <cstdio>
++#include <cstring>
++#include <malloc.h>
++#include <mutex>
++#include <unordered_map>
++#include <vector>
++
++#include <switch.h>
++
++#include <rex/logging.h>
++#include <rex/memory/utils.h>
++#include <rex/memory.h>
++#include <rex/platform.h>
++
++namespace rex {
++namespace memory {
++
++namespace {
++
++constexpr size_t kPage = 0x1000;
++constexpr size_t kGranule = 256 * 1024;
++constexpr size_t kSlab = 32 * 1024 * 1024;
++constexpr size_t kBlock = 2 * 1024 * 1024;
++
++struct View {
++  uint8_t* base;
++  size_t length;
++  size_t file_offset;
++};
++
++std::mutex g_lock;
++std::vector<View> g_views;
++// file offset / kGranule -> host address of the granule's memory in its slab's alias
++std::unordered_map<uint64_t, uint64_t> g_granules;
++uint64_t g_slab_next = 0, g_slab_end = 0;
++size_t g_slabs = 0, g_maps = 0;
++
++constexpr uintptr_t kHandleValue = 0x53564D;  // the only file mapping
++
++Handle Self() { return envGetOwnProcessHandle(); }
++
++bool NewSlab() {
++  void* heap = memalign(kBlock, kSlab);
++  if (!heap) {
++    REXLOG_ERROR("Switch memory: out of heap at {} slabs ({} MB)", g_slabs, g_slabs * kSlab / (1024 * 1024));
++    return false;
++  }
++  std::memset(heap, 0, kSlab);
++  virtmemLock();
++  uint64_t alias = reinterpret_cast<uint64_t>(virtmemFindCodeMemory(kSlab + kBlock, kPage));
++  alias = (alias + kBlock - 1) & ~uint64_t(kBlock - 1);
++  Result rc = svcMapProcessCodeMemory(Self(), alias, reinterpret_cast<uint64_t>(heap), kSlab);
++  virtmemUnlock();
++  if (R_SUCCEEDED(rc)) {
++    rc = svcSetProcessMemoryPermission(Self(), alias, kSlab, Perm_Rw);
++  }
++  if (R_FAILED(rc)) {
++    REXLOG_ERROR("Switch memory: slab rc={:#x}", rc);
++    return false;
++  }
++  g_slab_next = alias;
++  g_slab_end = alias + kSlab;
++  g_slabs++;
++  return true;
++}
++
++// Map [src, src+size) of a granule, for file offset `file`, into every view.
++bool MapToViews(uint64_t file, uint64_t src, size_t size) {
++  for (const View& v : g_views) {
++    uint64_t begin = std::max<uint64_t>(file, v.file_offset);
++    uint64_t end = std::min<uint64_t>(file + size, v.file_offset + v.length);
++    if (begin >= end) {
++      continue;
++    }
++    uint8_t* to = v.base + (begin - v.file_offset);
++    Result rc = svcMapProcessMemory(to, Self(), src + (begin - file), end - begin);
++    if (R_FAILED(rc)) {
++      REXLOG_ERROR("Switch memory: map {} size {:#x} rc={:#x} after {} maps", static_cast<void*>(to), end - begin,
++                   rc, g_maps);
++      return false;
++    }
++    g_maps++;
++  }
++  return true;
++}
++
++const View* ViewOf(const void* address) {
++  auto a = static_cast<const uint8_t*>(address);
++  for (const View& v : g_views) {
++    if (a >= v.base && a < v.base + v.length) {
++      return &v;
++    }
++  }
++  return nullptr;
++}
++
++bool Commit(const View& view, uint8_t* address, size_t length) {
++  uint64_t first = view.file_offset + (address - view.base);
++  uint64_t last = first + length;
++  std::lock_guard<std::mutex> lock(g_lock);
++  // View offsets may start inside a granule (E0000000 is 0x1000 in), which is fine:
++  // granules are in file offsets.
++  for (uint64_t g = first / kGranule; g <= (last - 1) / kGranule; g++) {
++    if (g_granules.count(g)) {
++      continue;
++    }
++    if (g_slab_next + kGranule > g_slab_end && !NewSlab()) {
++      return false;
++    }
++    uint64_t src = g_slab_next;
++    g_slab_next += kGranule;
++    if (!MapToViews(g * kGranule, src, kGranule)) {
++      return false;
++    }
++    g_granules[g] = src;
++  }
++  return true;
++}
++
++}  // namespace
++
++size_t page_size() { return kPage; }
++size_t allocation_granularity() { return kPage; }
++
++bool IsWritableExecutableMemorySupported() { return false; }
++bool IsWritableExecutableMemoryPreferred() { return false; }
++
++void* AllocFixed(void* base_address, size_t length, AllocationType allocation_type, PageAccess access) {
++  if (!base_address) {
++    void* mem = memalign(kPage, (length + kPage - 1) & ~(kPage - 1));
++    if (mem) {
++      std::memset(mem, 0, length);
++    }
++    return mem;
++  }
++  const View* view = ViewOf(base_address);
++  if (!view) {
++    return nullptr;
++  }
++  if (allocation_type == AllocationType::kReserve) {
++    return base_address;
++  }
++  return Commit(*view, static_cast<uint8_t*>(base_address), length) ? base_address : nullptr;
++}
++
++bool DeallocFixed(void* base_address, size_t length, DeallocationType deallocation_type) {
++  const View* view = ViewOf(base_address);
++  if (!view) {
++    if (deallocation_type == DeallocationType::kRelease) {
++      free(base_address);
++    }
++    return true;
++  }
++  // The memory stays mapped for the next commit, which must read as zero. Only
++  // whole committed granules can be touched: a reservation released unused isn't.
++  uint64_t first = view->file_offset + (static_cast<uint8_t*>(base_address) - view->base);
++  std::lock_guard<std::mutex> lock(g_lock);
++  uint64_t pos = first, end = first + length;
++  while (pos < end) {
++    uint64_t next = std::min<uint64_t>((pos / kGranule + 1) * kGranule, end);
++    auto it = g_granules.find(pos / kGranule);
++    if (it != g_granules.end()) {
++      std::memset(reinterpret_cast<void*>(it->second + (pos % kGranule)), 0, next - pos);
++    }
++    pos = next;
++  }
++  return true;
++}
++
++bool Protect(void* base_address, size_t length, PageAccess access, PageAccess* out_old_access) {
++  if (out_old_access) {
++    *out_old_access = PageAccess::kReadWrite;
++  }
++  return true;
++}
++
++bool QueryProtect(void* base_address, size_t& length, PageAccess& access_out) {
++  access_out = PageAccess::kReadWrite;
++  return true;
++}
++
++FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path, size_t length, PageAccess access,
++                                          bool commit) {
++  return static_cast<FileMappingHandle>(kHandleValue);
++}
++
++void CloseFileMappingHandle(FileMappingHandle handle, const std::filesystem::path& path) {
++  std::lock_guard<std::mutex> lock(g_lock);
++  g_views.clear();
++}
++
++void* MapFileView(FileMappingHandle handle, void* base_address, size_t length, PageAccess access,
++                  size_t file_offset) {
++  if (!base_address) {
++    return nullptr;
++  }
++  std::lock_guard<std::mutex> lock(g_lock);
++  g_views.push_back({static_cast<uint8_t*>(base_address), length, file_offset});
++  return base_address;
++}
++
++bool UnmapFileView(FileMappingHandle handle, void* base_address, size_t length) {
++  std::lock_guard<std::mutex> lock(g_lock);
++  for (auto it = g_views.begin(); it != g_views.end(); ++it) {
++    if (it->base == base_address) {
++      g_views.erase(it);
++      return true;
++    }
++  }
++  return true;
++}
++
++}  // namespace memory
++}  // namespace rex
+diff --git a/src/core/seh_switch.cpp b/src/core/seh_switch.cpp
+new file mode 100644
+index 0000000..752ef33
+--- /dev/null
++++ b/src/core/seh_switch.cpp
+@@ -0,0 +1,14 @@
++// [svr2011 switch] No signals on Horizon: guest SEH scopes never catch a host fault.
++#include <rex/platform/seh.h>
++
++namespace rex::platform {
++namespace {
++thread_local SehThreadState g_state;
++thread_local bool g_active = false;
++}  // namespace
++SehThreadState& seh_thread_state() { return g_state; }
++int seh_filter(u32, void*) { return 0; }
++[[noreturn]] void seh_rethrow() { __builtin_trap(); }
++void seh_initialize() {}
++bool& seh_active() { return g_active; }
++}  // namespace rex::platform
 diff --git a/src/core/threading_posix.cpp b/src/core/threading_posix.cpp
 index 6d9e384..c737267 100644
 --- a/src/core/threading_posix.cpp
@@ -1138,30 +1588,6 @@ index f102b56..9a88dcd 100644
  
  #=============================================================================
  # DXC API headers (vendored from DirectXShaderCompiler, runtime-loaded)
-diff --git a/thirdparty/FFmpeg b/thirdparty/FFmpeg
---- a/thirdparty/FFmpeg
-+++ b/thirdparty/FFmpeg
-@@ -1 +1 @@
--Subproject commit 0604b464c7cb4ebc94940cf1f324a3b26b87717c
-+Subproject commit 0604b464c7cb4ebc94940cf1f324a3b26b87717c-dirty
-diff --git a/thirdparty/libmspack b/thirdparty/libmspack
---- a/thirdparty/libmspack
-+++ b/thirdparty/libmspack
-@@ -1 +1 @@
--Subproject commit 305907723a4e7ab2018e58040059ffb5e77db837
-+Subproject commit 305907723a4e7ab2018e58040059ffb5e77db837-dirty
-diff --git a/thirdparty/moltenvk b/thirdparty/moltenvk
---- a/thirdparty/moltenvk
-+++ b/thirdparty/moltenvk
-@@ -1 +1 @@
--Subproject commit db445ff2042d9ce348c439ad8451112f354b8d2a
-+Subproject commit db445ff2042d9ce348c439ad8451112f354b8d2a-dirty
-diff --git a/thirdparty/o1heap b/thirdparty/o1heap
---- a/thirdparty/o1heap
-+++ b/thirdparty/o1heap
-@@ -1 +1 @@
--Subproject commit 388a73fd9007300e5130c5fe352d9ce3288b6dde
-+Subproject commit 388a73fd9007300e5130c5fe352d9ce3288b6dde-dirty
 diff --git a/thirdparty/renderdoc/renderdoc_app.h b/thirdparty/renderdoc/renderdoc_app.h
 index da323e9..f685ddf 100644
 --- a/thirdparty/renderdoc/renderdoc_app.h

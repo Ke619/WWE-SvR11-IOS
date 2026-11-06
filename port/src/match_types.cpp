@@ -464,7 +464,6 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
     }
 #endif
     out.insert(out.end(), rec, rec + kRec);
-#if !defined(__SWITCH__)
     // MY WWE -> OPTIONS -> REPORT A PROBLEM (report_page.h) after WEAPONS, the group's last: a copy of it (its node
     // id too, as menu.pac's port rows - game_files.cpp; menu.pac has no room left for one more record).
     if (Rd32(rec) == kOptionsWeaponsLabel && Rd32(rec + 0x18) == kOptionsGroup && (Rd32(rec + 0x3C) & 2)) {
@@ -477,7 +476,6 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
       ++added;
       continue;
     }
-#endif
     if (Rd32(rec + 0x54) != kScreenMatch) continue;
     for (const Row& row : kRows) {
       if (Rd32(rec) != row.anchor || Rd32(rec + 0x18) != row.group || !svr2011::MatchTypeSwitchOn(row.mod)) continue;

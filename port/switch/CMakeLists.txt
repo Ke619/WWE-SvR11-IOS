@@ -5,12 +5,13 @@
 cmake_minimum_required(VERSION 3.25)
 project(svr2011_switch LANGUAGES C CXX ASM)
 
-set(SVR_PORT "/work/nx/port" CACHE PATH "port folder (a link without spaces: the tools need that)" FORCE)
+set(SVR_PORT "/work/nx/port" CACHE PATH "port folder (a link without spaces: the tools need that)")
 set(REXSDK_DIR "/work/nx/rex" CACHE PATH "the SDK, with the svr2011 and Switch patches")
 set(PLUME_DIR "/work/nx/plume" CACHE PATH "plume, with the svr2011 patch")
 set(SVR_GENERATED "/work/nx/generated" CACHE PATH "generated recompiled code")
 set(NVK_SDK "/work/nvk-sdk" CACHE PATH "mesa-switch: libvulkan.a and its parts")
 option(SVR_SDK_ONLY "Only the SDK's libraries" OFF)
+option(SVR_NX_REPORTS_LIVE "Release builds: Report a problem may use the public server (test builds never do)" OFF)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -67,6 +68,7 @@ list(APPEND SVR_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/nx_stubs.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/nx_profile.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/nx_ab.cpp ${CMAKE_CURRENT_SOURCE_DIR}/nx_fast.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/nx_report.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/sdl3_nx/sdl_nx.cpp
   ${PLUME_DIR}/plume_vulkan.cpp)
 
@@ -82,6 +84,9 @@ target_compile_options(svr2011 PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:SHELL:-include
 target_compile_definitions(svr2011 PRIVATE
   SVR2011_PORT_VERSION="${SVR_VERSION}" SVR2011_BUILD_COMMIT="switch"
   PLUME_SWITCH=1)
+if(SVR_NX_REPORTS_LIVE)
+  target_compile_definitions(svr2011 PRIVATE SVR_NX_REPORTS_LIVE=1)
+endif()
 target_compile_options(svr2011 PRIVATE -O2)
 
 target_link_directories(svr2011 PRIVATE ${NVK_SDK}/lib)
@@ -89,4 +94,4 @@ target_link_libraries(svr2011 PRIVATE rex::runtime rexgpu-xenos
   -Wl,--allow-multiple-definition -Wl,--wrap=svcBreak -Wl,--wrap=stat -Wl,--wrap=lstat -Wl,--wrap=_open_r -Wl,--wrap=_read_r -Wl,--wrap=_lseek_r -Wl,--wrap=_close_r -Wl,--wrap=_write_r -Wl,--wrap=rename -Wl,--wrap=fchmod -Wl,--wrap=opendir -Wl,--wrap=readdir -Wl,--wrap=closedir -Wl,--wrap=pthread_detach -Wl,--wrap=threadStart -Wl,--start-group
   vulkan nvk nak nak_rs nil libnil_format_table nouveau_horizon nouveau_mme nouveau_ws nvidia_headers_c
   vtn nir compiler compiler_c_helpers vulkan_util mesa_util mesa_util_c11 mesa_util_simd xmlconfig blake3
-  expat zstd z nx stdc++ m -Wl,--end-group)
+  expat zstd mbedtls mbedx509 mbedcrypto z nx stdc++ m -Wl,--end-group)

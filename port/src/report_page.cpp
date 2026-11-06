@@ -57,6 +57,8 @@
 extern "C" {
 #include "report_flow.h"
 }
+#elif defined(__SWITCH__)
+#include "../switch/nx_report.h"
 #endif
 
 #ifndef SVR2011_PORT_VERSION
@@ -344,6 +346,43 @@ Sent SendNow(const Send& s) {
   }
   return out;
 }
+#elif defined(__SWITCH__)
+void SwitchProgress(uint64_t sent, uint64_t total) { g_progress_sent = sent, g_progress_total = total; }
+
+Sent SendNow(const Send& s) {
+  Sent out;
+  std::string server = s.server;
+#if defined(SVR_NX_REPORTS_LIVE)
+  if (server.empty()) server = "https://sho-ti.me/svr";
+#else
+  // A test build sends only where svr2011.toml says, and never to the public server.
+  if (server.empty() || server.find("sho-ti.me") != std::string::npos) {
+    out.why = "Test build: set online_server in svr2011.toml to a private server.";
+    return out;
+  }
+#endif
+  nx_report::Input in;
+  const std::u8string dir = g_game_dir.u8string();
+  in.game_dir.assign(dir.begin(), dir.end());
+  in.server = server;
+  in.version = SVR2011_PORT_VERSION;
+  in.problem = kKindText[s.answers.kind];
+  in.happens = kHappensText[s.answers.happens];
+  in.what = s.answers.what;
+  in.before = s.answers.before;
+  in.contact = s.answers.contact;
+  in.match_dir = s.match_dir;
+  in.picture = s.picture;
+  in.with_save = s.with_save;
+  in.pictures_later = s.pictures_later;
+  in.progress = SwitchProgress;
+  const nx_report::Output r = nx_report::Send(in);
+  out.ok = r.ok;
+  out.id = r.id;
+  out.seen_before = r.seen_before;
+  out.why = r.why.empty() ? "no answer from the server." : r.why;
+  return out;
+}
 #else
 Sent SendNow(const Send&) {
   Sent out;
@@ -524,6 +563,9 @@ void ReportPage::Open() {
   sel_ = 0;
   picture_ = kScreenshot;
   with_mods_ = with_save_ = true;
+#if defined(__SWITCH__)
+  with_mods_ = false;  // (the console's report doesn't send mods)
+#endif
   match_dir_ = NewestMatch();
   with_match_ = from_pause_ && !match_dir_.empty();  // (the match being played; from the menus the player picks)
   editing_ = -1;
@@ -561,7 +603,9 @@ void ReportPage::Activate(int row, int dir) {
     case kHappens: a_.happens = (a_.happens + int(std::size(kHappensText)) + step) % int(std::size(kHappensText)); break;
     case kPicture: picture_ = (picture_ + 3 + step) % 3; break;
     case kMatch: if (!match_dir_.empty()) with_match_ = !with_match_; break;
+#if !defined(__SWITCH__)
     case kMods: if (with_match_) with_mods_ = !with_mods_; break;
+#endif
     case kSave: with_save_ = !with_save_; break;
     case kWhat:
     case kBefore:
@@ -848,11 +892,16 @@ void ReportPage::OnDraw(ImGuiIO& io) {
     }
 #if defined(__ANDROID__)
     const char* where = "It's in the app's My reports: you'll see there when it's fixed or if we need more.";
+#elif defined(__SWITCH__)
+    const std::string where_text = "Your report number is " + sent_.id + ". Keep it if you want to ask about this report.";
+    const char* where = where_text.c_str();
 #else
     const char* where = "It's in the launcher's Reports tab: you'll see there when it's fixed or if we need more.";
 #endif
     Text(dl, g_menu_font, 18 * s, P(100, 280), kGrey, where, wrap);
+#if !defined(__SWITCH__)
     if (picture_ == kLater) Text(dl, g_menu_font, 18 * s, P(100, 320), kGold, "Add your pictures to it there.", wrap);
+#endif
     Hint(dl, P(84, 0).x, P(0, 660).y, s, "B", IM_COL32(200, 40, 40, 255), "CLOSE");
     if ((pressed & (X_INPUT_GAMEPAD_A | X_INPUT_GAMEPAD_B | X_INPUT_GAMEPAD_START)) || !taps.empty() ||
         ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_Enter, false))
@@ -1010,9 +1059,6 @@ REX_EXTERN(__imp__sub_824271E8);
 REX_HOOK_RAW(sub_824271E8) {
   const uint32_t o = ctx.r3.u32;
   __imp__sub_824271E8(ctx, base);
-#if defined(__SWITCH__)
-  return;  // (no REPORT A PROBLEM on Switch)
-#endif
   if (!o || Rd32(base + o) != kPauseVtable || !g_memory) return;
   if (svr2011::Lockstep()) return;  // (online: the match doesn't pause - no REPORT A PROBLEM there)
   const uint32_t items = Rd32(base + o + 40), count = Rd32(base + o + 44);

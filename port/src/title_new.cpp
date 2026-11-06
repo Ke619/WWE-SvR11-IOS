@@ -300,9 +300,22 @@ void NewTitlesTestCheck(PPCContext& ctx, uint8_t* base) {
     int n = 0;
     for (uint32_t k = 0; k < kCards; ++k) {
       const uint32_t a = CardAddress(base, k);
-      if (a && base[a + 1] != 255 && base[a + 2] == 2) base[a + 1] = uint8_t(kFirstNew), base[a + 4] |= 1, ++n;
+      // (=1 the first new title, =s<title> a stock one)
+      const char* v = std::getenv("SVR2011_TEST_NEW_TITLE_CARD");
+      if (a && base[a + 1] != 255 && base[a + 2] == 2) base[a + 1] = v[0] == 's' ? uint8_t(std::atoi(v + 1)) : uint8_t(kFirstNew), base[a + 4] |= 1, ++n;
     }
     REXLOG_INFO("[svr2011] new titles: test - {} cards on the new title", n);
+  }
+  // SVR2011_TEST_NEW_TITLE_HOLDER=<id>[,<title>]: the superstar holds that title (default: the first new one).
+  if (const char* h = !g_new.empty() ? std::getenv("SVR2011_TEST_NEW_TITLE_HOLDER") : nullptr) {
+    uint32_t id = 0, title = kFirstNew;
+    if (std::sscanf(h, "%u,%u", &id, &title) >= 1) {
+      const auto saved = ctx;
+      ctx.r3.u64 = title, ctx.r4.u64 = id, ctx.r5.u64 = 0;
+      sub_828BD5B8(ctx, base);
+      ctx = saved;
+      REXLOG_INFO("[svr2011] new titles: test - title {} holder {}", title, id);
+    }
   }
   if (std::getenv("SVR2011_TEST_NEW_TITLES")) TestCheck(ctx, base);
 }
@@ -721,6 +734,34 @@ void NewTitleArt_824998F8(PPCRegister& r5, PPCRegister& r8, PPCRegister& r9) {
     const uint8_t* p = g_base_for_sites + r9.u32 + uint32_t(t->belt_of) * 4;
     r5.u64 = uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3];
   }
+}
+
+REX_EXTERN(__imp__sub_825B2710);
+REX_HOOK_RAW(sub_825B2710) {
+  const uint32_t k = ctx.r3.u32;
+  __imp__sub_825B2710(ctx, base);
+  // A played match on a new title: the winner takes it, by the function the game hands a simulated match's title over
+  // with (sub_825B7EB0: reads the card's result; a winner already holding it keeps it).
+  if (g_new.empty()) return;
+  const auto saved = ctx;
+  ctx.r1.u64 -= 256;
+  const uint32_t list = ctx.r1.u32 + 80;
+  ctx.r3.u64 = list;
+  sub_825AC1E8(ctx, base);
+  ctx.r3.u64 = list, ctx.r4.u64 = k;
+  sub_825AC5D0(ctx, base);
+  const uint32_t card = ctx.r3.u32;
+  if (card && Row(base[card + 1]) && (base[card + 4] & 1)) {
+    ctx.r3.u64 = card;
+    sub_825B7EB0(ctx, base);
+    std::string who;  // (each person: id, result; 1 or 3 a win)
+    for (int i = 0; i < base[card + 2] && i < 6; ++i)
+      who += fmt::format(" {}:{}", uint32_t(base[card + 16 + i * 12]) << 8 | base[card + 17 + i * 12], int(int8_t(base[card + 21 + i * 12])));
+    REXLOG_INFO("[svr2011] new titles: {} after the match:{} - holder {}", Row(base[card + 1])->folder, who, Row(base[card + 1])->holder[0]);
+  }
+  ctx.r3.u64 = list;
+  sub_825AC248(ctx, base);
+  ctx = saved;
 }
 
 // Is the title one of Universe's: (title).

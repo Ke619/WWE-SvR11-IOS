@@ -18,8 +18,15 @@ holders kept beside the save.
 
 **Not yet:** other screens' lists (Universe, title select), a belt or art of its own (the holder carries a stock belt model and the list shows no art for it), announcer lines, online rules, a Mod Maker page.
 
-Outside Universe titles don't change hands in the game: every holder write is Universe, title settings or the save's
-set-up (`sub_825B7EB0`, `sub_825B1488`, `sub_8243D680`, `sub_8257B268`).
+Holder writes: `sub_825B7EB0` (a finished Universe card), `sub_825B1488` (titles outside Universe's list, after a
+simulated match), `sub_8243D680` (end of match, from the setup's people) and `sub_8257B268` (a superstar removed).
+
+A played Universe match on a new title changes hands in `sub_825B2710`'s hook (the match is recorded): it calls
+`sub_825B7EB0` on the card. The game's other route doesn't serve: `sub_825B3A40` stakes the holder's title in the setup's
+slot (+36, +40), only under 14, and it only takes when the holder is in the match; the select screen (`sub_82463FD0`,
+`sub_82737150` -> `sub_82734070`) clears the slot's +36; so `sub_828BAF58`'s lists (setup + 0xFD98 + 2872 / 2932, from the
+person's byte at +468) were empty at the end of the match in every run, and `sub_8243D680` wrote nothing. Whether a stock
+title takes that route in a real Universe match wasn't settled: the one stock run never staked its title.
 
 - The game's table is at 0x82EDEB50, 14 rows x 16 B, all 14 in use: holder a, holder b, +8 a group, +12 kind (2 = tag),
   +13 display order. Names: `sub_82588698(title, kind)`, kind 0 the name, 1 the short name.
@@ -52,7 +59,9 @@ set-up (`sub_825B7EB0`, `sub_825B1488`, `sub_8243D680`, `sub_8257B268`).
 - Universe's match screen shows a title match's picture from a stack list by title; a new title has its `belt=` title's.
 - To check: `sub_825C1EA0` lists holders in a 96 B heap block, which many new titles could fill; `sub_824AC5B8` reads a
   string table by title with no limit on its +296 path.
-- Test aids: `SVR2011_TEST_NEW_TITLES` (the table in the log; =<id> gives the first new title that holder, in memory).
+- Test aids: `SVR2011_TEST_NEW_TITLES` (the table in the log; =<id> gives the first new title that holder, in memory),
+  `SVR2011_TEST_NEW_TITLE_CARD` (every two-person card a title match: =1 the first new title, =s<n> stock title n),
+  `SVR2011_TEST_NEW_TITLE_HOLDER=<id>[,<title>]` (after a load, that superstar holds it).
 
 ## The mod
 

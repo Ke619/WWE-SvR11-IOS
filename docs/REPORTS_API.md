@@ -19,7 +19,7 @@ needed; an `Authorization: Bearer <token>` (optional, not sent by today's client
 | `zip` | `application/zip` | optional, 25 MB at most; the client's report zip (already redacted) |
 | `image0` .. `image4` | PNG / JPEG / WebP (checked by their bytes) | optional, 8 MB each |
 
-`report` fields: `format` (1), `app` (`launcher` / `modmaker` / `game` / `android`, required), `version` (required),
+`report` fields: `format` (1), `app` (`launcher` / `modmaker` / `game` / `android`, or SvR Anthology's `anthology` / `anthology-android`, shown on the dashboard's own SvR Anthology page; required), `version` (required),
 `platform` (`windows` / `android`), `os`, `problem` (required), `happens`, `what`, `before`, `contact`, `signature`
 (the client's hint), `updater` (PC: the last "result" line of `<game>\logs\updater.log` - the updater's last
 update or repair and how it ended; `update_log.h`). `what` / `before` are cut at 4000 characters, `updater` at

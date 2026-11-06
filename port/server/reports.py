@@ -27,6 +27,9 @@ problem is the idea's title, its what the idea; no zip. Same receipts, rate limi
 planned ("Sure"), not_planned ("No, not planned"), each with an optional note, or fixed with a version ("Done in
 <version>"). The dashboard's Suggestions panel lists them; its Reports panel doesn't.
 
+SvR Anthology (apps ANTHOLOGY_APPS): its launcher and phone app send here too, with the same routes and receipts. The
+dashboard shows them on their own SvR Anthology page, never among the port's, and `list` needs --anthology for them.
+
 Duplicates: a signature from app + version + problem + the first crash / error line in the zip's logs, made
 general (times, addresses, thread ids and other numbers taken out); the client's own hint stands in when the
 zip has none. seen_before = the reports before this one with the same signature.
@@ -42,7 +45,8 @@ import threading
 import time
 import zipfile
 
-APPS = ("launcher", "modmaker", "game", "android")
+APPS = ("launcher", "modmaker", "game", "android", "anthology", "anthology-android")
+ANTHOLOGY_APPS = ("anthology", "anthology-android")  # (SvR Anthology's launcher and phone app: the dashboard's own page)
 MAX_ZIP = 25 << 20
 MAX_IMAGE = 8 << 20
 MAX_IMAGES = 5
@@ -158,6 +162,11 @@ def has_url(text):
 def url_refusal(kind="report"):
     """What a player sees when their text has a web address in it."""
     return "Please dont add urls to " + ("suggestions" if kind == "suggestion" else "bug reports")
+
+
+def is_anthology(row):
+    """A report from SvR Anthology: same store and receipts, but its own dashboard page and its own `list --anthology`."""
+    return row.get("app") in ANTHOLOGY_APPS
 
 
 def clean_meta(raw):
@@ -1264,7 +1273,8 @@ def main():
         python reports.py --data <data folder> delete <report id>
         python reports.py --data <data folder> mark <suggestion id> --planned ["a note"] | --not-planned ["a note"]
                           | --fixed "a note" --version 2.1.10   (a suggestion: Sure / No, not planned / Done in)
-        python reports.py --data <data folder> list [--fixed] [--kind report | suggestion] [--who NAME]
+        python reports.py --data <data folder> list [--fixed] [--kind report | suggestion] [--who NAME] [--anthology]
+                          (SvR Anthology's reports are listed only with --anthology, and then only they are)
         python reports.py --data <data folder> show <report id>   (its fields, the answers, the sender's edits)
         python reports.py --data <data folder> resign [--write]   (every report signed again: before / after)
     A signature marks every report with it (the dashboard's groups). The dashboard shows the fixed ones under
@@ -1295,6 +1305,7 @@ def main():
     ls.add_argument("--fixed", action="store_true", help="only the fixed ones")
     ls.add_argument("--kind", choices=KINDS, help="only reports or only suggestions")
     ls.add_argument("--who", help="only this person's (the From column: an account name, a contact, anonymous)")
+    ls.add_argument("--anthology", action="store_true", help="SvR Anthology's reports instead of the port's")
     sh = sub.add_parser("show")
     sh.add_argument("id")
     rs = sub.add_parser("resign")
@@ -1342,6 +1353,8 @@ def main():
         print("deleted", a.id)
     else:
         for r in store.list(5000):
+            if is_anthology(r) != a.anthology:
+                continue
             if a.fixed and r["status"] != "fixed":
                 continue
             if a.kind and r.get("kind", "report") != a.kind:

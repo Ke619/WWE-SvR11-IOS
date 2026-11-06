@@ -24,6 +24,43 @@
 static FILE *g_log;
 static Handle g_self;
 
+#ifdef SVR_NSP
+/* Installed title: no loader hands us our own process handle or a heap, so ask
+   the kernel for the handle the way nx-hbloader does (ISC licence, same steps):
+   send it to ourselves over a private session. */
+static Handle g_received;
+
+static void handle_receive_thread(void *arg)
+{
+    Handle session = (Handle)(uintptr_t)arg;
+    s32 idx = 0;
+    hipcMakeRequestInline(armGetTls());
+    svcReplyAndReceive(&idx, &session, 1, INVALID_HANDLE, UINT64_MAX);
+    HipcParsedRequest r = hipcParseRequest(armGetTls());
+    g_received = r.data.copy_handles[0];
+    hipcMakeRequestInline(armGetTls());
+    svcReplyAndReceive(&idx, &session, 0, session, 0);
+    svcCloseHandle(session);
+}
+
+static Handle get_own_process_handle(void)
+{
+    Handle server, client;
+    if (R_FAILED(svcCreateSession(&server, &client, 0, 0)))
+        return INVALID_HANDLE;
+    Thread t;
+    if (R_FAILED(threadCreate(&t, handle_receive_thread, (void *)(uintptr_t)server, NULL, 0x1000, 0x20, 0)))
+        return INVALID_HANDLE;
+    threadStart(&t);
+    hipcMakeRequestInline(armGetTls(), .send_pid = false, .num_copy_handles = 1).copy_handles[0] = CUR_PROCESS_HANDLE;
+    svcSendSyncRequest(client);
+    svcCloseHandle(client);
+    threadWaitForExit(&t);
+    threadClose(&t);
+    return g_received;
+}
+#endif
+
 static void say(const char *fmt, ...)
 {
     if (!g_log)
@@ -189,6 +226,54 @@ static void test_big_views(void)
     }
 }
 
+/* Heap really in use: the process total doesn't move, because the heap is
+   reserved up front. */
+static u64 heap_used_mb(void)
+{
+    return (u64)mallinfo().uordblks / MB;
+}
+
+#ifdef SVR_NSP
+/* How fast do the game's files read: from inside the NSP or from the SD card? */
+static void test_read_speed(void)
+{
+    const size_t size = 64 * MB;
+    u8 *buf = malloc(size);
+    if (!buf)
+        return;
+    Result rc = romfsInit();
+    say("romfs mount rc=0x%x", rc);
+    if (R_SUCCEEDED(rc)) {
+        FILE *f = fopen("romfs:/speed.bin", "rb");
+        if (f) {
+            u64 t0 = armGetSystemTick();
+            size_t got = fread(buf, 1, size, f);
+            double ms = ms_since(t0);
+            fclose(f);
+            say("[%s] romfs read: %zu MB, %.0f MB/s, first bytes %02x %02x", got == size ? "PASS" : "FAIL", got / MB,
+                (double)got / MB / (ms / 1000.0), buf[0], buf[1]);
+            FILE *o = fopen("sdmc:/svr_nsp_speed.bin", "wb");
+            if (o) {
+                t0 = armGetSystemTick();
+                fwrite(buf, 1, size, o);
+                fclose(o);
+                say("sd write: %.0f MB/s", (double)size / MB / (ms_since(t0) / 1000.0));
+                o = fopen("sdmc:/svr_nsp_speed.bin", "rb");
+                t0 = armGetSystemTick();
+                got = fread(buf, 1, size, o);
+                fclose(o);
+                say("sd read: %zu MB, %.0f MB/s", got / MB, (double)got / MB / (ms_since(t0) / 1000.0));
+                remove("sdmc:/svr_nsp_speed.bin");
+            }
+        } else {
+            say("[FAIL] romfs:/speed.bin won't open");
+        }
+        romfsExit();
+    }
+    free(buf);
+}
+#endif
+
 /* ---- part 2: Vulkan ---- */
 #define CHECK(x)                                 \
     do {                                         \
@@ -248,6 +333,7 @@ static void log_device(VkPhysicalDevice gpu)
 static int run_vulkan(PadState *pad)
 {
     u64 t0 = armGetSystemTick();
+    say("heap in use before Vulkan: %llu MB", heap_used_mb());
     const char *inst_ext[] = { VK_KHR_SURFACE_EXTENSION_NAME, VK_NN_VI_SURFACE_EXTENSION_NAME };
     VkApplicationInfo app = { .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .pApplicationName = "svr_vktest", .apiVersion = VK_API_VERSION_1_2 };
     VkInstanceCreateInfo ici = { .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app,
@@ -384,7 +470,7 @@ static int run_vulkan(PadState *pad)
     VkFenceCreateInfo fci = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, .flags = VK_FENCE_CREATE_SIGNALED_BIT };
     VkFence fence;
     CHECK(vkCreateFence(dev, &fci, NULL, &fence));
-    say("used %llu MB before the first frame", info(InfoType_UsedMemorySize) / MB);
+    say("heap in use before the first frame: %llu MB", heap_used_mb());
 
     u64 start = armGetSystemTick(), last = start, worst = 0;
     int frames = 0;
@@ -437,23 +523,37 @@ static int run_vulkan(PadState *pad)
     double total = ms_since(start);
     say("[PASS] vulkan: %d frames in %.0f ms = %.1f fps, worst frame %.1f ms, used %llu MB", frames, total,
         frames * 1000.0 / total, (double)worst * 1000.0 / 19200000.0, info(InfoType_UsedMemorySize) / MB);
+    say("heap in use after the frames: %llu MB", heap_used_mb());
     vkDeviceWaitIdle(dev);
     return 1;
 }
 
 int main(void)
 {
+    #ifdef SVR_NSP
+    g_log = fopen("sdmc:/svr_nsptest.log", "w");
+#else
     g_log = fopen("sdmc:/svr_vktest.log", "w");
+#endif
     padConfigureInput(1, HidNpadStyleSet_NpadStandard);
     PadState pad;
     padInitializeDefault(&pad);
 
-    say("SvR 2011 Switch test 2: applet type %d, total %llu MB, used %llu MB", appletGetAppletType(),
-        info(InfoType_TotalMemorySize) / MB, info(InfoType_UsedMemorySize) / MB);
+#ifdef SVR_NSP
+    say("SvR 2011 Switch test 3: installed NSP");
+#endif
+    say("applet type %d, total %llu MB, used %llu MB, system resource %llu MB", appletGetAppletType(),
+        info(InfoType_TotalMemorySize) / MB, info(InfoType_UsedMemorySize) / MB, info(InfoType_SystemResourceSizeTotal) / MB);
+    say("aslr size 0x%llx, heap region size 0x%llx", info(InfoType_AslrRegionSize), info(InfoType_HeapRegionSize));
     if (appletGetAppletType() != AppletType_Application) {
         say("NOT TITLE MODE: hold R while starting a game.");
     } else {
+#ifdef SVR_NSP
+        g_self = get_own_process_handle();
+#else
         g_self = envGetOwnProcessHandle();
+#endif
+        say("own process handle 0x%x", g_self);
         virtmemLock();
         u8 *w = (u8 *)virtmemFindAslr(WINDOW_SIZE + BLOCK, PAGE);
         if (w)
@@ -462,6 +562,9 @@ int main(void)
         g_window = (u8 *)(((u64)w + BLOCK - 1) & ~(BLOCK - 1));
         test_pool();
         test_big_views();
+#ifdef SVR_NSP
+        test_read_speed();
+#endif
         say("memory done, used %llu MB; starting Vulkan", info(InfoType_UsedMemorySize) / MB);
         int ok = run_vulkan(&pad);
         say("DONE: vulkan %s", ok ? "ok" : "FAILED");

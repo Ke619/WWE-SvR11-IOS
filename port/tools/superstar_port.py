@@ -2464,7 +2464,9 @@ def moveset_ctx(a, g, src, cid, base, g11, work, rep, cache, **kw):
     if mg is not None:
         mgame = mg(src) if gid == 'wwe12' else mg(src, getattr(g, 'svrmod', None))
         waze = mgame.waze
-        pk = os.path.join(cache, 'mindex_%s_%08x.pkl' % (gid, zlib.crc32(os.path.abspath(a['src']).lower().encode())))
+        # (with the DLC folder in the key: the packages add moves)
+        pk = os.path.join(cache, 'mindex_%s_%08x.pkl' % (gid, zlib.crc32((os.path.abspath(a['src']).lower() + '|' +
+                                                                          os.environ.get('SVR2011_PORT_DLC', '').lower()).encode())))
         try:
             mgame._index = pickle.load(open(pk, 'rb'))
         except Exception:   # noqa: BLE001

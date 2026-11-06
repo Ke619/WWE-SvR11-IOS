@@ -261,6 +261,7 @@ int CaeMissingRow(PPCContext& ctx, uint8_t* base, uint32_t list, uint32_t value)
 }
 
 uint32_t EntranceFallback(uint8_t* base, uint32_t mgr, uint32_t idx, int part, uint32_t n) {
+  CaeSceneAsked();
   if (!n || n >= 0xFFFF || idx >= 16) return n;
   const uint32_t own_n = n >= 10000 ? n % 1000 : n;
   if (own_n < 100 || EntranceScriptExists(int(n))) return n;  // (DLC 50-57 live in DLC pacs)

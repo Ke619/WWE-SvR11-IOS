@@ -2243,6 +2243,41 @@ REX_HOOK_RAW(sub_828C3318) {
   std::memcpy(base + out + 8, e + 0x18, 2);  // multi-title
 }
 
+// CREATE AN ENTRANCE backing out to its menu says nothing on screen and left nothing in the log (report a81bee): the
+// superstar is picked, the game asks for his entrance scene at once (EntranceFallback, cae_mod_motions.cpp) - or it
+// never does and the next thing is the menu's load. That's logged with what the mod asks for.
+// (test aid: SVR2011_TEST_CAE_BACKOUT=1 - a scene asked for doesn't count, so leaving the editor logs the line)
+namespace {
+std::atomic<uint32_t> g_cae_picked{0};
+std::atomic<int64_t> g_cae_picked_at{0};
+}  // namespace
+namespace svr2011 {
+void CaePicked(uint32_t id) {
+  g_cae_picked_at = std::chrono::steady_clock::now().time_since_epoch().count();
+  g_cae_picked = id;
+}
+void CaeSceneAsked() {
+  static const bool test = std::getenv("SVR2011_TEST_CAE_BACKOUT") != nullptr;
+  if (!test) g_cae_picked = 0;
+}
+void CaeMenuLoads() {
+  const uint32_t id = g_cae_picked.exchange(0);
+  if (!id) return;
+  const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch() -
+                                                    std::chrono::steady_clock::duration(g_cae_picked_at.load())).count();
+  const Mod* m = ModOf(id);
+  if (!m) {
+    REXLOG_WARN("[svr2011] create an entrance: backed out of id {} after {:.1f} s - its entrance scene never started (not a mod)", id, secs);
+    return;
+  }
+  const char* why = m->entrance <= 0                         ? "no entrance= of its own, its base's scene never started"
+                    : !EntranceScriptExists(m->entrance) ? "its entrance has no script, and its scene never started"
+                                                             : "its entrance has a script, but its scene never started";
+  REXLOG_WARN("[svr2011] create an entrance: backed out of {} ({}, id {}, base {}) after {:.1f} s - {} (entrance {}, movie {}, music {})",
+              m->name, m->folder, id, int(m->base), secs, why, m->entrance, m->movie, m->music);
+}
+}  // namespace svr2011
+
 // The select screen's panel: "is it DLC" for the badge (r26: the id; r31:
 // the cursor).
 REX_EXTERN(__imp__sub_828B6CD0);
@@ -2251,6 +2286,7 @@ REX_HOOK_RAW(sub_828B6CD0) {
   // popup unless he is "downloaded" - then straight to the easy editor (state 23). Mods sit on downloaded slots,
   // and the user asked for ADVANCED on the real DLC superstars too: none counts as downloaded here.
   if (uint32_t(ctx.lr) == kCaePickCaller) {
+    svr2011::CaePicked(ctx.r3.u32);
     __imp__sub_828B6CD0(ctx, base);
     if (ctx.r3.u32) {
       static bool told = false;

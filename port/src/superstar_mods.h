@@ -78,4 +78,9 @@ uint32_t SuperstarModString(uint32_t id);
 // before InstallSuperstarMods.
 void AddOverlayMount(const std::string& file);
 
+// CREATE AN ENTRANCE: a superstar picked / his entrance scene asked for / the menu's load came first: the back-out's log line.
+void CaePicked(uint32_t id);
+void CaeSceneAsked();
+void CaeMenuLoads();
+
 }  // namespace svr2011

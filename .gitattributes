@@ -1,8 +1,0 @@
-* text=auto
-*.ps1 text eol=crlf
-*.rc text eol=crlf
-*.png binary
-*.jpg binary
-*.patch -text
-port/BUILD_COMMIT.txt export-subst
-*.sh text eol=lf

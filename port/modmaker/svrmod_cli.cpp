@@ -773,6 +773,15 @@ int main(int argc, char** argv) {
     return MakeMod(argv[2], argv[3], argv[4], argv[5], argv[6], argc == 8 ? argv[7] : nullptr);
   if (argc == 5 && !std::strcmp(argv[1], "ring")) return Ring(argv[2], argv[3], argv[4]);
   if (argc >= 5 && !std::strcmp(argv[1], "wwe13")) return Wwe13(argc, argv);
+  if ((argc == 4 || argc == 5) && !std::strcmp(argv[1], "wwe13prop")) {  // <entry> <out> [scale]: an entrance prop (entrance_port)
+    Bytes in, out;
+    std::string err;
+    if (!ReadFile(argv[2], in) || !ConvertProp13(in, out, argc == 5 ? float(std::atof(argv[4])) : 0.1f, &err)) {
+      std::printf("%s: %s\n", argv[2], err.c_str());
+      return 1;
+    }
+    return WriteFile(argv[3], out) ? 0 : 1;
+  }
   if (argc == 4 && !std::strcmp(argv[1], "xdec")) {
     Bytes in, out;
     std::string err;

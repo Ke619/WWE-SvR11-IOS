@@ -280,6 +280,10 @@ packages can hold the same name.
 
 Props the DLC entrance uses that 2011's `evtobj.pac` lacks don't show, and the conversion warns about them, as for a
 disc entrance; the packages' own `evtobj_dlc<nn>.pac` aren't read. SvR 2007 / 2008 /
+Props a DLC entrance uses that 2011's `evtobj.pac` lacks come from the packages' `evtobj_dlc<nn>.pac` (2K16: `pac/prop/<id>_dlc<nn>.pac`): the model
+goes through `svrmod wwe13prop` and the pack adds it under its own id. '13: 1 prop, 2K14: 3, 2K16: 5. Props no package holds don't show, and the conversion
+warns, as for a disc entrance. Not read from a package yet: moves whose motions only
+the DLC has (their slots keep the base's move), and the Moves & entrances tab doesn't get the DLC folder. SvR 2007 / 2008 /
 Legends use the 2009 reader but no package has been tried. WWE All Stars isn't a source game; its packages are skipped.
 
 Moves only the DLC has come from the packages too (`moves_port`, and so a whole superstar's moveset): a package's table

@@ -1010,6 +1010,9 @@ REX_EXTERN(__imp__sub_824271E8);
 REX_HOOK_RAW(sub_824271E8) {
   const uint32_t o = ctx.r3.u32;
   __imp__sub_824271E8(ctx, base);
+#if defined(__SWITCH__)
+  return;  // (no REPORT A PROBLEM on Switch)
+#endif
   if (!o || Rd32(base + o) != kPauseVtable || !g_memory) return;
   if (svr2011::Lockstep()) return;  // (online: the match doesn't pause - no REPORT A PROBLEM there)
   const uint32_t items = Rd32(base + o + 40), count = Rd32(base + o + 44);

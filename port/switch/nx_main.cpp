@@ -202,6 +202,11 @@ static void SetFileId(const char* path, struct stat* out) {
   out->st_ino = h | 1;
 }
 
+// The card has no permissions and fchmod fails, which made std::filesystem::copy_file
+// stop after creating an empty target: a save opened through its working copy read as
+// empty ("Load Failed"), and the game then wrote a blank one.
+int __wrap_fchmod(int, mode_t) { return 0; }
+
 // POSIX rename replaces the target; Horizon refuses. Saves and settings rely on it.
 int __real_rename(const char* from, const char* to);
 int __wrap_rename(const char* from, const char* to) {

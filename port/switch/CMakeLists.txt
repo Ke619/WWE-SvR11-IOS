@@ -85,7 +85,7 @@ target_compile_options(svr2011 PRIVATE -O2)
 
 target_link_directories(svr2011 PRIVATE ${NVK_SDK}/lib)
 target_link_libraries(svr2011 PRIVATE rex::runtime rexgpu-xenos
-  -Wl,--allow-multiple-definition -Wl,--wrap=svcBreak -Wl,--wrap=stat -Wl,--wrap=lstat -Wl,--wrap=_open_r -Wl,--wrap=rename -Wl,--wrap=opendir -Wl,--wrap=readdir -Wl,--wrap=closedir -Wl,--wrap=pthread_detach -Wl,--wrap=threadStart -Wl,--start-group
+  -Wl,--allow-multiple-definition -Wl,--wrap=svcBreak -Wl,--wrap=stat -Wl,--wrap=lstat -Wl,--wrap=_open_r -Wl,--wrap=rename -Wl,--wrap=fchmod -Wl,--wrap=opendir -Wl,--wrap=readdir -Wl,--wrap=closedir -Wl,--wrap=pthread_detach -Wl,--wrap=threadStart -Wl,--start-group
   vulkan nvk nak nak_rs nil libnil_format_table nouveau_horizon nouveau_mme nouveau_ws nvidia_headers_c
   vtn nir compiler compiler_c_helpers vulkan_util mesa_util mesa_util_c11 mesa_util_simd xmlconfig blake3
   expat zstd z nx stdc++ m -Wl,--end-group)

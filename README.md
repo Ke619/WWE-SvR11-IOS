@@ -121,18 +121,10 @@ iOS uses the same touch-control system as the PC port's Android build, so the ma
 ## Settings
 
 Open **My WWE → Options → Graphics** in the game. It has two tabs (**LB / RB**). **Display** holds the basics. **Quality** trades looks for speed, and its changes apply at once.
-> Game settings can also be adjusted in the Launcher. 
+> Game settings can also be adjusted in the Launcher.
 
-| Quality setting | What it does |
-|---|---|
-| **Render resolution** | The most the game renders at. Lower is faster. |
-| **Anti-aliasing** | Smoother edges, at a cost in speed. |
-| **Textures** | **High**: as the game has them. **Medium** / **Low**: big textures use the game's own half / quarter-size versions, which saves memory and loading time. Menus and fonts stay sharp. |
-| **Shadows & effects** | **High**: at the render resolution. **Normal**: at the Xbox 360's size, much less GPU work. |
-| **Entrance frame rate** | **60 fps**, or **30 fps** as on the Xbox 360. Entrances and cutscenes then need half the work. |
-| **Wide screens** | **Full width**: on wide screens, matches and entrances fill the screen with a wider view. The HUD and menus stay 16:9. **16:9** keeps the original picture with bars. |
 
-**Renderer.** The iOS build uses the **Native** renderer only (Vulkan through MoltenVK). There's no Emulated fallback, as there is on the PC.
+**Renderer:** The iOS build uses the **Native** renderer only (Vulkan through MoltenVK). There's no Emulated fallback, as there is on the PC.
 
 Settings are saved in `svr2011.toml` in the game folder (the app's **Documents**).
 

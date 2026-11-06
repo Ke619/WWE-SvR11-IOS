@@ -805,7 +805,7 @@ void Svr2011App::OnPostLoadXexImage() {
                      "process_priority"},
         {"effects", "depth_of_field motion_blur soft_filter"},
         {"gameplay", "replays managers_tile mixed_gender_matches caw_logos_anywhere unlock_everything user_language per_mod_saves"},
-        {"input", "input_backend mnk_mode touch_controls touch_auto_layout vibration device_vibration"},
+        {"input", "input_backend mnk_mode touch_controls touch_auto_layout vibration device_vibration pad_map_p1 pad_map_p2 pad_map_p3 pad_map_p4"},
         {"audio", "audio_backend audio_mute"},
         {"online", "online_enabled online_server"},
         {"storage", "saves_folder"},

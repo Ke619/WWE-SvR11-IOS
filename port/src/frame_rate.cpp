@@ -597,13 +597,9 @@ REX_HOOK_RAW(sub_8269D768) {
   g_world_ticks = std::clamp(int(g_world_acc), 1, kMaxTicks);
   g_world_acc = std::clamp(g_world_acc - g_world_ticks, -0.5, 1.0);
   if (g_lockstep || !REXCVAR_GET(full_speed)) g_world_ticks = 1, g_world_acc = 0;
-  // A pin's count: one update a frame. The characters' job runs once a frame (see the top), so with two updates a
-  // frame (30 fps, a slow PC, a phone) it missed every other step of the count: the referee's slap that should make
-  // a count 2 or 3 made it 0 (the guard by sub_822446E0 put it right by its timing) and a kick-out - the pinned
-  // player's or the CPU's - went with it: nobody ever kicked out (reports 4f62f3, Android at 14 fps; a2fd0a, PC at
-  // 30). The count takes its real length at the frame rate then (twice as long at 30 fps, as with FULL SPEED off).
-  // Test aid SVR2011_TEST_PIN_FULL_SPEED=1: the updates as before.
-  if (static const bool old_way = std::getenv("SVR2011_TEST_PIN_FULL_SPEED") != nullptr; !old_way && g_pin_counting.load())
+  // (Test aid SVR2011_TEST_PIN_ONE_UPDATE=1: a pin's count at one update a frame - 2.2.0's way, which slowed the
+  // world down below 60 fps. The count's lost step is put right at its cause now: sub_822EB8D8, below.)
+  if (static const bool one = std::getenv("SVR2011_TEST_PIN_ONE_UPDATE") != nullptr; one && g_pin_counting.load())
     g_world_ticks = 1, g_world_acc = 0;
 #if SVR2011_DEBUG_SUITE
   if (const int n = svr2011::dbg::SpeedTicks(); n && !g_lockstep) g_world_ticks = n, g_world_acc = 0;  // (dbg_speed)
@@ -1489,9 +1485,8 @@ SVR2011_LOST_TRACE(sub_822473B0)
 // motions is the lost step (HoldFrames). The lost step's drop comes at
 // 141 / 153 frames in for the 2 and 203 / 204 for the 3 (before its slap:
 // left to the game there, the pin stays on and the referee counts again).
-// Since the count runs one update a frame (g_pin_counting, above) the lost step
-// doesn't come; this stays for the cases that still have two (a replay played
-// back as recorded, SVR2011_TEST_PIN_FULL_SPEED).
+// The lost step is put right at its cause (sub_822EB8D8, below); this stays for
+// what that doesn't reach (SVR2011_TEST_PIN_GATE_OFF shows it working).
 namespace {
 struct PinGuard {
   uint32_t judge = 0;
@@ -1686,6 +1681,57 @@ REX_HOOK_RAW(sub_82165AD8) {
                 Rd32(base + kMatchFrames), g_extra_update ? " (extra update)" : "");
   __imp__sub_82165AD8(ctx, base);
 }
+// The referee's count (sub_822EB8D8: he is in motion 190, key 1 and its frame +24). Past frame 62 he goes round for the
+// next slap, or to key 3 for the last - when his controller presses a button (the gate: sub_8221CB90, the bit 0x40 of its
+// +72), which his AI does on that very frame. With two updates in a frame the press often doesn't come: he runs on to the
+// end of the key, into key 2, and there the handler zeroes the count with the pin still on - the lost step (a count of 2
+// or 3 made 0, and a kick-out gone with it: reports 4f62f3, a2fd0a, c35ceb). 2.2.0 ran the count at one update a frame,
+// which made it and what followed slow motion (report f7ad46). Here: while the pin is on, the press he should have made.
+// Test aids: SVR2011_TEST_PIN_GATE_OFF=1 (the game's alone), SVR2011_TEST_PIN_STEP_LOG=1 (each update of his count).
+REX_EXTERN(__imp__sub_822EB8D8);
+REX_HOOK_RAW(sub_822EB8D8) {
+  static const bool off = std::getenv("SVR2011_TEST_PIN_GATE_OFF") != nullptr;
+  static const bool log = std::getenv("SVR2011_TEST_PIN_STEP_LOG") != nullptr;
+  constexpr uint32_t kJudge = 0x82E3BC84;
+  constexpr float kPressFrame = 62.0f;  // (where his AI presses at 60 fps: the handler itself takes a press from about 30)
+  const uint32_t ch = ctx.r4.u32, gate = ctx.r3.u32 ? Rd32(base + ctx.r3.u32 + 36) : 0;
+  const uint32_t judge = Rd32(base + kJudge);
+  const auto f32 = [&](uint32_t a) {
+    const uint32_t v = Rd32(base + a);
+    float x;
+    std::memcpy(&x, &v, 4);
+    return x;
+  };
+  const uint32_t y0 = Rd32(base + ch + 216);
+  const float f0 = f32(ch + 24);
+  const int32_t c0 = judge ? int32_t(Rd32(base + judge + 100)) : -1;
+  bool pressed = false;
+  uint32_t word = 0;
+  if (!off && gate && judge && y0 == 1 && (Rd32(base + ch + 212) & 0x7FFF) == 190 && f0 >= kPressFrame &&
+      Rd32(base + judge + 92) == 1) {
+    const uint32_t pinner = Rd32(base + kChars + Rd32(base + judge + 112) * 4);
+    if (pinner && Rd32(base + pinner + 516) == 2) {
+      word = Rd32(base + gate + 72);
+      if (!(word & 0x00400000)) {  // (+72 is a halfword: the word's high half)
+        Wr32(base + gate + 72, word | 0x00400000);
+        pressed = true;
+      }
+    }
+  }
+  __imp__sub_822EB8D8(ctx, base);
+  if (pressed) {
+    Wr32(base + gate + 72, word);
+    static int told = 0;
+    if (++told <= 20 || told % 100 == 0)
+      REXLOG_INFO("pin count: the referee's press for the next slap didn't come - made for him at frame {:.0f}, count {} ({} times)",
+                  f0, c0, told);
+  }
+  if (log)
+    REXLOG_INFO("pin step: clock {}{} motion {} y {} f {:.2f} count {}{} -> y {} f {:.2f} count {}", Rd32(base + kMatchFrames),
+                g_extra_update ? " x" : "", Rd32(base + ch + 212), y0, f0, c0, pressed ? " pressed" : "", Rd32(base + ch + 216),
+                f32(ch + 24), judge ? int32_t(Rd32(base + judge + 100)) : -1);
+}
+
 SVR2011_LOST_TRACE(sub_82245DF8)
 SVR2011_LOST_TRACE(sub_82243660)
 SVR2011_LOST_TRACE(sub_822EB378)

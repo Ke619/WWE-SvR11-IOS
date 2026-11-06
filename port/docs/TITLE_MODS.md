@@ -55,7 +55,7 @@ title takes that route in a real Universe match wasn't settled: the one stock ru
 - Universe's cards (save + 0x364B4 + 14942, 66 x 88 B: +1 the title, +2 people, +4 bit 0 a title match). A card on a new
   title is saved as a plain match, with a `#card` row in `Saves\titles.txt`; it comes back on a load if the mod is there,
   and stays a plain match if not. A Universe title with no holder gets one the first time Universe is asked: of the
-  brand, in the roster, holding nothing, lowest id first (to improve: by rank). Contenders are saved in the row.
+  brand, in the roster, holding nothing, the best in its rank class (`sub_825ADE20`), lowest id on a tie. Contenders are saved in the row.
 - AI bookings: cards come from scripts with fixed titles (`sub_825C6BD8`), with no list to add to, and `sub_825C7480` only
   serves a special case from `sub_825B5700`. So `sub_825B3738`'s hook, once its job has copied a show's cards (it runs on
   opening Universe too), makes a plain one on one to play with a new title's holder in it a defence, one time in two,

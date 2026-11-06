@@ -686,16 +686,25 @@ NEW_TITLE_LOOP(825CA2B0)
 NEW_TITLE_GUARD(825ADBE4)
 
 // Universe is asked (its object is made): a Universe title with no holder gets one, as the game's own start with one: of
-// the brand, in the roster, holding nothing yet; again if the holder's mod has gone.
+// the brand, in the roster, holding nothing yet, the best in the title's rank class (lowest id on a tie); again if the
+// holder's mod has gone.
 REX_EXTERN(__imp__sub_825AC1E8);
 REX_HOOK_RAW(sub_825AC1E8) {
   if (g_pick_holders) {
     g_pick_holders = false;
     const auto saved = ctx;
+    ctx.r1.u64 -= 256;
+    const uint32_t ranks = ctx.r1.u32 + 80;  // (the object being made here, for its rank lists)
+    ctx.r3.u64 = ranks;
+    __imp__sub_825AC1E8(ctx, base);
     for (size_t k = 0; k < g_new.size(); ++k) {
       NewTitle& t = g_new[k];
       if (t.brand < 0 || t.tag || t.holder[0] != kNoHolder) continue;
       const uint32_t title = uint32_t(kFirstNew + k);
+      ctx.r3.u64 = title;
+      sub_825B74D0(ctx, base);
+      const uint32_t rank_class = ctx.r3.u32;
+      uint32_t best = kNoHolder, best_points = 0;
       for (uint32_t id = 0; id < 322; ++id) {
         ctx.r3.u64 = id;
         sub_828C1288(ctx, base);
@@ -717,11 +726,21 @@ REX_HOOK_RAW(sub_825AC1E8) {
         ctx.r3.u64 = id, ctx.r4.u64 = list, ctx.r5.u64 = 2, ctx.r6.u64 = 0;
         sub_828BDB38(ctx, base);
         if (ctx.r3.s32 != 0) continue;
-        t.holder[0] = id;
-        REXLOG_INFO("[svr2011] new titles: {} starts with holder {}", t.folder, id);
-        break;
+        uint32_t points = 0;
+        if (rank_class < 4) {
+          ctx.r3.u64 = ranks, ctx.r4.u64 = id, ctx.r5.u64 = rank_class;
+          sub_825ADE20(ctx, base);
+          points = ctx.r3.u32 & 0xFFFF;
+        }
+        if (best == kNoHolder || points > best_points) best = id, best_points = points;
+      }
+      if (best != kNoHolder) {
+        t.holder[0] = best;
+        REXLOG_INFO("[svr2011] new titles: {} starts with holder {} ({} points)", t.folder, best, best_points);
       }
     }
+    ctx.r3.u64 = ranks;
+    sub_825AC248(ctx, base);
     ctx = saved;
   }
   __imp__sub_825AC1E8(ctx, base);

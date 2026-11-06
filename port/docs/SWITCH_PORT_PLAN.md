@@ -237,7 +237,7 @@ The practice ring is CPU-limited at stock: 720p 27.9 fps, 480p 28.6, GPU at 768 
 Built from the thread profile (`logs/nx_samples.txt`, named with `svr2011.sym` of the same build):
 - Pad icon hooks off, test wrappers off, match recordings off.
 - The recording worker sleeps between larger batches instead of spinning.
-- The game's memcpy runs natively (`nx_fast.cpp`). The first version forgot that guest addresses from 0xE0000000 up sit 4 KB further on in host memory, and broke textures and movies.
+- Tried and removed: the game's memcpy run natively. The build with it showed broken textures and movies. Its cause isn't proven: the same build also had read-ahead, batched recording and pad icons off. `REX_PHYS_HOST_OFFSET` is 0 on Switch, so a +4 KB adjustment for high addresses is wrong here: adding one froze the game on its audio queue.
 - The log is written every 2 s instead of per line.
 - The two busiest threads each prefer their own core.
 

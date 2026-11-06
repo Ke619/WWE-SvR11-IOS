@@ -3,8 +3,9 @@
 // While loading: CPU 1785 MHz, from the start to the Start Screen and during the loads
 // after it. Not the system's boost mode: it takes the GPU down to 76.8 MHz, and the game's
 // loading screens count frames.
-// At 60 fps (GRAPHICS): CPU 1785 MHz, GPU 768 MHz, memory 1600 MHz, in handheld too; at
-// 30 fps the console's normal clocks. Cvar switch_boost_60 turns that off.
+// In the game: CPU 1785 MHz, GPU 768 MHz, memory 1600 MHz, in handheld too, at 30 fps as well:
+// with the console's normal clocks a match frame took 38 ms on the GPU, and 30 fps became 20.
+// Cvar switch_boost_60 turns that off.
 #include <switch.h>
 
 #include <atomic>
@@ -16,8 +17,7 @@
 
 #include "frame_rate.h"
 
-REXCVAR_DEFINE_BOOL(switch_boost_60, true, "GPU", "Switch: higher clocks when the frame rate is set to 60");
-REXCVAR_DECLARE(int32_t, frame_rate);
+REXCVAR_DEFINE_BOOL(switch_boost_60, true, "GPU", "Switch: higher clocks in the game");
 
 extern "C" volatile u64 g_nx_read_ticks, g_nx_read_bytes, g_nx_read_calls;
 struct NxFileStat {
@@ -75,7 +75,7 @@ void Run() {
     if (clocks && step % 4 == 0) {
       const bool docked = appletGetOperationMode() == AppletOperationMode_Console;
       const bool focus = appletGetFocusState() == AppletFocusState_InFocus;
-      const bool want = REXCVAR_GET(switch_boost_60) && REXCVAR_GET(frame_rate) >= 60 && focus;
+      const bool want = REXCVAR_GET(switch_boost_60) && focus;
       if (want) {
         Want(&cpu, 1785);
         Want(&gpu, 768);
@@ -87,7 +87,7 @@ void Run() {
           Want(&emc, docked ? 1600 : 1331);
         }
       }
-      if (want != high) REXLOG_INFO("[nx] 60 fps clocks {}", want ? "on" : "off");
+      if (want != high) REXLOG_INFO("[nx] game clocks {}", want ? "on" : "off");
       high = want;
     }
     if (step % 20 == 0) {

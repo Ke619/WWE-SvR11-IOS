@@ -12,7 +12,7 @@ index 9d5874e..acf119c 100644
      typedef ANativeWindow* RenderWindow;
  #elif defined(PLUME_SDL_VULKAN_ENABLED)
 diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
-index 79a2e21..6f392bf 100644
+index 79a2e21..3ed3761 100644
 --- a/plume_vulkan.cpp
 +++ b/plume_vulkan.cpp
 @@ -51,6 +51,7 @@ namespace plume {
@@ -42,11 +42,64 @@ index 79a2e21..6f392bf 100644
  #   elif defined(__ANDROID__)
          dstWidth = ANativeWindow_getWidth(desc.renderWindow);
          dstHeight = ANativeWindow_getHeight(desc.renderWindow);
-@@ -2842,6 +2848,80 @@ namespace plume {
+@@ -2842,6 +2848,136 @@ namespace plume {
          }
      }
  
 +#if defined(__SWITCH__)
++    // [svr2011] Barrier masks from the layouts. MEMORY_READ | MEMORY_WRITE on both sides makes NVK
++    // flush the shader caches and invalidate the texture, constant and shader data caches at every
++    // barrier. The stage masks stay, so each real wait for idle does too. A layout not listed, or
++    // stages that can't make the access, keep the old masks.
++    static void svrLayoutAccess(RenderTextureLayout layout, VkAccessFlags &writes, VkAccessFlags &accesses, RenderBarrierStages &needs, bool &known) {
++        known = true;
++        writes = 0;
++        switch (layout) {
++        case RenderTextureLayout::SHADER_READ:
++            accesses = VK_ACCESS_SHADER_READ_BIT;
++            needs = RenderBarrierStage::GRAPHICS_AND_COMPUTE;
++            break;
++        case RenderTextureLayout::COLOR_WRITE:
++            writes = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
++            accesses = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
++            needs = RenderBarrierStage::GRAPHICS;
++            break;
++        case RenderTextureLayout::DEPTH_WRITE:
++            writes = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
++            accesses = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
++            needs = RenderBarrierStage::GRAPHICS;
++            break;
++        case RenderTextureLayout::DEPTH_READ:
++            accesses = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_SHADER_READ_BIT;
++            needs = RenderBarrierStage::GRAPHICS;
++            break;
++        case RenderTextureLayout::COPY_SOURCE:
++            accesses = VK_ACCESS_TRANSFER_READ_BIT;
++            needs = RenderBarrierStage::COPY;
++            break;
++        case RenderTextureLayout::COPY_DEST:
++            writes = VK_ACCESS_TRANSFER_WRITE_BIT;
++            accesses = VK_ACCESS_TRANSFER_WRITE_BIT;
++            needs = RenderBarrierStage::COPY;
++            break;
++        default:
++            accesses = 0;
++            needs = RenderBarrierStage::NONE;
++            known = false;
++            break;
++        }
++    }
++
++    static void svrImageMasks(VkImageMemoryBarrier &barrier, RenderTextureLayout oldLayout, RenderBarrierStages oldStages, RenderTextureLayout newLayout, RenderBarrierStages newStages) {
++        VkAccessFlags writes, accesses;
++        RenderBarrierStages needs;
++        bool known;
++        svrLayoutAccess(oldLayout, writes, accesses, needs, known);
++        if (known && (writes == 0 || (oldStages & needs) != 0)) barrier.srcAccessMask = writes;
++        svrLayoutAccess(newLayout, writes, accesses, needs, known);
++        if (known && (newStages & needs) != 0) barrier.dstAccessMask = accesses;
++    }
++
 +    // [svr2011] GPU time per render pass, one frame in 300 (the log's "gpu passes" line).
 +    SvrGpuFrame g_svr_gpu_frame;
 +    namespace {
@@ -74,7 +127,10 @@ index 79a2e21..6f392bf 100644
 +                const VkResult res = vkGetQueryPoolResults(device->vk, g_svr_gpu_pool, 0, g_svr_gpu_count * 2, sizeof(ticks), ticks,
 +                                                           sizeof(uint64_t), VK_QUERY_RESULT_64_BIT);
 +                if (res == VK_SUCCESS) {
-+                    const double ms = double(device->physicalDeviceProperties.limits.timestampPeriod) / 1e6;
++                    // (NVK says 1 ns a tick here, and a frame's timers came out 1.63 times too short)
++                    const float period = device->physicalDeviceProperties.limits.timestampPeriod;
++                    g_svr_gpu_frame.period = period;
++                    const double ms = (period == 1.0f ? 1000.0 / 614.4 : double(period)) / 1e6;
 +                    for (uint32_t i = 0; i < g_svr_gpu_count; i++) {
 +                        SvrGpuPass pass = g_svr_gpu_passes[i];
 +                        pass.ms = double(ticks[i * 2 + 1] - ticks[i * 2]) * ms;
@@ -123,7 +179,7 @@ index 79a2e21..6f392bf 100644
      void VulkanCommandList::begin() {
          vkResetCommandBuffer(vk, 0);
  
-@@ -2854,10 +2934,16 @@ namespace plume {
+@@ -2854,10 +2990,16 @@ namespace plume {
              fprintf(stderr, "vkBeginCommandBuffer failed with error code 0x%X.\n", res);
              return;
          }
@@ -140,7 +196,17 @@ index 79a2e21..6f392bf 100644
  
          VkResult res = vkEndCommandBuffer(vk);
          if (res != VK_SUCCESS) {
-@@ -2978,6 +3064,9 @@ namespace plume {
+@@ -2919,6 +3061,9 @@ namespace plume {
+             imageMemoryBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+             imageMemoryBarrier.oldLayout = toImageLayout(interfaceTexture->textureLayout);
+             imageMemoryBarrier.newLayout = toImageLayout(textureBarrier.layout);
++#if defined(__SWITCH__)
++            svrImageMasks(imageMemoryBarrier, interfaceTexture->textureLayout, interfaceTexture->barrierStages, textureBarrier.layout, stages);
++#endif
+             imageMemoryBarrier.subresourceRange.levelCount = interfaceTexture->desc.mipLevels;
+             imageMemoryBarrier.subresourceRange.layerCount = interfaceTexture->desc.arraySize;
+             imageMemoryBarrier.subresourceRange.aspectMask = toAspectFlags(interfaceTexture->desc.format, interfaceTexture->desc.flags);
+@@ -2978,6 +3123,9 @@ namespace plume {
      void VulkanCommandList::drawInstanced(uint32_t vertexCountPerInstance, uint32_t instanceCount, uint32_t startVertexLocation, uint32_t startInstanceLocation) {
          assert(activeGraphicsPipelineLayout != nullptr);
          checkActiveRenderPass();
@@ -150,7 +216,7 @@ index 79a2e21..6f392bf 100644
  
          vkCmdDraw(vk, vertexCountPerInstance, instanceCount, startVertexLocation, startInstanceLocation);
      }
-@@ -2985,6 +3074,9 @@ namespace plume {
+@@ -2985,6 +3133,9 @@ namespace plume {
      void VulkanCommandList::drawIndexedInstanced(uint32_t indexCountPerInstance, uint32_t instanceCount, uint32_t startIndexLocation, int32_t baseVertexLocation, uint32_t startInstanceLocation) {
          assert(activeGraphicsPipelineLayout != nullptr);
          checkActiveRenderPass();
@@ -160,7 +226,7 @@ index 79a2e21..6f392bf 100644
  
          vkCmdDrawIndexed(vk, indexCountPerInstance, instanceCount, startIndexLocation, baseVertexLocation, startInstanceLocation);
      }
-@@ -3566,6 +3658,15 @@ namespace plume {
+@@ -3566,6 +3717,15 @@ namespace plume {
              g_svr_render_passes.fetch_add(1, std::memory_order_relaxed);
              g_svr_render_pass_pixels.fetch_add(uint64_t(targetFramebuffer->width) * targetFramebuffer->height,
                                                 std::memory_order_relaxed);
@@ -176,7 +242,7 @@ index 79a2e21..6f392bf 100644
              VkRenderPassBeginInfo beginInfo = {};
              beginInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
              beginInfo.renderPass = targetFramebuffer->renderPass;
-@@ -3581,6 +3682,13 @@ namespace plume {
+@@ -3581,6 +3741,13 @@ namespace plume {
          if (activeRenderPass != VK_NULL_HANDLE) {
              vkCmdEndRenderPass(vk);
              activeRenderPass = VK_NULL_HANDLE;
@@ -191,7 +257,7 @@ index 79a2e21..6f392bf 100644
      }
  
 diff --git a/plume_vulkan.h b/plume_vulkan.h
-index 6c1cf32..cc72f1d 100644
+index 6c1cf32..0e0dec5 100644
 --- a/plume_vulkan.h
 +++ b/plume_vulkan.h
 @@ -9,6 +9,7 @@
@@ -202,7 +268,7 @@ index 6c1cf32..cc72f1d 100644
  #include <mutex>
  #include <set>
  #include <unordered_map>
-@@ -282,6 +283,22 @@ namespace plume {
+@@ -282,6 +283,23 @@ namespace plume {
          bool contains(const VulkanTexture *attachment) const;
      };
  
@@ -217,6 +283,7 @@ index 6c1cf32..cc72f1d 100644
 +        std::atomic<bool> ready{false};
 +        uint32_t count = 0;
 +        double total_ms = 0;
++        float period = 0;  // (what the driver says a tick is, in ns)
 +        SvrGpuPass passes[kMax];
 +    };
 +    extern SvrGpuFrame g_svr_gpu_frame;

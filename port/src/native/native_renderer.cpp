@@ -2153,7 +2153,8 @@ void UpdateTitle(Renderer* r) {
           line += fmt::format(" {}x{}/{}:{:.2f}", p.width, p.height, p.draws, p.ms);
           if (p.gap_ms >= 0.05) line += fmt::format("(+{:.2f})", p.gap_ms);
         }
-        REXLOG_INFO("native perf: gpu passes: {:.2f} ms first to last, {:.2f} in {} passes:{}", gpu.total_ms, busy, gpu.count, line);
+        REXLOG_INFO("native perf: gpu passes: {:.2f} ms first to last, {:.2f} in {} passes (driver tick {} ns):{}", gpu.total_ms, busy,
+                    gpu.count, gpu.period, line);
         plume::g_svr_gpu_frame.ready.store(false, std::memory_order_release);
       }
 #endif

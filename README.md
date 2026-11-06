@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <img src="Screenshots/Banner.png" width="350">
+  <img src="Screenshots/launcher_logo.png" width="350">
 </p>
 
 

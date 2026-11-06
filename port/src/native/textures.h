@@ -119,6 +119,9 @@ void ReleaseResolved(const Context& ctx, plume::RenderTexture* texture);
 plume::RenderComponentMapping ComponentMapping(uint32_t swizzle, uint32_t components,
                                                bool swap_rb = false);
 
+// At the start of a frame, before any render pass: uploads the textures that change all the time.
+void UploadChanging(const Context& ctx);
+
 struct Stats {
   uint32_t textures = 0;     // resident
   uint32_t uploads = 0;      // this frame

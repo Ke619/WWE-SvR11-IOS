@@ -190,6 +190,25 @@ Each step has a pass or fail check, so a dead end shows up early.
 - **Tools:** devkitPro and Docker approved. devkitPro is installed in `C:\msys64` (`/opt/devkitpro`). Docker isn't installed yet, because nothing needs it so far. Its likely first use is building mesa-switch from source.
 - **Build note:** devkitPro's `make` fails on paths with spaces, so builds run from `/work` inside MSYS2.
 
+## 11. Console results so far (6 Nov 2026)
+
+Measured on the user's console (original unpatched, FW 22.1.0, AMS 1.12.1), from the Homebrew Menu in title mode.
+
+| Check | Result |
+|---|---|
+| One block at several addresses (`svcMapProcessMemory`) | Works at 4 addresses plus a shifted one, writes visible through all |
+| Memory held | 2816 MB in 16 MB pieces at 2 MB aligned addresses; 2 GB with the first 1 GB at 3 addresses |
+| Separate mappings | About 10,000 at most (3334 x 3, `0xCE01`, repeats exactly over 3 rounds), so commit in big regions, not 64 KB pieces |
+| `memalign` | Refuses 2 GB and up (`0x559`, libnx), 1792 MB is fine |
+| Cores and threads | Cores 0-2 only; at priority 0x2C same-core threads don't share time, at 0x3B they do |
+| Vulkan (mesa-switch, commit 0ff52079ca9e) | 1.4 on GM20B, triangle at 60.5 fps, worst frame 17.2 ms; BDA, int64, descriptor indexing, BC textures present; heap 2391 MB |
+
+**Not measured yet:** driver memory use (the used-memory figure is flat because the loader reserves the heap up front), real game shaders, and the installed NSP route.
+
+**Compiler:** devkitA64's GCC compiled one generated file (`svr2011_recomp.101.cpp`, 1 MB source, 420 KB code at `-O2`, `-std=gnu++23`) once the SDK headers had stand-ins for Linux, `sys/syscall.h` and `ucontext.h`. So GCC is the first choice, and the SDK's Clang-only check must go. `ucontext.h` doesn't exist on Horizon, so fibers need another way if the game uses them.
+
+**Step 3 (PC count of alias use) is dropped:** aliases work on the console, so it no longer decides anything.
+
 ## Sources
 
 - UnleashedRecomp-NX: https://github.com/ChanseyIsTheBest/UnleashedRecomp-NX (`docs/SWITCH-PERFORMANCE.md`, `docs/SWITCH-PERFORMANCE-AUDIT.md`, `docs/SWITCH-MESA.md`, `UnleashedRecomp/kernel/memory.cpp`, `toolchains/switch-devkitA64.cmake`)

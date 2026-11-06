@@ -469,12 +469,14 @@ void ShowFrom(uint8_t* base, int top) {
     Wr(base, g_list.self + 400 + uint32_t(i) * 4, r.title);
     const uint32_t art = g_list.widgets + kArtWidget[i] * 256;
     const int stock = top + i;
-    if (stock < kListRows) {
-      Wr(base, art + 0x4C, g_art_picture[stock]);
-      Wr(base, art + 0xD4, 0x3F800000);
-    } else {
-      Wr(base, art + 0xD4, 0);
-    }
+    // (the picture is an index in this screen's own table, +0x50 its name; a new title has its belt= title's, if this
+    // screen lists that one)
+    int picture = stock < kListRows ? stock : -1;
+    if (const NewTitle* t = picture < 0 ? Row(int32_t(r.title)) : nullptr)
+      for (int k = 0; k < kListRows; ++k)
+        if (g_list.rows[size_t(k)].title == uint32_t(t->belt_of)) picture = k;
+    Wr(base, art + 0xD4, picture >= 0 ? 0x3F800000 : 0);
+    if (picture >= 0) Wr(base, art + 0x4C, g_art_picture[picture]);
   }
   REXLOG_INFO("[svr2011] new titles: title list from row {} of {}", top, g_list.rows.size());
 }

@@ -42,7 +42,9 @@ title takes that route in a real Universe match wasn't settled: the one stock ru
   above, the list below. Each is the game's own with no new title installed.
 - Championship Scramble's list (`sub_8244C9B0`): 11 rows on screen, the game's own 11 first. With new titles the rows
   scroll in the list's on-move function (`sub_8244CF50`). The art of a row is a widget (`sub_82452A48`: row -> widget
-  1342-1352); its picture is the widget's +0x4C, so a scrolled row's widget gets its title's picture.
+  1342-1352); its picture is the widget's +0x4C, an index in the screen's own table of the images it uses (+0x50 the name),
+  so a scrolled row's widget gets its title's picture, and a new title has its `belt=` title's. Art of its own would need
+  entries in that table and a texture built from the mod's picture: not done.
 - `sub_82732D68` (select screen: is this pick allowed) marks titles in a 14-entry stack list. With a new title in the
   picks the same rules run in the hook, so nothing writes past the list. Written from the game's code; no run has
   confirmed that path was taken.

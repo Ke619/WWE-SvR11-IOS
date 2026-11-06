@@ -43,6 +43,9 @@ struct Convert13Stats {
 // Unused texture names are pruned (slots renumbered).
 void ConvertModel13(Model& m, float scale, Convert13Stats& st);
 
+// An entrance prop's evtobj entry (PACH {0: model, 10: textures, ...}) from WWE '12 - 2K16: its model converted, the rest kept.
+bool ConvertProp13(const Bytes& in, Bytes& out, float scale, std::string* error = nullptr);
+
 // HMD collision in cm -> 10 cm.
 Bytes ConvertHmd13(const Bytes& raw, float scale);
 // c351 model flags: shadow flags of floor pieces dropped (the light numbers stay:

@@ -1,7 +1,8 @@
 // Clocks on the Switch, and bring-up measurements in the game log.
 //
-// While loading: the system's own CPU boost mode, as retail games use (CPU 1785 MHz, GPU
-// down to 76.8 MHz), from the start to the Start Screen and during the loads after it.
+// While loading: CPU 1785 MHz, from the start to the Start Screen and during the loads
+// after it. Not the system's boost mode: it takes the GPU down to 76.8 MHz, and the game's
+// loading screens count frames.
 // At 60 fps (GRAPHICS): CPU 1785 MHz, GPU 768 MHz, memory 1600 MHz, in handheld too; at
 // 30 fps the console's normal clocks. Cvar switch_boost_60 turns that off.
 #include <switch.h>
@@ -45,7 +46,7 @@ void Run() {
   bool boosting = false, high = false;
   u64 bytes = 0, ticks = 0, calls = 0, last_bytes = 0;
   const u64 start = armGetSystemTick();
-  u64 boot_cap = start + 90 * kTicksPerSecond;
+  const u64 boot_cap = start + 45 * kTicksPerSecond;
   for (u32 step = 1;; step++) {
     std::this_thread::sleep_for(std::chrono::milliseconds(250));
     const u64 now = armGetSystemTick();
@@ -63,23 +64,23 @@ void Run() {
     const bool loading = g_boot.load() || g_start_load.load() || g_match_load_at.load() != 0;
     if (loading != boosting) {
       boosting = loading;
-      const Result r = appletSetCpuBoostMode(loading ? ApmCpuBoostMode_FastLoad : ApmCpuBoostMode_Normal);
-      REXLOG_INFO("[nx] loading boost {}: {:X}", loading ? "on" : "off", r);
-      high = false;  // (the system set its clocks)
+      REXLOG_INFO("[nx] loading boost {}", loading ? "on" : "off");
     }
-    // Once a second, and only when not loading: the clocks for the frame rate chosen.
-    if (clocks && !loading && step % 4 == 0) {
+    // Once a second: the clocks for the frame rate chosen, the CPU up while loading.
+    if (clocks && step % 4 == 0) {
       const bool docked = appletGetOperationMode() == AppletOperationMode_Console;
-      const bool want = REXCVAR_GET(switch_boost_60) && REXCVAR_GET(frame_rate) >= 60 &&
-                        appletGetFocusState() == AppletFocusState_InFocus;
+      const bool focus = appletGetFocusState() == AppletFocusState_InFocus;
+      const bool want = REXCVAR_GET(switch_boost_60) && REXCVAR_GET(frame_rate) >= 60 && focus;
       if (want) {
         Want(&cpu, 1785);
         Want(&gpu, 768);
         Want(&emc, 1600);
-      } else if (high) {
-        Want(&cpu, 1020);
-        Want(&gpu, docked ? 768 : 307);
-        Want(&emc, docked ? 1600 : 1331);
+      } else {
+        Want(&cpu, loading && focus ? 1785 : 1020);
+        if (high) {
+          Want(&gpu, docked ? 768 : 307);
+          Want(&emc, docked ? 1600 : 1331);
+        }
       }
       if (want != high) REXLOG_INFO("[nx] 60 fps clocks {}", want ? "on" : "off");
       high = want;

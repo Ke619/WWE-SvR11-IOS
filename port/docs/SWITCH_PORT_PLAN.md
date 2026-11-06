@@ -237,7 +237,7 @@ The practice ring is CPU-limited at stock: 720p 27.9 fps, 480p 28.6, GPU at 768 
 Built from the thread profile (`logs/nx_samples.txt`, named with `svr2011.sym` of the same build):
 - Pad icon hooks off, test wrappers off, match recordings off.
 - The recording worker sleeps between larger batches instead of spinning.
-- The game's memcpy runs natively (`nx_fast.cpp`).
+- The game's memcpy runs natively (`nx_fast.cpp`). The first version forgot that guest addresses from 0xE0000000 up sit 4 KB further on in host memory, and broke textures and movies.
 - The log is written every 2 s instead of per line.
 - The two busiest threads each prefer their own core.
 
@@ -245,6 +245,7 @@ For load times:
 - Read-ahead for read-only files (`nx_readahead.h`, tested by `tests/ra_test.cpp` on a PC). C++ streams and stdio read 1 KB at a time here.
 - string.pac is patched once, then a stamp file skips the 30 MB read and search.
 - `fast_loads` on by default.
-- The system's CPU boost mode while loading.
+- CPU 1785 MHz while loading, through the clock service. Not the system's boost mode: it takes the GPU to 76.8 MHz, which held the frame-counted loading screens to about 30 fps.
+- The folder scan at start-up lists the card in one request per 64 entries (`ListFiles`, `NxListSdFolder`). It took about 5 requests a file through stat().
 
 Clocks (`nx_ab.cpp`): at 60 fps the game asks for CPU 1785 / GPU 768 / memory 1600 MHz, at 30 fps the normal clocks. Cvar `switch_boost_60` turns this off.

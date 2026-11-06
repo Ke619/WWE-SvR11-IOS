@@ -208,7 +208,7 @@ index 3fa5fa0..8f8a20a 100644
    auto* f = new Fiber();  // (its sp_ is set by the first switch away)
    f->is_thread_fiber_ = true;
 diff --git a/src/core/filesystem_posix.cpp b/src/core/filesystem_posix.cpp
-index 9149c3f..9f85d99 100644
+index 9149c3f..76eacea 100644
 --- a/src/core/filesystem_posix.cpp
 +++ b/src/core/filesystem_posix.cpp
 @@ -100,7 +100,7 @@ std::filesystem::path GetExecutablePath() {
@@ -220,6 +220,68 @@ index 9149c3f..9f85d99 100644
    // [svr2011] The executable is the system's app_process; the app's folder
    // (the game files) is passed by its Java activity.
    if (auto dir = rex::platform::env::get("REX_APP_FOLDER")) {
+@@ -274,9 +274,61 @@ bool GetInfo(const std::filesystem::path& path, FileInfo* out_info) {
+   return false;
+ }
+ 
++#if REX_PLATFORM_SWITCH
++}  // namespace rex::filesystem
++extern "C" bool NxListSdFolder(const char* path, void (*entry)(void*, const char*, bool, uint64_t), void* user);
++namespace rex::filesystem {
++
++// The game's folder: the card's listing in one request per 64 entries, then what only the
++// NSP has (the card's file wins). Timestamps are left at 0: nothing here reads them.
++static bool ListFilesFast(const std::filesystem::path& path, std::vector<FileInfo>& result) {
++  struct Ctx {
++    const std::filesystem::path* path;
++    std::vector<FileInfo>* out;
++  } ctx{&path, &result};
++  auto add = [](void* user, const char* name, bool folder, uint64_t size) {
++    auto* c = static_cast<Ctx*>(user);
++    FileInfo info;
++    info.name = name;
++    info.path = *c->path;
++    info.create_timestamp = info.access_timestamp = info.write_timestamp = convertUnixtimeToWinFiletime(0);
++    info.type = folder ? FileInfo::Type::kDirectory : FileInfo::Type::kFile;
++    info.total_size = folder ? 0 : size;
++    c->out->push_back(info);
++  };
++  if (!NxListSdFolder(path.c_str(), add, &ctx)) return false;
++  static const std::string kGame = "/SvR2011";
++  const std::string text = path.string();
++  if (text.compare(0, kGame.size(), kGame) != 0 || (text.size() > kGame.size() && text[kGame.size()] != '/')) return true;
++  const std::string in_nsp = "romfs:/game" + text.substr(kGame.size());
++  DIR* dir = opendir(in_nsp.c_str());
++  if (!dir) return true;
++  while (auto ent = readdir(dir)) {
++    if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
++    bool have = false;
++    for (const auto& known : result) {
++      if (known.name == std::filesystem::path(ent->d_name)) {
++        have = true;
++        break;
++      }
++    }
++    if (have) continue;
++    struct stat st {};
++    stat((in_nsp + "/" + ent->d_name).c_str(), &st);
++    add(&ctx, ent->d_name, ent->d_type == DT_DIR, static_cast<uint64_t>(st.st_size));
++  }
++  closedir(dir);
++  return true;
++}
++#endif
++
+ std::vector<FileInfo> ListFiles(const std::filesystem::path& path) {
+   std::vector<FileInfo> result;
+ 
++#if REX_PLATFORM_SWITCH
++  if (ListFilesFast(path, result)) return result;
++  result.clear();
++#endif
+   DIR* dir = opendir(path.c_str());
+   if (!dir) {
+     return result;
 diff --git a/src/core/logging.cpp b/src/core/logging.cpp
 index 1645848..41e9238 100644
 --- a/src/core/logging.cpp

@@ -764,6 +764,25 @@ REX_HOOK_RAW(sub_825B2710) {
   ctx = saved;
 }
 
+// sub_825C1EA0 lists the show's people and the holders of every title in a heap block of 96 B: room for the new titles' too.
+void NewTitleList_825C1EF8(PPCRegister& r3) { r3.u64 += uint64_t(g_new.size()) * 4; }
+
+// sub_824AC5B8, a holder's message: the title's text from a table of 14. A new title goes through as the title whose belt it
+// carries, and its own name replaces the text.
+namespace {
+uint32_t g_say_name = 0;
+}
+void NewTitleSay_824AC5FC(PPCRegister& r30) {
+  g_say_name = 0;
+  if (const NewTitle* t = Row(r30.s32)) g_say_name = t->guest_name, r30.u64 = uint64_t(t->belt_of);
+}
+void NewTitleSay_824AC63C(PPCRegister& r11) {
+  if (const NewTitle* t = Row(r11.s32)) g_say_name = t->guest_name, r11.u64 = uint64_t(t->belt_of);
+}
+void NewTitleSay_824AC680(PPCRegister& r30) {
+  if (g_say_name) r30.u64 = g_say_name;
+}
+
 // Is the title one of Universe's: (title).
 REX_EXTERN(__imp__sub_828BDA98);
 REX_HOOK_RAW(sub_828BDA98) {

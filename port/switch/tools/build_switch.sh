@@ -2,7 +2,7 @@
 # Builds the Switch program from a checkout of this repository. Steps and what they need: port/docs/SWITCH_BUILD.md.
 #   build_switch.sh sources|codegen|build|nsp|all
 # Run from MSYS2's bash. Settings, in the environment:
-#   NX_WORK    work folder, with no spaces in its path (default /work/nx)
+#   NX_WORK    work folder under /work, with no spaces (default /work/nx)
 #   NX_DRIVER  folder with mesa-switch's lib and include (default $NX_WORK/nvk-sdk)
 #   NX_XEX     your own default.xex (codegen)
 #   NX_REXGLUE the PC SDK's rexglue.exe (codegen)
@@ -30,9 +30,11 @@ HBP_COMMIT=745b16e
 export DEVKITPRO=/opt/devkitpro DEVKITA64=/opt/devkitpro/devkitA64
 export PATH=/opt/devkitpro/tools/bin:/opt/devkitpro/devkitA64/bin:/mingw64/bin:$PATH
 
-case "$WORK$PORT" in
-  *" "*) echo "No spaces allowed in NX_WORK or the checkout's path: the tools fail on them. Use a junction."; exit 1 ;;
-esac
+# devkitA64's compiler is a Windows program: it reads "/work/..." from the root of the current drive, and can't read
+# MSYS paths such as /e/... See "Folders" in port/docs/SWITCH_BUILD.md.
+case "$WORK" in /work/*) ;; *) echo "NX_WORK must be under /work (see SWITCH_BUILD.md)"; exit 1 ;; esac
+case "$PORT" in /work/*) ;; *) echo "Run this through a checkout under /work (see SWITCH_BUILD.md), not $PORT"; exit 1 ;; esac
+case "$WORK$PORT" in *" "*) echo "No spaces allowed in these paths: the tools fail on them."; exit 1 ;; esac
 
 fetch_repo() {  # url commit folder
   [ -d "$3/.git" ] && return 0

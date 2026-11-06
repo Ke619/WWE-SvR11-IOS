@@ -364,6 +364,24 @@ def who(url, node_data):
         {"id": a["id"], "secret": a["secret"]}]})[1]["reports"][0] for k in ("contact", "who")))
 
 
+def anthology(url, node_data):
+    """SvR Anthology's apps go in, keep their app name and receipts, and `list` keeps them apart from the port's."""
+    st, a = post(url, meta(app="anthology", version="1.0.0", problem="Crash", what="anthology pc"), ip="203.0.113.76")
+    st2, b = post(url, meta(app="anthology-android", version="1.0.0", problem="Crash", what="anthology phone"), ip="203.0.113.76")
+    st3, c = post(url, meta(problem="Crash", what="the port's own"), ip="203.0.113.76")
+    check("anthology: both apps taken", st == 200 and st2 == 200 and st3 == 200)
+    check("anthology: a third app refused", post(url, meta(app="anthology-x"), ip="203.0.113.77")[0] == 400)
+    rows = {x["id"]: x for x in json.loads(get(url, "/api/admin/reports")[1])["reports"]}
+    check("anthology: the rows keep their app", rows[a["id"]]["app"] == "anthology" and rows[b["id"]]["app"] == "anthology-android")
+    got = post_json(url, "/api/reports/status", {"reports": [{"id": a["id"], "secret": a["secret"]}]})[1]["reports"]
+    check("anthology: its receipt works", got and got[0]["state"] == "received")
+    cli = [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "reports.py"), "--data", node_data, "list"]
+    run = lambda *x: subprocess.run(cli + list(x), capture_output=True, text=True, encoding="utf-8").stdout
+    plain, only = run(), run("--anthology")
+    check("anthology: list leaves them out", a["id"] not in plain and b["id"] not in plain and c["id"] in plain)
+    check("anthology: list --anthology has only them", a["id"] in only and b["id"] in only and c["id"] not in only)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", required=True)
@@ -469,6 +487,7 @@ def main():
     edits(url, a.node_data, r1, r2)
     urls(url, r1)
     who(url, a.node_data)
+    anthology(url, a.node_data)
     check("index.jsonl: a line for each accepted report (%d)" % len(mine), len(mine) == 12)
 
     # the dashboard's routes

@@ -42,6 +42,7 @@ a { color: var(--accent); }
 header { background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; }
 .top { max-width: 1180px; margin: 0 auto; padding: 12px 20px 0; display: flex; align-items: center; gap: 12px;
        flex-wrap: wrap; }
+body.anth nav.tabs { display: none; }  /* (the SvR Anthology page: its reports only) */
 .top h1 { font-size: 18px; margin: 0; white-space: nowrap; }
 .top .sub { color: var(--faint); font-size: 13px; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden;
             text-overflow: ellipsis; }
@@ -210,10 +211,11 @@ td.acts { text-align: right; white-space: nowrap; }
 <body>
 <header>
   <div class="top">
-    <h1>SvR 2011 Online</h1>
+    <h1 id="title">SvR 2011 Online</h1>
     <span class="sub" id="since"></span>
     <button class="btn" id="theme" title="Colours: the system's, light or dark">Theme: auto</button>
     <button class="btn" id="signout" hidden>Sign out</button>
+    <button class="btn" id="anth" title="The reports from SvR Anthology (its launcher and phone app)"><span id="anth-l">SvR Anthology</span> <span class="count" id="n-anth"></span></button>
   </div>
   <nav class="tabs" role="tablist" aria-label="Dashboard">
     <button role="tab" id="tab-overview" aria-controls="p-overview">Overview</button>
@@ -414,7 +416,7 @@ td.acts { text-align: right; white-space: nowrap; }
       <label class="note"><input type="checkbox" id="rp-open" checked> Hide done / duplicates</label>
       <input class="filter" id="f-rp" placeholder="Filter" aria-label="Filter reports"></h2>
     <div id="fixed" hidden></div>
-    <p class="intro">Sent from Report a problem (launcher, Mod Maker, game, Android). Grouped by signature: the app, version, problem and the first crash / error line in the logs. The files are in the storage node's reports folder.</p>
+    <p class="intro" id="rp-intro">Sent from Report a problem (launcher, Mod Maker, game, Android). Grouped by signature: the app, version, problem and the first crash / error line in the logs. The files are in the storage node's reports folder.</p>
     <p class="note" id="modstore"></p>
     <div id="reports"><span class="empty">Loading&hellip;</span></div>
   </section>
@@ -506,7 +508,7 @@ td.acts { text-align: right; white-space: nowrap; }
 
   // ---- tabs (arrow keys / Home / End move between them; the last one is kept in this browser and the address)
   var tabs = Array.prototype.slice.call(document.querySelectorAll('[role=tab]'));
-  var current = null;
+  var current = null, anthMode = false;
   function tabName(t) { return t.id.replace('tab-', ''); }
   function show(name, focus) {
     var tab = el('tab-' + name) || tabs[0];
@@ -518,8 +520,9 @@ td.acts { text-align: right; white-space: nowrap; }
     });
     if (focus) tab.focus();
     current = tabName(tab);
-    store('svr-tab', current);
-    if (location.hash !== '#' + current) history.replaceState(null, '', '#' + current);
+    if (!anthMode) store('svr-tab', current);
+    var hash = anthMode ? 'anthology' : current;
+    if (location.hash !== '#' + hash) history.replaceState(null, '', '#' + hash);
     refresh(current);
   }
   tabs.forEach(function (t, i) {
@@ -534,7 +537,9 @@ td.acts { text-align: right; white-space: nowrap; }
   });
   window.addEventListener('hashchange', function () {
     var h = location.hash.slice(1);
-    if (h && h !== current && el('tab-' + h)) show(h);
+    if (h === 'anthology') { if (!anthMode) setAnth(true); return; }
+    if (anthMode) setAnth(false, h);
+    else if (h && h !== current && el('tab-' + h)) show(h);
   });
   document.addEventListener('click', function (e) {
     var g = e.target.closest('[data-go]');
@@ -1080,6 +1085,23 @@ td.acts { text-align: right; white-space: nowrap; }
 
   // ---- problem reports, grouped by signature (newest group first)
   var reportRows = [], reportError = '', modStore = null;
+  // (SvR Anthology's reports: the same store and renderers, on their own page - never among the port's)
+  var portRows = [], anthRows = [], portIntro = el('rp-intro').textContent;
+  function isAnth(r) { return r.app === 'anthology' || r.app === 'anthology-android'; }
+  function setAnth(on, back) {
+    anthMode = on;
+    document.body.classList.toggle('anth', on);
+    el('title').textContent = on ? 'SvR Anthology' : 'SvR 2011 Online';
+    el('anth-l').textContent = on ? 'Back to SvR 2011 Online' : 'SvR Anthology';
+    el('n-anth').hidden = on;
+    el('rp-intro').textContent = on ? 'Sent from Report a problem in the SvR Anthology launcher and phone app. Grouped by ' +
+      'signature, as the port\'s are. reports.py list --anthology lists them.' : portIntro;
+    el('modstore').hidden = on;
+    el('f-rp').value = '';
+    whoFilter = '';
+    reportRows = on ? anthRows : portRows;
+    show(on ? 'reports' : back && el('tab-' + back) ? back : store('svr-tab') || 'overview');
+  }
   // (a report's match: the match folder's summary, its zip, the mods with it, and the replay pack of both)
   function matchRow(r) {
     var m = r.match, mods = r.mods || [];
@@ -1355,12 +1377,16 @@ td.acts { text-align: right; white-space: nowrap; }
   function loadReports() {
     return api('api/admin/reports').then(function (d) {
       var all = d.reports || [];
-      reportRows = all.filter(function (r) { return r.kind !== 'suggestion'; });
-      sugRows = all.filter(function (r) { return r.kind === 'suggestion'; });
+      anthRows = all.filter(function (r) { return isAnth(r) && r.kind !== 'suggestion'; });
+      portRows = all.filter(function (r) { return !isAnth(r) && r.kind !== 'suggestion'; });
+      reportRows = anthMode ? anthRows : portRows;
+      sugRows = all.filter(function (r) { return !isAnth(r) && r.kind === 'suggestion'; });
       reportError = ''; modStore = d.mod_store || null; renderModStore();
       el('n-sug').textContent = sugRows.filter(function (r) { return !r.status; }).length || '';
       if (current === 'suggestions') renderSuggestions();
-      el('n-reports').textContent = reportRows.filter(function (r) { return !r.status || r.status === 'replied'; }).length || '';
+      function waiting(r) { return !r.status || r.status === 'replied'; }
+      el('n-reports').textContent = portRows.filter(waiting).length || '';
+      el('n-anth').textContent = anthRows.filter(waiting).length || '';
       if (current === 'reports') { renderFixed(); renderReports(); }
     }).catch(function (e) { reportError = 'The reports could not be loaded (' + e.message + ').'; if (current === 'reports') renderReports(); });
   }
@@ -1541,8 +1567,10 @@ td.acts { text-align: right; white-space: nowrap; }
   }
 
   setTheme(store('svr-theme') || 'auto');
+  el('anth').addEventListener('click', function () { setAnth(!anthMode); });
   var first = location.hash.slice(1);
-  show(el('tab-' + first) ? first : store('svr-tab') || 'overview');
+  if (first === 'anthology') setAnth(true);
+  else show(el('tab-' + first) ? first : store('svr-tab') || 'overview');
   // (the counts on the tabs keep up; the open tab refreshes its own part)
   if (current !== 'ping') pings();
   if (current !== 'overview' && current !== 'matches') live();

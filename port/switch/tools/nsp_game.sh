@@ -4,7 +4,8 @@ rm -rf /work/hbl; mkdir -p /work/hbl; tar -xzf "$(cygpath -u "$HBL_TGZ")" -C /wo
 rm -rf /work/nx/pk; mkdir -p /work/nx/pk/exefs /work/nx/pk/control /work/nx/pk/romfs; cd /work/nx/pk
 elf2nso /work/hbl/hbl.elf exefs/main
 sed 's/svr_nsptest/svr2011/' "$SRC/tests/vktest/nsp.json" > game.json; npdmtool game.json exefs/main.npdm 2>/dev/null
-nacptool --create "SvR 2011" "SvR 2011 port" "$NX_VER" control/control.nacp --titleid=0500565220110000
+nacptool --create "WWE SmackDown vs. Raw 2011" "SvR 2011 port" "$NX_VER" control/control.nacp --titleid=0500565220110000
+cp "$SRC/icon.jpg" control/icon_AmericanEnglish.dat
 cp /work/nx/b/svr2011.nro romfs/svr2011.nro
 # The compact shaders (uniform-buffer constants), until the SD card's pack has them.
 mkdir -p romfs/game/native_shaders; cp "$SVR_SPVC"/*.spvc romfs/game/native_shaders/; ls romfs/game/native_shaders | wc -l

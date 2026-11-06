@@ -49,6 +49,10 @@ void Monitor(void*) {
   const u64 base = reinterpret_cast<u64>(&_start);
   u64 before = armGetSystemTick();
   Handle self = threadGetCurHandle();
+  // (Pausing threads to see where they are costs frames: only when this file exists.)
+  FILE* flag = fopen("/SvR2011/nx_profile_stacks.txt", "r");
+  const bool pause = flag != nullptr;  // g_pause
+  if (flag) fclose(flag);
   for (int round = 0; round < 40; round++) {
     svcSleepThread(round < 4 ? 5000000000ll : 15000000000ll);
     const u64 now = armGetSystemTick();
@@ -67,6 +71,7 @@ void Monitor(void*) {
       s.ticks = ticks - g_threads[i].last_ticks;
       g_threads[i].last_ticks = ticks;
       svcGetThreadId(&s.id, s.handle);
+      if (!pause) continue;
       if (double(s.ticks) * 100.0 / span < 2.0 && (round % 4) != 3) continue;
       if (R_FAILED(svcSetThreadActivity(s.handle, ThreadActivity_Paused))) continue;
       static ThreadContext ctx;

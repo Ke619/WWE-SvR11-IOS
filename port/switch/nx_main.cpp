@@ -79,11 +79,18 @@ u64 __nx_exception_stack_size = sizeof(__nx_exception_stack);
 void NxProfileStart(void);
 void NxAbStart(void);
 
-// Bring-up settings: written at each start, so a test build needs no card access.
+// First settings, written once; after that the GRAPHICS page owns the file.
 static void WriteSettings() {
+  char first[64] = {};
+  if (FILE* old = fopen(SVR_GAME_DIR "/svr2011.toml", "r")) {
+    fgets(first, sizeof(first), old);
+    fclose(old);
+    if (strstr(first, "switch settings 2")) return;  // the player's, from now on
+  }
   FILE* f = fopen(SVR_GAME_DIR "/svr2011.toml", "w");
   if (!f) return;
   fputs(
+      "# switch settings 2\n"
       "gpu_plugin = \"xenos\"\n"
       "gpu_backend = \"vulkan\"\n"
       "native_renderer = \"main\"\n"
@@ -95,7 +102,7 @@ static void WriteSettings() {
       "vsync = true\n"
       "window_width = 1280\n"
       "window_height = 720\n"
-      "frame_rate = 30\n"
+      "frame_rate = 60\n"
       "mnk_mode = false\n"
       "p2p_port_mapping = false\n"
       "native_aa = 1\n"
@@ -125,7 +132,7 @@ void userAppInit(void) {
   std::set_terminate(OnTerminate);
   WriteSettings();
   NxProfileStart();
-  NxAbStart();
+  NxAbStart();  // (clock readings in the log)
   // Start-up marks, flushed at once: this works even if logging never starts.
   FILE* f = fopen(SVR_GAME_DIR "/logs/nx_start.txt", "w");
   if (f) {
@@ -187,6 +194,25 @@ int __wrap__open_r(struct _reent* r, const char* path, int flags, int mode) {
   return __real__open_r(r, other, flags, mode);
 }
 
+// The card reports file id 0 for every file, so std::filesystem took any two files for
+// the same one. An id from the path tells them apart.
+static void SetFileId(const char* path, struct stat* out) {
+  u64 h = 1469598103934665603ull;
+  for (const char* c = path; *c; c++) h = (h ^ (unsigned char)*c) * 1099511628211ull;
+  out->st_ino = h | 1;
+}
+
+// POSIX rename replaces the target; Horizon refuses. Saves and settings rely on it.
+int __real_rename(const char* from, const char* to);
+int __wrap_rename(const char* from, const char* to) {
+  int r = __real_rename(from, to);
+  if (r != 0 && errno == EEXIST) {
+    remove(to);
+    r = __real_rename(from, to);
+  }
+  return r;
+}
+
 // A path naming no device here ("C:\\Windows\\...") fails with ENODEV, and
 // std::filesystem throws on anything but "not found". It is simply not there.
 int __real_stat(const char* path, struct stat* out);
@@ -197,6 +223,7 @@ int __wrap_stat(const char* path, struct stat* out) {
     if (InRomfs(path, other, sizeof(other))) r = __real_stat(other, out);
   }
   if (r != 0 && errno == ENODEV) errno = ENOENT;
+  if (r == 0) SetFileId(path, out);
   return r;
 }
 int __real_lstat(const char* path, struct stat* out);
@@ -207,6 +234,7 @@ int __wrap_lstat(const char* path, struct stat* out) {
     if (InRomfs(path, other, sizeof(other))) r = __real_stat(other, out);
   }
   if (r != 0 && errno == ENODEV) errno = ENOENT;
+  if (r == 0) SetFileId(path, out);
   return r;
 }
 

@@ -142,6 +142,7 @@ void userAppInit(void) {
   mkdir(SVR_GAME_DIR "/logs", 0777);
   setenv("REX_APP_FOLDER", SVR_GAME_DIR, 1);
   setenv("HOME", SVR_GAME_DIR, 1);  // (the SDK asks for a user folder)
+  setenv("SVR2011_TEST_TASK_LOG", "1", 1);  // (bring-up: which screens the loads spend their time on)
   chdir(SVR_GAME_DIR);
   // The driver's and the runtime's own messages, written as they come.
   if (freopen(SVR_GAME_DIR "/logs/nx_stderr.txt", "w", stderr)) {

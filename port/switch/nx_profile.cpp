@@ -10,6 +10,7 @@
 #define SVR_THREADS_FILE "/SvR2011/logs/nx_threads.txt"
 
 extern "C" void _start(void);
+extern "C" bool NxStartLoading(void);
 
 namespace {
 
@@ -65,9 +66,13 @@ void Sampler(void*) {
   const u64 base = reinterpret_cast<u64>(&_start);
   FILE* f = fopen("/SvR2011/logs/nx_samples.txt", "w");
   if (!f) return;
-  // Window 0 is the start-up (40 s, the main thread first), then three in the game.
+  // Window 0 is the start-up (40 s, the main thread first), window 1 the Start Screen's
+  // loading (from START), then two in the game.
   for (int window = 0; window < 4;) {
-    if (window > 0) {
+    if (window == 1) {
+      svcSleepThread(100000000ll);
+      if (!NxStartLoading()) continue;
+    } else if (window > 1) {
       svcSleepThread(1000000000ll);
       if (!g_in_game) continue;
     }
@@ -111,7 +116,7 @@ void Sampler(void*) {
     }
     fflush(f);
     window++;
-    svcSleepThread(30000000000ll);
+    if (window > 2) svcSleepThread(30000000000ll);
   }
   fclose(f);
 }

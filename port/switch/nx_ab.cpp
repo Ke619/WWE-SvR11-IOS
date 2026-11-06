@@ -109,4 +109,5 @@ void Run() {
 extern "C" void NxAbStart(void) { std::thread(Run).detach(); }
 extern "C" void NxBootDone(void) { g_boot = false; }
 extern "C" void NxLoadBoost(bool on) { g_start_load = on; }
+extern "C" bool NxStartLoading(void) { return g_start_load.load(); }
 extern "C" void NxMatchLoad(void) { g_match_load_at = armGetSystemTick(); }

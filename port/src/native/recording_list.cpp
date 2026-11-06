@@ -19,7 +19,7 @@ constexpr size_t kMaxChunks = 256;  // (reserved: the worker reads the list whil
 #if defined(__SWITCH__)
 // Three cores, none to spare: bigger batches, and the worker sleeps between them (its
 // spinning took about 40% of a core, away from the game's threads).
-constexpr size_t kPublishEvery = 256;
+constexpr size_t kPublishEvery = 512;
 constexpr int kWorkerSpins = 8, kFinishSpins = 32;
 #else
 constexpr size_t kPublishEvery = 32;

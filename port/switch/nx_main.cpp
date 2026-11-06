@@ -4,11 +4,37 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <sys/stat.h>
 #include <unistd.h>
 
 // The game's folder on the SD card (rex::filesystem::GetExecutableFolder).
 #define SVR_GAME_DIR "sdmc:/SvR2011"
+
+namespace {
+
+// An uncaught C++ exception: its text, then the normal way out.
+void OnTerminate() {
+  FILE* f = fopen(SVR_GAME_DIR "/logs/nx_crash.txt", "a");
+  if (f) {
+    fprintf(f, "terminate: ");
+    if (std::exception_ptr e = std::current_exception()) {
+      try {
+        std::rethrow_exception(e);
+      } catch (const std::exception& ex) {
+        fprintf(f, "%s\n", ex.what());
+      } catch (...) {
+        fprintf(f, "unknown exception\n");
+      }
+    } else {
+      fprintf(f, "no exception\n");
+    }
+    fclose(f);
+  }
+  abort();
+}
+
+}  // namespace
 
 extern "C" {
 
@@ -25,6 +51,11 @@ void userAppInit(void) {
   setenv("REX_APP_FOLDER", SVR_GAME_DIR, 1);
   setenv("HOME", SVR_GAME_DIR, 1);  // (the SDK asks for a user folder)
   chdir(SVR_GAME_DIR);
+  // The driver's and the runtime's own messages, written as they come.
+  if (freopen(SVR_GAME_DIR "/logs/nx_stderr.txt", "w", stderr)) {
+    setvbuf(stderr, nullptr, _IOLBF, 1024);
+  }
+  std::set_terminate(OnTerminate);
   // Start-up marks, flushed at once: this works even if logging never starts.
   FILE* f = fopen(SVR_GAME_DIR "/logs/nx_start.txt", "w");
   if (f) {
@@ -38,6 +69,42 @@ void userAppInit(void) {
 }
 
 void userAppExit(void) { socketExit(); }
+
+// Every deliberate stop goes through here: aborts in libnx, newlib and the driver
+// (these leave no CPU fault for the handler below).
+Result __real_svcBreak(u32 reason, uintptr_t address, uintptr_t size);
+Result __wrap_svcBreak(u32 reason, uintptr_t address, uintptr_t size) {
+  extern void _start(void);
+  const u64 base = reinterpret_cast<u64>(&_start);
+  if (!(reason & BreakReason_NotificationOnlyFlag)) {
+    FILE* f = fopen(SVR_GAME_DIR "/logs/nx_crash.txt", "a");
+    if (f) {
+      u64 lr = reinterpret_cast<u64>(__builtin_return_address(0));
+      fprintf(f, "break: reason %x, value %llx, size %llx, called from image+%llx\n", reason,
+              (unsigned long long)address, (unsigned long long)size, (unsigned long long)(lr - base));
+      // diagAbortWithResult passes a pointer to the result.
+      if (address && size == sizeof(Result)) {
+        fprintf(f, "  result 0x%x\n", *reinterpret_cast<Result*>(address));
+      }
+      const u64* sp = reinterpret_cast<const u64*>(__builtin_frame_address(0));
+      fprintf(f, "  stack words inside the image:\n");
+      MemoryInfo info{};
+      u32 page = 0;
+      if (R_SUCCEEDED(svcQueryMemory(&info, &page, reinterpret_cast<u64>(sp)))) {
+        const u64 end = info.addr + info.size;
+        int shown = 0;
+        for (int i = 0; i < 8192 && reinterpret_cast<u64>(sp + i + 1) <= end && shown < 40; i++) {
+          if (sp[i] > base + 0x1000 && sp[i] < base + (1ull << 28)) {
+            fprintf(f, "  +%llx\n", (unsigned long long)(sp[i] - base));
+            shown++;
+          }
+        }
+      }
+      fclose(f);
+    }
+  }
+  return __real_svcBreak(reason, address, size);
+}
 
 // A fault in any thread: where it was, for the first test runs.
 void __libnx_exception_handler(ThreadExceptionDump* ctx) {
@@ -65,7 +132,7 @@ void __libnx_exception_handler(ThreadExceptionDump* ctx) {
       int shown = 0;
       for (int i = 0; i < 4096 && reinterpret_cast<u64>(sp + i) < stack_end && shown < 48; i++) {
         u64 v = sp[i];
-        if (v >= base && v < base + (1ull << 30)) {
+        if (v > base + 0x1000 && v < base + (1ull << 28)) {
           fprintf(f, "  +%llx\n", (unsigned long long)(v - base));
           shown++;
         }

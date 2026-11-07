@@ -1,6 +1,7 @@
 // WWE SmackDown vs. Raw 2011 - user music for entrances (see music.h).
 
 #include "music.h"
+#include "media_mods.h"
 
 #include <algorithm>
 #include <array>
@@ -162,6 +163,10 @@ class Player {
   bool Active() const { return active_; }
   // As Play, at `gain` (a factor) for this file only - a clip's own level, whatever its name (every mod's
   // announcer call is voice.mp3).
+  void PlayAt(std::filesystem::path path, float gain, bool once) {  // (gain 0: the file's own, SetSongGain)
+    once_ = once;
+    PlayAt(std::move(path), gain);
+  }
   void PlayAt(std::filesystem::path path, float gain) {
     {
       std::lock_guard lock(mutex_);
@@ -467,6 +472,10 @@ class Player {
   bool Active() const { return active_; }
   // As Play, at `gain` (a factor) for this file only - a clip's own level, whatever its name (every mod's
   // announcer call is voice.mp3).
+  void PlayAt(std::filesystem::path path, float gain, bool once) {  // (gain 0: the file's own, SetSongGain)
+    once_ = once;
+    PlayAt(std::move(path), gain);
+  }
   void PlayAt(std::filesystem::path path, float gain) {
     {
       std::lock_guard lock(mutex_);
@@ -755,7 +764,7 @@ std::mutex g_pool_mutex;
 std::vector<Player*> g_pool;
 }  // namespace
 
-int HostSoundStart(const std::filesystem::path& file, bool loop, float volume) {
+int HostSoundStart(const std::filesystem::path& file, bool loop, float volume, float gain_db) {
   std::lock_guard lock(g_pool_mutex);
   size_t i = 0;
   while (i < g_pool.size() && g_pool[i]->Active()) ++i;
@@ -771,7 +780,7 @@ int HostSoundStart(const std::filesystem::path& file, bool loop, float volume) {
     }).detach();
   }
   g_pool[i]->SetVolume(volume);
-  g_pool[i]->Play(file, !loop);
+  g_pool[i]->PlayAt(file, gain_db ? std::pow(10.0f, gain_db / 20.0f) : 0.0f, !loop);
   return int(i);
 }
 void HostSoundStop(int h) {
@@ -849,6 +858,26 @@ void InstallUserMusic(const std::filesystem::path& folder) {
     return names;
   };
   music.play = [](const std::u16string& name) {
+    // The win (docs/VICTORY_SCENES.md 5): the game starts the song at the result, and the scene starts it again.
+    // The song goes on through that; the owner's own track, if any, in its place.
+    static std::u16string win_name;
+    if (!WinMusicNow()) {
+      win_name.clear();
+    } else {
+      if (win_name == name && g_player->Active()) {
+        REXLOG_INFO("user music: the win's song started again: it goes on");
+        return true;
+      }
+      win_name = name;
+      std::filesystem::path track;
+      float db = 0.0f;
+      if (VictoryTrackOfPlaylist(name, &track, &db)) {
+        REXLOG_INFO("user music: playing {} (the win's, {:+.1f} dB)", track.string(), db);
+        JukeboxStopMyMusic();
+        g_player->PlayAt(track, db ? std::pow(10.0f, db / 20.0f) : 1.0f);
+        return true;
+      }
+    }
     for (auto& [list, song] : Playlists()) {
       if (list == name) {
         REXLOG_INFO("user music: playing {}", song.string());

@@ -654,7 +654,7 @@ bool InstallModFiles(const fs::path& dir, const std::vector<ZipEntry>& files, st
     for (const auto& f : files)
       if (f.name == "manifest.txt") {
         const std::string t(f.data.begin(), f.data.end());
-        for (const char* k : {"type", "name", "base", "song", "music", "movie", "theme_gain", "call_gain", "entrance", "victory", "cae", "moves", "pack"})
+        for (const char* k : {"type", "name", "base", "song", "victory_song", "victory_gain", "music", "movie", "theme_gain", "call_gain", "entrance", "victory", "cae", "moves", "pack"})
           if (const std::string v = Value(t, k); !v.empty()) keys += std::string(" ") + k + "=" + v;
       }
     Log("install: " + PathStr(dir.parent_path().filename()) + "/" + PathStr(dir.filename()) + " (" + std::to_string(files.size()) +
@@ -3301,6 +3301,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   int star_victory = 0;
   std::wstring title_spec, title_save;
   std::wstring forfun_arena, forfun_star;
+  std::wstring star_victory_song, media_victory;
   std::wstring star_model, star_song, star_movie, star_picture, star_voice, star_save, sign_save, media_save, media_video;
   std::string star_name;
   std::vector<std::wstring> sign_files, media_pictures, background_files;
@@ -3685,6 +3686,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--star-cae") && more) star_page::TestCae(Utf8(argv[++i]));  // a created entrance (Mods\.cae id)
     else if (!wcscmp(argv[i], L"--star-import-moveset") && more) star_import_moveset = Utf8(argv[++i]);  // star:<id> | mod:<folder>
     else if (!wcscmp(argv[i], L"--star-entrance") && more) star_entrance = _wtoi(argv[++i]);
+    else if (!wcscmp(argv[i], L"--star-victory-song") && more) star_victory_song = argv[++i];  // (victory_song=, -3 dB)
+    else if (!wcscmp(argv[i], L"--media-victory") && more) media_victory = argv[++i];  // <id>,<song>
     else if (!wcscmp(argv[i], L"--star-victory") && more) star_victory = _wtoi(argv[++i]);  // (victory=, the section open)
     else if (!wcscmp(argv[i], L"--star-victory-port") && more) star_page::TestVictoryPort(Utf8(argv[++i]));  // (<game>,<n>: converted)
     else if (!wcscmp(argv[i], L"--run-fix") && more) g_test_fix = Utf8(argv[++i]);
@@ -3850,10 +3853,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   if (!star_import_moveset.empty()) star_page::TestImportMoveset(star_import_moveset);
   if (star_entrance) star_page::TestEntrance(star_entrance);
   if (star_victory) star_page::TestVictory(star_victory);
+  if (!star_victory_song.empty()) star_page::TestVictorySong(star_victory_song, -3.0f);
   signs_page::TestStart(sign_files, sign_save);
   backgrounds_page::TestStart(background_files, background_save);
   forfun_page::TestStart(forfun_arena, forfun_star);
   title_page::TestStart(title_spec, title_save);
+  if (const size_t c = media_victory.find(L','); c != std::wstring::npos) media_page::TestVictory(_wtoi(media_victory.c_str()), media_victory.substr(c + 1));
   media_page::TestStart(media_arena, media_video, media_pictures, media_save);
   arena_page::SetTestSave(test_save, test_lib);
   if (!test_obj_add.empty() || !test_obj_export.empty() || test_obj_remove >= 0)

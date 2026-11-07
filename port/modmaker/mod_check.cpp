@@ -258,6 +258,7 @@ std::function<void()> DropBrokenMoves(const fs::path& pack) {
 // What a manifest key is, for people ("the theme song", "outfit 2" ...).
 std::string Thing(const std::string& key) {
   if (key == "song") return "the theme song";
+  if (key == "victory_song") return "the victory track";
   if (key == "movie") return "the big screen video";
   if (key == "voice") return "the name recording";
   if (key == "menu_music") return "the menu music";
@@ -266,6 +267,7 @@ std::string Thing(const std::string& key) {
   const std::string what = key.substr(0, dot), id = dot == std::string::npos ? "" : key.substr(dot + 1);
   if (what == "video") return "the big screen video (" + id + ")";
   if (what == "theme") return "the theme song (" + id + ")";
+  if (what == "victory_theme") return "the victory track (" + id + ")";
   if (what == "sound") return "the sound \"" + id + "\"";
   if (what == "render" || what == "bust" || what == "icon") return "a select picture (" + id + ")";
   if (what == "arena") return "the arena (" + id + ")";
@@ -511,7 +513,7 @@ void CheckSuperstar(const fs::path& dir, std::vector<Problem>& p) {
   const Manifest m = ReadManifest(dir);
   ManifestBasics(dir, m, "superstar", p);
   TrailingSpaces(dir, m, p);
-  UnknownKeys(dir, m, {"short", "base", "song", "music", "theme_gain", "theme_gain_auto", "movie", "voice", "call_gain", "renumbered", "loading", "style", "ratings", "call", "hometown", "announcer", "height", "pose",
+  UnknownKeys(dir, m, {"short", "base", "song", "victory_song", "victory_gain", "music", "theme_gain", "theme_gain_auto", "movie", "voice", "call_gain", "renumbered", "loading", "style", "ratings", "call", "hometown", "announcer", "height", "pose",
                        "entrance", "victory", "abilities", "moves", "pack", "game_look", "cae"},
               {"attire"}, p);
   const std::string name = Trim(m.Get("name"));
@@ -580,6 +582,7 @@ void CheckSuperstar(const fs::path& dir, std::vector<Problem>& p) {
   if (name.size() > 31)
     p.push_back(Warning(who + "'s name is too long: the game cuts it after 31 letters.").With("Cut it to 31 letters", Set(dir, "name", name.substr(0, 31))));
   SongCheck(dir, "song", m.Get("song"), p);
+  SongCheck(dir, "victory_song", m.Get("victory_song"), p);
   MovieCheck(dir, "movie", m.Get("movie"), true, p);
   if (const std::string v = Trim(m.Get("voice")); !v.empty() && !Exists(dir / fs::u8path(v)))
     p.push_back(Warning("The name recording is missing from the mod: the announcer won't say " + who + "'s name.").With("Leave it out", Set(dir, "voice", "")));
@@ -962,7 +965,7 @@ void CheckMedia(const fs::path& dir, std::vector<Problem>& p) {
     const std::string what = dot == std::string::npos ? k : k.substr(0, dot), id = dot == std::string::npos ? "" : k.substr(dot + 1);
     if (!id.empty() && std::isdigit(uint8_t(id[0])) && std::atoi(id.c_str()) < 50 && (what == "video" || what == "theme")) ++low;
     if (what == "video") MovieCheck(dir, k, v, true, p);
-    else if (what == "theme" || k == "menu_music" || what == "sound") SongCheck(dir, k, v, p);
+    else if (what == "theme" || what == "victory_theme" || k == "menu_music" || what == "sound") SongCheck(dir, k, v, p);
     else if (what == "render" || what == "bust" || what == "icon") {
       const int size = what == "render" ? 512 : what == "bust" ? 256 : 64;
       const std::string f = Trim(v);

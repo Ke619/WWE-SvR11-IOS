@@ -321,12 +321,49 @@ std::string Members(const Team& t) {
 }
 }  // namespace
 
+namespace {
+// A member listed twice in one team (report a6aa1e: a stock partner of a mod joined their team after each match,
+// sub_825B7B40's mod answer had skipped the "already in one team" check) - the later copies go, the members after
+// them move up (id +2 + 2i, its byte +12 + i) and the count (+0) is the members left.
+void DropRepeatedMembers(uint8_t* base, uint32_t save) {
+  for (uint32_t k = 0; k < kTeamCount; ++k) {
+    uint8_t* t = base + save + kTeams + k * kTeamSize;
+    const uint32_t count = uint32_t(t[0]) << 8 | t[1];
+    if (count < 2 || count > 5) continue;  // (an empty table - before a save loads it's all 0 - or not a team)
+    uint32_t ids[5], n = 0;
+    uint8_t bytes[5];
+    bool dropped = false;
+    std::string gone;
+    for (uint32_t i = 0; i < 5; ++i) {
+      const uint32_t id = uint32_t(t[2 + 2 * i]) << 8 | t[3 + 2 * i];
+      if (id >= kNoMember) continue;
+      if (std::find(ids, ids + n, id) != ids + n) {
+        dropped = true;
+        gone += (gone.empty() ? "" : ", ") + std::to_string(id);
+        continue;
+      }
+      ids[n] = id, bytes[n] = t[12 + i], ++n;
+    }
+    if (!dropped) continue;
+    for (uint32_t i = 0; i < 5; ++i) {
+      const uint32_t id = i < n ? ids[i] : kNoMember;
+      t[2 + 2 * i] = uint8_t(id >> 8), t[3 + 2 * i] = uint8_t(id);
+      t[12 + i] = i < n ? bytes[i] : 0;
+    }
+    t[0] = 0, t[1] = uint8_t(n);
+    REXLOG_INFO("[svr2011] universe teams: team {} listed {} more than once - the copies taken out, {} left", k + 1,
+                gone, n);
+  }
+}
+}  // namespace
+
 void UniverseTeamsTick(uint8_t* base) {
   static uint32_t frames = 0, save_seen = 0, grace = 0;  // (grace: ticks after a list - a save still coming in)
   static std::vector<Team> seen;
   if (++frames % 30) return;
   const uint32_t save = Rd32(base + kSavePtr);
   if (!save) return;
+  DropRepeatedMembers(base, save);
   std::vector<Team> now;
   for (uint32_t k = 0; k < kTeamCount; ++k) now.push_back(ReadTeam(base + save + kTeams + k * kTeamSize));
   const auto in_use = [](const Team& t) { return !t.members.empty() || !t.name.empty(); };

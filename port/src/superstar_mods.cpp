@@ -1594,6 +1594,20 @@ void SetSigns(uint8_t* sr, const uint8_t* br, const Mod& m) {
 // lengths times it, and grapples / IK follow. Always from the base's value
 // (never compounding over a kept or saved record); clamped to what the
 // game's moves still fit.
+// Universe's brand (record +16 + mode; Universe +17: 0 RAW, 1 SmackDown, 4 the legends, 6 the unused ids). A mod
+// built on an unused id (base 115 ...) carried that 6, and the rankings of every brand's title skip anyone not on the
+// title's brand (sub_825AF0F0 -> sub_828B8038(id, 1)): only the Unified Tag ranking, which takes teams, showed mods
+// (2.2.0 report e7e305). A 6 becomes RAW or SmackDown, by the slot (both brands get mods); a brand the player set stays.
+constexpr uint32_t kUniverseBrand = 17;
+void UniverseBrand(uint8_t* sr, const Mod& m) {
+  if (sr[kUniverseBrand] != 6) return;
+  sr[kUniverseBrand] = uint8_t(m.slot & 1);
+  static std::set<uint32_t> told;
+  if (told.insert(m.slot).second)
+    REXLOG_INFO("[svr2011] superstar mods: id {} in Universe on {} (its base's record had no brand)", m.slot,
+                m.slot & 1 ? "SmackDown" : "RAW");
+}
+
 void SetHeight(uint8_t* sr, const uint8_t* br, const Mod& m) {
   if (m.height <= 0) return;
   const long v = std::clamp(std::lround(Rd16(br + kScale) * m.height), 3300L, 4900L);
@@ -1905,6 +1919,7 @@ void ApplyRecords(uint8_t* base) {
         REXLOG_INFO("[svr2011] superstar mods: id {} kept as loaded (ratings {} {} {} ...)", m.slot, sr[0], sr[1],
                     sr[2]);
       }
+      UniverseBrand(sr, m);
       continue;  // (already: as set up, or from a save)
     }
     const std::string was(reinterpret_cast<char*>(sr + kFullName), 0,
@@ -1939,6 +1954,7 @@ void ApplyRecords(uint8_t* base) {
         for (uint32_t off : {kOwnId, kOwnId2, kSamePerson}) sr[off] = uint8_t(m.slot >> 8), sr[off + 1] = uint8_t(m.slot);
         OwnSelectTile(sr, br);
         SetHeight(sr, br, m);
+        UniverseBrand(sr, m);
         continue;
       }
     }
@@ -1956,6 +1972,7 @@ void ApplyRecords(uint8_t* base) {
     if (!m.abilities.empty())
       for (uint32_t k = 0; k < 8; ++k) sr[kAbilities + k] = k < m.abilities.size() ? m.abilities[k] : 0;
     SetHeight(sr, br, m);
+    UniverseBrand(sr, m);
 
     // test aid: SVR2011_TEST_STAR_EDIT=<id> - that mod's ratings set to 20 (as
     // an edit made in the game would), to see them kept through a save

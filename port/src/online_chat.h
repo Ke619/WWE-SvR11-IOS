@@ -51,4 +51,10 @@ bool OnlineChatBeforeInsert(PPCContext& ctx, uint8_t* base, uint32_t field);
 // this game: the whole text instead of the field's end).
 std::optional<std::string> OnlineChatTakeOwn();
 
+// An online match's setup as this game placed it (match_types.cpp, once at its start: "rule 2B, arena 4,
+// 0:58 1:57 ..." - person number : superstar id, DLC ids too). Sent to the lobby's players over the chat's
+// channel; when another game's differs, both are logged and a notice shows (report 6dde2f: two friends each saw
+// the other idle - lockstep ran, the games didn't play the same match). The match goes on: a diagnostic only.
+void OnlineMatchSetup(const std::string& setup);
+
 }  // namespace svr2011

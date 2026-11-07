@@ -26,6 +26,23 @@ title changes hands after the match.
 **Not yet:** other screens' lists (title select), a belt or art of its own (the holder carries a stock belt model; screens show the
 `belt=` title's picture or none), a tag title's own two-face rankings row and page layout, a Mod Maker page.
 
+## Title matches outside Universe (`src/title_exhibition.cpp`)
+
+The select screen has them already. State 9 asks "TITLE MATCH?" (A plain, X title), state 10 is the row of the titles the picked
+superstar holds (LEFT / RIGHT, from the slot's list at record +124 / +128; the rule's +85..+98 flags decide what is on it), and A stakes it (record
++36, +40). Two things kept it from showing: `sub_8245DD48` said yes only for titles outside Universe's seven, and after the attire menu the game
+goes on to state 13 without asking. The hooks change both: not online, not in Championship Scramble (rule 38), not on Universe's own cards.
+
+The stake reaches the person's byte (+468), `sub_828BAF58`'s lists and `sub_8243D680` at the end of the match, which writes the holder; the
+game's autosave then saves it. The win banner says "Title Successfully Retained" or "New Champion Crowned". The holder table is the one Universe reads,
+so an exhibition win changes the Universe champion, whichever brand the new one is on.
+
+A tag title: row 10 takes A only when the stake is legal (`sub_82732D68` is one input); holders picked after others were refused in tests, and B goes back to the question.
+
+Test aids: `SVR2011_TEST_EXH_TRACE` (select states, the end of the match), `SVR2011_TEST_EXH_HOLDER=<title>,<id>[,<id>][;...]`. `SVR2011_TEST_LOSE`'s person loses to person 0,
+so the holder must not be person 0 to see a change; read the end-of-match line for who won.
+
+
 Holder writes: `sub_825B7EB0` (a finished Universe card), `sub_825B1488` (titles outside Universe's list, after a
 simulated match), `sub_8243D680` (end of match, from the setup's people) and `sub_8257B268` (a superstar removed).
 

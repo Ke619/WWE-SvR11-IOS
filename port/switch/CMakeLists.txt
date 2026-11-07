@@ -87,6 +87,9 @@ target_compile_definitions(svr2011 PRIVATE
 if(SVR_NX_REPORTS_LIVE)
   target_compile_definitions(svr2011 PRIVATE SVR_NX_REPORTS_LIVE=1)
 endif()
+# (nx_report.cpp: zlib and Mbed TLS, from devkitPro's portlibs)
+find_path(NX_PORTLIBS_INCLUDE mbedtls/ssl.h REQUIRED)
+target_include_directories(svr2011 PRIVATE ${NX_PORTLIBS_INCLUDE})
 target_compile_options(svr2011 PRIVATE -O2)
 
 target_link_directories(svr2011 PRIVATE ${NVK_SDK}/lib)

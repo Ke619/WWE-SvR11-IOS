@@ -17,7 +17,7 @@ $zip   = Join-Path $port "out\$name.zip"
 
 Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $stage | Out-Null
-$files = @("svr2011.exe", "SvR2011 Launcher.exe", "SvR2011 Updater.exe", "rexruntime.dll", "rexgpu-xenos.dll")
+$files = @("svr2011.exe", "SvR2011 Launcher.exe", "SvR2011 Updater.exe", "rexruntime.dll", "rexgpu-xenos.dll", "rexffmpeg.dll", "rexmspack.dll")
 foreach ($f in $files) {
     $src = Join-Path $build $f
     if (-not (Test-Path $src)) { throw "$f is missing from $build - build first" }
@@ -103,6 +103,9 @@ if ($WithModMaker) {
     if (Test-Path $cli) { Copy-Item $cli $mmtools } else {   # (2.1.0 shipped without it: "ToolMissing: svrmod.exe")
         throw "no $cli - the Mod Maker's converters need it (WWE '13+ ports fail with ToolMissing: svrmod.exe). Build it in this checkout (bash port/modmaker/build_cli.sh -> port\out\modmaker\svrmod.exe), then package again."
     }
+    # (svrmod.exe doesn't start without its LZX decoder beside it)
+    $cliDll = Join-Path $port "out\modmaker\rexmspack.dll"
+    if (Test-Path $cliDll) { Copy-Item $cliDll $mmtools } else { throw "no $cliDll - svrmod.exe won't start without it. Build it with bash port/modmaker/build_cli.sh, then package again." }
     # the guide (pictures, diagrams, tutorials): docs/guide -> "Mod Maker Guide"
     $guide = Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) "docs\guide"
     if (Test-Path $guide) { Copy-Item $guide (Join-Path $stage "Mod Maker Guide") -Recurse }
@@ -115,7 +118,7 @@ $vcrt = @("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140_at
 Get-ChildItem $build -Filter "*.dll" | Where-Object { $files -notcontains $_.Name -and $vcrt -notcontains $_.Name.ToLower() } |
     Copy-Item -Destination $stage
 Copy-Item (Join-Path $port "dist\Read Me.txt") $stage
-Copy-Item (Join-Path $port "dist\Third-party notices.txt") $stage   # (AMD FSR 1 / FSR 2: MIT)
+Copy-Item (Join-Path $port "dist\Third-party notices.txt") $stage   # (credits and licence texts; the APK carries it too: build_apk.py)
 # NVIDIA DLSS (experimental): a build with the DLSS SDK (CMake SVR2011_DLSS_SDK) has nvngx_dlss.dll beside the exe -
 # copied above with the other DLLs. It ships only in this zip, never in the repository, with NVIDIA's licence
 # (the RTX SDKs licence from the same SDK folder) beside it.

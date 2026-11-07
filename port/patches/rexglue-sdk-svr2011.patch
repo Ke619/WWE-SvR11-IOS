@@ -7028,9 +7028,18 @@ index 0d8f8af..d90945b 100644
      ${REXGLUE_ROOT}  # For thirdparty/dxbc/DXBCChecksum.h include
  )
 diff --git a/src/system/CMakeLists.txt b/src/system/CMakeLists.txt
-index fc46d86..2531c00 100644
+index fc46d86..8738429 100644
 --- a/src/system/CMakeLists.txt
 +++ b/src/system/CMakeLists.txt
+@@ -106,7 +106,7 @@ if(REXGLUE_ENABLE_PERF_COUNTERS)
+ endif()
+ 
+ if(WIN32)
+-    target_link_libraries(rexruntime PRIVATE ws2_32)
++    target_link_libraries(rexruntime PRIVATE ws2_32 bcrypt)  # (bcrypt: xboxkrnl_crypt.cpp; it used to come along with FFmpeg)
+     target_link_libraries(rexruntime PUBLIC dxgi dxguid)
+     target_compile_definitions(rexruntime PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
+ endif()
 @@ -123,3 +123,7 @@ if(REXGLUE_USE_VULKAN)
      )
      target_compile_definitions(rexruntime PUBLIC REX_HAS_VULKAN=1)
@@ -9623,3 +9632,180 @@ index 4179e8b..8c6b6e1 100644
    return ReadInternal(buffer_guest_address, buffer_length, byte_offset, out_bytes_read, apc_context,
                        notify_completion);
  }
+diff --git a/cmake/rexglue_install.cmake b/cmake/rexglue_install.cmake
+index d9a64eb..ea3e70c 100644
+--- a/cmake/rexglue_install.cmake
++++ b/cmake/rexglue_install.cmake
+@@ -19,6 +19,9 @@ set(REXGLUE_INSTALL_TARGETS
+     aes128 mspack o1heap disasm xxhash
+     libavcodec libavutil
+ )
++if(WIN32)
++    list(APPEND REXGLUE_INSTALL_TARGETS rexffmpeg)
++endif()
+ 
+ if(REXGLUE_USE_VULKAN)
+     list(APPEND REXGLUE_INSTALL_TARGETS
+diff --git a/src/audio/CMakeLists.txt b/src/audio/CMakeLists.txt
+index d55f16a..d34e4a1 100644
+--- a/src/audio/CMakeLists.txt
++++ b/src/audio/CMakeLists.txt
+@@ -37,5 +37,9 @@ target_include_directories(rexaudio PUBLIC
+ 
+ target_link_libraries(rexaudio
+     PUBLIC rexcore SDL3::SDL3
+-    PRIVATE libavcodec libavutil
+ )
++if(WIN32)
++    target_link_libraries(rexaudio PRIVATE rexffmpeg)  # [svr2011] rexffmpeg.dll (LGPL)
++else()
++    target_link_libraries(rexaudio PRIVATE libavcodec libavutil)
++endif()
+diff --git a/src/audio/xma_context.cpp b/src/audio/xma_context.cpp
+index 11b83be..1f831a8 100644
+--- a/src/audio/xma_context.cpp
++++ b/src/audio/xma_context.cpp
+@@ -10,6 +10,8 @@
+ */
+ 
+ #include <algorithm>
++#include <atomic>
++#include <cstdlib>
+ #include <cstring>
+ 
+ #include <rex/audio/xma/context.h>
+@@ -82,6 +84,7 @@ int XmaContext::Setup(uint32_t id, memory::Memory* memory, uint32_t guest_ptr) {
+   av_context_->channels = 0;
+   av_context_->sample_rate = 0;
+ 
++  if (id == 0 && std::getenv("SVR2011_TEST_XMA_LOG")) REXAPU_INFO("xma setup: {}", av_codec_->name);
+   av_frame_ = av_frame_alloc();
+   if (!av_frame_) {
+     REXAPU_ERROR("XmaContext {}: Couldn't allocate frame", id);
+@@ -99,6 +102,12 @@ bool XmaContext::Work() {
+ 
+   std::lock_guard<std::mutex> lock(lock_);
+   set_is_enabled(false);
++  {
++    // [svr2011] Test aid (with the one in Decode): the game's work reaching the decoder at all.
++    static const bool xma_log = std::getenv("SVR2011_TEST_XMA_LOG") != nullptr;
++    static std::atomic<uint64_t> works{0};
++    if (xma_log && works.fetch_add(1) % 20000 == 0) REXAPU_INFO("xma work: {} calls", works.load());
++  }
+ 
+   auto context_ptr = memory()->TranslateVirtual(guest_ptr());
+   XMA_CONTEXT_DATA data(context_ptr);
+@@ -667,6 +676,28 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
+   }
+   PreparePacket(packet_info.current_frame_size_, padding_start);
+   const bool decoded = DecodePacket(av_context_, av_packet_, av_frame_);
++  {
++    // [svr2011] Test aid: muted tests can't hear the decoder - frames decoded, failed and with sound in them.
++    static const bool xma_log = std::getenv("SVR2011_TEST_XMA_LOG") != nullptr;
++    if (xma_log) {
++      static std::atomic<uint64_t> ok{0}, failed{0}, loud{0};
++      (decoded ? ok : failed).fetch_add(1);
++      if (decoded) {
++        // (planar float samples)
++        const float* s = reinterpret_cast<const float*>(av_frame_->data[0]);
++        for (int i = 0; s && i < av_frame_->nb_samples; ++i) {
++          if (s[i] > 0.001f || s[i] < -0.001f) {
++            loud.fetch_add(1);
++            break;
++          }
++        }
++      }
++      const uint64_t done = ok.load() + failed.load();
++      if (done % 2000 == 1) {
++        REXAPU_INFO("xma decode: {} frames, {} failed, {} with sound", ok.load(), failed.load(), loud.load());
++      }
++    }
++  }
+   if (decoded) {
+     ConvertFrame(reinterpret_cast<const uint8_t**>(&av_frame_->data), bool(data->is_stereo),
+                  decoded_frame_.data());
+diff --git a/thirdparty/CMakeLists.txt b/thirdparty/CMakeLists.txt
+index f102b56..9f26378 100644
+--- a/thirdparty/CMakeLists.txt
++++ b/thirdparty/CMakeLists.txt
+@@ -127,9 +127,20 @@ target_compile_options(aes128 PRIVATE -w)
+ # libmspack - LZX decompression (only lzxd.c needed for XEX decompression)
+ # Uses cabextract version which has all needed headers in one place
+ set(MSPACK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/libmspack/cabextract/mspack")
++if(WIN32)
++    # [svr2011] LGPL: in a DLL of its own that a player can replace (rexmspack.dll). Its C runtime is built in
++    # (the launcher's hybrid CRT), so it adds no VC++ runtime need to the Mod Maker's tools.
++    add_library(mspack SHARED
++        ${MSPACK_DIR}/lzxd.c
++        ${CMAKE_CURRENT_SOURCE_DIR}/lgpl-dlls/rexmspack.def
++    )
++    set_target_properties(mspack PROPERTIES OUTPUT_NAME rexmspack MSVC_RUNTIME_LIBRARY "MultiThreaded")
++    target_link_options(mspack PRIVATE -Wl,/NODEFAULTLIB:libucrt.lib -Wl,/DEFAULTLIB:ucrt.lib)
++else()
+ add_library(mspack STATIC
+     ${MSPACK_DIR}/lzxd.c
+ )
++endif()
+ target_include_directories(mspack PUBLIC
+     $<BUILD_INTERFACE:${MSPACK_DIR}>
+     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+@@ -702,3 +713,14 @@ set_target_properties(libavutil libavcodec PROPERTIES
+     C_VISIBILITY_PRESET hidden
+     VISIBILITY_INLINES_HIDDEN ON
+     FOLDER "FFmpeg")
++
++if(WIN32)
++    # [svr2011] LGPL: libavcodec + libavutil in a DLL of their own that a player can replace (rexffmpeg.dll). The
++    # runtime links this, not the static libraries; the export list says what it calls.
++    add_library(rexffmpeg SHARED
++        ${CMAKE_CURRENT_SOURCE_DIR}/lgpl-dlls/dll_stub.c
++        ${CMAKE_CURRENT_SOURCE_DIR}/lgpl-dlls/rexffmpeg.def
++    )
++    target_link_libraries(rexffmpeg PRIVATE libavcodec libavutil)
++    target_include_directories(rexffmpeg INTERFACE $<BUILD_INTERFACE:${FFMPEG_DIR}>)
++endif()
+diff --git a/thirdparty/lgpl-dlls/dll_stub.c b/thirdparty/lgpl-dlls/dll_stub.c
+new file mode 100644
+index 0000000..a342fba
+--- /dev/null
++++ b/thirdparty/lgpl-dlls/dll_stub.c
+@@ -0,0 +1,3 @@
++/* A DLL needs one source file of its own: everything else in rexffmpeg.dll comes out of the static libraries, pulled
++ * in by its export list. */
++int rexffmpeg_dll_stub;
+diff --git a/thirdparty/lgpl-dlls/rexffmpeg.def b/thirdparty/lgpl-dlls/rexffmpeg.def
+new file mode 100644
+index 0000000..7ef6626
+--- /dev/null
++++ b/thirdparty/lgpl-dlls/rexffmpeg.def
+@@ -0,0 +1,16 @@
++; FFmpeg's libavcodec and libavutil (LGPL 2.1 or later), a DLL of their own on Windows: what the XMA decoder calls.
++LIBRARY rexffmpeg
++EXPORTS
++    av_buffer_alloc
++    av_frame_alloc
++    av_frame_free
++    av_log_set_callback
++    av_packet_alloc
++    av_strerror
++    avcodec_alloc_context3
++    avcodec_find_decoder
++    avcodec_flush_buffers
++    avcodec_free_context
++    avcodec_open2
++    avcodec_receive_frame
++    avcodec_send_packet
+diff --git a/thirdparty/lgpl-dlls/rexmspack.def b/thirdparty/lgpl-dlls/rexmspack.def
+new file mode 100644
+index 0000000..1b48a20
+--- /dev/null
++++ b/thirdparty/lgpl-dlls/rexmspack.def
+@@ -0,0 +1,8 @@
++; libmspack's LZX decoder (LGPL 2.1), a DLL of its own on Windows: rexruntime, the Mod Maker and svrmod.exe use it.
++LIBRARY rexmspack
++EXPORTS
++    lzxd_init
++    lzxd_set_output_length
++    lzxd_set_reference_data
++    lzxd_decompress
++    lzxd_free

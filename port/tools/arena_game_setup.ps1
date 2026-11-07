@@ -41,5 +41,5 @@ $orig = Join-Path $port "runs\arena_orig"
 if (-not (Test-Path $orig)) { New-Item -ItemType Directory $orig | Out-Null }
 
 $src = if ($Exe) { $Exe } else { $main }
-foreach ($f in 'svr2011.exe', 'rexruntime.dll', 'rexgpu-xenos.dll') { Copy-Item -Force (Join-Path $src $f) (Join-Path $game $f) }
+foreach ($f in @('svr2011.exe') + @(Get-ChildItem $src -Filter 'rex*.dll' | ForEach-Object Name)) { Copy-Item -Force (Join-Path $src $f) (Join-Path $game $f) }
 "arena_game ready: $game (exe from $src)"

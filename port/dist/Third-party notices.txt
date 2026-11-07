@@ -1236,8 +1236,10 @@ It comes with these libraries, as vgmstream's project built them:
   libcelt-0061.dll, libcelt-0110.dll: CELT (BSD-style, below).
     https://gitlab.xiph.org/xiph/celt
   libatrac9.dll: LibAtrac9 (MIT, below). https://github.com/Thealexbarney/LibAtrac9
-  libg719_decode.dll: G.719 decoder, Christopher Snowhill, from the ITU-T
-    reference code. https://github.com/kode54/libg719_decode
+  libg719_decode.dll is not a third-party library: it is this project's own
+    stand-in, which decodes nothing. vgmstream needs a DLL of that name to start;
+    with this one it refuses files in the G.719 format, which the Mod Maker's
+    converters don't use.
 
 Ogg Vorbis (libvorbis)
 ----------------------

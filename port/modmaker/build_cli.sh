@@ -14,6 +14,11 @@ mspack="$sdk/thirdparty/libmspack/libmspack/mspack"
 [ -f "$here/../out/modmaker/rexmspack.dll" ] || clang -O2 -w -D_CRT_SECURE_NO_WARNINGS -shared -fms-runtime-lib=static -I "$mspack" \
   -Wl,/DEF:"$sdk/thirdparty/lgpl-dlls/rexmspack.def" -Wl,/NODEFAULTLIB:libucrt.lib -Wl,/DEFAULTLIB:ucrt.lib \
   -o "$here/../out/modmaker/rexmspack.dll" "$mspack/lzxd.c"
+# (Mod Maker Tools\vgmstream's libg719_decode.dll: decodes nothing, g719_stub.c. In a folder of its own: no .lib beside the rest)
+mkdir -p "$here/../out/modmaker/g719"
+[ -f "$here/../out/modmaker/g719/libg719_decode.dll" ] || clang -O2 -shared -fms-runtime-lib=static \
+  -Wl,/DEF:"$here/g719_stub.def" -Wl,/NODEFAULTLIB:libucrt.lib -Wl,/DEFAULTLIB:ucrt.lib \
+  -o "$here/../out/modmaker/g719/libg719_decode.dll" "$here/g719_stub.c"
 # zip reading (svrfmt/zip_write.cpp unzip_inflate): the launcher's inflate
 clang -O2 -w -c -o "$here/../out/modmaker/obj/unzip.o" "$here/../launcher/unzip.c"
 clang++ -std=c++20 -O2 -Wall -Wno-unused-function -D_CRT_SECURE_NO_WARNINGS -DSVRFMT_INFLATE \

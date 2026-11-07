@@ -255,6 +255,7 @@ final class BundledRules {
             case "background": return "Backgrounds";
             case "attire": return "Attires";
             case "title": return "Titles";
+            case "cawpart": return "CawParts";
             default: return null;
         }
     }

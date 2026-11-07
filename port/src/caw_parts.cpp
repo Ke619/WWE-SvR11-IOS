@@ -393,8 +393,7 @@ uint32_t CawPartsAlias(const char* name) {
   const bool slash = *name == '/';
   const char* n = slash ? name + 1 : name;
   if (!std::strcmp(n, "EDIT/MENU")) return slash ? g_menu_slash : g_menu_bare;
-  static const bool no_part_alias = std::getenv("SVR2011_TEST_CAWPARTS_NOALIAS") != nullptr;  // (experiment)
-  if (!no_part_alias && (n[0] == 'E' || n[0] == 'P') && std::strlen(n) == 9) {
+  if ((n[0] == 'E' || n[0] == 'P') && std::strlen(n) == 9) {
     // (the bare name - asked for a part past the game's own count, as for a DLC one, also as our own name past its
     // "/" - isn't found in an overlay archive: it gets the full name)
     const auto it = g_part_alias.find(n);

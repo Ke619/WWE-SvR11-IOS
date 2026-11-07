@@ -124,10 +124,35 @@ like face paint, with the mask designs (62) on top. A mask from an OBJ / FBX wou
 texture layout. The model categories for the "rigid part" prototype are glasses (18, no own nodes) and piercings (44);
 hats (16), horns (19) and other headwear (20, the gas mask) carry their own head rig.
 
-## Open (for the prototype)
+## Making a part (`tools/caw_part.py`, `src/caw_parts.cpp`)
 
-- Where a CAW save keeps each category's record index and colours (the 0x6BC CAW record in SaveData.dat): needed for
-  the removed-mod fallback and for CASData online.
-- How the game picks `Mnnn` / `Tnnn` for a record beyond the pac's own entries: overlay pac entries appended after
-  the game's (append-only, a stable per-mod index map).
+`Mods/CawParts/<id>/`: `manifest.txt` (`type=cawpart`, `part=<category> <m|f|mf> <stem>`), `<stem>.m.pach`, `.t.pach`, `.thumb.dds`, `.rec`.
+
+    python caw_part.py make --game-pac <pac> --obj part.obj --png part.png --out <mod folder> --id <id> --name "<text>"
+    python caw_part.py export --game-pac <pac> --out <folder>      (the template as OBJ + PNG, in the game's axes)
+
+An OBJ is taken as Blender writes it (y up, the front towards +z); `--no-fit` keeps the game's own numbers (y down, the front towards -z).
+Glasses (18) only so far. Piercings (44) list with their thumbnail but don't draw (one mesh, not looked into): the tool refuses them.
+
+What the game needs of a part, each found by a crash or a part that didn't show:
+
+- **Settings rows:** a second table per category, 28-byte rows by texture number (`sub_828DDC98` / `sub_828DDCC8`), as long as the stock textures.
+  A mod part's number is past it, so it gets its own row, a copy of the row of the texture its `.rec` names at +14 (the template).
+- **Colour slots:** a glasses `.rec` needs its +20; with 0 the part doesn't draw.
+- **Entries are BPE-packed:** the model's and the colour texture's entries go through the game's decoder (`sub_826AEF10`).
+- **Two meshes:** the game walks a model's meshes past the last (`sub_82700FB0`), so the template's count is kept: an unused mesh is one tiny triangle.
+- **The model's third entry (22xx):** for each editor vertex (20xx), the in-game model's (21xx) (mesh, 0, vertex) that places it, once skinned (`sub_828F1050`).
+  Stock: exact to 1e-6. With one vertex order in both models: (mesh, 0, i).
+- **Bones:** the in-game model's weight blocks aren't plain weights (a vertex's add up to anything from 0 to 2.8), and copying them to other vertices threw
+  the part off the head. A part is rigid: one bone at 1.0, the in-game template's main one (33; the editor's 79 isn't in a match, and the part vanishes).
+  So a part doesn't follow the face's shape sliders the way stock glasses do.
+
+**A saved CAW keeps the part's numbers:** with no overlay (mod and index gone, another machine) `/ED18/T054` was in no pac and the game crashed. A name no pac answers now gets the category's first part
+(`CawPartsMissing`), and a record past the list the first record (`sub_828DDC00`, in caw_logos.cpp).
+
+## Open
+
+- Other categories: hats, horns and hair have their own rig and chains (`SIMPLE` in the tool).
+- Online: a CAW wearing a mod part on a game without it falls back as above; not run.
+- Android: not run. A Mod Maker page: none yet.
 - Multi-texture parts (two `10xx`, e.g. ed33 knee pads): which band set goes with which.

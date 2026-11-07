@@ -3536,7 +3536,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
       };
       put("(set)", CheckInstalledSet());
       std::error_code ec;
-      for (const char* kind : {"Superstars", "Attires", "Arenas", "Moves", "Backstage", "Signs", "Media", "Backgrounds", "MatchTypes"})
+      for (const char* kind : {"Superstars", "Attires", "Arenas", "Moves", "Backstage", "Signs", "Media", "Backgrounds", "MatchTypes", "CawParts"})
         for (const auto& e : fs::directory_iterator(fs::path(g_game) / L"Mods" / kind, ec))
           if (e.is_directory(ec) && e.path().filename().wstring()[0] != L'.') put(std::string(kind) + "/" + Utf8(e.path().filename().wstring()), CheckModFolder(kind, e.path()));
       WriteFile(Utf8(out), Bytes(text.begin(), text.end()));

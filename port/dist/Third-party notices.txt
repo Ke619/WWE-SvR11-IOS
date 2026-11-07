@@ -1233,7 +1233,7 @@ It comes with these libraries, as vgmstream's project built them:
   libmpg123-0.dll: mpg123 (LGPL 2.1; the text is above). https://www.mpg123.de
   libvorbis.dll: Ogg Vorbis (BSD-3-Clause, below). https://xiph.org/vorbis
   libspeex-1.dll: Speex (BSD-style, below). https://www.speex.org
-  libcelt-0061.dll, libcelt-0110.dll: CELT (BSD licence).
+  libcelt-0061.dll, libcelt-0110.dll: CELT (BSD-style, below).
     https://gitlab.xiph.org/xiph/celt
   libatrac9.dll: LibAtrac9 (MIT, below). https://github.com/Thealexbarney/LibAtrac9
   libg719_decode.dll: G.719 decoder, Christopher Snowhill, from the ITU-T
@@ -1280,6 +1280,42 @@ Copyright 2005-2008	Commonwealth Scientific and Industrial Research
 Copyright 1993, 2002, 2006 David Rowe
 Copyright 2003 		EpicGames
 Copyright 1992-1994	Jutta Degener, Carsten Bormann
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions
+are met:
+
+- Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+
+- Redistributions in binary form must reproduce the above copyright
+notice, this list of conditions and the following disclaimer in the
+documentation and/or other materials provided with the distribution.
+
+- Neither the name of the Xiph.org Foundation nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE FOUNDATION OR
+CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+CELT (libcelt)
+--------------
+The text below is CELT's COPYING file as published with its version 0.7.1
+(https://sources.debian.org/src/celt/0.7.1-1/COPYING/). The two DLLs are named
+for versions 0.6.1 and 0.11; vgmstream's project built them.
+
+Copyright 2001-2009 Jean-Marc Valin, Timothy B. Terriberry,
+                    CSIRO, and other contributors
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions

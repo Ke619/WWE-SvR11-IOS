@@ -4,13 +4,14 @@
 // header, one bar per setting, the selected one red with < > around the
 // value), and every setting applies at once (CROWD and GRAPHICS API: at the
 // next start). Three tabs: DISPLAY, GRAPHICS and ADV. GRAPHICS. The same page
-// is also MY WWE -> OPTIONS -> CONTROLS, which rebinds the keyboard (the SDK's
-// keyboard driver reads its keybind_* settings every poll, so a change applies
-// at once too), and LANGUAGE.
+// is also MY WWE -> OPTIONS -> CONTROLS, which rebinds the keyboard and the mouse
+// (the SDK's keyboard driver reads its keybind_* settings every poll, so a change
+// applies at once too) and each player's controller (pad_map.h), and LANGUAGE.
 
 #include "frame_rate.h"
 #include "free_cam.h"
 #include "graphics_page.h"
+#include "platform.h"
 #include "cpu_difficulty.h"
 #include "display_modes.h"
 #include "arena_lights.h"
@@ -54,6 +55,9 @@
 #include "jukebox.h"
 #include "native/native_renderer.h"
 #include "online_overlay.h"
+#include "pad_icons.h"
+#include "pad_map.h"
+#include "pad_types.h"
 #include "touch_controls.h"
 
 namespace svr2011 {
@@ -113,7 +117,7 @@ enum Row {
   kFrameRate, kFullSpeed,                                        // DISPLAY
   kCpuPriority,                                                  // DISPLAY (PC, last)
   kTextureQuality,                                               // GRAPHICS
-  kCrowd, kShadows,                                              // ADV. GRAPHICS
+  kPreset, kCrowd, kShadows,                                     // ADV. GRAPHICS
   kFastStart,                                                    // DISPLAY (last)
   kPing,                                                         // DISPLAY
   kRouterPort,                                                   // DISPLAY
@@ -128,6 +132,44 @@ enum Row {
 };
 // FRAME RATE (frame_rate.h): the choices.
 constexpr int kFrameRates[] = {30, 60};
+
+// ADV. GRAPHICS -> CROWD DENSITY.
+constexpr const char* kLevelNames[] = {"LOW", "MED", "HIGH"};
+constexpr const char* kCrowdValues[] = {"off", "medium", "on"};
+
+// ADV. GRAPHICS -> PRESET: sets these rows, all in one go. The page shows the one that matches them, else CUSTOM.
+// Which device: only the presets that fit it are offered.
+enum PresetDevice { kPresetAndroid, kPresetSwitch, kPresetDeck, kPresetPc };
+struct Preset {
+  const char* name;
+  PresetDevice device;
+  int crowd;           // (0 LOW, 1 MED, 2 HIGH)
+  bool shadows;
+  bool effects;        // (EFFECT DETAIL HIGH)
+  int textures;        // (kTextureQualities)
+  int scale;           // (kScales)
+  int aa;              // (1 off, 2-4)
+  int frame_rate;      // (kFrameRates: 0 for 30, 1 for 60)
+};
+constexpr int kScale360 = 1, kScale720 = 3, kScale1080 = 5, kScale1440 = 6;
+constexpr Preset kPresets[] = {
+    {"MALI", kPresetAndroid, 0, false, false, 2, kScale360, 1, 0},
+    {"SNAPDRAGON", kPresetAndroid, 2, true, false, 0, kScale720, 1, 1},
+    {"SWITCH", kPresetSwitch, 2, true, false, 2, kScale720, 1, 0},
+    {"STEAM DECK", kPresetDeck, 2, true, false, 0, kScale720, 1, 1},
+    {"LOW END PC", kPresetPc, 1, true, false, 1, kScale720, 1, 1},
+    {"MEDIUM END PC", kPresetPc, 2, true, false, 0, kScale1080, 1, 1},
+    {"HIGH END PC", kPresetPc, 2, true, true, 0, kScale1440, 2, 1},
+};
+bool PresetFits(const Preset& p) {
+#if defined(__SWITCH__)
+  return p.device == kPresetSwitch;
+#elif defined(__ANDROID__)
+  return p.device == kPresetAndroid;
+#else
+  return p.device == kPresetPc || (p.device == kPresetDeck && svr2011::IsSteamDeck());
+#endif
+}
 constexpr int kNumFrameRates = 2;
 enum Tab { kDisplayTab, kGraphicsTab, kAdvancedTab, kCpuTab, kTabs };
 const char* kTabNames[kTabs] = {"DISPLAY", "GRAPHICS", "ADV. GRAPHICS", "CPU"};
@@ -140,7 +182,7 @@ const std::vector<Row> kTabRowsAll[kTabs] = {{kResolution, kDisplay, kFrameRate,
                                               kReplays, kCpuPriority, kFastStart, kCawLimits},
 #endif
                                              {kRenderScale, kAntiAliasing, kUpscaling, kTextureQuality, kArenaBrightness, kMatFix, kVsStyle, kWide, kCutsceneFps},
-                                             {kCrowd, kShadows, kEffects, kDof, kMotionBlur, kSoft, kPrepare},
+                                             {kPreset, kCrowd, kShadows, kEffects, kDof, kMotionBlur, kSoft, kPrepare},
                                              {kCpuPreset, kCpuReversal, kCpuRates, kCpuDamage, kCpuPin, kCpuMomentum}};
 // SHADOWS: only with the renderer's native_shadows setting.
 bool HasShadows() {
@@ -195,11 +237,65 @@ constexpr Binding kBindings[] = {
     {"keybind_back", "BACK", "BACK", "Z,Tab"},
 };
 constexpr int kNumBindings = int(std::size(kBindings));
-// Rows: VIBRATION (ON / OFF, the vibration setting: pad_types.cpp), the
-// inputs (row - 1), RESET TO DEFAULTS.
-constexpr int kVibrationRow = 0, kFirstBinding = 1, kResetRow = kNumBindings + 1;
-constexpr int kControlRows = kNumBindings + 2;
+// The tabs (LB / RB), each with a RESET TO DEFAULTS last:
+// KEYBOARD: the inputs' keys.
+// MOUSE: MOUSE LOOK (the right stick), MOUSE SPEED, the inputs' mouse buttons (in the same keybind_* settings).
+// CONTROLLER: PLAYER (whose layout), VIBRATION (the vibration setting: pad_types.cpp), the buttons (pad_map.h).
+enum ControlTab { kKeysTab, kMouseTab, kPadTab, kControlTabs };
+const char* kControlTabNames[kControlTabs] = {"KEYBOARD", "MOUSE", "CONTROLLER"};
+#if defined(__ANDROID__)
+constexpr int kFirstControlTab = kPadTab;  // (the phone: its on-screen controller has its own editor)
+#else
+constexpr int kFirstControlTab = kKeysTab;
+#endif
+constexpr int kMouseLookRow = 0, kMouseSpeedRow = 1;
+constexpr int kPadPlayerRow = 0, kVibrationRow = 1;
+int FirstInputRow(int tab) { return tab == kKeysTab ? 0 : 2; }
+int InputRows(int tab) { return tab == kPadTab ? kPadInputs : kNumBindings; }
+int ControlRows(int tab) { return FirstInputRow(tab) + InputRows(tab) + 1; }
 constexpr int kControlsShown = 9;              // (rows on screen; the list scrolls)
+
+// A key list as its names; a mouse button is a key of the list.
+std::vector<std::string> SplitKeys(const std::string& keys) {
+  std::vector<std::string> out;
+  size_t at = 0;
+  while (at <= keys.size()) {
+    const size_t comma = std::min(keys.find(',', at), keys.size());
+    std::string k = keys.substr(at, comma - at);
+    while (!k.empty() && k.back() == ' ') k.pop_back();
+    while (!k.empty() && k.front() == ' ') k.erase(0, 1);
+    if (!k.empty()) out.push_back(k);
+    at = comma + 1;
+  }
+  return out;
+}
+std::string JoinKeys(const std::vector<std::string>& keys) {
+  std::string out;
+  for (const std::string& k : keys) out += (out.empty() ? "" : ",") + k;
+  return out;
+}
+bool IsMouseKey(const std::string& k) { return k == "LMB" || k == "RMB" || k == "MMB"; }
+// The keyboard's or the mouse's part of a list.
+std::vector<std::string> DeviceKeys(const std::string& keys, bool mouse) {
+  std::vector<std::string> out;
+  for (const std::string& k : SplitKeys(keys))
+    if (IsMouseKey(k) == mouse) out.push_back(k);
+  return out;
+}
+// The inputs the game's menus need: they always keep a keyboard key, so a keyboard player can always reach this page
+// and leave a menu. (The page's own Enter, Esc and arrows, and a controller's buttons in menus, can't be changed.)
+bool NeedsKey(int binding) {
+  const std::string c = kBindings[binding].cvar;
+  return c == "keybind_a" || c == "keybind_b" || c == "keybind_start" || c == "keybind_lstick_up" ||
+         c == "keybind_lstick_down" || c == "keybind_lstick_left" || c == "keybind_lstick_right";
+}
+// A physical input's name on a player's controller.
+const char* PadInputLabel(int input, bool playstation) {
+  static const char* const kPs[kPadInputs] = {"CROSS", "CIRCLE", "SQUARE", "TRIANGLE", "L1", "R1", "L2", "R2",
+                                              "L3", "R3", "D-PAD UP", "D-PAD DOWN", "D-PAD LEFT", "D-PAD RIGHT",
+                                              "START", "SELECT"};
+  return playstation ? kPs[input] : PadInput(input).label;
+}
 
 // The keys a binding can take: ImGui's key -> the driver's name for it.
 struct KeyName {
@@ -397,6 +493,13 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   // CONTROLS: navigate / rebind (true when it used the frame's input).
   void ControlsInput(uint16_t pressed, uint16_t act, bool& back);
   void SetBinding(int i, const std::string& keys);
+  // A key (or mouse button) for an input: it leaves any other input, unless that would leave one the menus need
+  // without a key. `add`: next to the input's keys, else in place of the keyboard's / the mouse's part of them.
+  void AssignKey(int binding, const std::string& name, bool add);
+  void SetPadLayout(uint32_t player, uint64_t layout);
+  void SetNotice(const std::string& text);
+  void ResetControlTab();
+  void StartCapture(int input, bool add);
 
   int tab_ = kDisplayTab;
   int mode_ = kGraphicsMode;  // (Mode)
@@ -411,8 +514,10 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   bool caw_no_limits_ = true;  // CAW LIMITS: OFF (the port's) / STOCK (caw_limits.cpp)
   int fast_start_ = 0;  // FAST START (fast_start.h): bit 0 skip_intros, bit 1 skip_training
   bool prepare_ = true;  // the known pipelines built ahead in the menus
-  bool crowd_ = true, crowd_at_start_ = true;  // arena_crowd (read when the game starts)
+  int crowd_ = 2, crowd_at_start_ = 2;  // arena_crowd: 0 LOW, 1 MED, 2 HIGH (read when the game starts)
   bool shadows_ = true;  // native_shadows
+  const Preset* CurrentPreset() const;
+  void ApplyPreset(const Preset& p);
   bool mat_fix_ = true;  // native_mat_fix
   int vs_style_ = 0;      // vs_style: 0 2011's, k the k-th installed style (vs_styles.h)
   int language_ = 0;    // kLanguages index (saved; applies at the next start)
@@ -442,6 +547,11 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   int control_row_ = 0, control_top_ = 0;
   int capture_ = -1;
   int capture_mod_ = -1;  // (a Shift / Ctrl / Alt held while waiting: kMods index)
+  int control_tab_ = kFirstControlTab;  // (ControlTab)
+  int pad_player_ = 0;                  // (the CONTROLLER tab's player)
+  bool capture_armed_ = false;          // (a controller button: everything was released first)
+  std::string notice_;                  // (what the last change did, under the list)
+  Clock::time_point notice_until_{};
   bool capture_add_ = false;
   Clock::time_point capture_until_{};
   Clock::time_point repeat_at_{};
@@ -542,7 +652,11 @@ void GraphicsPage::Load() {
   prepare_ = rex::cvar::Query<bool>("native_prepare_pipelines");
   {
     const std::string c = rex::cvar::Query<std::string>("arena_crowd");
-    crowd_ = c == "on" || (c != "off" && rex::cvar::GetFlagByName("mali_alpha") != "true");
+    crowd_ = c == "on"       ? 2
+             : c == "medium" ? 1
+             : c == "off"    ? 0
+             : rex::cvar::GetFlagByName("mali_alpha") == "true" ? 0
+                                                                : 2;
     static const bool at_start = crowd_;
     crowd_at_start_ = at_start;
   }
@@ -572,6 +686,30 @@ void GraphicsPage::Load() {
     if (kFrameRates[i] == TargetFrameRate()) frame_rate_ = i;
 }
 
+const Preset* GraphicsPage::CurrentPreset() const {
+  for (const Preset& p : kPresets) {
+    if (PresetFits(p) && crowd_ == p.crowd && shadows_ == p.shadows && effects_ == p.effects && textures_ == p.textures &&
+        scale_ == p.scale && aa_ == p.aa && frame_rate_ == p.frame_rate && upscale_ == 0)
+      return &p;
+  }
+  return nullptr;
+}
+
+// Each row through Change, as if the player had moved it: the same saving and the same cvars.
+void GraphicsPage::ApplyPreset(const Preset& p) {
+  const auto to = [this](Row row, const auto& value, const auto& want) {
+    for (int i = 0; i < 32 && value() != want; ++i) Change(row, 1);
+  };
+  to(kUpscaling, [&] { return upscale_; }, 0);
+  to(kAntiAliasing, [&] { return aa_; }, p.aa);
+  to(kRenderScale, [&] { return scale_; }, p.scale);
+  to(kTextureQuality, [&] { return textures_; }, p.textures);
+  to(kEffects, [&] { return effects_; }, p.effects);
+  to(kFrameRate, [&] { return frame_rate_; }, p.frame_rate);
+  to(kCrowd, [&] { return crowd_; }, p.crowd);
+  if (HasShadows()) to(kShadows, [&] { return shadows_; }, p.shadows);
+}
+
 void GraphicsPage::Change(int row, int dir) {
   switch (row) {
     case kRenderScale: {
@@ -587,10 +725,23 @@ void GraphicsPage::Change(int row, int dir) {
       break;
     }
     case kCrowd:  // (the arenas' crowd-less copies are chosen when the game starts: crowd_off.h)
-      crowd_ = !crowd_;
-      rex::cvar::SetFlagByName("arena_crowd", crowd_ ? "on" : "off");
-      SaveSetting("arena_crowd", crowd_ ? "\"on\"" : "\"off\"");
+      crowd_ = (crowd_ + dir + 3) % 3;
+      rex::cvar::SetFlagByName("arena_crowd", kCrowdValues[crowd_]);
+      SaveSetting("arena_crowd", std::string("\"") + kCrowdValues[crowd_] + "\"");
       break;
+    case kPreset: {
+      const int n = int(std::size(kPresets));
+      int at = -1;  // (CUSTOM: the first one next)
+      for (int i = 0; i < n; ++i)
+        if (&kPresets[i] == CurrentPreset()) at = i;
+      if (at < 0 && dir < 0) at = 0;
+      for (int step = 0; step < n; ++step) {
+        at = (at + dir + n) % n;
+        if (PresetFits(kPresets[at])) break;
+      }
+      if (PresetFits(kPresets[at])) ApplyPreset(kPresets[at]);
+      break;
+    }
     case kShadows:
       shadows_ = !shadows_;
       rex::cvar::SetFlagByName("native_shadows", shadows_ ? "true" : "false");
@@ -825,47 +976,170 @@ void GraphicsPage::SetBinding(int i, const std::string& keys) {
   REXLOG_INFO("[svr2011] controls: {} = \"{}\"", kBindings[i].cvar, keys);
 }
 
+void GraphicsPage::SetNotice(const std::string& text) {
+  notice_ = text;
+  notice_until_ = Clock::now() + std::chrono::seconds(6);
+  REXLOG_INFO("[svr2011] controls: {}", text);
+}
+
+void GraphicsPage::AssignKey(int binding, const std::string& name, bool add) {
+  const bool mouse = IsMouseKey(name);
+  std::vector<int> others;
+  for (int i = 0; i < kNumBindings; ++i) {
+    if (i == binding) continue;
+    const std::vector<std::string> keys = SplitKeys(rex::cvar::Query<std::string>(kBindings[i].cvar));
+    if (std::find(keys.begin(), keys.end(), name) == keys.end()) continue;
+    if (!mouse && NeedsKey(i) && DeviceKeys(rex::cvar::Query<std::string>(kBindings[i].cvar), false).size() == 1) {
+      SetNotice(ShowKeys(name) + " IS THE ONLY KEY FOR " + kBindings[i].input + " - NOT CHANGED");
+      return;
+    }
+    others.push_back(i);
+  }
+  for (int i : others) {
+    std::vector<std::string> keys = SplitKeys(rex::cvar::Query<std::string>(kBindings[i].cvar));
+    keys.erase(std::remove(keys.begin(), keys.end(), name), keys.end());
+    SetBinding(i, JoinKeys(keys));
+    SetNotice(ShowKeys(name) + " MOVED FROM " + kBindings[i].input + " TO " + kBindings[binding].input);
+  }
+  std::vector<std::string> keys;
+  for (const std::string& k : SplitKeys(rex::cvar::Query<std::string>(kBindings[binding].cvar)))
+    if (add || IsMouseKey(k) != mouse) keys.push_back(k);
+  if (std::find(keys.begin(), keys.end(), name) == keys.end()) keys.push_back(name);
+  SetBinding(binding, JoinKeys(keys));
+}
+
+void GraphicsPage::SetPadLayout(uint32_t player, uint64_t layout) {
+  SetPadMapLayout(player, layout);
+  const std::string setting = "pad_map_p" + std::to_string(player + 1), text = PadMapText(layout);
+  rex::cvar::SetFlagByName(setting, text);
+  SaveSetting(setting, "\"" + text + "\"");
+  REXLOG_INFO("[svr2011] controls: {} = \"{}\"", setting, text);
+}
+
+void GraphicsPage::ResetControlTab() {
+  if (control_tab_ == kPadTab) {
+    SetPadLayout(uint32_t(pad_player_), kPadMapStandard);
+    SetNotice("PLAYER " + std::to_string(pad_player_ + 1) + ": THE STANDARD BUTTONS");
+    return;
+  }
+  const bool mouse = control_tab_ == kMouseTab;
+  for (int i = 0; i < kNumBindings; ++i) {
+    const std::string now = rex::cvar::Query<std::string>(kBindings[i].cvar);
+    // (the tab's own part goes back; the other tab's stays)
+    std::vector<std::string> keys = mouse ? DeviceKeys(now, false) : SplitKeys(kBindings[i].keys);
+    if (!mouse)
+      for (const std::string& k : DeviceKeys(now, true)) keys.push_back(k);
+    SetBinding(i, JoinKeys(keys));
+  }
+  if (mouse) {
+    rex::cvar::SetFlagByName("mnk_mouse", "false");
+    SaveSetting("mnk_mouse", "false");
+    rex::cvar::SetFlagByName("mnk_sensitivity", "1.0");
+    SaveSetting("mnk_sensitivity", "1.0");
+  }
+  SetNotice(mouse ? "THE MOUSE: NO BUTTONS, NO MOUSE LOOK" : "THE KEYBOARD: THE DEFAULT KEYS");
+}
+
+void GraphicsPage::StartCapture(int input, bool add) {
+  // (from the next frame on: the key that started it is not the new key)
+  capture_ = input;
+  capture_mod_ = -1;
+  capture_add_ = add;
+  capture_armed_ = false;
+  (void)TakePadIconsMouseClick();
+  capture_until_ = Clock::now() + std::chrono::seconds(8);
+}
+
 void GraphicsPage::ControlsInput(uint16_t pressed, uint16_t act, bool& back) {
   using namespace rex::input;
   auto key = [](ImGuiKey k, bool repeat) { return ImGui::IsKeyPressed(k, repeat); };
-  if ((act & X_INPUT_GAMEPAD_DPAD_UP) || key(ImGuiKey_UpArrow, true))
-    control_row_ = (control_row_ + kControlRows - 1) % kControlRows;
-  if ((act & X_INPUT_GAMEPAD_DPAD_DOWN) || key(ImGuiKey_DownArrow, true))
-    control_row_ = (control_row_ + 1) % kControlRows;
+  // LB / RB, Tab: the tab.
+  if ((pressed & (X_INPUT_GAMEPAD_LEFT_SHOULDER | X_INPUT_GAMEPAD_RIGHT_SHOULDER)) || key(ImGuiKey_Tab, false)) {
+    const int tabs = kControlTabs - kFirstControlTab;
+    const int step = (pressed & X_INPUT_GAMEPAD_LEFT_SHOULDER) ? tabs - 1 : 1;
+    control_tab_ = kFirstControlTab + (control_tab_ - kFirstControlTab + step) % tabs;
+    control_row_ = control_top_ = 0;
+    return;
+  }
+  const int rows = ControlRows(control_tab_);
+  if ((act & X_INPUT_GAMEPAD_DPAD_UP) || key(ImGuiKey_UpArrow, true)) control_row_ = (control_row_ + rows - 1) % rows;
+  if ((act & X_INPUT_GAMEPAD_DPAD_DOWN) || key(ImGuiKey_DownArrow, true)) control_row_ = (control_row_ + 1) % rows;
   const bool change = (pressed & X_INPUT_GAMEPAD_A) || key(ImGuiKey_Enter, false);
   const bool add = (pressed & X_INPUT_GAMEPAD_Y) || key(ImGuiKey_Insert, false);
   const bool clear = (pressed & X_INPUT_GAMEPAD_X) || key(ImGuiKey_Delete, false);
   const bool reset = (pressed & X_INPUT_GAMEPAD_BACK) || key(ImGuiKey_R, false);
-  if (control_row_ == kVibrationRow) {  // VIBRATION: A, left / right toggle it
-    const bool flip = change || (act & (X_INPUT_GAMEPAD_DPAD_LEFT | X_INPUT_GAMEPAD_DPAD_RIGHT)) ||
-                      key(ImGuiKey_LeftArrow, false) || key(ImGuiKey_RightArrow, false);
-    if (flip) {
-      const bool on = !rex::cvar::Query<bool>("vibration");
-      rex::cvar::SetFlagByName("vibration", on ? "true" : "false");
-      SaveSetting("vibration", on ? "true" : "false");
-      REXLOG_INFO("[svr2011] controls: vibration {}", on ? "on" : "off");
+  const bool left = (act & X_INPUT_GAMEPAD_DPAD_LEFT) || key(ImGuiKey_LeftArrow, false);
+  const bool right = (act & X_INPUT_GAMEPAD_DPAD_RIGHT) || key(ImGuiKey_RightArrow, false);
+  const int first = FirstInputRow(control_tab_);
+  if (control_row_ < first) {  // (the tab's settings)
+    if (control_tab_ == kPadTab && control_row_ == kPadPlayerRow) {
+      if (change || right) pad_player_ = (pad_player_ + 1) % kPadMapPlayers;
+      if (left) pad_player_ = (pad_player_ + kPadMapPlayers - 1) % kPadMapPlayers;
+    } else if (control_tab_ == kPadTab) {  // VIBRATION: A, left / right toggle it
+      if (change || left || right) {
+        const bool on = !rex::cvar::Query<bool>("vibration");
+        rex::cvar::SetFlagByName("vibration", on ? "true" : "false");
+        SaveSetting("vibration", on ? "true" : "false");
+        REXLOG_INFO("[svr2011] controls: vibration {}", on ? "on" : "off");
+      }
+    } else if (control_row_ == kMouseLookRow) {
+      if (change || left || right) {
+        const bool on = !rex::cvar::Query<bool>("mnk_mouse");
+        rex::cvar::SetFlagByName("mnk_mouse", on ? "true" : "false");
+        SaveSetting("mnk_mouse", on ? "true" : "false");
+        REXLOG_INFO("[svr2011] controls: mouse look {}", on ? "on" : "off");
+      }
+    } else if (left || right) {  // MOUSE SPEED
+      const double speed = std::clamp(rex::cvar::Query<double>("mnk_sensitivity") + (right ? 0.25 : -0.25), 0.25, 4.0);
+      const std::string text = std::to_string(speed);
+      rex::cvar::SetFlagByName("mnk_sensitivity", text);
+      SaveSetting("mnk_sensitivity", text);
     }
     return;
   }
-  if (control_row_ == kResetRow) {  // RESET TO DEFAULTS
+  if (control_row_ == rows - 1) {  // RESET TO DEFAULTS
+    if (change) ResetControlTab();
+    return;
+  }
+  const int input = control_row_ - first;
+  if (control_tab_ == kPadTab) {
+    const PadType type = PlayerPadType(uint32_t(pad_player_));
     if (change) {
-      for (int i = 0; i < kNumBindings; ++i) SetBinding(i, kBindings[i].keys);
+      if (type == PadType::kXbox || type == PadType::kPlayStation) {
+        StartCapture(input, false);
+        back = false;
+      } else {
+        SetNotice("PLAYER " + std::to_string(pad_player_ + 1) + " HAS NO CONTROLLER NOW");
+      }
+    } else if (reset) {  // (this input back on its own button; BACK doesn't close the page here)
+      uint64_t layout = PadMapLayout(uint32_t(pad_player_));
+      if (PadMapAssign(&layout, input, input) >= 0) SetPadLayout(uint32_t(pad_player_), layout);
+      back = false;
     }
     return;
   }
-  const int binding = control_row_ - kFirstBinding;
+  const bool mouse = control_tab_ == kMouseTab;
+  const std::string now = rex::cvar::Query<std::string>(kBindings[input].cvar);
   if (change || add) {
-    // (from the next frame on: the key that started it is not the new key)
-    capture_ = binding;
-    capture_mod_ = -1;
-    capture_add_ = add && !change;
-    capture_until_ = Clock::now() + std::chrono::seconds(8);
+    StartCapture(input, add && !change);
     back = false;
   } else if (clear) {
-    SetBinding(binding, "");
-  } else if (reset) {  // (this input's default keys; BACK doesn't close the page here)
-    SetBinding(binding, kBindings[binding].keys);
+    if (!mouse && NeedsKey(input)) {
+      SetNotice(std::string(kBindings[input].input) + " MUST KEEP A KEY: THE MENUS NEED IT");
+    } else {
+      SetBinding(input, JoinKeys(DeviceKeys(now, !mouse)));
+    }
+  } else if (reset) {  // (this input's default keys, its mouse buttons as they are; the mouse: none)
     back = false;
+    if (mouse) {
+      SetBinding(input, JoinKeys(DeviceKeys(now, false)));
+    } else {
+      bool first_key = true;
+      for (const std::string& k : SplitKeys(kBindings[input].keys)) {
+        AssignKey(input, k, !first_key);
+        first_key = false;
+      }
+    }
   }
 }
 
@@ -923,6 +1197,12 @@ void TestPageKeys(ImGuiIO& io) {
   in.close();
   std::ofstream(file, std::ios::trunc) << rest;
   while (!line.empty() && (line.back() == 13 || line.back() == 32)) line.pop_back();
+  if (IsMouseKey(line)) {
+    static std::string click;  // (lasts: the page takes the name's address)
+    click = line;
+    PadIconsMouseClick(click.c_str());
+    return;
+  }
   shift = line.rfind("Shift+", 0) == 0;
   if (shift) line = line.substr(6);
   ImGuiKey key = line == "Escape" ? ImGuiKey_Escape : line == "Delete" ? ImGuiKey_Delete : ImGuiKey_None;
@@ -944,6 +1224,8 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
     if (const char* v = std::getenv("SVR2011_TEST_GFX_ROW")) row_ = std::atoi(v);  // (test aid: the cursor's row)
     mode_ = g_requested_mode.exchange(kGraphicsMode);
     control_row_ = control_top_ = 0;
+    control_tab_ = kFirstControlTab;
+    capture_ = -1;
     // The A that opened the page is still down: wait for everything to be
     // released, judged only on pad states the game polled after opening.
     wait_release_ = true;
@@ -988,6 +1270,7 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
     prev_buttons_ = buttons;
     const auto cancel = [&] {
       capture_ = -1;
+      capture_mod_ = -1;
       wait_release_ = true;
       opened_at_ = now;
     };
@@ -1000,42 +1283,58 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
     static const Mod kMods[] = {{ImGuiKey_LeftShift, ImGuiKey_RightShift, "Shift"},
                                 {ImGuiKey_LeftCtrl, ImGuiKey_RightCtrl, "Ctrl"},
                                 {ImGuiKey_LeftAlt, ImGuiKey_RightAlt, "Alt"}};
-    for (const Mod& m : kMods)
-      if (ImGui::IsKeyPressed(m.left, false) || ImGui::IsKeyPressed(m.right, false)) capture_mod_ = &m - kMods;
-    const char* bare = nullptr;
-    if (capture_mod_ >= 0 && !ImGui::IsKeyDown(kMods[capture_mod_].left) && !ImGui::IsKeyDown(kMods[capture_mod_].right))
-      bare = kMods[capture_mod_].name;
     if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || now > capture_until_) {
-      capture_mod_ = -1;
       cancel();
-    } else if (bare) {
-      std::string keys = rex::cvar::Query<std::string>(kBindings[capture_].cvar);
-      if (!capture_add_ || keys.empty()) {
-        keys = bare;
-      } else if (("," + keys + ",").find(std::string(",") + bare + ",") == std::string::npos) {
-        keys += std::string(",") + bare;
+    } else if (control_tab_ == kPadTab) {
+      // A button on that player's controller, once everything is released (the button that started this).
+      X_INPUT_STATE st = {};
+      uint32_t held = 0;
+      if (g_input && g_input->HeldState(uint32_t(pad_player_), &st)) {
+        for (int i = 0; i < kPadInputs; ++i)
+          if (PadInput(i).bit & uint16_t(st.gamepad.buttons)) held |= 1u << i;
+        if (uint8_t(st.gamepad.left_trigger) > 0x40) held |= 1u << 6;
+        if (uint8_t(st.gamepad.right_trigger) > 0x40) held |= 1u << 7;
       }
-      SetBinding(capture_, keys);
-      capture_mod_ = -1;
-      cancel();
-    } else {
-      for (const KeyName& k : KeyNames()) {
-        if (!ImGui::IsKeyPressed(k.key, false)) continue;
-        std::string name;
-        if (io.KeyCtrl) name += "Ctrl+";
-        if (io.KeyAlt) name += "Alt+";
-        if (io.KeyShift) name += "Shift+";
-        name += k.name;
-        std::string keys = rex::cvar::Query<std::string>(kBindings[capture_].cvar);
-        if (!capture_add_ || keys.empty()) {
-          keys = name;
-        } else if (("," + keys + ",").find("," + name + ",") == std::string::npos) {
-          keys += "," + name;
+      if (!capture_armed_) {
+        capture_armed_ = held == 0;
+      } else if (held) {
+        int physical = 0;
+        while (!(held >> physical & 1)) ++physical;
+        uint64_t layout = PadMapLayout(uint32_t(pad_player_));
+        const int other = PadMapAssign(&layout, capture_, physical);
+        if (other >= 0) {
+          SetPadLayout(uint32_t(pad_player_), layout);
+          const bool ps = PlayerPadType(uint32_t(pad_player_)) == PadType::kPlayStation;
+          SetNotice(std::string(PadInputLabel(capture_, ps)) + " AND " + PadInputLabel(other, ps) + " SWAPPED");
         }
-        SetBinding(capture_, keys);
-        capture_mod_ = -1;
         cancel();
-        break;
+      }
+    } else if (control_tab_ == kMouseTab) {
+      if (const char* click = TakePadIconsMouseClick()) {
+        AssignKey(capture_, click, capture_add_);
+        cancel();
+      }
+    } else {
+      for (const Mod& m : kMods)
+        if (ImGui::IsKeyPressed(m.left, false) || ImGui::IsKeyPressed(m.right, false)) capture_mod_ = &m - kMods;
+      const char* bare = nullptr;
+      if (capture_mod_ >= 0 && !ImGui::IsKeyDown(kMods[capture_mod_].left) && !ImGui::IsKeyDown(kMods[capture_mod_].right))
+        bare = kMods[capture_mod_].name;
+      if (bare) {
+        AssignKey(capture_, bare, capture_add_);
+        cancel();
+      } else {
+        for (const KeyName& k : KeyNames()) {
+          if (!ImGui::IsKeyPressed(k.key, false)) continue;
+          std::string name;
+          if (io.KeyCtrl) name += "Ctrl+";
+          if (io.KeyAlt) name += "Alt+";
+          if (io.KeyShift) name += "Shift+";
+          name += k.name;
+          AssignKey(capture_, name, capture_add_);
+          cancel();
+          break;
+        }
       }
     }
   } else {
@@ -1098,13 +1397,14 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
          IM_COL32(255, 255, 255, 255), title);
     // GRAPHICS: its tabs (LB / RB), the chosen one white on red; CONTROLS and
     // LANGUAGE: their name alone.
-    const bool alone = mode_ != kGraphicsMode;
+    const bool alone = mode_ == kLanguageMode || (mode_ == kControlsMode && kFirstControlTab == kPadTab);
     const float ps = 18 * s;
     float x = P(708, 0).x;
     const float cy = P(0, 101).y;
-    for (int i = 0; i < (alone ? 1 : int(kTabs)); ++i) {
-      const char* name = mode_ == kLanguageMode ? "LANGUAGE" : mode_ == kControlsMode ? "CONTROLS" : kTabNames[i];
-      const bool chosen = alone || i == tab_;
+    const bool controls = mode_ == kControlsMode;
+    for (int i = 0; i < (alone ? 1 : controls ? int(kControlTabs) : int(kTabs)); ++i) {
+      const char* name = mode_ == kLanguageMode ? "LANGUAGE" : controls ? (alone ? "CONTROLS" : kControlTabNames[i]) : kTabNames[i];
+      const bool chosen = alone || i == (controls ? control_tab_ : tab_);
       const ImVec2 z = TextSize(g_menu_font, ps, name);
       const ImVec2 a(x - 10 * s, cy - 13 * s), b(x + z.x + 10 * s, cy + 13 * s);
       if (chosen) {
@@ -1122,15 +1422,20 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
          hint);
   }
 
-  // CONTROLS: the inputs, their keys, RESET TO DEFAULTS; a scrolling list.
+  // CONTROLS: the tab's settings, the inputs, RESET TO DEFAULTS; a scrolling list.
   if (mode_ == kControlsMode) {
     const float row_h = 30.0f, gap = 8.0f, top = 132.0f;
     const float fs = 21 * s;
+    const int control_rows = ControlRows(control_tab_), first_input = FirstInputRow(control_tab_);
+    const int reset_row = control_rows - 1;
+    const PadType pad_type = PlayerPadType(uint32_t(pad_player_));
+    const bool ps = pad_type == PadType::kPlayStation;
+    const uint64_t layout = PadMapLayout(uint32_t(pad_player_));
     control_top_ = std::clamp(control_top_, std::max(0, control_row_ - kControlsShown + 1),
-                              std::min(control_row_, kControlRows - kControlsShown));
+                              std::min(control_row_, control_rows - kControlsShown));
     for (int k = 0; k < kControlsShown; ++k) {
       const int i = control_top_ + k;
-      if (i >= kControlRows) break;
+      if (i >= control_rows) break;
       const float y = top + k * (row_h + gap);
       const bool sel = i == control_row_;
       const ImVec2 a = P(166, y), b = P(1112, y + row_h);
@@ -1142,51 +1447,84 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
         dl->AddRectFilled(a, b, IM_COL32(34, 34, 40, 235), 3 * s);
       }
       const float ty = P(0, y + row_h * 0.5f).y - TextSize(g_menu_font, fs, "A").y * 0.5f;
-      if (i == kResetRow) {
+      if (i == reset_row) {
         const char* reset = "RESET TO DEFAULTS";
         const ImVec2 z = TextSize(g_menu_font, fs, reset);
         Text(dl, g_menu_font, fs, ImVec2(P(639, 0).x - z.x * 0.5f, ty), IM_COL32(255, 255, 255, 255), reset);
         continue;
       }
-      if (i == kVibrationRow) {
-        Text(dl, g_menu_font, fs, ImVec2(P(186, 0).x, ty), IM_COL32(255, 255, 255, 255), "VIBRATION");
-        Text(dl, g_menu_font, fs * 0.85f, ImVec2(P(470, 0).x, ty + fs * 0.08f), IM_COL32(180, 180, 188, 255),
-             "CONTROLLER RUMBLE");
-        const char* v = rex::cvar::Query<bool>("vibration") ? "ON" : "OFF";
-        const ImVec2 vs = TextSize(g_menu_font, fs, v);
-        Text(dl, g_menu_font, fs, ImVec2(P(1092, 0).x - vs.x, ty), IM_COL32(255, 255, 255, 255), v);
-        continue;
+      std::string input, action, v;
+      ImU32 colour = IM_COL32(255, 255, 255, 255);
+      if (i < first_input) {
+        if (control_tab_ == kPadTab && i == kPadPlayerRow) {
+          input = "PLAYER", action = "WHOSE BUTTONS";
+          v = std::to_string(pad_player_ + 1) + (pad_type == PadType::kXbox        ? " - XBOX"
+                                                 : ps                              ? " - PLAYSTATION"
+                                                 : pad_type == PadType::kKeyboard  ? " - KEYBOARD"
+                                                                                   : " - NO CONTROLLER");
+        } else if (control_tab_ == kPadTab) {
+          input = "VIBRATION", action = "CONTROLLER RUMBLE", v = rex::cvar::Query<bool>("vibration") ? "ON" : "OFF";
+        } else if (i == kMouseLookRow) {
+          input = "MOUSE LOOK", action = "THE MOUSE MOVES THE RIGHT STICK", v = rex::cvar::Query<bool>("mnk_mouse") ? "ON" : "OFF";
+        } else {
+          char speed[16];
+          std::snprintf(speed, sizeof(speed), "%.2f", rex::cvar::Query<double>("mnk_sensitivity"));
+          input = "MOUSE SPEED", action = "MOUSE LOOK", v = speed;
+        }
+      } else if (control_tab_ == kPadTab) {
+        const int in = i - first_input;
+        input = PadInputLabel(in, ps), action = PadInput(in).action;
+        v = capture_ == in ? "PRESS A BUTTON" : PadInputLabel(PadMapPhysical(layout, in), ps);
+        if (capture_ != in && PadMapPhysical(layout, in) != in) colour = IM_COL32(255, 200, 60, 255);
+      } else {
+        const Binding& bd = kBindings[i - first_input];
+        const bool mouse = control_tab_ == kMouseTab;
+        input = bd.input, action = bd.action;
+        const bool waiting = capture_ == i - first_input;
+        v = waiting ? (mouse ? "CLICK A MOUSE BUTTON" : capture_add_ ? "PRESS A KEY TO ADD" : "PRESS A KEY")
+                    : ShowKeys(JoinKeys(DeviceKeys(rex::cvar::Query<std::string>(bd.cvar), mouse)));
       }
-      const Binding& bd = kBindings[i - kFirstBinding];
-      Text(dl, g_menu_font, fs, ImVec2(P(186, 0).x, ty), IM_COL32(255, 255, 255, 255), bd.input);
-      Text(dl, g_menu_font, fs * 0.85f, ImVec2(P(470, 0).x, ty + fs * 0.08f), IM_COL32(180, 180, 188, 255),
-           bd.action);
-      const bool waiting = capture_ == i - kFirstBinding;
-      const std::string v = waiting ? (capture_add_ ? "PRESS A KEY TO ADD" : "PRESS A KEY")
-                                    : ShowKeys(rex::cvar::Query<std::string>(bd.cvar));
+      if (capture_ >= 0 && i >= first_input && capture_ == i - first_input) colour = IM_COL32(255, 200, 60, 255);
+      Text(dl, g_menu_font, fs, ImVec2(P(186, 0).x, ty), IM_COL32(255, 255, 255, 255), input.c_str());
+      Text(dl, g_menu_font, fs * 0.85f, ImVec2(P(470, 0).x, ty + fs * 0.08f), IM_COL32(180, 180, 188, 255), action.c_str());
       const ImVec2 vs = TextSize(g_menu_font, fs, v.c_str());
-      Text(dl, g_menu_font, fs, ImVec2(P(1092, 0).x - vs.x, ty),
-           waiting ? IM_COL32(255, 200, 60, 255) : IM_COL32(255, 255, 255, 255), v.c_str());
+      Text(dl, g_menu_font, fs, ImVec2(P(1092, 0).x - vs.x, ty), colour, v.c_str());
     }
     // (more above / below)
     const ImU32 arrow = IM_COL32(200, 200, 205, 255);
     if (control_top_ > 0)
       dl->AddTriangleFilled(P(639, 120), P(629, 128), P(649, 128), arrow);
-    if (control_top_ + kControlsShown < kControlRows) {
+    if (control_top_ + kControlsShown < control_rows) {
       const float yb = top + kControlsShown * (row_h + gap) - gap + 4;
       dl->AddTriangleFilled(P(639, yb + 8), P(629, yb), P(649, yb), arrow);
     }
+    const bool keys_off = control_tab_ != kPadTab && !rex::cvar::Query<bool>("mnk_mode");
     const char* help =
-        capture_ >= 0 ? "Press the key (Shift / Ctrl / Alt + a key: a combination; tapped alone: that key). ESC: cancel."
-        : control_row_ == kResetRow
-            ? "A: the default keys for every input."
-        : control_row_ == kVibrationRow
-            ? "A / LEFT / RIGHT: controller vibration on or off."
-            : "A: change   Y: add a key   X: clear   BACK: reset   (keyboard: Enter, Insert, Delete, R)";
+        capture_ >= 0
+            ? (control_tab_ == kPadTab    ? "Press the button on that player's controller: it swaps with the one using it."
+               : control_tab_ == kMouseTab ? "Click a mouse button. ESC: cancel."
+                                           : "Press the key (Shift / Ctrl / Alt + a key: a combination; tapped alone: that key). ESC: cancel.")
+        : control_row_ == reset_row
+            ? (control_tab_ == kPadTab ? "A: this player's standard buttons." : control_tab_ == kMouseTab ? "A: no mouse buttons, no mouse look." : "A: the default keys for every input.")
+        : control_row_ < first_input
+            ? (control_tab_ == kPadTab && control_row_ == kPadPlayerRow ? "LEFT / RIGHT: the player. Their layout applies in matches; menus keep the real buttons."
+               : control_tab_ == kMouseTab && control_row_ == kMouseSpeedRow ? "LEFT / RIGHT: how fast the mouse moves the right stick."
+               : control_tab_ == kMouseTab ? "A / LEFT / RIGHT: the mouse moves the right stick, and the window holds the cursor."
+                                           : "A / LEFT / RIGHT: controller vibration on or off.")
+        : control_tab_ == kPadTab
+            ? "A: change (the button is swapped)   BACK: its own button"
+        : control_tab_ == kMouseTab
+            ? "A: change   Y: add a button   X: clear   BACK: none"
+            : "A: change   Y: add a key   X: clear   BACK: reset   (keyboard: Enter, Insert, Delete, R, Tab)";
     const float hs = 18 * s;
     const ImVec2 sz = TextSize(g_menu_font, hs, help);
     Text(dl, g_menu_font, hs, ImVec2(P(639, 0).x - sz.x * 0.5f, P(0, 508).y - sz.y * 0.5f),
          IM_COL32(200, 200, 205, 255), help);
+    const std::string line = now < notice_until_ ? notice_ : keys_off ? std::string("THE KEYBOARD AND MOUSE ARE OFF IN THE LAUNCHER'S SETTINGS") : std::string();
+    if (!line.empty()) {
+      const ImVec2 nz = TextSize(g_menu_font, hs, line.c_str());
+      Text(dl, g_menu_font, hs, ImVec2(P(639, 0).x - nz.x * 0.5f, P(0, 486).y - nz.y * 0.5f), IM_COL32(255, 200, 60, 255), line.c_str());
+    }
     if (back) Hide();
     return;
   }
@@ -1283,7 +1621,11 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
                                              "DLSS PERFORMANCE (EXPERIMENTAL)"};
         return kNames[std::clamp(upscale_, 0, 12)];
       }
-      case kCrowd: return crowd_ ? "ON" : "OFF";
+      case kPreset: {
+        const Preset* p = CurrentPreset();
+        return p ? p->name : "CUSTOM";
+      }
+      case kCrowd: return kLevelNames[crowd_];
       case kShadows: return shadows_ ? "ON" : "OFF";
       case kEffects: return effects_ ? "HIGH" : "NORMAL";
       case kCutsceneFps: return fps60_ ? "60 FPS" : "30 FPS (ORIGINAL)";
@@ -1328,7 +1670,8 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kAntiAliasing: return "ANTI-ALIASING";
       case kUpscaling: return "UPSCALING";
       case kEffects: return "EFFECT DETAIL";
-      case kCrowd: return "CROWD";
+      case kPreset: return "PRESET";
+      case kCrowd: return "CROWD DENSITY";
       case kShadows: return "SHADOWS";
       case kCutsceneFps: return "ENTRANCE FRAME RATE";
     }
@@ -1391,9 +1734,12 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
         return "The game's picture size. AUTO fills the screen; lower is faster (360P / 480P: softer, for weak "
                "devices; 1080P: sharp on a 1080p screen, lighter than AUTO's 1440P). ANTI-ALIASING draws it bigger.";
       case kCrowd:
-        return crowd_ == crowd_at_start_ ? "The people in the seats. OFF: empty seats - faster on weak PCs and phones."
+        return crowd_ == crowd_at_start_ ? "The people in the seats. LOW: empty seats. MED: about half. HIGH: everyone."
                                          : "Takes effect the next time the game starts.";
       case kShadows: return "The wrestlers', ring's and arena's shadows. OFF: faster.";
+      case kPreset:
+        return "Sets resolution, upscaling, anti-aliasing, textures, effect detail, crowd, shadows and frame rate "
+               "together. Changing one of them afterwards shows CUSTOM. A new crowd level applies at the next start.";
       case kAntiAliasing:
         return upscale_ ? "Off while UPSCALING is on: FSR / DLSS draw the picture smaller and smooth its edges "
                           "themselves. Set UPSCALING to OFF to use this."
@@ -1505,6 +1851,21 @@ void InstallGraphicsPage(rex::ui::ImGuiDrawer* drawer, rex::ui::Window* window,
   g_window = window;
   g_input = input;
   g_config_path = config_path;
+#if !defined(__ANDROID__)
+  // (a settings file with no key on an input the menus need - an older version's CLEAR: its default keys, or a keyboard
+  // player could never reach this page again)
+  for (int i = 0; i < kNumBindings; ++i) {
+    if (!NeedsKey(i)) continue;
+    const std::string now = rex::cvar::Query<std::string>(kBindings[i].cvar);
+    if (!DeviceKeys(now, false).empty()) continue;
+    std::vector<std::string> keys = SplitKeys(kBindings[i].keys);
+    for (const std::string& k : DeviceKeys(now, true)) keys.push_back(k);
+    const std::string text = JoinKeys(keys);
+    rex::cvar::SetFlagByName(kBindings[i].cvar, text);
+    SaveSetting(kBindings[i].cvar, "\"" + text + "\"");
+    REXLOG_WARN("[svr2011] controls: {} had no key - back to \"{}\"", kBindings[i].cvar, text);
+  }
+#endif
   new GraphicsPage(drawer);  // lives for the whole run
   // F11: full screen (the kind chosen on the page) <-> window.
   rex::ui::RegisterBind("bind_fullscreen", "F11", "Toggle full screen", [] {

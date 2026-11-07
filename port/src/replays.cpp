@@ -22,6 +22,8 @@
 // the wait before a clip; no scene is made yet in either) the step is done -
 // the game's own "no highlights" path - and the recorder's state is logged.
 
+#include "media_mods.h"
+
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -136,6 +138,8 @@ REX_HOOK_RAW(sub_82322DA0) {
   static Clock::time_point since;
   static bool told = false;
   const uint32_t state = Rd32(base + task + 16);
+  // (once per end, from the result on - the menus' music can end it while this task still steps: docs/VICTORY_SCENES.md 5)
+  if (state >= 1 && (task != last_task || last_state == 0 || state < last_state)) svr2011::WinMusicOn();
   if (task != last_task || state != last_state) {
     REXLOG_INFO("[svr2011] match end: step {} (task {:08X}, +20 {})", state, task, Rd32(base + task + 20));
     if (task != last_task) svr2011::MatchBoxMatchEnded();  // (a new end task - its first step 0, or 1 after a win: the box)

@@ -9,6 +9,8 @@ What a package adds: its superstars' model pacs. They are named pac/ch/ch<id>.pa
 Files are copied out once to <cache>/dlc/<package>/ when a step asks for them; the packages are only read.
 
     py dlc_src.py <folder> [title id hex]     lists the packages (JSON)
+    py dlc_src.py movies <folder> <title id hex> <out folder>     copies out the packages' Bink 1 movies (WWE All Stars'
+        jumbotrons: no disc needed, a mod's movie as they are); the same name in two packages once
 """
 import json
 import os
@@ -49,6 +51,11 @@ class Package:
 
     def read(self, low):
         return self.files[low][2]()
+
+
+def notice(text):
+    """a line for the player: the Mod Maker shows it on screen when the job ends (tool_run.cpp)"""
+    print('notice ' + text.replace('\n', ' '), file=sys.stderr, flush=True)
 
 
 def _stfs_package(path):
@@ -107,7 +114,7 @@ def find_packages(folder):
                 try:
                     out.append(_stfs_package(full))
                 except (ValueError, OSError, IndexError, UnicodeError):
-                    pass   # (damaged or not really a package: the others still count)
+                    notice('DLC: %s can\'t be read (damaged?): left out.' % n)   # (the others still count)
     walk(folder, 0)
     return out
 
@@ -121,6 +128,8 @@ class DlcSet:
         # (an unpacked package has no title id: it counts; another game's package in the same folder doesn't)
         self.packages = [p for p in every if title is None or p.title is None or p.title == title]
         self.others = len(every) - len(self.packages)
+        if self.others and not self.packages:
+            notice('DLC folder: its %d package(s) belong to another game: none used.' % self.others)
         self._by_model = {}
         for p in self.packages:
             for i in p.models():
@@ -172,6 +181,13 @@ class SourceView:
 
     def __getattr__(self, name):
         return getattr(self.disc, name)
+
+    def __enter__(self):
+        self.disc.__enter__()
+        return self
+
+    def __exit__(self, *a):
+        return self.disc.__exit__(*a)
 
     @staticmethod
     def _low(path):
@@ -237,7 +253,28 @@ def view(disc):
     return SourceView(disc, dlc) if dlc else disc
 
 
+def movies(folder, title, out):
+    """the packages' .bik files (Bink 1) -> out: {"ok", "movies": [names], "folder"}"""
+    names = []
+    for p in DlcSet(folder, '', title).packages:
+        for low in sorted(p.files):
+            name = low.rsplit('/', 1)[-1]
+            if not low.endswith('.bik') or name in names:
+                continue
+            data = p.read(low)
+            if data[:3] != b'BIK':
+                continue
+            os.makedirs(out, exist_ok=True)
+            with open(os.path.join(out, name), 'wb') as f:
+                f.write(data)
+            names.append(name)
+    return dict(ok=bool(names), movies=names, folder=out, error=None if names else 'no Bink movies in these packages')
+
+
 def main(argv):
+    if len(argv) == 5 and argv[1] == 'movies':
+        print(json.dumps(movies(argv[2], int(argv[3], 16), argv[4])))
+        return 0
     title = int(argv[2], 16) if len(argv) > 2 else None
     s = DlcSet(argv[1], '', title)
     print(json.dumps([dict(name=p.name, title='%08X' % p.title if p.title is not None else None, display=p.display,

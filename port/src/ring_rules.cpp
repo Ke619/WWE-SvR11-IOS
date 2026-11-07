@@ -248,15 +248,18 @@ REX_HOOK_RAW(sub_8269A8D8) {
       }
     // (the stage's heap full - an arena with more 3D detail than the game's own: caw_limits.h kStageHeap; the
     // match's weapons' heap - OPTIONS -> WEAPONS picks: kWeaponHeap; heap 12, kMatchLoadHeap - physical: the sign
-    // bank's textures are copied into it)
-    if ((heap == svr2011::kStageHeap || heap == svr2011::kWeaponHeap || (heap == kMatchLoadHeap && size >= kMatchLoadFallbackMin)) &&
+    // bank's textures are copied into it; a wrestler's model heap 17-20, its small blocks - physical as its big ones,
+    // sub_8269BA30's hook: a Created Superstar with many parts filled 17 in Road to WrestleMania and the story's copy of
+    // 337 bytes, sub_823C6858, wrote to the 0 it got: report c85461)
+    const bool model_heap = heap >= 17 && heap <= 20;
+    if ((heap == svr2011::kStageHeap || heap == svr2011::kWeaponHeap || model_heap || (heap == kMatchLoadHeap && size >= kMatchLoadFallbackMin)) &&
         svr2011::BigModelMemory())
-      if (const uint32_t p = svr2011::FallbackBlock(size, heap != kMatchLoadHeap)) {
+      if (const uint32_t p = svr2011::FallbackBlock(size, !model_heap && heap != kMatchLoadHeap)) {
         ctx.r3.u64 = p;
         static int told = 0;
         if (told++ < 5 || told % 200 == 0)
           REXLOG_INFO("[svr2011] model memory: the {} heap ({}) full - {} bytes from the fallback memory ({} so)",
-                      heap == svr2011::kStageHeap ? "stage's" : heap == kMatchLoadHeap ? "match load" : "weapons'", heap,
+                      heap == svr2011::kStageHeap ? "stage's" : model_heap ? "model" : heap == kMatchLoadHeap ? "match load" : "weapons'", heap,
                       size, told);
         return;
       }

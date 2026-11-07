@@ -1540,6 +1540,28 @@ int LiftTableLids(Arena& a) {
   return n;
 }
 
+bool ConvertProp13(const Bytes& in, Bytes& out, float scale, std::string* error) {
+  std::vector<PachEntry> ents;
+  if (!PachRead(in, ents)) {
+    if (error) *error = "not a PACH";
+    return false;
+  }
+  for (auto& e : ents) {
+    const Bytes r = Unpack(e.data);
+    if (IsJboy13(r)) {
+      Model m;
+      if (!Jboy13Read(r, m, error)) return false;
+      Convert13Stats st;
+      ConvertModel13(m, scale, st);
+      e.data = Pack(JboyWrite(m));
+    } else {
+      e.data = Pack(r);  // (2K14 and later keep their parts in ZLIB: the game's are BPE)
+    }
+  }
+  out = PachWrite(ents);
+  return true;
+}
+
 bool BuildArenaFromWwe13(const Bytes& wwe13, const Bytes& host_file, const Wwe13Options& opt, Bytes& out,
                          Wwe13Report& rep, std::string* error) {
   auto fail = [&](const std::string& why) { if (error) *error = why; return false; };

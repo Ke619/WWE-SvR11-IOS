@@ -3,13 +3,17 @@
     py tools/title_port.py titles
     py tools/title_port.py make --game <SvR 2011 game folder or ISO> --title <key> --out <dir> [--name <name>]
         [--short <name>] [--champion <name>] [--picture <png>] [--art <png>] [--set <belt texture>=<picture> ...] [--id <folder>] [--author <name>] [--version <v>] [--svrmod]
+    py tools/title_port.py make --new --name <name> --out <dir> [--belt <key>] [--like <key>] [--brand raw|smackdown|both]
+        [--tag] [--short <name>] [--champion <name>] [--id <folder>] [--author <name>] [--version <v>] [--svrmod]
 
 titles lists the keys (IC, US, WWE, WHC, WWE_TAG, WORLD_TAG, ECW, DIVAS, WOMENS, HARDCORE, CRUISER, MILLION, WCW)
 with their names, belt textures (data/belt_weapon_textures.json) and menu pictures (data/title_pictures.json).
 make writes <out>/<id>/ - manifest.txt (type=title) and textures/ named as in texture packs
 (<owner>_<texture>_<hash16>.dds / .png: the game serves them in place of the stock ones) - and with --svrmod
 <out>/<id>.svrmod as well; <out>/report.json. The picture (--picture) goes in for the title's menu picture in
-both menu sizes (menuHD / menuSD), any size. stdout is JSON only; exit 0 ok / 2 bad input / 3 failed.
+both menu sizes (menuHD / menuSD), any size. --new makes a title beside the game's instead of replacing one: --belt is
+the game's belt it carries, --like the title whose rank class it counts in, --brand puts it in Universe. stdout is JSON
+only; exit 0 ok / 2 bad input / 3 failed.
 """
 import argparse
 import io
@@ -58,7 +62,57 @@ def titles():
     return out
 
 
+# (the keys the game reads for belt= and like=: src/title_new.cpp)
+NEW_KEYS = ['WWE', 'WHC', 'WWE_TAG', 'WORLD_TAG', 'IC', 'US', 'CRUISER', 'WOMENS', 'HARDCORE', 'ECW', 'WCW', 'DIVAS', 'UNIFIED_TAG', 'MILLION']
+
+
+def make_new(a):
+    if not (a.name or '').strip():
+        raise BadInput('a new title needs --name')
+    if a.title or a.picture or a.art or a.set:
+        raise BadInput('--new makes a title of its own: no --title, --picture, --art or --set yet')
+    for opt, v in (('--belt', a.belt), ('--like', a.like)):
+        if v and v.upper() not in NEW_KEYS:
+            raise BadInput('%s %r: one of %s' % (opt, v, ', '.join(NEW_KEYS)))
+    if a.brand and a.brand not in ('raw', 'smackdown', 'both'):
+        raise BadInput('--brand %r: raw, smackdown or both' % a.brand)
+    folder_id = re.sub(r'[^a-z0-9]+', '_', (a.id or a.name).lower()).strip('_')[:40]
+    if not folder_id:
+        raise BadInput('--id: letters or digits, please (the name has none)')
+    mod = os.path.join(a.out, folder_id)
+    os.makedirs(mod, exist_ok=True)
+    lines = ['type=title', 'new=1', 'id=' + folder_id, 'name=' + a.name]
+    for k, v in (('champion', a.champion), ('short', a.short), ('belt', a.belt and a.belt.upper()),
+                 ('like', a.like and a.like.upper()), ('brand', a.brand), ('kind', 'tag' if a.tag else None), ('author', a.author)):
+        if v:
+            lines.append('%s=%s' % (k, v))
+    return finish(a, mod, folder_id, lines, [], ['new title "%s"%s' % (a.name, ' in Universe' if a.brand else '')])
+
+
+def finish(a, mod, folder_id, lines, warnings, notes):
+    lines += ['made_with=' + (a.made_with or 'Port tools (title_port)'), 'version=' + (a.version or '1.0')]
+    with open(os.path.join(mod, 'manifest.txt'), 'w', encoding='utf-8', newline='\n') as f:
+        f.write('\n'.join(lines) + '\n')
+    rep = {'ok': True, 'out': mod, 'opens': 'title', 'warnings': warnings, 'dropped': [], 'notes': notes}
+    if a.svrmod:
+        path = os.path.join(a.out, folder_id + '.svrmod')
+        with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as z:
+            for root, _, files in os.walk(mod):
+                for fn in files:
+                    full = os.path.join(root, fn)
+                    z.write(full, os.path.relpath(full, mod).replace(os.sep, '/'))
+        rep['svrmod'] = path
+    with open(os.path.join(a.out, 'report.json'), 'w') as f:
+        json.dump(rep, f, indent=1)
+    reskin_port.progress(100, 'done')
+    return rep
+
+
 def make(a):
+    if a.new:
+        return make_new(a)
+    if not a.title:
+        raise BadInput('--title: one of %s (or --new)' % ', '.join(KEYS))
     key = a.title.upper()
     if key not in KEYS:
         raise BadInput('--title %r: one of %s' % (a.title, ', '.join(KEYS)))
@@ -117,22 +171,7 @@ def make(a):
         lines.append('short=' + a.short)
     if a.author:
         lines.append('author=' + a.author)
-    lines += ['made_with=' + (a.made_with or 'Port tools (title_port)'), 'version=' + (a.version or '1.0')]
-    with open(os.path.join(mod, 'manifest.txt'), 'w', encoding='utf-8', newline='\n') as f:
-        f.write('\n'.join(lines) + '\n')
-    rep = {'ok': True, 'out': mod, 'opens': 'title', 'warnings': warnings, 'dropped': [], 'notes': notes}
-    if a.svrmod:
-        path = os.path.join(a.out, folder_id + '.svrmod')
-        with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as z:
-            for root, _, files in os.walk(mod):
-                for fn in files:
-                    full = os.path.join(root, fn)
-                    z.write(full, os.path.relpath(full, mod).replace(os.sep, '/'))
-        rep['svrmod'] = path
-    with open(os.path.join(a.out, 'report.json'), 'w') as f:
-        json.dump(rep, f, indent=1)
-    reskin_port.progress(100, 'done')
-    return rep
+    return finish(a, mod, folder_id, lines, warnings, notes)
 
 
 def main(argv):
@@ -141,7 +180,12 @@ def main(argv):
     sub.add_parser('titles')
     p = sub.add_parser('make')
     p.add_argument('--game')
-    p.add_argument('--title', required=True)
+    p.add_argument('--title')
+    p.add_argument('--new', action='store_true')
+    p.add_argument('--belt')
+    p.add_argument('--like')
+    p.add_argument('--brand')
+    p.add_argument('--tag', action='store_true')
     p.add_argument('--out', required=True)
     p.add_argument('--name')
     p.add_argument('--short')

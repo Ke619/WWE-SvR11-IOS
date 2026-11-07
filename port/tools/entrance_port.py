@@ -55,7 +55,9 @@ import json
 import os
 import re
 import struct
+import subprocess
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -895,6 +897,48 @@ def own_vehicles(src, game, evp11, game_pac, rep):
     return evp11
 
 
+DLC_PROP_FALLBACK = 2006   # (a prop every 2011 install has: only if the pack can't add the entrance's own)
+
+
+def dlc_props(src, game, evp11, rep):
+    """the props of a DLC entrance that 2011's evtobj lacks, from the game's packages (evtobj_dlc<nn>.pac, 2K16's pac/prop/<id>_dlc<nn>.pac):
+    the model converted (svrmod wwe13prop), added by the pack under its own id"""
+    packages = getattr(getattr(src, 'dlc', None), 'packages', None)
+    if not packages:
+        return
+    missing = collections.defaultdict(list)
+    for w in rep['warnings']:
+        m = re.search(r"prop (\d+) is not in 2011's evtobj", w)
+        if m:
+            missing[int(m.group(1))].append(w)
+    if not missing:
+        return
+    found = {}
+    for pk in packages:
+        for low in pk.matching(r'^pac/(evt/evtobj_dlc\d+|prop/\d+_dlc\d+)\.pac$'):
+            raw = pk.read(low)
+            if raw[:4] == b'\x0f\xf5\x12\xed':
+                raw = E13.xdec(raw, E13.find_svrmod(SVRMOD))
+            for (g, n), b in E13.epk8_entries(raw).items():
+                if g == 'SOBJ' and n.isdigit():
+                    found.setdefault(int(n), b)
+    for pid, warnings in sorted(missing.items()):
+        if pid not in found or any(p[0] == pid for p in PROPS):
+            continue
+        with tempfile.TemporaryDirectory() as d:
+            a, b = os.path.join(d, 'in.bin'), os.path.join(d, 'out.bin')
+            with open(a, 'wb') as f:
+                f.write(found[pid])
+            r = subprocess.run([E13.find_svrmod(SVRMOD), 'wwe13prop', a, b], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+            if r.returncode or not os.path.exists(b):
+                rep['notes'].append('prop %d: its DLC model not converted (%s)' % (pid, (r.stdout or '').strip()[:120]))
+                continue
+            with open(b, 'rb') as f:
+                PROPS.append((pid, DLC_PROP_FALLBACK, f.read()))
+        rep['warnings'] = [w for w in rep['warnings'] if w not in warnings]
+        rep['notes'].append('prop %d: the DLC package\'s own model as evtobj %d, added by the pack' % (pid, pid))
+
+
 def wwe13_convert(src, entrance, number, name, parts, rep, game_pac=None, game='wwe13'):
     evp, evz = wwe13_entrances(src, game)
     if entrance not in evp or entrance not in evz:
@@ -909,6 +953,7 @@ def wwe13_convert(src, entrance, number, name, parts, rep, game_pac=None, game='
     for k in ('notes', 'warnings', 'dropped'):
         rep[k] += r[k]
     evp11 = own_vehicles(src, game, evp11, game_pac, rep)
+    dlc_props(src, game, evp11, rep)
     rep['notes'].append('not converted: theme, face / finger tracks; titantron only with --titantron (Bink 2: a decoder the player installs)')
     return evp11, evt11
 
@@ -1483,6 +1528,8 @@ def main(argv):
         return 2
     global SVRMOD
     SVRMOD = opt(argv, '--svrmod')
+    if opt(argv, '--dlc'):   # (the source game's DLC packages: open_source reads them beside the disc)
+        os.environ['SVR2011_PORT_DLC'] = opt(argv, '--dlc')
     cmd = {'games': cmd_games, 'detect': cmd_detect, 'list': cmd_list, 'convert': cmd_convert,
            'free-numbers': cmd_free}.get(argv[0])
     if not cmd:

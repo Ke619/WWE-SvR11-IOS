@@ -470,7 +470,7 @@ extern PageHooks hooks; std::string SlotName(int slot); void ShowPose(int motion
                       const std::wstring& picture, const std::wstring& save);
                       void SetModel(const std::wstring& ch_pac);  // (a converted model)
                       void TestFiles(const std::wstring& song, const std::wstring& movie, const std::wstring& voice, int call);
-                      void TestHeight(float scale); void TestCallGain(float db); void TestMoveset(const std::string& spec); void ThreadsDraw(); void ThreadsTest(const std::string& spec); void TestCae(const std::string& id); void TestImportMoveset(const std::string& spec); void TestEntrance(int n); void TestVictory(int n); void TestVictoryPort(const std::string& spec); void TestInstall(); void TestWatchSlot(int off); void TestFull(const std::wstring& png); void TestLoad(const std::wstring& png); void TestHometown(const std::string& h); void TestPose(int id);
+                      void TestHeight(float scale); void TestCallGain(float db); void TestVictorySong(const std::wstring& file, float db); void TestMoveset(const std::string& spec); void ThreadsDraw(); void ThreadsTest(const std::string& spec); void TestCae(const std::string& id); void TestImportMoveset(const std::string& spec); void TestEntrance(int n); void TestVictory(int n); void TestVictoryPort(const std::string& spec); void TestInstall(); void TestWatchSlot(int off); void TestFull(const std::wstring& png); void TestLoad(const std::wstring& png); void TestHometown(const std::string& h); void TestPose(int id);
                       void TestFbx(const std::wstring& fbx, const std::string& map); void TestSimple(int step); void TestSimpleFrom(int step); void TestSimpleChain(const std::string& spec);
                       // entrance gear from another superstar (tools/svr11_build.py --gear-from / --onto): the game superstars
                       // with gear, a popup to pick one, and the transplant onto <target pac>'s attire (done(new pac) on success)
@@ -493,7 +493,7 @@ namespace signs_page { extern PageHooks hooks; void TestStart(const std::vector<
                        bool InstallPack(const std::string& id, const std::vector<ZipEntry>& files); }
 namespace title_page { extern PageHooks hooks; void TestStart(const std::wstring& spec, const std::wstring& save); }
 namespace backgrounds_page { extern PageHooks hooks; void TestStart(const std::vector<std::wstring>& files, const std::wstring& save); }
-namespace media_page { extern PageHooks hooks; void SetTab(int tab); int Tab();  // 0 videos, 1 menus & renders, 2 audio
+namespace media_page { extern PageHooks hooks; void SetTab(int tab); int Tab(); void TestVictory(int id, const std::wstring& song);  // 0 videos, 1 menus & renders, 2 audio
                        void TestStart(int arena, const std::wstring& video,
                        const std::vector<std::wstring>& pictures, const std::wstring& save); }
 namespace moves_page { extern PageHooks hooks; void OpenPack(const std::wstring& folder); void TestPut(const std::wstring& spec); void TestOpen(const std::wstring& folder); void TestSave(const std::wstring& file); }

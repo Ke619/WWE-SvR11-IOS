@@ -57,6 +57,8 @@ struct StarProject {
   int music = 0;                  // music= : a theme of the game's own (its music id 1-253) instead of a song file; 0 = none
   int entrance = -1;              // entrance= number (-1: the style's); a superstar's id, or 535 (Jeff Hardy's, unused)
   int victory = -1;               // victory= scene (-1: the game's; Victories())
+  std::wstring victory_song;      // victory_song= his music when he wins (none: his theme)
+  float victory_gain = 0.0f;      // victory_gain=<dB> (-20..+6; 0: left out)
   char announcer[32] = "";        // announcer=<NAME>: the ring announcer's own clips of that name
   char hometown_city[32] = "";    // hometown=<CITY>[,<STATE>]: the announcer's own hometown clips
   char hometown_state[32] = "";

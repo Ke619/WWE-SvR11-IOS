@@ -247,12 +247,88 @@ class Game12:
         self.waze = waze_records(raw)
         self._m = None
         self._index = None
+        self.merge_dlc_waze()
 
     def pac_bytes(self, rel):
         return open(self.src.need(rel), 'rb').read()
 
     def motion_pacs(self):
         return ['pac/m.pac']
+
+    # ---- the game's DLC packages (superstar_port --dlc): moves the disc has no motion for
+    @staticmethod
+    def _read(raw):
+        return read_pac(raw)
+
+    def decode(self, raw):
+        return raw
+
+    def dlc_packages(self):
+        dlc = getattr(self.src, 'dlc', None)
+        return dlc.packages if dlc else []
+
+    def merge_dlc_waze(self):
+        """the packages' move records: their names, for the ids the disc's table lacks. Each package has a table of its own:
+        pac/misc.pac ('12), misc_dlc<nn> MOVS/WAZE ('13, 2K14), misc01_start_dlc<nn> MOVS/WA20, WAZ3, WA50 (2K15), createmode_dlc<nn>
+        MOVS/DL<nn> (2K16: its own new moves only)"""
+        for pk in self.dlc_packages():
+            for low in pk.matching(r'^pac/(misc|createmode)[^/]*\.pac$'):
+                try:
+                    groups = self._read(self.decode(pk.read(low)))
+                except (ValueError, IndexError, KeyError, OSError, struct.error) as e:
+                    log('moves_port: %s in %s skipped: %s' % (low, pk.name, e))
+                    continue
+                for t, es in groups:
+                    if t != b'MOVS':
+                        continue
+                    for n, b in es:
+                        if n.strip(b'\0 ')[:2] not in (b'WA', b'DL'):
+                            continue
+                        try:
+                            for mid, nm in waze_records_any(unz(b)).items():
+                                if mid:
+                                    self.waze.setdefault(mid, nm)
+                        except (ValueError, IndexError, KeyError, struct.error) as e:
+                            log('moves_port: %s %s in %s skipped: %s' % (low, n, pk.name, e))
+
+    def dlc_groups(self):
+        """[(group type, name, data)] of the packages' motion pacs: dlc_mot<nn> ('13, 2K14), m_dlc<nn> ('12), mot_dlc<nn> (2K15, 2K16).
+        The tree is the same in each: ... -> x -> move id -> a motion record. ZMVM and ZMOT everywhere; 2K16's new moves are MOT/DL<nn>."""
+        if not hasattr(self, '_dlc_groups'):
+            self._dlc_groups = []
+            for pk in self.dlc_packages():
+                for low in pk.matching(r'^pac/(dlc_mot\d+|mot_dlc\d+|m_dlc\d+)\.pac$'):
+                    try:
+                        for t, es in self._read(self.decode(pk.read(low))):
+                            for n, b in es:
+                                n = n.strip(b'\0 ')
+                                if t in (b'ZMVM', b'ZMOT') or (t.strip() == b'MOT' and n[:2] == b'DL'):
+                                    self._dlc_groups.append((t, n, b))
+                    except (ValueError, IndexError, KeyError, OSError, struct.error) as e:
+                        self.skipped.append('%s in %s (%s)' % (low, pk.name, str(e)[:120]))
+                        log('moves_port: %s in %s skipped: %s' % (low, pk.name, e))
+        return self._dlc_groups
+
+    def index_dlc(self):
+        """the moves only the packages have: a record of theirs names the move and the disc has no motion for it
+        (a package's trees also hold copies of disc moves and motions that aren't moves: left out)"""
+        disc = set(self._index)
+        for t, n, b in self.dlc_groups():
+            cat = n.decode('latin1')
+
+            def walk(raw, path):
+                if raw[:4] == b'PACH':
+                    for i, d in svrfmt.pach_read(raw):
+                        try:
+                            walk(unz(d), path + [i])
+                        except Exception:   # noqa: BLE001
+                            pass
+                elif len(path) >= 2 and path[-1] not in disc and path[-1] in self.waze:
+                    self._index.setdefault(path[-1], {}).setdefault(path[-2], (cat, path))
+            try:
+                walk(unz(b), [])
+            except Exception as e:   # noqa: BLE001
+                log('moves_port: DLC group %s skipped: %s' % (cat, e))
 
     def _groups(self):
         if self._m is None:
@@ -294,14 +370,22 @@ class Game12:
                         elif len(path) >= 2:
                             self._index.setdefault(path[-1], {}).setdefault(path[-2], (cat, path))
                     walk(top, [])
+            self.index_dlc()
         return self._index
 
     def record(self, cat, path):
-        b = next(bb for t, es in self._groups() if t == b'ZMVM' for n, bb in es if n == cat.encode('latin1'))
-        raw = unz(b)
-        for i in path:
-            raw = unz(dict(svrfmt.pach_read(raw))[i])
-        return raw
+        name = cat.encode('latin1')
+        blobs = [bb for t, es in self._groups() if t == b'ZMVM' for n, bb in es if n == name]
+        blobs += [b for t, n, b in self.dlc_groups() if n == name]   # (two packages can have a group of the same name)
+        for b in blobs:
+            try:
+                raw = unz(b)
+                for i in path:
+                    raw = unz(dict(svrfmt.pach_read(raw))[i])
+                return raw
+            except KeyError:
+                continue
+        raise KeyError('%s %s' % (cat, path))
 
 
 class Game13(Game12):
@@ -316,7 +400,9 @@ class Game13(Game12):
         Game12.__init__(self, src)
 
     def pac_bytes(self, rel):
-        raw = open(self.src.need(rel), 'rb').read()
+        return self.decode(open(self.src.need(rel), 'rb').read())
+
+    def decode(self, raw):
         return self.WE.xdec(raw, self.svrmod) if raw[:4] == b'\x0f\xf5\x12\xed' else raw
 
     def motion_pacs(self):
@@ -338,6 +424,7 @@ class Game14(Game13):
         self.waze = waze_records(raw)
         self._m = None
         self._index = None
+        self.merge_dlc_waze()
 
 
 class Game2K15(Game14):
@@ -358,6 +445,7 @@ class Game2K16(Game14):
         self.waze = waze_records(raw)
         self._m = None
         self._index = None
+        self.merge_dlc_waze()
 
     @staticmethod
     def _read(raw):
@@ -457,7 +545,11 @@ class Game0789:
         import pickle
         import svr10_moves as SM
         self.src, self.SM = src, SM
-        g = read_pac(open(src.need('pac/misc.pac'), 'rb').read())
+        # (SvR 2009's DLC packages each hold the whole m.pac and misc.pac, the disc's and the DLC moves: taken when there -
+        # the same banks with more in them; the moves' names start "DLC ")
+        dlc = getattr(src, 'dlc', None)
+        whole = bool(dlc and dlc.exists('pac/m.pac') and dlc.exists('pac/misc.pac'))
+        g = read_pac(open(dlc.get('pac/misc.pac') if whole else src.need('pac/misc.pac'), 'rb').read())
         raw = unz(dict(((t, n), b) for t, es in g for n, b in es)[(b'MOVS', b'WAZE')])
         self.waze = {}
         self.situation = {}   # (where the move starts: +0x73, as 2011's WAZE - the same values for the same moves)
@@ -465,10 +557,21 @@ class Game0789:
             nm = raw[q + 0x10:q + 0x50].split(b'\0')[0]
             if len(nm) > 2 and all(32 <= c < 127 for c in nm):
                 mid = struct.unpack_from('<H', raw, q + 0x88)[0]
-                self.waze.setdefault(mid, nm.decode('latin1').strip())
+                self.waze.setdefault(mid, re.sub(r'^DLC ', '', nm.decode('latin1').strip()))
                 self.situation.setdefault(mid, raw[q + 0x73])
-        self.groups = SM.read_epac(src.need('pac/m.pac'))[1]
-        cache = os.path.join(work, 'index0789.pkl') if work else None
+        if whole:   # (each package's table has the DLC moves up to it: Roster Update 2's the most)
+            for pk in dlc.packages:
+                if 'pac/misc.pac' in pk.files:
+                    d = dict(((t, n), x) for t, es in read_pac(pk.read('pac/misc.pac')) for n, x in es)[(b'MOVS', b'WAZE')]
+                    d = unz(d)
+                    for q in range(0, len(d) - 143, 144):
+                        nm = d[q + 0x10:q + 0x50].split(b'\0')[0]
+                        if len(nm) > 2 and all(32 <= c < 127 for c in nm):
+                            mid = struct.unpack_from('<H', d, q + 0x88)[0]
+                            self.waze.setdefault(mid, re.sub(r'^DLC ', '', nm.decode('latin1').strip()))
+                            self.situation.setdefault(mid, d[q + 0x73])
+        self.groups = SM.read_epac(dlc.get('pac/m.pac') if whole else src.need('pac/m.pac'))[1]
+        cache = os.path.join(work, 'index0789_dlc.pkl' if whole else 'index0789.pkl') if work else None
         if cache and os.path.exists(cache):
             self.banks = pickle.load(open(cache, 'rb'))
         else:
@@ -876,6 +979,19 @@ def waze_records(raw):
         nm = r[0x10:0x50].split(b'\0')[0]
         if nm and all(32 <= c < 127 for c in nm):
             out.setdefault(struct.unpack_from('<H', r, 0x90)[0], nm.decode('latin1').strip())
+    return out
+
+
+def waze_records_any(raw):
+    """a package's move table: as waze_records, or 2K16's: a PACH whose entry 20 has 96-byte records (id +0, name +0x20)"""
+    if raw[:4] != b'PACH':
+        return waze_records(raw)
+    out = {}
+    tab = dict(svrfmt.pach_read(raw)).get(20, b'')
+    for q in range(0, len(tab) - 95, 96):
+        nm = tab[q + 0x20:q + 0x60].split(b'\0')[0]
+        if nm and all(32 <= c < 127 for c in nm):
+            out.setdefault(struct.unpack_from('<H', tab, q)[0], nm.decode('latin1').strip())
     return out
 
 
@@ -2206,6 +2322,8 @@ def main(argv):
         else:
             print(json.dumps({'error': 'unexpected argument: %s' % k}))
             return 2
+    if a.get('dlc'):   # (the source game's DLC packages: Src reads them beside the disc)
+        os.environ['SVR2011_PORT_DLC'] = a['dlc']
     rep = dict(ok=False, out=None, folder=None, opens='moves', warnings=[], dropped=[], notes=[])
     rep_path = None
     try:

@@ -5,10 +5,12 @@
 #include <atomic>
 #include <cstring>
 #include <map>
+#include <cwctype>
 #include <mutex>
 #include <thread>
 
 #include "app.h"
+#include "tool_run.h"
 #include "svrfmt/disc.h"
 
 namespace mm {
@@ -212,6 +214,24 @@ void PickFor(const Game& g, bool folder) {
 }
 
 
+static std::wstring g_test_stars_from, g_test_stars_to;
+
+// An archive right in the folder or a level down: the porters read packages, not what they were downloaded in.
+static bool HoldsArchives(const std::wstring& folder, int depth = 0) {
+  std::error_code ec;
+  for (fs::directory_iterator it(fs::path(folder), fs::directory_options::skip_permission_denied, ec), end; !ec && it != end; it.increment(ec)) {
+    std::error_code e2;
+    if (it->is_directory(e2)) {
+      if (depth < 1 && HoldsArchives(it->path().wstring(), depth + 1)) return true;
+    } else {
+      std::wstring x = it->path().extension().wstring();
+      for (auto& c : x) c = wchar_t(towlower(c));
+      if (x == L".rar" || x == L".7z" || x == L".zip") return true;
+    }
+  }
+  return false;
+}
+
 // Any DLC under the folder, as tools/dlc_src.py looks (its MAX_DEPTH): a console package file, or a folder holding pac\\ch.
 static bool HoldsDlc(const std::wstring& folder, int depth = 0) {
   std::error_code ec;
@@ -271,7 +291,9 @@ void GameRow(const Game& g) {
       if (!p.empty()) {
         SetDlc(g.key, p);
         Status(FullName(g) + " DLC: " + Utf8(p) +
-               (HoldsDlc(p) ? "" : " - no DLC packages found there (console package files, or unpacked ones holding pac\\ch)."));
+               (HoldsDlc(p) ? ""
+                : HoldsArchives(p) ? " - this folder has .rar / .7z / .zip files: unpack them first, then pick the folder they unpacked to."
+                                   : " - no DLC packages found there (console package files, or unpacked ones holding pac\\ch)."));
       }
     }
     if (!dlc.empty()) {
@@ -576,10 +598,25 @@ void TestFind(const std::wstring& spec) {
   g_test_pending = true;
 }
 
+static void GetAllStarsMovies(const std::wstring& from, const std::wstring& to) {
+  RunToolJson(L"dlc_src.py", {L"movies", from, L"54510866", to}, [from, to](int code, const std::string& out) {
+    const size_t found = out.find("\"ok\": true");
+    if (code == 0 && found != std::string::npos) Status("WWE All Stars' jumbotrons saved in " + Utf8(to) + ": use one as a superstar's entrance movie.");
+    else if (HoldsArchives(from)) Status("That folder has .rar / .7z / .zip files: unpack them first, then pick the folder they unpacked to.");
+    else Status("No WWE All Stars DLC movies found in " + Utf8(from) + ".");
+  });
+}
+
+void TestAllStars(const std::wstring& from, const std::wstring& to) { g_test_stars_from = from, g_test_stars_to = to; }
+
 void Draw() {
   if (g_test_pending) {
     g_test_pending = false;
     FindIn(g_test_folder);
+  }
+  if (!g_test_stars_from.empty() && !Busy()) {  // (--discs-allstars <from>,<to>: the button's job)
+    GetAllStarsMovies(g_test_stars_from, g_test_stars_to);
+    g_test_stars_from.clear();
   }
   const float top = ImGui::GetCursorPosY();
   Heading("My game discs", "Your other WWE games, set once: every From another game tab and Moves & entrances read them. Disc "
@@ -635,6 +672,15 @@ void Draw() {
   Table(true);
   ImGui::Spacing();
   Table(false);
+  ImGui::Spacing();
+  // (WWE All Stars isn't a source game, but its DLC's jumbotrons are Bink movies a mod can use: its packages are enough)
+  if (ImGui::SmallButton("WWE All Stars DLC: get the jumbotrons...") && !Busy()) {
+    const std::wstring from = PickFolder(L"The folder with WWE All Stars' DLC packages", L"");
+    if (!from.empty()) {
+      const std::wstring to = PickFolder(L"Where to save the jumbotrons (.bik)", L"");
+      if (!to.empty()) GetAllStarsMovies(from, to);
+    }
+  }
   ImGui::Spacing();
   ImGui::PushTextWrapPos(0);
   ImGui::TextDisabled("Only your own discs are read: nothing of any game comes with the Mod Maker. WWE '12 and later "

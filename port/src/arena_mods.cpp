@@ -137,14 +137,21 @@ void Refresh(const std::string& name) {
 
 std::map<std::string, fs::path> g_placed;  // overlay name -> the file asked for
 
-// overlay/<name> := link to (or copy of) `source` - with the crowd off
-// (crowd_off.h) its crowd-less copy once made.
-bool Place(const fs::path& requested, const std::string& name) {
+bool Place(const fs::path& requested, const std::string& name);
+
+// What overlay/<name> should be for `requested`: with fewer people (crowd_off.h) its copy once made, which
+// replaces the entry when it is ready.
+fs::path Served(const fs::path& requested, const std::string& name) {
   g_placed[name] = requested;
-  const fs::path source = svr2011::crowd::Serve(requested, g_game / "Mods" / "ArenaCrowdless", [requested, name] {
+  return svr2011::crowd::Serve(requested, g_game / "Mods" / "ArenaCrowdless", [requested, name] {
     std::lock_guard lock(g_mutex);
     if (g_placed[name] == requested) Place(requested, name);  // (now the copy)
   });
+}
+
+// overlay/<name> := link to (or copy of) what Served says.
+bool Place(const fs::path& requested, const std::string& name) {
+  const fs::path source = Served(requested, name);
   std::error_code ec;
   const fs::path dst = g_overlay / name;
   // An overlay entry may be a hard link to an original: never write through
@@ -162,6 +169,10 @@ bool Place(const fs::path& requested, const std::string& name) {
       REXLOG_WARN("[svr2011] arena mods: cannot place {} ({})", name, ec.message());
       return false;
     }
+    // (no hard links on a phone's shared storage: with the source's time, the next start knows this copy)
+    std::error_code time_ec;
+    const auto when = fs::last_write_time(source, time_ec);
+    if (!time_ec) fs::last_write_time(dst, when, time_ec);
   }
   Refresh(name);
   return true;
@@ -178,10 +189,13 @@ bool PrepareOverlay() {
     if (!e.is_regular_file()) continue;
     const std::string name = Upper(e.path().filename().string());
     const fs::path dst = g_overlay / name;
-    // keep an existing link to the same original (same size and time)
-    std::error_code e1, e2;
-    if (fs::exists(dst, e1) && fs::file_size(dst, e1) == e.file_size() &&
-        fs::last_write_time(dst, e2) == e.last_write_time()) {
+    // keep an entry that already is what this run serves (same size and time) - compared with the file to serve,
+    // not the original: an overlay made with everyone in the seats must still get the copies, and the copies
+    // still being made must still be asked for
+    const fs::path want = Served(e.path(), name);
+    std::error_code e1, e2, e3, e4;
+    const bool same_size = fs::exists(dst, e1) && fs::file_size(dst, e2) == fs::file_size(want, e3) && !e2 && !e3;
+    if (same_size && fs::last_write_time(dst, e2) == fs::last_write_time(want, e4) && !e2 && !e4) {
       Refresh(name);
       continue;
     }
@@ -2084,11 +2098,12 @@ void InstallArenaMods(rex::memory::Memory* memory, rex::filesystem::VirtualFileS
   g_game = rex::filesystem::GetExecutableFolder();
   g_overlay = g_game / "Mods" / "ArenaOverlay";
   g_bpe_log = std::getenv("SVR2011_TEST_BPE_LOG") != nullptr;
-  if (crowd::Off()) {
-    // (the arenas come through the overlay from the start: their crowd-less copies)
+  if (crowd::UsesCopies()) {
+    // (the arenas come through the overlay from the start: their copies)
     std::lock_guard lock(g_mutex);
     PrepareOverlay();
-    REXLOG_INFO("[svr2011] crowd: off - arenas without their crowd");
+    REXLOG_INFO("[svr2011] crowd: {}", crowd::Level() == 1 ? "medium - arenas with half their crowd"
+                                                           : "off - arenas without their crowd");
   }
   LoadCustomArenas();
   // Test aid: SVR2011_TEST_ARENA_MOD=<custom arena folder> - it is picked from the start, on its base arena's tile

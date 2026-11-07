@@ -273,15 +273,34 @@ packages can hold the same name.
 |---|---|---|
 | SvR 2009 | `pac/evt/NyujyoD.pac` (`entrance_port` lists it; `superstar_port` takes 2011's by name, as for its disc superstars) | `NNN.bik`: Bink 1, as it is |
 | WWE '12 | `pac/evt/NyujyoC.pac`, same name in Pack 3 and Pack 4, each with its own entrances | `.bik`: as it is |
-| WWE '13 | `Entrance_dlc<nn>.pac` | `NNN.bik2`: early Bink 2 (KB2d), RAD Video Tools can't open it, so no titantron |
-| WWE 2K14 | `Entrance_dlc<nn>.pac` | `NNN.bik2`: as '13 |
+| WWE '13 | `Entrance_dlc<nn>.pac` | `NNN.bik2`: early Bink 2 (KB2d), neither RAD Video Tools nor FFmpeg can open it, so no titantron |
+| WWE 2K14 | `Entrance_dlc<nn>.pac` | `NNN.bik2`: Bink 2 (KB2f), needs the player's decoder |
 | WWE 2K15 | `entrance_dlc<nn>[b].pac` | `ent_NNNN_V_0.bk2`: Bink 2, needs the player's decoder |
 | WWE 2K16 | `<5 digits>_dlc<nn>.pac`, EPK8 where the disc has EPAC | `ent_NNNN_V_0.bk2`: as 2K15 |
 
-Props the DLC entrance uses that 2011's `evtobj.pac` lacks don't show, and the conversion warns about them, as for a
-disc entrance; the packages' own `evtobj_dlc<nn>.pac` aren't read. Not read from a package yet: moves whose motions only
-the DLC has (their slots keep the base's move), and the Moves & entrances tab doesn't get the DLC folder. SvR 2007 / 2008 /
-Legends use the 2009 reader but no package has been tried. WWE All Stars isn't a source game; its packages are skipped.
+Props a DLC entrance uses that 2011's `evtobj.pac` lacks come from the packages' `evtobj_dlc<nn>.pac` (2K16: `pac/prop/<id>_dlc<nn>.pac`): the model
+goes through `svrmod wwe13prop` and the pack adds it under its own id. '13: 1 prop, 2K14: 3, 2K16: 5. Props no package holds don't show, and the conversion
+warns, as for a disc entrance. SvR 2007 / 2008 / Legends use the 2009 reader but no package has been tried.
+
+WWE All Stars isn't a source game (Unreal Engine 3 packages, nothing of it converts) and needs no disc for this: its DLC's 13
+jumbotrons (`phase<n>/<nnn>_JumboTron.bik`, Bink 1, 512 x 512) work as a superstar mod's entrance movie as they are. My game
+discs: **WWE All Stars DLC: get the jumbotrons...**, or `dlc_src.py movies <folder> 54510866 <out>`. They're named by number.
+
+Moves only the DLC has come from the packages too (`moves_port`, and so a whole superstar's moveset): a package's table
+names the move and the disc has no motion for it. The Mod Maker gives the DLC folder to `moves_port`, `entrance_port` and
+`arena_port` as well as `superstar_port`.
+
+| Game | Motions in a package | Move records in a package | DLC-only moves |
+|---|---|---|---|
+| SvR 2009 | the whole `pac/m.pac`: used in place of the disc's | the whole `pac/misc.pac`; names start "DLC " | 43 |
+| WWE '12 | `m_dlc<nn>.pac` ZMOT | `pac/misc.pac` MOVS/WAZE | 47 |
+| WWE '13 | `dlc_mot<nn>.pac` ZMOT | `misc_dlc<nn>.pac` MOVS/WAZE | 87 |
+| WWE 2K14 | `dlc_mot<nn>.pac` ZMVM | `misc_dlc<nn>.pac` MOVS/WAZE | 87 |
+| WWE 2K15 | `mot_dlc<nn>.pac` ZMVM, ZMOT | `misc01_start_dlc<nn>.pac` MOVS/WA20, WAZ3, WA50 | 8 |
+| WWE 2K16 | `mot_dlc<nn>.pac` MOT/DL<nn> | `createmode_dlc<nn>.pac` MOVS/DL<nn>: a PACH, entry 20 has 96-byte records (id +0, name +0x20) | 116 |
+
+The small packages holding only `asset_v2.bin` and `icon.png` (shirts, outfits, masks, title belts) are Xbox avatar items,
+not game content, and those holding only `info/catalog.dlc` have nothing to take.
 A disc model with the same id wins: DLC attires of disc superstars aren't taken.
 
 ### What SvR 2011 has (the target)

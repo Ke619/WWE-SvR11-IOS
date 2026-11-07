@@ -1263,8 +1263,8 @@ class GameW:
             try:
                 etc = self.MP.read_pac(self.decode(pk.read(low)))
             except (ValueError, IndexError, KeyError, OSError, struct.error) as e:
-                print('DLC package %s: its character table can\'t be read (%s): its superstars are left out' % (pk.name, e),
-                      file=sys.stderr)
+                print('DLC package %s: its character table can\'t be read (%s)' % (pk.name, e), file=sys.stderr)
+                __import__('dlc_src').notice('DLC package %s: its character table can\'t be read: its superstars are left out.' % pk.display)
                 continue
             for t, es in etc:
                 if t == b'CHAR' or (t[:2] == b'CH' and t[2:4].isdigit()):   # (2K16: CH20 / CH40; '12's CHCM has a DAT too)
@@ -2464,7 +2464,9 @@ def moveset_ctx(a, g, src, cid, base, g11, work, rep, cache, **kw):
     if mg is not None:
         mgame = mg(src) if gid == 'wwe12' else mg(src, getattr(g, 'svrmod', None))
         waze = mgame.waze
-        pk = os.path.join(cache, 'mindex_%s_%08x.pkl' % (gid, zlib.crc32(os.path.abspath(a['src']).lower().encode())))
+        # (with the DLC folder in the key: the packages add moves)
+        pk = os.path.join(cache, 'mindex_%s_%08x.pkl' % (gid, zlib.crc32((os.path.abspath(a['src']).lower() + '|' +
+                                                                          os.environ.get('SVR2011_PORT_DLC', '').lower()).encode())))
         try:
             mgame._index = pickle.load(open(pk, 'rb'))
         except Exception:   # noqa: BLE001

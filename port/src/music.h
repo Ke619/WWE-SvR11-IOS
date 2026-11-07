@@ -45,7 +45,7 @@ void PlayClip(const std::filesystem::path& file, float db = 0.0f);
 // Host sounds (media mods' replacements of the game's sounds): Start gives a
 // handle (-1: none free), each on its own voice; Active while playing or
 // paused (a looping one until stopped). Volume 0..1 (audio_mute honoured).
-int HostSoundStart(const std::filesystem::path& file, bool loop, float volume);
+int HostSoundStart(const std::filesystem::path& file, bool loop, float volume, float gain_db = 0.0f);
 void HostSoundStop(int handle);
 void HostSoundPause(int handle, bool paused);
 void HostSoundVolume(int handle, float volume);

@@ -20,6 +20,7 @@
 
 #include "generated/default/svr2011_init.h"
 #include "no_mods.h"
+#include "p2p.h"
 #include "superstar_mods.h"
 #include "text_guard.h"
 
@@ -300,9 +301,22 @@ void NewTitlesTestCheck(PPCContext& ctx, uint8_t* base) {
     int n = 0;
     for (uint32_t k = 0; k < kCards; ++k) {
       const uint32_t a = CardAddress(base, k);
-      if (a && base[a + 1] != 255 && base[a + 2] == 2) base[a + 1] = uint8_t(kFirstNew), base[a + 4] |= 1, ++n;
+      // (=1 the first new title, =s<title> a stock one)
+      const char* v = std::getenv("SVR2011_TEST_NEW_TITLE_CARD");
+      if (a && base[a + 1] != 255 && base[a + 2] == 2) base[a + 1] = v[0] == 's' ? uint8_t(std::atoi(v + 1)) : uint8_t(kFirstNew), base[a + 4] |= 1, ++n;
     }
     REXLOG_INFO("[svr2011] new titles: test - {} cards on the new title", n);
+  }
+  // SVR2011_TEST_NEW_TITLE_HOLDER=<id>[,<title>]: the superstar holds that title (default: the first new one).
+  if (const char* h = !g_new.empty() ? std::getenv("SVR2011_TEST_NEW_TITLE_HOLDER") : nullptr) {
+    uint32_t id = 0, title = kFirstNew;
+    if (std::sscanf(h, "%u,%u", &id, &title) >= 1) {
+      const auto saved = ctx;
+      ctx.r3.u64 = title, ctx.r4.u64 = id, ctx.r5.u64 = 0;
+      sub_828BD5B8(ctx, base);
+      ctx = saved;
+      REXLOG_INFO("[svr2011] new titles: test - title {} holder {}", title, id);
+    }
   }
   if (std::getenv("SVR2011_TEST_NEW_TITLES")) TestCheck(ctx, base);
 }
@@ -455,12 +469,14 @@ void ShowFrom(uint8_t* base, int top) {
     Wr(base, g_list.self + 400 + uint32_t(i) * 4, r.title);
     const uint32_t art = g_list.widgets + kArtWidget[i] * 256;
     const int stock = top + i;
-    if (stock < kListRows) {
-      Wr(base, art + 0x4C, g_art_picture[stock]);
-      Wr(base, art + 0xD4, 0x3F800000);
-    } else {
-      Wr(base, art + 0xD4, 0);
-    }
+    // (the picture is an index in this screen's own table, +0x50 its name; a new title has its belt= title's, if this
+    // screen lists that one)
+    int picture = stock < kListRows ? stock : -1;
+    if (const NewTitle* t = picture < 0 ? Row(int32_t(r.title)) : nullptr)
+      for (int k = 0; k < kListRows; ++k)
+        if (g_list.rows[size_t(k)].title == uint32_t(t->belt_of)) picture = k;
+    Wr(base, art + 0xD4, picture >= 0 ? 0x3F800000 : 0);
+    if (picture >= 0) Wr(base, art + 0x4C, g_art_picture[picture]);
   }
   REXLOG_INFO("[svr2011] new titles: title list from row {} of {}", top, g_list.rows.size());
 }
@@ -469,8 +485,10 @@ void ShowFrom(uint8_t* base, int top) {
 REX_HOOK_RAW(sub_8244C9B0) {
   const uint32_t self = ctx.r3.u32;
   __imp__sub_8244C9B0(ctx, base);
-  if (g_new.empty()) return;
   g_list = TitleList();
+  // (online, none: a new title's index is this game's alone - its place in this game's folders - so the two sides can't
+  // agree on one, and the other side may not have it)
+  if (g_new.empty() || svr2011::P2POnlineMode()) return;
   g_list.self = self;
   g_list.widgets = Rd(base, Rd(base, Rd(base, 0x82EDE628) + 56) + 8);
   for (int i = 0; i < kListRows; ++i) {
@@ -673,42 +691,78 @@ NEW_TITLE_LOOP(825CA2B0)
 NEW_TITLE_GUARD(825ADBE4)
 
 // Universe is asked (its object is made): a Universe title with no holder gets one, as the game's own start with one: of
-// the brand, in the roster, holding nothing yet; again if the holder's mod has gone.
+// the brand, in the roster, holding nothing yet, the best in the title's rank class (lowest id on a tie); again if the
+// holder's mod has gone.
 REX_EXTERN(__imp__sub_825AC1E8);
 REX_HOOK_RAW(sub_825AC1E8) {
   if (g_pick_holders) {
     g_pick_holders = false;
     const auto saved = ctx;
+    ctx.r1.u64 -= 256;
+    const uint32_t ranks = ctx.r1.u32 + 80;  // (the object being made here, for its rank lists)
+    ctx.r3.u64 = ranks;
+    __imp__sub_825AC1E8(ctx, base);
     for (size_t k = 0; k < g_new.size(); ++k) {
       NewTitle& t = g_new[k];
-      if (t.brand < 0 || t.tag || t.holder[0] != kNoHolder) continue;
+      if (t.brand < 0 || t.holder[0] != kNoHolder) continue;
       const uint32_t title = uint32_t(kFirstNew + k);
-      for (uint32_t id = 0; id < 322; ++id) {
+      ctx.r3.u64 = title;
+      sub_825B74D0(ctx, base);
+      const uint32_t rank_class = ctx.r3.u32;
+      // (of the brand, in the roster, can hold the title, holding nothing of this kind; its points, -1 if not)
+      const auto points_of = [&](uint32_t id) -> int64_t {
         ctx.r3.u64 = id;
         sub_828C1288(ctx, base);
-        if (ctx.r3.u32 == 0) continue;
+        if (ctx.r3.u32 == 0) return -1;
         ctx.r3.u64 = id;
         sub_828B7E70(ctx, base);
-        if (ctx.r3.u32 == 0) continue;
+        if (ctx.r3.u32 == 0) return -1;
         ctx.r3.u64 = id, ctx.r4.u64 = 1;
         sub_825B75A8(ctx, base);
-        if (ctx.r3.u32 == 0) continue;
+        if (ctx.r3.u32 == 0) return -1;
         ctx.r3.u64 = id, ctx.r4.u64 = 1;
         sub_828B8038(ctx, base);
-        if (t.brand != 7 && ctx.r3.s32 != t.brand) continue;
+        if (t.brand != 7 && ctx.r3.s32 != t.brand) return -1;
         ctx.r3.u64 = id, ctx.r4.u64 = title, ctx.r5.u64 = 1;
         sub_828BD9D0(ctx, base);
-        if (ctx.r3.u32 == 0) continue;
+        if (ctx.r3.u32 == 0) return -1;
         static const uint32_t list = g_memory ? g_memory->SystemHeapAlloc(64) : 0;  // (the titles it holds)
-        if (!list) continue;
-        ctx.r3.u64 = id, ctx.r4.u64 = list, ctx.r5.u64 = 2, ctx.r6.u64 = 0;
+        if (!list) return -1;
+        ctx.r3.u64 = id, ctx.r4.u64 = list, ctx.r5.u64 = t.tag ? 1 : 0, ctx.r6.u64 = 0;
         sub_828BDB38(ctx, base);
-        if (ctx.r3.s32 != 0) continue;
-        t.holder[0] = id;
-        REXLOG_INFO("[svr2011] new titles: {} starts with holder {}", t.folder, id);
-        break;
+        if (ctx.r3.s32 != 0) return -1;
+        if (rank_class >= 4) return 0;
+        ctx.r3.u64 = ranks, ctx.r4.u64 = id, ctx.r5.u64 = rank_class;
+        sub_825ADE20(ctx, base);
+        return int64_t(ctx.r3.u32 & 0xFFFF);
+      };
+      int64_t best_points = -1;
+      uint32_t best[2] = {kNoHolder, kNoHolder};
+      if (t.tag) {
+        for (uint32_t team = 0; team < 70; ++team) {  // (the game's tag teams: 270 B, +2 and +4 the first two people)
+          ctx.r3.u64 = team;
+          sub_828C02C0(ctx, base);
+          const uint32_t r = ctx.r3.u32;
+          if (!r || (base[r] == 0 && base[r + 1] == 0)) continue;
+          const uint32_t a = uint32_t(base[r + 2]) << 8 | base[r + 3], b = uint32_t(base[r + 4]) << 8 | base[r + 5];
+          const uint32_t c = uint32_t(base[r + 6]) << 8 | base[r + 7];
+          if (a >= 322 || b >= 322 || c != kNoHolder) continue;  // (two people)
+          const int64_t pa = points_of(a), pb = pa < 0 ? -1 : points_of(b);
+          if (pb >= 0 && pa + pb > best_points) best_points = pa + pb, best[0] = a, best[1] = b;
+        }
+      } else {
+        for (uint32_t id = 0; id < 322; ++id) {
+          const int64_t points = points_of(id);
+          if (points > best_points) best_points = points, best[0] = id;
+        }
+      }
+      if (best[0] != kNoHolder) {
+        t.holder[0] = best[0], t.holder[1] = best[1];
+        REXLOG_INFO("[svr2011] new titles: {} starts with holder {} {} ({} points)", t.folder, best[0], best[1], best_points);
       }
     }
+    ctx.r3.u64 = ranks;
+    sub_825AC248(ctx, base);
     ctx = saved;
   }
   __imp__sub_825AC1E8(ctx, base);
@@ -721,6 +775,111 @@ void NewTitleArt_824998F8(PPCRegister& r5, PPCRegister& r8, PPCRegister& r9) {
     const uint8_t* p = g_base_for_sites + r9.u32 + uint32_t(t->belt_of) * 4;
     r5.u64 = uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3];
   }
+}
+
+REX_EXTERN(__imp__sub_825B2710);
+REX_HOOK_RAW(sub_825B2710) {
+  const uint32_t k = ctx.r3.u32;
+  __imp__sub_825B2710(ctx, base);
+  // A played match on a new title: the winner takes it, by the function the game hands a simulated match's title over
+  // with (sub_825B7EB0: reads the card's result; a winner already holding it keeps it).
+  if (g_new.empty()) return;
+  const auto saved = ctx;
+  ctx.r1.u64 -= 256;
+  const uint32_t list = ctx.r1.u32 + 80;
+  ctx.r3.u64 = list;
+  sub_825AC1E8(ctx, base);
+  ctx.r3.u64 = list, ctx.r4.u64 = k;
+  sub_825AC5D0(ctx, base);
+  const uint32_t card = ctx.r3.u32;
+  if (card && Row(base[card + 1]) && (base[card + 4] & 1)) {
+    ctx.r3.u64 = card;
+    sub_825B7EB0(ctx, base);
+    std::string who;  // (each person: id, result; 1 or 3 a win)
+    for (int i = 0; i < base[card + 2] && i < 6; ++i)
+      who += fmt::format(" {}:{}", uint32_t(base[card + 16 + i * 12]) << 8 | base[card + 17 + i * 12], int(int8_t(base[card + 21 + i * 12])));
+    REXLOG_INFO("[svr2011] new titles: {} after the match:{} - holder {}", Row(base[card + 1])->folder, who, Row(base[card + 1])->holder[0]);
+  }
+  ctx.r3.u64 = list;
+  sub_825AC248(ctx, base);
+  ctx = saved;
+}
+
+// A show's cards are built (scripts: sub_825C6BD8, with no list of titles to add to): a plain one on one with a new
+// title's holder in it can be a defence, one time in two. sub_825B3738 is asked until its job has copied the cards: its
+// job is at *(this + 4), and it returns 0 then.
+REX_EXTERN(__imp__sub_825B3738);
+REX_HOOK_RAW(sub_825B3738) {
+  const uint32_t job = Rd(base, ctx.r3.u32 + 4);
+  const bool had_job = job && Rd(base, job) != 0;
+  __imp__sub_825B3738(ctx, base);
+  if (g_new.empty() || !had_job || ctx.r3.u32 != 0) return;
+  const auto saved = ctx;
+  ctx.r1.u64 -= 256;
+  const uint32_t list = ctx.r1.u32 + 80;
+  ctx.r3.u64 = list;
+  sub_825AC1E8(ctx, base);
+  ctx.r3.u64 = list;
+  sub_825AC908(ctx, base);
+  const uint32_t cards = ctx.r3.u32;
+  const bool always = std::getenv("SVR2011_TEST_NEW_TITLE_BOOK") != nullptr;
+  std::vector<bool> booked(g_new.size(), false);
+  for (uint32_t k = 0; k < cards && k < kCards; ++k) {
+    ctx.r3.u64 = list, ctx.r4.u64 = k;
+    sub_825AC5D0(ctx, base);
+    const uint32_t c = ctx.r3.u32;
+    if (always && c) REXLOG_INFO("[svr2011] new titles: test - card {}: rule {} title {} people {} flags {:02X} ids {} {}", k, base[c], base[c + 1], base[c + 2], base[c + 4], uint32_t(base[c + 16]) << 8 | base[c + 17], uint32_t(base[c + 28]) << 8 | base[c + 29]);
+    if (!c || base[c + 3] == 2 || (base[c + 4] & 1)) continue;  // (to play, for no title)
+    const uint32_t people = base[c + 2];
+    const bool singles = base[c] == 0 && people == 2;
+    if (!singles && people != 4) continue;
+    const uint32_t a = uint32_t(base[c + 16]) << 8 | base[c + 17], b = uint32_t(base[c + 28]) << 8 | base[c + 29];
+    for (size_t n = 0; n < g_new.size(); ++n) {
+      const NewTitle& t = g_new[n];
+      if (booked[n] || t.brand < 0 || t.holder[0] == kNoHolder) continue;
+      if (t.tag != !singles) continue;
+      if (singles) {
+        if (t.holder[0] != a && t.holder[0] != b) continue;
+      } else {  // (a tag match: both holders, on one side, two people a side)
+        int side[2] = {-1, -1}, count[2] = {0, 0};
+        for (uint32_t i = 0; i < 4; ++i) {
+          const uint32_t id = uint32_t(base[c + 16 + i * 12]) << 8 | base[c + 17 + i * 12];
+          const int sd = int(int8_t(base[c + 19 + i * 12]));
+          if (id == t.holder[0]) side[0] = sd;
+          if (id == t.holder[1]) side[1] = sd;
+          ++count[sd & 1];
+        }
+        if (side[0] < 0 || side[0] != side[1] || count[0] != 2 || count[1] != 2) continue;
+      }
+      booked[n] = true;
+      if (!always && ((c >> 3) + a + b + n) % 2) continue;
+      base[c + 1] = uint8_t(kFirstNew + n), base[c + 4] |= 1;
+      REXLOG_INFO("[svr2011] new titles: {} defended on card {}: {} and {}", t.folder, k, a, b);
+      break;
+    }
+  }
+  ctx.r3.u64 = list;
+  sub_825AC248(ctx, base);
+  ctx = saved;
+}
+
+// sub_825C1EA0 lists the show's people and the holders of every title in a heap block of 96 B: room for the new titles' too.
+void NewTitleList_825C1EF8(PPCRegister& r3) { r3.u64 += uint64_t(g_new.size()) * 4; }
+
+// sub_824AC5B8, a holder's message: the title's text from a table of 14. A new title goes through as the title whose belt it
+// carries, and its own name replaces the text.
+namespace {
+uint32_t g_say_name = 0;
+}
+void NewTitleSay_824AC5FC(PPCRegister& r30) {
+  g_say_name = 0;
+  if (const NewTitle* t = Row(r30.s32)) g_say_name = t->guest_name, r30.u64 = uint64_t(t->belt_of);
+}
+void NewTitleSay_824AC63C(PPCRegister& r11) {
+  if (const NewTitle* t = Row(r11.s32)) g_say_name = t->guest_name, r11.u64 = uint64_t(t->belt_of);
+}
+void NewTitleSay_824AC680(PPCRegister& r30) {
+  if (g_say_name) r30.u64 = g_say_name;
 }
 
 // Is the title one of Universe's: (title).
@@ -746,7 +905,7 @@ REX_EXTERN(__imp__sub_825B6BE0);
 REX_HOOK_RAW(sub_825B6BE0) {
   const int64_t k = int64_t(ctx.r4.s32) - kFirstNew;
   if (k >= 0 && k < int64_t(g_new.size())) {
-    ctx.r3.u64 = g_new[size_t(k)].brand >= 0 ? g_contenders + uint32_t(k) * 4 : 0;
+    ctx.r3.u64 = g_new[size_t(k)].brand >= 0 ? g_contenders + uint32_t(k) * 4 + (ctx.r5.u32 & 1) * 2 : 0;
     return;
   }
   __imp__sub_825B6BE0(ctx, base);
@@ -786,6 +945,18 @@ void ShowRank(PPCContext& ctx, uint8_t* base, int pos) {
       ctx.r3.u64 = t.holder[0];
       sub_828B6138(ctx, base);
       name = ctx.r3.u32;
+      if (t.tag && t.holder[1] != kNoHolder && t.holder[1] < 322 && g_memory) {  // (a tag title: both names on the line)
+        const std::string first(reinterpret_cast<const char*>(base + name));
+        ctx.r3.u64 = t.holder[1];
+        sub_828B6138(ctx, base);
+        const std::string both = first + " & " + reinterpret_cast<const char*>(base + ctx.r3.u32);
+        static uint32_t text = g_memory->SystemHeapAlloc(160);
+        if (text) {
+          std::memcpy(base + text, both.c_str(), std::min<size_t>(both.size() + 1, 159));
+          base[text + 159] = 0;
+          name = text;
+        }
+      }
     }
     ctx = saved;
     Wr(base, label, t.guest_champion), Wr(base, holder, name);
@@ -807,7 +978,7 @@ REX_HOOK_RAW(sub_8249B208) {
   if (brand != 0 && brand != 1) return;
   std::vector<int> titles;
   for (size_t k = 0; k < g_new.size(); ++k)
-    if (!g_new[k].tag && (g_new[k].brand == brand || g_new[k].brand == 7)) titles.push_back(int(k));
+    if (g_new[k].brand == brand || g_new[k].brand == 7) titles.push_back(int(k));
   const int was = g_rank.self == self ? g_rank.pos : 0;
   g_rank = RankRow();
   g_rank.self = self;

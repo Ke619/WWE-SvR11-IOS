@@ -99,7 +99,8 @@ IN-GAME OVERLAYS
 
 FILES
   svr2011.exe        the game
-  *.dll              runtime (ReXGlue) and GPU plugin (rexgpu-xenos.dll)
+  *.dll              runtime (ReXGlue), GPU plugin (rexgpu-xenos.dll), FFmpeg
+                     (rexffmpeg.dll) and LZX decoder (rexmspack.dll)
   native_shaders\    the native renderer's shaders (without them the game
                      uses the emulated renderer)
   svr2011.toml       settings

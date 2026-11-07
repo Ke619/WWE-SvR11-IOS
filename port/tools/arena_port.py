@@ -81,7 +81,7 @@ def mark_items(game, items):
         key = it.get('key', '')
         if (game, key) in KNOWN_CRASHES:
             it['status'], it['reason'] = 'crashes', KNOWN_CRASHES[(game, key)]
-        elif game in NATIVE_GAMES and key[:2] == 'bg' and key[2:4].isdigit() and int(key[2:4]) >= 60:
+        elif game in NATIVE_GAMES and not it.get('dlc') and key[:2] == 'bg' and key[2:4].isdigit() and int(key[2:4]) >= 60:
             it['status'], it['reason'] = 'special', 'a backstage room or studio / photo stage, not an arena'
         else:
             it.setdefault('status', 'ok')
@@ -799,11 +799,34 @@ def bg_list(disc):
     import re
     items = []
     for nm in disc.listdir('pac/bg'):
-        m = re.fullmatch(r'bg(\d+)\.pac', nm.lower())
+        m = re.fullmatch(r'bg(\d+)(_dlc\d+)?\.pac', nm.lower())   # (a package's: 2K15 bg51.pac, 2K16 bg60_dlc40.pac)
         if m:
             items.append({'key': nm.lower()[:-4], 'name': nm.lower()[:-4], 'arena': int(m.group(1)),
                           'size': disc.size('pac/bg/' + nm), 'in_2011': None})
+            if hasattr(disc, 'dlc') and not disc.disc.exists('pac/bg/' + nm):
+                items[-1]['dlc'] = True
     return sorted(items, key=lambda it: it['arena'])
+
+
+def dlc_files(disc, game, src, items, cache_root=None):
+    """a package's arena, copied out once: 'dlc_file' (the Mod Maker's own converter takes a file). 'name' ends " (DLC)"."""
+    import arena_names as AN
+    folder = os.path.join(AN.cache_dir(os.path.abspath(cache_root or arena_cache_root()), game, src), 'dlc')
+    for it in items:
+        if not it.get('dlc'):
+            continue
+        dst = os.path.join(folder, it['key'] + '.pac')
+        if not os.path.exists(dst) or os.path.getsize(dst) != it['size']:
+            os.makedirs(folder, exist_ok=True)
+            tmp = dst + '.part'
+            with open(tmp, 'wb') as f:
+                f.write(disc.read('pac/bg/' + it['key'] + '.pac'))
+            os.replace(tmp, dst)
+        it['dlc_file'] = dst
+        # (2K15's six are all named RAW; 2K16's have no name in the game's tables)
+        named = it['name'] if it['name'] != it['key'] else 'Arena'
+        it['name'] = '%s bg%d (DLC)' % (named, it['arena'])
+    return items
 
 
 # -- a lone arena file (no disc) -------------------------------------------------
@@ -1104,11 +1127,15 @@ def main(argv):
     p.add_argument('--base', type=int)
     p.add_argument('--name')
     p.add_argument('--pac11')
+    for k in ('list', 'scan', 'convert'):   # (the source game's DLC packages: read beside the disc)
+        sub.choices[k].add_argument('--dlc')
     try:
         a = ap.parse_args(argv)
     except SystemExit:
         print(json.dumps({'ok': False, 'error': 'bad arguments'}))
         return 2
+    if getattr(a, 'dlc', None):
+        os.environ['SVR2011_PORT_DLC'] = a.dlc
     if a.cmd == 'games':
         print(json.dumps(GAMES))
         return 0
@@ -1164,6 +1191,9 @@ def main(argv):
             if a.game not in GAME_NAMES or a.game == 'svr2011':
                 raise BadInput('unknown game %r' % a.game)
             disc = discfs.open(a.src)
+            if a.game in NATIVE_GAMES:   # (the game's DLC packages beside the disc: --dlc)
+                import dlc_src
+                disc = dlc_src.view(disc)
             item, game_id = getattr(a, 'item', None), a.game  # (list / scan have no --item)
         with disc:
             if not disc.isdir('pac/bg'):
@@ -1176,6 +1206,7 @@ def main(argv):
                 items = lists.get(game_id, bg_list)(disc)
                 if game_id in NATIVE_GAMES:
                     items, _ = named_list(disc, game_id, a.src, items, a.cache, scan=a.cmd == 'scan')
+                    items = dlc_files(disc, game_id, a.src, items, a.cache)
                 print(json.dumps(mark_items(game_id, items)))
                 return 0
             if game_id not in FAMILY:

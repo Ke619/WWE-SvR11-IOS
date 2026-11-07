@@ -154,5 +154,5 @@ What the game needs of a part, each found by a crash or a part that didn't show:
 
 - Other categories: hats, horns and hair have their own rig and chains (`SIMPLE` in the tool).
 - Online: a CAW wearing a mod part on a game without it falls back as above; not run.
-- Android: not run. A Mod Maker page: none yet.
+- Android: the app's Mods page adds the .svrmod (A51: listed and drawn in the editor). The Mod Maker page is CAW glasses (Media tab).
 - Multi-texture parts (two `10xx`, e.g. ed33 knee pads): which band set goes with which.

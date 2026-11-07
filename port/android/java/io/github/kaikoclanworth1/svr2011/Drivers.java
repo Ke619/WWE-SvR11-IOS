@@ -259,8 +259,9 @@ final class Drivers {
 
     void buildMali(LinearLayout column) {
         // (alpha mode turned on by an older launcher: its settings brought up to date)
+        // Only what the GPU needs: the look (setMali) is set once, so a player can change it afterwards.
         if (settings_.getBool(kMaliKey, false)) {
-            setMali(true);
+            setMaliNeeds(true);
             settings_.save();
         }
         LinearLayout card = a_.card(column, "Mali GPU (alpha)");
@@ -291,10 +292,14 @@ final class Drivers {
                                      "vulkan_force_expand_rectangle_lists_in_vs",
                                      "vulkan_force_convert_quad_lists_to_triangle_lists"};
 
-    void setMali(boolean on) {
+    void setMaliNeeds(boolean on) {
         settings_.setBool(kMaliKey, on);
         for (String k : kMaliOff) settings_.setBool(k, !on);
         for (String k : kMaliOn) settings_.setBool(k, on);
+    }
+
+    void setMali(boolean on) {
+        setMaliNeeds(on);
         // Mali GPUs are in slow phones and tablets: the scene at half resolution
         // and small textures (memory), no real-time shadows; the crowd is left
         // out in Mali mode too (arena_crowd auto). Off: full resolution and

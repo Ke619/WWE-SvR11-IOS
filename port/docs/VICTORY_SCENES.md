@@ -68,8 +68,49 @@ converters convert them unchanged with `--kind victory`:
 
 Proof (26 Oct, hidden, `runsic6_sheet.png`): Matt Striker with SvR 2008's WIN_Sabu as 6300 beat Cena.
 
+## 5. Victory tracks [C]
+
+A superstar's own music for the win, in place of the theme (suggestion 0bbd61).
+
+- Superstar mod: `victory_song=<file>`, `victory_gain=<dB>` (-20..+6). Mod Maker: Superstar page, More, under Victory,
+  with Measure / Match the game.
+- Media pack, for a stock superstar: `victory_theme.<id>=<file>`, `victory_theme_gain.<id>=<dB>`. Mod Maker: Media,
+  the Audio tab.
+
+How the game starts the win's music [C, event logs and stacks, 6 Nov]:
+
+- The match's end task (sub_82322DA0, `match end: step` in the log) posts the winner's theme right after step 1, the
+  result: before the replay of the finish and about 8 s before the scene. A stock theme is the entrance's event
+  `Play_MUS_<nnnn>_a_b` (via 825F7BA8), a USER PLAYLIST the entrance's `XMPPlayUserPlaylist` (via 825F7690).
+- The scene (sub_82768270 -> 8277CD88 -> 825F2D34, the path an entrance's music takes) then starts its music again. A
+  stock theme isn't posted a second time. A USER PLAYLIST is: that was the **double start**, the mods' and CAWs' song
+  jumping back to its start as the scene came up. The port now lets the song go on (`user music: the win's song
+  started again: it goes on`), with or without a track.
+
+Hooks: `WinMusicOn` from the end task's step 1 (replays.cpp), off when a match sets up a wrestler (sub_828B5BC0) or at
+`Play_Menu_Music`. While it's on, the music the game starts goes through media_mods.cpp `WinnerTrack`: the game asks by
+theme, so the owner is the person in the match with that theme in the entrance block his match record copied, a person
+who beat someone first (a mirror match, or a mod on a stock theme). A theme that's nobody's (a tag team's own) or
+whose owner has no track plays as it did. An event track plays on a host voice tied to the event's object, as a media
+pack's `sound.` does; a playlist's on the user music player.
+
+Online: the music is this PC's alone. `victory_song` / `victory_gain` / `victory_theme` lines and the sound files stay
+out of a mod's key (svrfmt/mod_travel), so two players with different tracks should still match, each hearing their own
+(from the code; not played with two different folders). A LAN match with a track on the host only stayed in lockstep
+at clocks 600 and 800 [C]. With `SVR2011_TEST_LOSE` online the end task's step 1 never came and no win music started,
+so a track never played there. A real online pin hasn't been run. CAWs have no way to set a track yet, and a song has no
+start point: both left for later.
+
+Seen [C, logs, 7 Nov]: singles (mod and media pack), tornado tag 0x2E, a Universe title defence (saved card: `nt_test
+after the match`; a CAW won, whose theme has no track). 14 entrants' themes in a 15-man Rumble played as they were.
+Not seen: a Rumble's end, a win in Road to WrestleMania (rule 0x54 story match, forced loss: no end task, nothing
+swapped). Muted tests: how it sounds is a hand check.
+
 ## Test aids
 
+- `SVR2011_TEST_VICTORY_LOG=1`: each match person's theme as the owner lookup sees it (`victory track: person ...`).
+- `SVR2011_TEST_NO_VICTORY=1`: this game plays without tracks (two test games share one Mods folder).
+- Mod Maker: `--star-victory-song <file>` (-3 dB), `--media-victory <id>,<file>`.
 - `SVR2011_TEST_LOSE=<person>,<s>`: at <s> seconds of the match clock the person loses to person 0.
 - `SVR2011_TEST_EVP_LOG=1`: every scene script the game opens (`evp: /EVPA/6139 (lr ...)`).
 - Frame shots stop with the match clock: after the bell use timed shots (`SVR2011_TEST_SHOT_REQUEST`).

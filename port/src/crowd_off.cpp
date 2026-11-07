@@ -18,7 +18,8 @@
 #include "modmaker/svrfmt/pac.h"
 
 REXCVAR_DEFINE_STRING(arena_crowd, "auto", "GPU",
-                      "The arena crowd: on, off (no people in the seats: weak phones), auto (off in Mali mode)");
+                      "The arena crowd: on, medium (about half the people), off (no people in the seats: weak phones), "
+                      "auto (off in Mali mode)");
 
 namespace svr2011::crowd {
 namespace fs = std::filesystem;
@@ -47,7 +48,7 @@ bool Empty(svrfmt::Model& m) {
 }
 
 // The arena file without its crowd (false: not an arena / nothing to do).
-bool Strip(const Bytes& in, Bytes& out, int& emptied) {
+bool Strip(const Bytes& in, Bytes& out, int& emptied, bool half) {
   svrfmt::Epac epac;
   if (!svrfmt::EpacRead(in, epac)) return false;
   for (auto& g : epac.groups)
@@ -60,7 +61,9 @@ bool Strip(const Bytes& in, Bytes& out, int& emptied) {
         const bool packed = svrfmt::IsBpe(e.data);
         std::vector<svrfmt::PachEntry> people;
         if (!svrfmt::PachRead(svrfmt::Unpack(e.data), people)) continue;
+        int index = 0;
         for (auto& person : people) {
+          if (half && index++ % 2 == 0) continue;  // (medium: every other person stays)
           const Bytes raw = svrfmt::Unpack(person.data);
           svrfmt::Model m;
           if (!svrfmt::IsJboy(raw) || !svrfmt::JboyRead(raw, m) || !Empty(m)) continue;
@@ -111,7 +114,8 @@ void Make(const Job& job) {
   std::error_code ec;
   fs::create_directories(job.copy.parent_path(), ec);
   const fs::path stamp = job.copy.string() + ".stamp";
-  if (!Strip(in, out, emptied) || out.size() > in.size()) {
+  const bool half = Level() == 1;
+  if (!Strip(in, out, emptied, half) || out.size() > in.size()) {
     // (no crowd, or the copy would not fit the game's arena memory: the original)
     REXLOG_INFO("[svr2011] crowd: {} kept as is ({})", job.source.filename().string(),
                 emptied ? "the copy came out bigger" : "no crowd in it");
@@ -123,8 +127,8 @@ void Make(const Job& job) {
   fs::rename(tmp, job.copy, ec);
   if (ec) return;
   std::ofstream(stamp, std::ios::binary) << Stamp(job.source);
-  REXLOG_INFO("[svr2011] crowd: {} without its crowd ({} people, {} -> {} KB, {:.1f} s)",
-              job.source.filename().string(), emptied, in.size() / 1024, out.size() / 1024,
+  REXLOG_INFO("[svr2011] crowd: {} {} ({} people emptied, {} -> {} KB, {:.1f} s)",
+              job.source.filename().string(), half ? "with half its crowd" : "without its crowd", emptied, in.size() / 1024, out.size() / 1024,
               std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
   if (job.ready) job.ready();
 }
@@ -147,20 +151,24 @@ void Worker() {
 
 }  // namespace
 
-bool Off() {
-  static const bool off = [] {
+int Level() {
+  static const int level = [] {
     const std::string v = REXCVAR_GET(arena_crowd);
-    if (v == "off") return true;
-    if (v == "on") return false;
-    return rex::cvar::GetFlagByName("mali_alpha") == "true";
+    if (v == "off") return 0;
+    if (v == "medium") return 1;
+    if (v == "on") return 2;
+    return rex::cvar::GetFlagByName("mali_alpha") == "true" ? 0 : 2;
   }();
-  return off;
+  return level;
 }
 
+bool UsesCopies() { return Level() != 2; }
+
 fs::path Serve(const fs::path& source, const fs::path& cache_dir, std::function<void()> ready) {
-  if (!Off()) return source;
+  if (!UsesCopies()) return source;
   // (one copy per original: a custom arena's file is named after its folder too)
-  std::string key = source.parent_path().filename().string() + "_" + source.filename().string();
+  std::string key = std::string(Level() == 1 ? "half_" : "") + source.parent_path().filename().string() + "_" +
+                    source.filename().string();
   const fs::path copy = cache_dir / key;
   const std::string want = Stamp(source);
   const std::string have = ReadText(copy.string() + ".stamp");

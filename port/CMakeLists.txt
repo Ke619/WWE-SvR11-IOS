@@ -310,6 +310,14 @@ if(TARGET rexgpu-xenos AND NOT ANDROID)
         DEPENDS rexgpu-xenos svr2011
         VERBATIM)
 endif()
+# FFmpeg and libmspack (LGPL) are DLLs of their own on Windows, beside the programs (Third-party notices.txt). The
+# runtime with them: the exe doesn't relink when only the inside of the runtime changed, which left a stale copy here.
+if(WIN32 AND TARGET rexffmpeg AND TARGET mspack)
+    add_custom_target(svr2011_stage_lgpl_dlls ALL
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:rexruntime> $<TARGET_FILE:rexffmpeg> $<TARGET_FILE:mspack> $<TARGET_FILE_DIR:svr2011>
+        DEPENDS rexruntime rexffmpeg mspack svr2011
+        VERBATIM)
+endif()
 if(NOT WIN32)
     # MSVC CRT functions the port uses (_dupenv_s ...).
     target_compile_options(svr2011 PRIVATE -include ${CMAKE_CURRENT_SOURCE_DIR}/src/compat.h)
@@ -385,7 +393,7 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/launcher/svr2011_launcher.c")
         modmaker/icons_page.cpp modmaker/caw_page.cpp modmaker/help_page.cpp modmaker/other_page.cpp modmaker/match_page.cpp
         modmaker/tool_run.cpp modmaker/session_log.cpp launcher/movie_maker.c launcher/bink_encode.c launcher/caw_import.c launcher/stfs.c launcher/move_warning.c
         launcher/setup_tab.c launcher/updater.c launcher/verify.c
-        modmaker/svrfmt/wwe13.cpp ${REXSDK_DIR}/thirdparty/libmspack/libmspack/mspack/lzxd.c modmaker/editor.cpp modmaker/char_preview.cpp modmaker/svrfmt/ring_kit.cpp modmaker/svrfmt/arena_build.cpp
+        modmaker/svrfmt/wwe13.cpp modmaker/editor.cpp modmaker/char_preview.cpp modmaker/svrfmt/ring_kit.cpp modmaker/svrfmt/arena_build.cpp
         modmaker/svrfmt/pac.cpp modmaker/svrfmt/archive.cpp modmaker/svrfmt/texture.cpp modmaker/svrfmt/jboy.cpp modmaker/svrfmt/mod_travel.cpp modmaker/svrfmt/disc.cpp modmaker/pac_editor.cpp modmaker/loudness.cpp modmaker/port_page.cpp modmaker/attire_page.cpp
         modmaker/pac_attires.cpp modmaker/installed_page.cpp modmaker/svrfmt/char_fbx.cpp modmaker/rig_map.cpp launcher/unzip.c
         modmaker/svrfmt/fbx_write.cpp modmaker/svrfmt/png.cpp modmaker/svrfmt/arena.cpp modmaker/svrfmt/arena_full.cpp
@@ -403,7 +411,8 @@ if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/launcher/svr2011_launcher.c")
     file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION.txt" SVR2011_MM_VERSION LIMIT_COUNT 1)
     target_compile_definitions(svr2011_modmaker PRIVATE "PORT_VERSION=\"${SVR2011_MM_VERSION}\"")
     target_link_libraries(svr2011_modmaker PRIVATE version d3d11 dxgi d3dcompiler ole32 shell32 windowscodecs comdlg32
-        mfplat mfreadwrite mfuuid propsys delayimp xaudio2 bcrypt winhttp rstrtmgr dbghelp)
+        mfplat mfreadwrite mfuuid propsys delayimp xaudio2 bcrypt winhttp rstrtmgr dbghelp
+        mspack)  # (rexmspack.dll: LGPL, beside the program)
     # (Media Foundation only when used: Windows "N" without the Media Feature Pack)
     target_link_options(svr2011_modmaker PRIVATE -Wl,/DELAYLOAD:mfplat.dll -Wl,/DELAYLOAD:mfreadwrite.dll)
     set_target_properties(svr2011_modmaker PROPERTIES OUTPUT_NAME "SvR2011 Mod Maker")

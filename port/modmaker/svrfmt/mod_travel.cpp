@@ -90,6 +90,7 @@ std::string ManifestKeyText(const std::string& manifest) {
       return key.compare(0, n, name) == 0 && (key.size() == n || key[n] == '.');
     };
     if (is("theme_gain") || is("theme_gain_auto") || is("movie") || is("video")) continue;
+    if (is("victory_song") || is("victory_gain") || is("victory_theme") || is("victory_theme_gain")) continue;  // (each player hears their own)
     out += line + "\n";
   }
   return out;

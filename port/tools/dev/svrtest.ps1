@@ -147,7 +147,9 @@ foreach ($f in "default.xex", "plist360.arc", "plist360_4x3.arc") {
 }
 $build = switch ($o.exe) { "release" { Join-Path $port "out\build\SourceRelease" } "dbg" { Join-Path $port "out\build\DebugSuite" } default { Split-Path $o.exe -Parent } }
 $exeName = switch ($o.exe) { "release" { "svr2011.exe" } "dbg" { "svr2011_dbg.exe" } default { Split-Path $o.exe -Leaf } }
-foreach ($f in $exeName, "rexruntime.dll", "rexgpu-xenos.dll") {
+foreach ($f in $exeName, "rexruntime.dll", "rexgpu-xenos.dll", "rexffmpeg.dll", "rexmspack.dll") {
+    # (the two LGPL DLLs: not in a build from an SDK copy without them)
+    if ($f -in "rexffmpeg.dll", "rexmspack.dll" -and -not (Test-Path (Join-Path $build $f))) { continue }
     $src = Join-Path $build $f
     if (-not (Test-Path $src) -and $f -ne $exeName) { $src = Join-Path $port "out\build\SourceRelease\$f" }
     if (-not (Test-Path $src)) { throw "svrtest: no $f in $build - build it first" }

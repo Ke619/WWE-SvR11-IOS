@@ -187,6 +187,8 @@ struct Mod {
   int entrance = -1;            // entrance number (manifest entrance=; profile +0x1C0 +0x14..+0x18)
   int attire_entrance[4] = {-1, -1, -1, -1};  // per attire (manifest attire<N>_entrance=; EntranceForAttire)
   int victory = -1;  // its victory scene when it wins a singles match (manifest victory=; VictoryOfWinner)
+  fs::path victory_song;  // its music when it wins (manifest victory_song= / victory_gain=: media_mods.h SetVictoryTrack)
+  float victory_gain = 0.0f;
   // a created entrance (manifest cae=<file>: a whole 284-byte entrance block as the game holds it, big-endian -
   // its five scene parts are copied in: motion, pyro and the rest per scene, as CREATE AN ENTRANCE's ADVANCED
   // CREATION makes them); its parts' hash (.applied cae=) so a player's own later edit stays
@@ -991,6 +993,9 @@ void LoadMods() {
         if (l.rfind("pose=", 0) == 0) m.pose = uint32_t(std::clamp(std::atoi(l.c_str() + 5), 0, 65535));
         if (l.rfind("entrance=", 0) == 0) m.entrance = std::clamp(std::atoi(l.c_str() + 9), 0, 65535);
         if (l.rfind("victory=", 0) == 0) m.victory = std::clamp(std::atoi(l.c_str() + 8), 0, 65535);
+        if (l.rfind("victory_song=", 0) == 0 && l.size() > 13 && fs::exists(f / fs::u8path(l.substr(13)), ec))
+          m.victory_song = f / fs::u8path(l.substr(13));
+        if (l.rfind("victory_gain=", 0) == 0) m.victory_gain = std::clamp(float(std::atof(l.c_str() + 13)), -20.0f, 6.0f);
         if (l.rfind("cae=", 0) == 0) {  // (a created entrance's block: CaeParts)
           std::ifstream in(f / fs::u8path(l.substr(4)), std::ios::binary);
           std::vector<uint8_t> b((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -1153,6 +1158,7 @@ void LoadMods() {
     REXLOG_INFO("[svr2011] superstar mods: {} as id {} (from {}, key {}){}", m.name, m.slot, m.base, m.key,
                 temp ? " - fetched from the session's host, this run only" : "");
     m.fingerprint = Fingerprint(m);
+    if (!m.victory_song.empty()) svr2011::SetVictoryTrack(m.slot, m.victory_song, m.victory_gain);
     g_mods.push_back(std::move(m));
   }
   {  // the mods left out at this start, one folder a line (none: no file)

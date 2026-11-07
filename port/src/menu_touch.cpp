@@ -121,7 +121,7 @@ void ShotAid() {
 using Clock = std::chrono::steady_clock;
 struct Drawn {
   uint32_t element = 0, id = 0;
-  float x = 0, y = 0;
+  float x = 0, y = 0;  // (of the text: its top left in a list, its middle on the VS screen)
   Clock::time_point seen, moved;
   char text[48] = {};
 };
@@ -162,6 +162,8 @@ constexpr float kGridX = 66.7f, kGridY = 192, kTileW = 24, kTileH = 29.7f;
 constexpr uint32_t kCharacterTile = 5;
 constexpr uint32_t kPanelPlayer = 284, kPanelCol = 88, kPanelRow = 72, kPanelListMode = 28916, kPanelScreen = 272;
 constexpr uint32_t kPanelState = 268;   // (2: it has a cursor; 0: not yet, or its pick is settled)
+constexpr uint32_t kScreenStage = 16, kScreenVsButton = 72;  // (the select's screen object; stage 2: the VS screen)
+std::atomic<uint32_t> g_select_screen{0};
 constexpr uint32_t kPanelPicking = 84;  // (0 once a superstar is chosen: "READY / ADVANCED", no cursor on the grid)
 struct Panel {
   uint32_t cursor = 0, col = 0, row = 0, mode = 0, state = 0, picking = 0;
@@ -227,6 +229,60 @@ bool GridTap(float x, float y, svr2011::MenuTouchPress press) {
   return true;
 }
 
+// A row tapped: the game only draws a cursor it moved itself (written alone, the highlight stays on the old row until the
+// next move, and a port page opens without a redraw to hide that). So the cursor goes next to the row, one press of the
+// d-pad moves it on, and A follows when it has arrived. A row it can't stop on gets no A.
+std::atomic<bool> g_row_moving{false};
+struct RowMove {
+  uint32_t group = 0, row = 0;
+  Clock::time_point at;
+  svr2011::MenuTouchPress press = nullptr;
+} g_row_move;
+std::mutex g_row_mutex;
+
+void RowMoveTick() {
+  if (!g_row_moving.load(std::memory_order_relaxed)) return;
+  std::lock_guard lock(g_row_mutex);
+  if (!g_row_moving) return;
+  const auto waited = Clock::now() - g_row_move.at;
+  uint32_t group = 0, cursor = 0;
+  if (waited > std::chrono::seconds(1) || !svr2011::ScriptMenuState(&group, &cursor) || group != g_row_move.group) {
+    g_row_moving = false;
+    return;
+  }
+  if (cursor != g_row_move.row || waited < std::chrono::milliseconds(120)) return;  // (past the d-pad's own press)
+  g_row_moving = false;
+  if (g_row_move.press) g_row_move.press(0x1000);  // (A)
+}
+
+// The VS screen, after the select and in its group: PLAY, MATCH CREATOR, SELECT ARENA, SIMULATE side by side, in any
+// language, so by place: the texts on the buttons' line, in order, their bars meeting half way. A tap selects, as in a list.
+bool VsTap(float x, float y, svr2011::MenuTouchPress press) {
+  constexpr uint32_t kVsTextId = 1000;
+  constexpr float kVsLine = 276;
+  const uint32_t screen = g_select_screen;
+  if (!screen || !g_base || Rd32(g_base + screen + kScreenStage) != 2 || std::fabs(y - kVsLine) > 11) return false;
+  std::vector<float> buttons;
+  {
+    const auto now = Clock::now();
+    std::lock_guard lock(g_drawn_mutex);
+    for (const Drawn& d : g_drawn)
+      if (d.element && d.text[0] && d.id == kVsTextId && std::fabs(d.y - kVsLine) < 1 && now - d.seen < kRecent && now - d.moved > kSettled)
+        buttons.push_back(d.x);
+  }
+  if (buttons.size() < 2) return false;
+  std::sort(buttons.begin(), buttons.end());
+  const float half = (buttons[1] - buttons[0]) / 2;
+  for (size_t k = 0; k < buttons.size(); ++k) {
+    if (std::fabs(x - buttons[k]) > half) continue;
+    REXLOG_INFO("[svr2011] menu touch: VS button {} of {}, was {}", k, buttons.size(), Rd32(g_base + screen + kScreenVsButton));
+    Wr32(g_base + screen + kScreenVsButton, uint32_t(k));
+    if (press) press(0x1000);  // (A)
+    return true;
+  }
+  return false;
+}
+
 }  // namespace
 
 namespace svr2011 {
@@ -237,6 +293,7 @@ void MenuTouchPanel(PPCContext& ctx, uint8_t* base, uint32_t cursor) {
   const uint8_t* c = base + cursor;
   const uint32_t player = Rd32(c + kPanelPlayer), col = Rd32(c + kPanelCol), row = Rd32(c + kPanelRow);
   const uint32_t mode = Rd32(c + kPanelListMode), state = Rd32(c + kPanelState);
+  g_select_screen = Rd32(c + kPanelScreen);
   const auto now = Clock::now();
   bool apply = false;
   uint32_t apply_col = 0, apply_row = 0;
@@ -296,12 +353,12 @@ void MenuTouchPanel(PPCContext& ctx, uint8_t* base, uint32_t cursor) {
 bool MenuTouchTap(float fx, float fy, MenuTouchPress press) {
   if (fx < 0 || fx > 1 || fy < 0 || fy > 1) return false;
   g_shot_again = true;
-  if (GuestPagesHoldInput() || GameKeyboardOpen()) return false;
+  if (GuestPagesHoldInput() || GameKeyboardOpen() || g_row_moving) return false;
   if (P2POnlineMode()) return false;  // (first version: online screens may be synced by input; steer with the pad)
   uint32_t group = 0, cursor = 0;
   if (!ScriptMenuState(&group, &cursor)) return false;
   const float x = fx * 640, y = fy * 360;
-  if (group == kSelectGroup) return GridTap(x, y, press);
+  if (group == kSelectGroup) return VsTap(x, y, press) || GridTap(x, y, press);
   std::vector<Drawn> drawn;
   {
     const auto now = Clock::now();
@@ -349,8 +406,17 @@ bool MenuTouchTap(float fx, float fy, MenuTouchPress press) {
   }
   if (best < 0) return false;
   REXLOG_INFO("[svr2011] menu touch: tap {:.0f},{:.0f} -> group {:X} row {} ({}), cursor was {}", x, y, group, best, label, cursor);
-  if (uint32_t(best) != cursor) ScriptMenuSetRow(uint32_t(best));
-  if (press) press(0x1000);  // (A)
+  if (uint32_t(best) == cursor) {
+    if (press) press(0x1000);  // (A)
+    return true;
+  }
+  {
+    std::lock_guard lock(g_row_mutex);
+    g_row_move = RowMove{group, uint32_t(best), Clock::now(), press};
+    g_row_moving = true;
+  }
+  ScriptMenuSetRow(best > 0 ? uint32_t(best - 1) : 1);
+  if (press) press(best > 0 ? 0x0002 : 0x0001);  // (d-pad down, up)
   return true;
 }
 
@@ -360,6 +426,7 @@ REX_EXTERN(__imp__sub_823D4008);
 REX_HOOK_RAW(sub_823D4008) {
   if (g_log) LogElement(base, ctx.r3.u32, ctx.r4.u32);
   NoteText(base, ctx.r3.u32, ctx.r4.u32);
+  RowMoveTick();
   ShotAid();
   __imp__sub_823D4008(ctx, base);
 }

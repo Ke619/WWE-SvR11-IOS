@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <cctype>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -407,6 +408,24 @@ uint32_t CawPartsAlias(const char* name) {
     if (it != g_cast.end()) return slash ? it->second.first : it->second.second;
   }
   return 0;
+}
+
+uint32_t CawPartsMissing(const char* name) {
+  if (!name || !g_memory || std::strncmp(name, "/ED", 3) || std::strlen(name) != 10 || name[5] != '/' ||
+      (name[6] != 'M' && name[6] != 'T') || !std::isdigit(uint8_t(name[3])) || !std::isdigit(uint8_t(name[4])) ||
+      !std::strcmp(name + 7, "000"))
+    return 0;
+  static std::mutex m;
+  static std::map<std::string, uint32_t> names;
+  std::string first(name);
+  first.replace(7, 3, "000");
+  std::lock_guard lock(m);
+  auto it = names.find(first);
+  if (it == names.end()) {
+    it = names.emplace(first, Guest(first)).first;
+    REXLOG_WARN("[svr2011] CAW parts: {} is in no pac (a removed mod's part?): {} instead", name, first);
+  }
+  return it->second;
 }
 
 int CawPartsFirstRecord(int category) {

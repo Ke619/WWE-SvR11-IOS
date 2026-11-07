@@ -493,6 +493,9 @@ REX_HOOK_RAW(sub_828DDC00) {
   if (Rd32(base, ctx.r3.u32 + 1640) == kHighType && ctx.r4.u32 >= kGameHigh && ctx.r4.u32 < kMaxHigh) {
     ctx.r4.u64 = 0;
   }
+  // (a saved CAW's record past the category's list, its CAW part mod gone - no overlay, another machine: the first record)
+  const uint32_t at = ctx.r3.u32 + Rd32(base, ctx.r3.u32 + 1640) * 16 + 56;
+  if (ctx.r4.u32 >= (uint32_t(base[at]) << 8 | base[at + 1])) ctx.r4.u64 = 0;
   __imp__sub_828DDC00(ctx, base);
 }
 

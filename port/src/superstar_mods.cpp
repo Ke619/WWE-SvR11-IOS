@@ -2452,7 +2452,17 @@ REX_HOOK_RAW(sub_826B87B0) {
     }
   }
   if (!log) {
+    const auto asked = ctx;
     __imp__sub_826B87B0(ctx, base);
+    // (a part a saved CAW names that no pac has - its mod gone, or another machine's: that category's first)
+    if (!ctx.r3.u32 && uint32_t(asked.lr) != 0x826A17FC)
+      if (const uint32_t alias = svr2011::CawPartsMissing(reinterpret_cast<const char*>(base + asked.r4.u32))) {
+        const auto lr = ctx.lr;
+        ctx = asked;
+        ctx.lr = lr;
+        ctx.r4.u64 = alias;
+        __imp__sub_826B87B0(ctx, base);
+      }
     return;
   }
   const std::string name(reinterpret_cast<const char*>(base + ctx.r4.u32), 0,

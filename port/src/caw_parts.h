@@ -18,6 +18,8 @@ void InstallCawParts(rex::memory::Memory* memory);
 // The file name resolver's name (sub_826B87B0): "/EDIT/MENU" and a changed category's "/CAST/00nn" asked for by
 // the overlay's names; 0 = as it is.
 uint32_t CawPartsAlias(const char* name);
+// A name no pac answered: "/EDnn/M..." or "/EDnn/T..." -> the guest name of that category's first of them; 0: not a part.
+uint32_t CawPartsMissing(const char* name);
 // A record of a category that a mod part has (or had: a removed mod's record falls back to a stock part).
 // category -> the first such record index; -1: none.
 int CawPartsFirstRecord(int category);

@@ -8,7 +8,7 @@ This builds `svr2011.nsp` from this repository and your own copy of the game. It
 
 | What | Where it comes from |
 |---|---|
-| MSYS2 and devkitPro | `pacman -S switch-dev switch-mbedtls switch-zlib switch-libzstd switch-expat`; also `mingw-w64-x86_64-gcc`, `mingw-w64-x86_64-python`, `cmake`, `ninja`, `git` |
+| MSYS2 and devkitPro | MSYS2 at `C:\msys64`, with `pacman -S switch-dev switch-mbedtls switch-zlib switch-libzstd switch-libexpat mingw-w64-x86_64-gcc cmake ninja git`. Python on the PATH |
 | This repository | The branch that holds the Switch port, with `port/patches` |
 | The graphics driver | mesa-switch commit `0ff52079ca9e` (MIT), built by that project's GitHub Actions. Unpack it so `lib/libvulkan.a` exists, and set `NX_DRIVER`. See `port/switch/tests/vktest/DRIVER.txt` |
 | `rexglue.exe` | From the PC SDK build (`recomp/rexglue-sdk`, see `port/build.ps1`). It only generates code, and runs on Windows |
@@ -16,14 +16,22 @@ This builds `svr2011.nsp` from this repository and your own copy of the game. It
 | The `.spvc` shaders | `port/tools/convert_shaders.py` output (`port/runs/shaders_native/spirv`), made from shaders captured from your own copy |
 | `prod.keys` | Your own, dumped from your own console. Only the NSP step needs it |
 
-The work folder and the checkout must have no spaces in their paths: the devkitPro tools fail on them. A junction is enough.
+## Folders
+
+The devkitPro compiler is a Windows program. It reads `/work/...` from the root of the current drive, and it can't read MSYS paths such as `/e/...`. So everything lives under `/work`, with no spaces:
+
+```bash
+cmd //c "mklink /J C:\\work C:\\msys64\\work"
+```
+
+Clone this repository into `C:\msys64\work`, or link it there with another junction. Run the script through that `/work/...` path. The script stops if it's run from anywhere else. A work folder on another drive also works through a junction under `C:\msys64\work`.
 
 ## Build
 
 Run these from MSYS2's bash, in `port/switch/tools`:
 
 ```bash
-export NX_WORK=/e/nxwork NX_DRIVER=/e/nxwork/nvk-sdk
+export NX_WORK=/work/nx NX_DRIVER=/work/nvk-sdk
 ```
 
 ```bash
@@ -62,4 +70,15 @@ Report a problem sends to the public server only when the build is made with `NX
 
 ## What has been checked
 
-@CHECKED@
+Run on 7 Nov 2026 from a fresh clone of this branch, on the PC that already had devkitPro installed:
+
+- **`sources`:** fetched everything from the addresses above and applied every patch. The SDK and plume then matched the working copies, ignoring line endings.
+- **`codegen`:** generated the code, using an existing `rexglue.exe`.
+- **`build` and `nsp`:** built the whole SDK and game and made an NSP, using an existing set of `.spvc` shaders. No part of `prod.keys` is in the NSP, the program or the patch.
+
+Not checked yet:
+
+- This run's NSP on a console.
+- A PC with nothing set up beforehand.
+- Building `rexglue.exe` and the `.spvc` shaders from a clean checkout.
+

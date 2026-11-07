@@ -472,10 +472,34 @@ REX_HOOK_RAW(sub_828D1648) {
 // with the reason, so the next report says which.
 REX_EXTERN(__imp__sub_8257BCD0);
 REX_EXTERN(__imp__sub_8257ABB8);
+REX_EXTERN(__imp__sub_8257BAC0);
+// The roster entry's +32 bit 4: saving a moveset (sub_8237E9E0) sets it when a move's WAZE record has +140 bit 0x800 -
+// 4775, 9205, 9236, 9237, 9513 and 9773 (Bret Hart's and Chris Masters' taunts, one Backbreaker Drop): on the disc, and
+// a match plays them without the unlocks. The game's message for it was "contains
+// downloadable content" (string 50999, lifted: sub_8257AB78 below), but sub_8257BAC0 and this list's check refuse on it
+// too, which said "created by a different player" for a player's own move-set (report 88abc3). Not a reason to refuse.
+constexpr uint8_t kUploadMark = 4;
+REX_HOOK_RAW(sub_8257BAC0) {  // (r3: the roster entry)
+  uint8_t& mark = base[ctx.r3.u32 + 32];
+  const uint8_t was = mark;
+  if (was & kUploadMark) {
+    static std::set<uint32_t> said;
+    if (said.insert(ctx.r3.u32).second)
+      REXLOG_INFO("online: roster entry {} has the upload mark: not refused for it", int32_t(ctx.r3.u32 - 0x82EBE9FCu) / 36);
+  }
+  mark = uint8_t(was & ~kUploadMark);
+  __imp__sub_8257BAC0(ctx, base);
+  mark = was;
+}
 REX_HOOK_RAW(sub_8257BCD0) {
   const uint32_t profile = ctx.r3.u32;
   const auto saved = ctx;
+  const int16_t entry = profile ? int16_t(uint16_t(base[profile + 32]) << 8 | base[profile + 33]) : int16_t(-1);
+  uint8_t* mark = entry >= 0 && entry < 322 ? base + 0x82EBE9FCu + uint32_t(entry) * 36 + 32 : nullptr;
+  const uint8_t was = mark ? *mark : uint8_t(0);
+  if (mark) *mark = uint8_t(was & ~kUploadMark);
   __imp__sub_8257BCD0(ctx, base);
+  if (mark) *mark = was;
   if (ctx.r3.u32 || !profile) return;
   static std::set<uint32_t> said;
   const uint8_t* p = base + profile;
@@ -491,7 +515,7 @@ REX_HOOK_RAW(sub_8257BCD0) {
   if (id >= 0 && id < 322) {
     const uint8_t* rec = base + 0x82EBE9FCu + uint32_t(id) * 36;
     if (rec[17]) add("downloaded (+17 = " + std::to_string(rec[17]) + ")");
-    if (rec[32]) add("roster +32 = " + std::to_string(rec[32]));
+    if (rec[32] & ~kUploadMark) add("roster +32 = " + std::to_string(rec[32]));
     auto c = saved;
     c.r3.u64 = 0x82EBE9FCu + uint32_t(id) * 36, c.r4.u64 = uint64_t(id);  // (sub_8257ABB8(rec, id): a DLC part)
     __imp__sub_8257ABB8(c, base);

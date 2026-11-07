@@ -260,7 +260,18 @@ what's open on the Arena or Superstar page and can pick any other.
 
 Crowd signs, menu backgrounds and the game's media, one tab each; Belts &
 weapons brings title belts' and weapons' looks from another game (a texture
-pack); Titles replaces a championship.
+pack); Titles replaces a championship; CAW glasses adds your own glasses to Create
+A Superstar.
+
+### CAW glasses tab
+
+Your own glasses from an OBJ model and a picture: give them a name, pick both, then
+Install or Save. Glasses only for now. The model's first object is the frame and a second
+one the lenses; it's sized to the stock glasses' width and put in front of the eyes, facing the way
+Blender's front view does. They come last in Create A Superstar's Glasses list. They're fixed to the
+head, so they don't follow the face's shape sliders and can sit wrong on a heavily reshaped face. A
+Created Superstar wearing them shows the first stock glasses on a game without the mod. The page runs the
+Mod Maker tools (Python): Install what's missing fetches them.
 
 ### Titles tab
 

@@ -1,7 +1,7 @@
 """Create A Superstar parts from an OBJ and a PNG: a mod folder for Mods/CawParts (docs/CAW_PARTS.md, src/caw_parts.cpp).
 
   python caw_part.py make --game-pac <pac dir> --obj <file> --png <file> --out <mod folder> --id <id> [--name <text>]
-                     [--category 18] [--template 5] [--genders mf] [--thumb <png>] [--no-fit]
+                     [--category 18] [--template 5] [--genders mf] [--thumb <png>] [--no-fit] [--made-with <text>]
   python caw_part.py export --game-pac <pac dir> --out <folder> [--category 18] [--template 5]
         -> the template part as template.obj + template.png, to model around
 
@@ -208,14 +208,14 @@ def colour_texture(png, tga):
     return bytes(out + table + data)
 
 
-def write_mod(out, mid, name, category, genders, rec, model, tex, thumb):
+def write_mod(out, mid, name, category, genders, rec, model, tex, thumb, made=''):
     os.makedirs(out, exist_ok=True)
     open(os.path.join(out, 'part.rec'), 'wb').write(rec)
     open(os.path.join(out, 'part.m.pach'), 'wb').write(model)
     open(os.path.join(out, 'part.t.pach'), 'wb').write(tex)
     open(os.path.join(out, 'part.thumb.dds'), 'wb').write(thumb)
     with open(os.path.join(out, 'manifest.txt'), 'w', newline='\r\n', encoding='utf-8') as f:
-        f.write('type=cawpart\nid=%s\nname=%s\nversion=1.0\npart=%d %s part\n' % (mid, name, category, genders))
+        f.write('type=cawpart\nid=%s\nname=%s\nversion=1.0\n%spart=%d %s part\n' % (mid, name, 'made_with=%s\n' % made if made else '', category, genders))
 
 
 def dxt1(im):
@@ -310,7 +310,7 @@ def cmd_make(a):
     tk = sorted(tx)
     tex = svrfmt.pach_write([(tk[0], pack(colour_texture(a['--png'], unpack(tx[tk[0]]))))] + [(k, tx[k]) for k in tk[1:]])
     write_mod(a['--out'], a['--id'], a.get('--name', a['--id']), cat, a.get('--genders', 'mf'), rec, model, tex,
-              make_thumb(a.get('--thumb', a['--png'])))
+              make_thumb(a.get('--thumb', a['--png'])), a.get('--made-with', ''))
     return dict(ok=True, out=a['--out'], vertices=sum(counts), triangles=sum(len(q[3]) for q in parts), category=cat, template=tpl)
 
 

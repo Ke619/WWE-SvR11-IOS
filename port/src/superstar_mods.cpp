@@ -4008,10 +4008,26 @@ REX_HOOK_RAW(sub_825B7660) {  // (id) -> Universe place, -1: none
   __imp__sub_825B7660(ctx, base);
 }
 REX_EXTERN(__imp__sub_825B7B40);
-REX_HOOK_RAW(sub_825B7B40) {  // (id, id) -> both in Universe
+// (id, id) -> 1: the two may team up - both in Universe, not in one team already, and not both in teams. Its
+// callers: after a match the partners' join step (sub_825C3498: one joins the other's team, sub_828C0F50 adds with
+// no check of its own) and a new team (sub_825ACFF8).
+REX_HOOK_RAW(sub_825B7B40) {
   const uint32_t a = ctx.r3.u32, b = ctx.r4.u32;
   if (ModOf(a) || ModOf(b)) {  // (its own code looks ids up in the disc list: a mod's answered here)
-    ctx.r3.u64 = UniversePlace(ctx, base, a) != -1 && UniversePlace(ctx, base, b) != -1 ? 1 : 0;
+    bool ok = UniversePlace(ctx, base, a) != -1 && UniversePlace(ctx, base, b) != -1;
+    if (ok) {  // (its team rules, as its own code has them: this answer once skipped them, and after each match
+      // a stock partner of a mod joined their team again - report a6aa1e: Matt Hardy 3 times in THE HARDYS)
+      const auto saved = ctx;
+      const auto team = [&](uint32_t x, uint32_t y) {  // sub_828C0650(x, y, nobody): the team that has both, -1
+        ctx = saved;
+        ctx.r3.u64 = x, ctx.r4.u64 = y, ctx.r5.u64 = 0x200;
+        sub_828C0650(ctx, base);
+        return int32_t(ctx.r3.u32);
+      };
+      ok = team(a, b) == -1 && (team(a, 0x200) == -1 || team(b, 0x200) == -1);
+      ctx = saved;
+    }
+    ctx.r3.u64 = ok ? 1 : 0;
     return;
   }
   __imp__sub_825B7B40(ctx, base);

@@ -95,6 +95,11 @@ if ($WithModMaker) {
         $vdst = Join-Path $mmtools "vgmstream"
         New-Item -ItemType Directory -Force $vdst | Out-Null
         Get-ChildItem $vgm -File | Copy-Item -Destination $vdst   # (VERSION.txt too: where it came from + its SHA-256)
+        # (the exe won't start without a libg719_decode.dll, and no game audio we convert uses G.719: our stand-in,
+        # modmaker\g719_stub.c, in place of the release's)
+        $g719 = Join-Path $port "out\modmaker\g719\libg719_decode.dll"
+        if (-not (Test-Path $g719)) { throw "no $g719 - build it in this checkout (bash port/modmaker/build_cli.sh)" }
+        Copy-Item -Force $g719 $vdst
     } else {   # (2.1.0 shipped without it: WWE '12+ themes didn't convert)
         throw "no $vgm\vgmstream-cli.exe - WWE '12+ themes won't convert. Copy the vgmstream release (vgmstream-cli.exe, its DLLs and VERSION.txt) from the main checkout's port\third_party\vgmstream into $vgm, then package again."
     }

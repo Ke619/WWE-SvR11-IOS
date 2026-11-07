@@ -669,6 +669,12 @@ const std::string& DlcSet() {
         for (unsigned char ch : name) h = (h ^ ch) * 0x100000001B3ull;
         for (int i = 0; i < 8; ++i) h = (h ^ uint8_t(size >> (8 * i))) * 0x100000001B3ull;
       }
+      // (not the volumes' files as they came, Vol02's and Vol03's: which file, for a report)
+      if (h != 0xFD7BF34EAD3CAE51ull && h != 0x5BC65024845FD378ull) {
+        std::string list;
+        for (const auto& [name, size] : files) list += " " + name + " " + std::to_string(size);
+        REXLOG_INFO("online: DLC {}: not the usual files:{}", pkg.path().filename().string(), list);
+      }
       // (its name: the content header's, UTF-16BE at 8 - "WWE SmackDown vs. Raw 2011 - Vol02" -> "DLC Vol02")
       std::string name;
       {
@@ -719,12 +725,24 @@ const std::string& DlcSet() {
 }
 
 std::string DlcDifference(const std::string& mine, const std::string& theirs) {
-  const auto a = ParseSet(mine), b = ParseSet(theirs);
+  // By the volume's name: a volume missing keeps two games apart (its moves play otherwise without its motions); the
+  // same volume with other files doesn't (report e0ec9d: a friend's Vol02 refused for a file nobody could name).
+  std::map<std::string, std::string> a, b;
+  for (const auto& [key, l] : ParseSet(mine)) a[l.name] = l.id;
+  for (const auto& [key, l] : ParseSet(theirs)) b[l.name] = l.id;
   std::vector<std::string> parts;
-  for (const auto& [key, l] : b)
-    if (!a.count(key)) parts.push_back("they have " + l.name + ", you don't");
-  for (const auto& [key, l] : a)
-    if (!b.count(key)) parts.push_back("you have " + l.name + ", they don't");
+  for (const auto& [name, id] : b) {
+    const auto it = a.find(name);
+    if (it == a.end()) {
+      parts.push_back("they have " + name + ", you don't");
+    } else if (it->second != id) {
+      static std::set<std::string> said;
+      if (said.insert(it->second + id).second)
+        REXLOG_INFO("online: {}: this game's files {} and the other's {} differ - not refused", name, it->second, id);
+    }
+  }
+  for (const auto& [name, id] : a)
+    if (!b.count(name)) parts.push_back("you have " + name + ", they don't");
   if (parts.empty()) return "";
   std::string out = "Your downloadable content doesn't match: ";
   for (size_t i = 0; i < parts.size() && i < 2; ++i) out += (i ? "; " : "") + parts[i];

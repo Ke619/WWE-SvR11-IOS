@@ -179,6 +179,8 @@ def main():
         notice.write_text(text[text.index("## Licence"):text.index("To add another")].strip() + "\n",
                           encoding="utf-8")
         assets.append((notice, "assets/drivers/LICENSE-Mesa.txt"))
+    # The credits and licence texts (dist/Third-party notices.txt), on every build.
+    assets.append((PORT / "dist" / "Third-party notices.txt", "assets/third_party_notices.txt"))
     # PlayStation / keyboard button pictures (tools/make_pad_icons.py, from the
     # user's PS3 copy): the Game Files' pad_icons (or SVR2011_PAD_ICONS).
     icons = None

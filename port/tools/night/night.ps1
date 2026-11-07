@@ -40,7 +40,7 @@ function Sync-Worker([int]$w) {
     $d = Join-Path $night "w$w"
     New-Item -ItemType Directory -Force $d | Out-Null
     # program files: refreshed when Game Files has a newer build
-    foreach ($f in "svr2011.exe", "rexruntime.dll", "rexgpu-xenos.dll", "default.xex", "nxeart", "plist360.arc", "plist360_4x3.arc") {
+    foreach ($f in "svr2011.exe", "rexruntime.dll", "rexgpu-xenos.dll", "rexffmpeg.dll", "rexmspack.dll", "default.xex", "nxeart", "plist360.arc", "plist360_4x3.arc") {
         $src = Join-Path $game $f; $dst = Join-Path $d $f
         if ((Test-Path $src) -and (-not (Test-Path $dst) -or (Get-Item $src).LastWriteTime -ne (Get-Item $dst).LastWriteTime)) {
             Copy-Item $src $dst -Force

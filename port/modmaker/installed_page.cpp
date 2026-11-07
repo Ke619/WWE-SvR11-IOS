@@ -28,7 +28,7 @@ using namespace svrfmt;
 namespace {
 
 // The type folders the launcher installs into (the *Overlay folders are the game's own output).
-const char* const kKinds[] = {"Superstars", "Attires", "Arenas", "Moves", "Media", "Signs", "Backgrounds", "Backstage", "MatchTypes"};
+const char* const kKinds[] = {"Superstars", "Attires", "Arenas", "Moves", "Media", "Signs", "Backgrounds", "Backstage", "MatchTypes", "CawParts"};
 
 struct Mod {
   std::string kind;  // its folder's type ("Superstars")

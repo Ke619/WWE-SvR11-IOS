@@ -17,6 +17,7 @@
 #         --fresh (the user data may have no save: a first-start test - else svrtest refuses one without
 #         Saves\SaveData.dat, the game would sit in its first-time screens)
 #         --arg "<game option>" (more of the game's --options, repeatable)
+#         --keep-caw-index (Mods\SuperstarOverlay as the last run left it: CAW parts' index, a removed part mod)
 #         --keep-overlay (Mods\PacOverlay as the last run left it: a start that finds the overlay up to date)
 #
 # Each run: refuses when the player's game runs or 4 test games already do (any chat); refreshes the private
@@ -87,6 +88,7 @@ for ($i = 0; $i -lt $Rest.Count; $i++) {
         '^--name$' { $o.name = $v; $i++; continue }
         '^--keep$' { $o.keep = $true; continue }
         '^--keep-overlay$' { $o.keepoverlay = $true; continue }
+        '^--keep-caw-index$' { $o.keepcaw = $true; continue }
         '^--arg$' { $o.args += $v; $i++; continue }
         default { if (-not $o.target -and $a -notlike "--*") { $o.target = $a } else { throw "svrtest: unknown option $a" } }
     }
@@ -161,8 +163,8 @@ foreach ($f in $exeName, "rexruntime.dll", "rexgpu-xenos.dll", "rexffmpeg.dll", 
     }
 }
 # its Mods: only --mods (a mod folder is placed by its manifest's type)
-$kinds = @{ superstar = "Superstars"; attire = "Attires"; arena = "Arenas"; moves = "Moves"; backstage = "Backstage"; signs = "Signs"; media = "Media"; backgrounds = "Backgrounds"; matchtype = "MatchTypes"; weapon = "Weapons"; title = "Titles" }
-Get-ChildItem (Join-Path $game "Mods") -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne ".convert" -and -not ($o.keepoverlay -and $_.Name -eq "PacOverlay") } | Remove-Item -Recurse -Force
+$kinds = @{ superstar = "Superstars"; attire = "Attires"; arena = "Arenas"; moves = "Moves"; backstage = "Backstage"; signs = "Signs"; media = "Media"; backgrounds = "Backgrounds"; matchtype = "MatchTypes"; weapon = "Weapons"; title = "Titles"; cawpart = "CawParts" }
+Get-ChildItem (Join-Path $game "Mods") -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne ".convert" -and -not ($o.keepoverlay -and $_.Name -eq "PacOverlay") -and -not ($o.keepcaw -and $_.Name -eq "SuperstarOverlay") } | Remove-Item -Recurse -Force
 if ($o.mods -and $o.mods -ne "none") {
     foreach ($m in $o.mods -split ',') {
         $man = Join-Path $m "manifest.txt"

@@ -343,7 +343,7 @@ struct ProjectIn {
 
 // The project's type is its page. Pages the rail shows.
 enum class PageId { kArena, kEditor, kBackstage, kStar, kMoves, kSigns, kBackgrounds, kMedia, kMatch, kOther, kCaw, kAssets, kAnims, kIcons, kHelp, kPort, kAttire, kInstalled, kDiscs, kPortEntrance, kPortMoves, kPortTaunts,
-                    kStarPort, kArenaPort, kMovesPort, kBelts, kThreads, kTitle, kForFun, kCount };  // (the last four: "From another game" / belt tabs)
+                    kStarPort, kArenaPort, kMovesPort, kBelts, kThreads, kTitle, kForFun, kCawPart, kCount };  // (the last four: "From another game" / belt tabs)
 // What only a project holds (materials, the FBX steps, Reduce detail, gear picks, an arena's camera...) for a mod:
 // the page's project keys without its files, every absolute path cut to its file name (nothing of the author's
 // folders goes out with a shared mod). UI thread (it reads the page). "" for a page with no project keys.
@@ -491,6 +491,7 @@ namespace signs_page { extern PageHooks hooks; void TestStart(const std::vector<
                        std::vector<ZipEntry> PackFiles(const std::string& id, const std::string& name, const std::string& author,
                                                        const std::vector<std::pair<std::string, Image>>& signs);
                        bool InstallPack(const std::string& id, const std::vector<ZipEntry>& files); }
+namespace caw_part_page { extern PageHooks hooks; void TestStart(const std::wstring& spec, const std::wstring& save); }
 namespace title_page { extern PageHooks hooks; void TestStart(const std::wstring& spec, const std::wstring& save); }
 namespace backgrounds_page { extern PageHooks hooks; void TestStart(const std::vector<std::wstring>& files, const std::wstring& save); }
 namespace media_page { extern PageHooks hooks; void SetTab(int tab); int Tab(); void TestVictory(int id, const std::wstring& song);  // 0 videos, 1 menus & renders, 2 audio

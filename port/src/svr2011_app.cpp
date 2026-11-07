@@ -60,6 +60,7 @@
 #include "hd_movies.h"
 #include "media_mods.h"
 #include "vs_styles.h"
+#include "caw_parts.h"
 #include "frame_rate.h"
 #include "guest_faults.h"
 #include "perf_hooks.h"
@@ -1018,6 +1019,7 @@ void Svr2011App::OnPostLoadXexImage() {
   // Superstar mods: new characters in the free DLC slots (superstar_mods.h).
   svr2011::InstallMediaMods(runtime()->memory());  // (arenas branch: before the superstar mods mount its pac)
   svr2011::InstallVsStyles(runtime()->memory());   // (the same: its overlay pac)
+  svr2011::InstallCawParts(runtime()->memory());   // (the same: CAW parts from mods, caw_parts.h)
   svr2011::KeepWindowAlive();
 #ifndef SVR2011_D3D_TRACE
   svr2011::InstallModelMem(runtime()->memory());  // (model_mem.cpp)

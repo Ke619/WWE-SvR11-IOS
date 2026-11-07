@@ -2359,6 +2359,7 @@ const PageDesc kPages[] = {
     {PageId::kSigns, "Crowd signs", "", &signs_page::hooks, nullptr},
     {PageId::kBackgrounds, "Menu backgrounds", "", &backgrounds_page::hooks, nullptr},
     {PageId::kTitle, "Championship titles", "", &title_page::hooks, nullptr},
+    {PageId::kCawPart, "CAW glasses", "", &caw_part_page::hooks, nullptr},
     {PageId::kMedia, "Media", "", &media_page::hooks, nullptr},
     {PageId::kMatch, "Match types", "", &match_page::hooks, nullptr},
     {PageId::kPort, "Port from a disc", "", nullptr, port_page::Draw},
@@ -2424,7 +2425,7 @@ const Group kGroups[] = {
                                {"Move pack", PageId::kMoves}, {"From another game", PageId::kMovesPort}}},
     {"Media", "", {{"Crowd signs", PageId::kSigns}, {"Menu backgrounds", PageId::kBackgrounds},
                    {"Titantron videos", PageId::kMedia, 0}, {"Menus & renders", PageId::kMedia, 1}, {"Audio", PageId::kMedia, 2},
-                   {"Belts & weapons", PageId::kBelts}, {"Titles", PageId::kTitle}}},
+                   {"Belts & weapons", PageId::kBelts}, {"Titles", PageId::kTitle}, {"CAW glasses", PageId::kCawPart}}},
     {"Match types", "", {{"Match types", PageId::kMatch}}},
     {"My game discs", "Porting", {{"My game discs", PageId::kDiscs}}},
     {"CAW pictures", "Saves", {{"CAW pictures", PageId::kCaw}}},
@@ -2571,7 +2572,7 @@ bool PageByName(const std::wstring& name, PageId& page) {
       {L"port-taunts", PageId::kPortTaunts, -1}, {L"taunts", PageId::kPortTaunts, -1},
       {L"superstar-port", PageId::kStarPort, -1}, {L"arena-port", PageId::kArenaPort, -1},
       {L"moves-port", PageId::kMovesPort, -1}, {L"belts", PageId::kBelts, -1}, {L"threads", PageId::kThreads, -1},
-      {L"titles", PageId::kTitle, -1}, {L"forfun", PageId::kForFun, -1}};
+      {L"titles", PageId::kTitle, -1}, {L"forfun", PageId::kForFun, -1}, {L"caw-glasses", PageId::kCawPart, -1}};
   for (const auto& n : kNames)
     if (name == n.name) {
       page = n.page;
@@ -3299,7 +3300,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   std::string star_moveset, star_import_moveset;
   int star_entrance = 0;
   int star_victory = 0;
-  std::wstring title_spec, title_save;
+  std::wstring title_spec, title_save, caw_part_spec, caw_part_save;
   std::wstring forfun_arena, forfun_star;
   std::wstring star_victory_song, media_victory;
   std::wstring star_model, star_song, star_movie, star_picture, star_voice, star_save, sign_save, media_save, media_video;
@@ -3536,7 +3537,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
       };
       put("(set)", CheckInstalledSet());
       std::error_code ec;
-      for (const char* kind : {"Superstars", "Attires", "Arenas", "Moves", "Backstage", "Signs", "Media", "Backgrounds", "MatchTypes"})
+      for (const char* kind : {"Superstars", "Attires", "Arenas", "Moves", "Backstage", "Signs", "Media", "Backgrounds", "MatchTypes", "CawParts"})
         for (const auto& e : fs::directory_iterator(fs::path(g_game) / L"Mods" / kind, ec))
           if (e.is_directory(ec) && e.path().filename().wstring()[0] != L'.') put(std::string(kind) + "/" + Utf8(e.path().filename().wstring()), CheckModFolder(kind, e.path()));
       WriteFile(Utf8(out), Bytes(text.begin(), text.end()));
@@ -3762,6 +3763,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--forfun-arena") && more) forfun_arena = argv[++i];
     else if (!wcscmp(argv[i], L"--forfun-star") && more) forfun_star = argv[++i];
     else if (!wcscmp(argv[i], L"--title-test") && more) title_spec = argv[++i];
+    else if (!wcscmp(argv[i], L"--caw-part-test") && more) caw_part_spec = argv[++i];
+    else if (!wcscmp(argv[i], L"--test-caw-part-save") && more) caw_part_save = argv[++i];
     else if (!wcscmp(argv[i], L"--test-title-save") && more) title_save = argv[++i];
     else if (!wcscmp(argv[i], L"--background") && more) background_files.push_back(argv[++i]);
     else if (!wcscmp(argv[i], L"--test-background-save") && more) background_save = argv[++i];
@@ -3858,6 +3861,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   backgrounds_page::TestStart(background_files, background_save);
   forfun_page::TestStart(forfun_arena, forfun_star);
   title_page::TestStart(title_spec, title_save);
+  caw_part_page::TestStart(caw_part_spec, caw_part_save);
   if (const size_t c = media_victory.find(L','); c != std::wstring::npos) media_page::TestVictory(_wtoi(media_victory.c_str()), media_victory.substr(c + 1));
   media_page::TestStart(media_arena, media_video, media_pictures, media_save);
   arena_page::SetTestSave(test_save, test_lib);

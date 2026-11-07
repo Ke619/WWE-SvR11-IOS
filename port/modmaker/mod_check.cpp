@@ -1049,6 +1049,7 @@ std::string KindOfType(const std::string& type) {
   if (t == "background") return "Backgrounds";
   if (t == "matchtype") return "MatchTypes";
   if (t == "title") return "Titles";
+  if (t == "cawpart") return "CawParts";
   return "";
 }
 

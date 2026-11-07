@@ -22,7 +22,7 @@ using namespace svrfmt;
 namespace {
 
 struct MediaStar {
-  std::wstring video, theme;  // files
+  std::wstring video, theme, victory;  // files
   Picture render;             // 512; the bust (256) and icon (64) are made from it
   Image bust, icon;
 };
@@ -53,7 +53,7 @@ bool StarPicker() {
   if (ImGui::BeginCombo("Superstar", cur)) {
     for (int i = 0; i < int(stars.size()); ++i) {
       const auto it = g_media.stars.find(stars[i].id);
-      const bool has = it != g_media.stars.end() && (!it->second.video.empty() || !it->second.theme.empty() || !it->second.render.Empty());
+      const bool has = it != g_media.stars.end() && (!it->second.video.empty() || !it->second.theme.empty() || !it->second.victory.empty() || !it->second.render.Empty());
       if (ImGui::Selectable((stars[i].name + (has ? "  *" : "") + "##m" + std::to_string(i)).c_str(), g_star == i))
         g_star = i;
     }
@@ -118,7 +118,7 @@ std::vector<Image> FramesFromVideo(const std::wstring& file) {
 // Everything the build needs, copied off the UI thread.
 struct Job {
   std::string id, name, author, version;
-  struct Star { int id; std::wstring video, theme; Image render, bust, icon; };
+  struct Star { int id; std::wstring video, theme; Image render, bust, icon; std::wstring victory; };
   std::vector<Star> stars;
   std::map<int, std::vector<Image>> arenas;
   std::wstring menu_music;
@@ -129,7 +129,7 @@ struct Job {
 void PrepareJob(Job& j) {
   if (!g_media.name[0]) std::snprintf(g_media.name, sizeof g_media.name, "My Media");
   j.id = MediaId(), j.name = g_media.name, j.author = g_media.author, j.version = g_media.version;
-  for (const auto& [id, s] : g_media.stars) j.stars.push_back({id, s.video, s.theme, s.render.image, s.bust, s.icon});
+  for (const auto& [id, s] : g_media.stars) j.stars.push_back({id, s.video, s.theme, s.render.image, s.bust, s.icon, s.victory});
   for (const auto& [num, a] : g_media.arenas)
     for (const auto& f : a.frames) j.arenas[num].push_back(f.image);
   j.menu_music = g_media.menu_music;
@@ -139,7 +139,7 @@ void PrepareJob(Job& j) {
 
 bool Empty() {
   for (const auto& [id, s] : g_media.stars)
-    if (!s.video.empty() || !s.theme.empty() || !s.render.Empty()) return false;
+    if (!s.video.empty() || !s.theme.empty() || !s.victory.empty() || !s.render.Empty()) return false;
   return g_media.arenas.empty() && g_media.menu_music.empty() && g_media.sounds.empty();
 }
 
@@ -169,6 +169,7 @@ bool BuildFiles(const Job& j, std::vector<ZipEntry>& files) {
       man += "video." + i + "=" + name + "\n";
     }
     if (!s.theme.empty() && !add_file("theme." + i, s.theme, "theme_" + i)) return false;
+    if (!s.victory.empty() && !add_file("victory_theme." + i, s.victory, "victory_" + i)) return false;
     if (s.render.w) {
       files.push_back({"render_" + i + ".dds", DdsEncode(s.render, DxtFormat::kDxt5, false)});
       files.push_back({"bust_" + i + ".dds", DdsEncode(s.bust, DxtFormat::kDxt5, false)});
@@ -262,12 +263,13 @@ void Problems(std::vector<Problem>& p) {
     const std::string who = st ? st->name : std::to_string(id);
     if (!s.video.empty() && !fs::exists(s.video, ec)) p.push_back(Error(who + "'s video file is missing: " + FileName(s.video)));
     if (!s.theme.empty() && !fs::exists(s.theme, ec)) p.push_back(Error(who + "'s theme file is missing: " + FileName(s.theme)));
+    if (!s.victory.empty() && !fs::exists(s.victory, ec)) p.push_back(Error(who + "'s victory track is missing: " + FileName(s.victory)));
   }
   if (!g_media.menu_music.empty() && !fs::exists(g_media.menu_music, ec)) p.push_back(Error("The menu music file is missing."));
   for (const auto& [ev, f] : g_media.sounds)
     if (!fs::exists(f, ec)) p.push_back(Error("The sound file for " + ev + " is missing: " + FileName(f)));
   bool themes = false;
-  for (const auto& [id, s] : g_media.stars) themes |= !s.theme.empty();
+  for (const auto& [id, s] : g_media.stars) themes |= !s.theme.empty() || !s.victory.empty();
   if (themes) p.push_back(Warning("Your entrance songs will play much louder than the game's own music.", "Make them quieter in a sound editor, or use the Superstar page's \"Match the game\"."));
 }
 
@@ -364,6 +366,8 @@ void AudioTab() {
   if (StarPicker()) {
     MediaStar& s = g_media.stars[Stars()[g_star].id];
     if (FileRow("Entrance theme...", s.theme, "the game's", kSoundFilter, 1)) Touch();
+    if (FileRow("Victory track...", s.victory, "their theme", kSoundFilter, 1,
+                "Plays when they win, in place of their theme. Only this PC hears it: online, each player hears their own packs' track.")) Touch();
   }
   ImGui::Separator();
   if (FileRow("Menu music...", g_media.menu_music, "the game's", kSoundFilter, 1,
@@ -443,7 +447,7 @@ std::string StateText() {
   std::string s = std::string("name=") + g_media.name + "\nauthor=" + g_media.author + "\nversion=" + g_media.version +
                   "\nmenu=" + Utf8(g_media.menu_music) + "\n";
   for (const auto& [id, st] : g_media.stars)
-    s += std::to_string(id) + ":" + Utf8(st.video) + "|" + Utf8(st.theme) + "|" + std::to_string(st.render.image.rgba.size()) + "\n";
+    s += std::to_string(id) + ":" + Utf8(st.video) + "|" + Utf8(st.theme) + "|" + Utf8(st.victory) + "|" + std::to_string(st.render.image.rgba.size()) + "\n";
   for (const auto& [num, a] : g_media.arenas) s += "arena" + std::to_string(num) + "=" + std::to_string(a.frames.size()) + "\n";
   for (const auto& [ev, f] : g_media.sounds) s += ev + "=" + Utf8(f) + "\n";
   return s;
@@ -459,6 +463,7 @@ void WriteProject(ProjectOut& out) {
     const std::string i = std::to_string(id);
     out.File("video." + i, ProjectMovie(s.video), "media/video_" + i);
     out.File("theme." + i, s.theme, "media/theme_" + i);
+    out.File("victory_theme." + i, s.victory, "media/victory_" + i);
     out.Png("render." + i, s.render.image, "media/render_" + i);
   }
   for (const auto& [num, a] : g_media.arenas)
@@ -494,6 +499,7 @@ bool Read(const ProjectIn& in, bool mod) {
       auto id_of = [&](const char* prefix) { return key.rfind(prefix, 0) == 0 ? std::atoi(key.c_str() + std::strlen(prefix)) : -1; };
       if (int id = id_of("video."); id > 0) g_media.stars[id].video = file(key);
       else if (int id = id_of("theme."); id > 0) g_media.stars[id].theme = file(key);
+      else if (int id = id_of("victory_theme."); id > 0) g_media.stars[id].victory = file(key);
       else if (int id = id_of("render."); id > 0) {
         Image img;
         const ZipEntry* e = in.Find(val);
@@ -549,6 +555,8 @@ bool Read(const ProjectIn& in, bool mod) {
 }
 
 }  // namespace
+
+void TestVictory(int id, const std::wstring& song) { g_media.stars[id].victory = song; }
 
 void TestStart(int arena, const std::wstring& video, const std::vector<std::wstring>& pictures, const std::wstring& save) {
   g_test_arena = arena, g_test_video = video, g_test_pictures = pictures, g_test_save = save;

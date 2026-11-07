@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <string>
 
 namespace rex::memory {
 class Memory;
@@ -28,5 +29,19 @@ uint32_t MediaAlias(const char* name);
 // it (played on a host voice; *playing_id what to return) - else the game's.
 // Stop / pause events update the host voices and return false.
 bool MediaEvent(uint8_t* base, const char* name, uint32_t object, uint32_t* playing_id);
+
+// Victory tracks (docs/VICTORY_SCENES.md 5): a superstar's own music for the win, in place of his theme.
+// A superstar mod's victory_song= (its id, once it has one; a media pack's victory_theme.<id>= comes in itself).
+void SetVictoryTrack(uint32_t id, const std::filesystem::path& file, float gain_db);
+// The match's result is in (replays.cpp: the match's end task): the music the game starts from now on is the win's.
+void WinMusicOn();
+// A new match sets up, or the menus' music: that's over.
+void WinMusicOff();
+bool WinMusicNow();
+// The win's song is this USER PLAYLIST: true if its owner has a track (*file, *gain_db).
+bool VictoryTrackOfPlaylist(const std::u16string& playlist, std::filesystem::path* file, float* gain_db);
+namespace detail {
+void NoteMatchPerson(const uint8_t* base, uint32_t record, uint32_t desc);
+}
 
 }  // namespace svr2011

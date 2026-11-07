@@ -237,6 +237,8 @@ Manifest keys (in the order the converters write them,
 | `pose=<id>` | optional | the select / VS screen pose: a pose motion id (32500 and up: 32500-32505 generic men, 32510-32515 women, 32520-32591 the superstars' own), or a superstar id below 512 for that superstar's pose |
 | `song=<file>` | optional | the entrance theme (.mp3 .m4a .aac .wav .flac .wma .ogg). It plays at full level, so make it about -24 LUFS or use `theme_gain=` |
 | `theme_gain=<dB>` | optional | -20.0..+6.0 dB (clamped). Left out, the PC launcher measures the song at install (or with Installed Mods -> Level music) and writes it, to -24 LUFS like the Mod Maker's meter (`launcher/music_level.c`) |
+| `victory_song=<file>` | optional | plays when this superstar wins, in place of the theme (same file types; `port/docs/VICTORY_SCENES.md` 5). Not part of the mod's online key |
+| `victory_gain=<dB>` | optional | that track's level, -20.0..+6.0 dB. Left out, it plays at the file's level |
 | `theme_gain_auto=<size>:<time>` | written by the launcher | marks a `theme_gain=` the launcher measured (the song's size and time then): measured again when the song changes. Without it, `theme_gain=` is the author's and is never changed |
 | `music=<1-253>` | optional | instead of `song=`: one of the game's own themes by music id. 254 (the user playlist) and 255 (none) are not accepted. `song=` wins when both are given |
 | `movie=<file>` | optional | the entrance (titantron) movie: a 320 x 320 Bink `.bik`, or an `.mp4` ([5.8](#58-media-theme-titantron)) |
@@ -382,6 +384,7 @@ Replaces the game's own media. Later packs (by folder name) win.
 | `video.<id>=<file>` | that superstar's entrance (titantron) video: a 320 x 320 `.bik`, or an `.mp4` played HD ([5.8](#58-media-theme-titantron)) |
 | `theme.<id>=<file>` | the entrance theme |
 | `theme_gain.<id>=<dB>` | that theme's level, -20..+6 (left out: the PC launcher measures and writes it, as `theme_gain=`, with `theme_gain_auto.<id>=`) |
+| `victory_theme.<id>=<file>`, `victory_theme_gain.<id>=<dB>` | plays when that superstar wins, in place of the theme; its level, -20..+6 |
 | `render.<id>=`, `bust.<id>=`, `icon.<id>=` | the 512 x 512 render, 256 x 256 bust, 64 x 64 face icon (DDS, DXT5) |
 | `arena.<nn>=<bgNN.pac>` | arena nn's own file with its screens' flip-book retextured (the Mod Maker's Media page) |
 | `sound.<event>=<file>` | any game sound by its event name without `Play_` (e.g. `Menu_Music`, `MUS_0161_0_0`) |

@@ -1852,7 +1852,11 @@ def convert(a, rep):
         rep['warnings'].append('an apron move in its game (APR2): in 2011 it plays as an apron move - check it in a match')
     # (a moveset slot's own category wins - moveset_port passes it: Mankind '13's Mandible Claw in a finisher
     # slot (STN1) got an apron move as its template, both people sunk in the mat; Rumble elimination slots: RUMB)
-    if a.get('cat') and not a.get('template'):
+    # A signature / finisher slot is STN1 for every move, so a top-rope, turnbuckle or rope move keeps its own category:
+    # WWE '12's 450 Splash 2 (CORN) in a finisher slot got Sambo Hip Toss, a front grapple, and never played in a match
+    # (reports 20261107-182224, -181926). Apron and ground moves still take the slot's (the Mandible Claw above).
+    own_pos = a.get('special') and CATS.get(cat0) in ('CORN', 'CETB', 'ROPE')
+    if a.get('cat') and not a.get('template') and not own_pos:
         sc = slot_categories(a['cat'])
         if sc and sc != list(SINGLES):
             cat11 = sc

@@ -65,6 +65,11 @@ def bpe_decode(data):
     return bytes(out)
 
 
+def unbpe(data):
+    """bpe_decode a "BPE " entry; anything else comes back as it is."""
+    return bpe_decode(data) if data[:4] == b'BPE ' else data
+
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 # svrmod.exe beside this file (the player's "Mod Maker Tools" folder), else the
 # developer build (modmaker/build_cli.sh -> port/out/modmaker)

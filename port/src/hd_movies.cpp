@@ -15,8 +15,8 @@
 // An HD movie is an .mp4: the game opens a stub .bik of its size and length
 // (every frame "all skip": nearly free to decode) and after each step the
 // decoder's frame for that time is written over the set Bink just decoded.
-// Size: the mod's .bik fallback's (320 / 640 / 1024), else a square .mp4's
-// (the first of those it fits), else 1024 - the
+// Size: 320 for a 320 .bik fallback or a square .mp4 up to 320, else 1024 (640's
+// luma drew shifted: not used) - the
 // game's own movie layout at that size (the big screen the top size*220/320
 // rows, shown at 16:9, the stage strip below): a square .mp4 is taken as
 // laid out so, any other fills the big screen (stretched to it) over a black
@@ -26,8 +26,8 @@
 // scales to the size and gives NV12) on a thread per open movie, a frame
 // ahead. Where it can't decode (no H.264: a Windows "N" edition, Proton on
 // the Steam Deck) RegisterHdMovie says no and the fallback .bik plays.
-// Android: the NDK's MediaExtractor + MediaCodec into an image reader (the
-// phone's own decoder), scaled to the frame size on the movie's thread; no
+// Android: the NDK's MediaExtractor + MediaCodec (the phone's own decoder),
+// its output buffers scaled to the frame size on the movie's thread; no
 // decoder for it on the phone: the fallback .bik.
 //
 // Test aid: SVR2011_TEST_HD_MOVIES=1 logs the decoders.
@@ -41,17 +41,21 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <fstream>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <thread>
 #include <vector>
 
 #include <rex/hook.h>
 #include <rex/logging.h>
 #include <rex/ppc.h>
+#include <rex/thread.h>
 
 #include "generated/default/svr2011_init.h"
 #include "user_movies.h"
+#include "util.h"
 
 extern "C" {
 #include "bink_encode.h"
@@ -74,8 +78,6 @@ using Microsoft::WRL::ComPtr;
 #include <fcntl.h>
 #include <sys/resource.h>
 #include <unistd.h>
-#include <media/NdkImage.h>
-#include <media/NdkImageReader.h>
 #include <media/NdkMediaCodec.h>
 #include <media/NdkMediaExtractor.h>
 #endif
@@ -105,10 +107,7 @@ struct HdMovie {
 std::mutex g_mutex;
 std::map<std::string, HdMovie> g_movies;  // by the stub's file name (lower case)
 
-std::string Lower(std::string s) {
-  for (char& c : s) c = char(std::tolower(uint8_t(c)));
-  return s;
-}
+using svr2011::Lower;
 
 // A .bik's size from its header (0: not one).
 int BinkSize(const fs::path& bik) {
@@ -179,12 +178,33 @@ class DecoderBase {
     const Frame* best = nullptr;
     for (const Frame& f : frames_)
       if (f.ready && f.time <= seconds + 0.5 / kFps && (!best || f.time > best->time)) best = &f;
+    // (the game showing the movie 3 s with no frame from the decoder: said once - the
+    // screen is the stub's black)
+    if (!best && !shown_ && !told_ && seconds >= 3.0) {
+      told_ = true;
+      REXLOG_WARN("[svr2011] hd movies: {} has shown 3 s with no decoded frame (black)",
+                  movie_.mp4.filename().string());
+    }
     if (!best) return;
+    shown_ = true;
     for (uint32_t r = 0; r < h_; ++r) std::memcpy(y + size_t(r) * ypitch, best->nv12.data() + size_t(r) * w_, w_);
+    // Every row of the colour planes (w_ / 2 of them): the picture's colour rows, and neutral (128) where the
+    // picture has none (a wide movie's strip under the big screen: black, not the stub's bytes - green there).
+    // (The "down" rows of de9f8027 - colour written 12 rows lower at 320, 6 at 1024 - made up for the planes'
+    // address 4 KB off (the movie step's hook, below); with it right the colour goes level with its picture.
+    // Test aid SVR2011_TEST_CHROMA_DOWN=<rows>: that many lower, wrapping round - an A/B of the colour's place.)
+    static const int test_down = [] { const char* v = std::getenv("SVR2011_TEST_CHROMA_DOWN"); return v ? std::atoi(v) : 0; }();
+    const uint32_t down = uint32_t(std::max(test_down, 0));
     const uint8_t* uv = best->nv12.data() + size_t(w_) * h_;
-    for (uint32_t r = 0; r < h_ / 2; ++r) {
-      uint8_t* u = cb + size_t(r) * cpitch;
-      uint8_t* v = cr + size_t(r) * cpitch;
+    const uint32_t rows = w_ / 2;
+    for (uint32_t k = 0; k < rows; ++k) {
+      const uint32_t r = (k + rows - down % rows) % rows;
+      uint8_t* u = cb + size_t(k) * cpitch;
+      uint8_t* v = cr + size_t(k) * cpitch;
+      if (r >= h_ / 2) {
+        std::memset(u, 128, rows), std::memset(v, 128, rows);
+        continue;
+      }
       const uint8_t* s = uv + size_t(r) * w_;
       for (uint32_t x = 0; x < w_ / 2; ++x) u[x] = s[2 * x], v[x] = s[2 * x + 1];
     }
@@ -199,7 +219,7 @@ class DecoderBase {
 
   // (the subclass starts its thread when constructed and stops it in its
   // destructor, while its own members still exist)
-  void Start() { thread_ = std::thread([this] { Run(); }); }
+  void Start() { thread_ = std::thread([this] { rex::thread::set_current_thread_name("hd movie"); Run(); }); }
   void Stop() {
     stop_ = true;
     if (thread_.joinable()) thread_.join();
@@ -231,6 +251,7 @@ class DecoderBase {
  private:
   std::thread thread_;
   std::atomic<double> want_{0.0};
+  bool shown_ = false, told_ = false;  // (Write's: a frame shown; the no-frame warning given)
   std::mutex mutex_;
   Frame frames_[3];
 };
@@ -250,24 +271,39 @@ bool MfOn() {
 // The GPU's video decoder for the readers: a D3D11 device (video support,
 // shared by the movies' threads) in a DXGI device manager - without one
 // Media Foundation decodes H.264 and scales on the CPU, next to the game's
-// own threads. nullptr: none (no such GPU / driver): the CPU then.
-IMFDXGIDeviceManager* GpuManager() {
-  static std::once_flag once;
+// own threads. nullptr: none (no such GPU / driver): the CPU then. A device
+// the driver lost (removed: a driver reset, the GPU's power state) is made
+// again - every reader on the lost one gives no pictures.
+ComPtr<IMFDXGIDeviceManager> GpuManager() {
+  static std::mutex mutex;
+  static ComPtr<ID3D11Device> device;
   static ComPtr<IMFDXGIDeviceManager> manager;
-  std::call_once(once, [] {
-    ComPtr<ID3D11Device> device;
-    D3D_FEATURE_LEVEL level;
-    if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, nullptr,
-                                 0, D3D11_SDK_VERSION, &device, &level, nullptr)))
-      return;
-    ComPtr<ID3D10Multithread> mt;
-    if (SUCCEEDED(device.As(&mt))) mt->SetMultithreadProtected(TRUE);
-    UINT token = 0;
-    ComPtr<IMFDXGIDeviceManager> m;
-    if (FAILED(MFCreateDXGIDeviceManager(&token, &m)) || FAILED(m->ResetDevice(device.Get(), token))) return;
-    manager = m;
-  });
-  return manager.Get();
+  static bool failed = false;
+  std::lock_guard lock(mutex);
+  if (device && device->GetDeviceRemovedReason() != S_OK) {
+    REXLOG_WARN("[svr2011] hd movies: the GPU video device was lost (0x{:08X}) - made again",
+                uint32_t(device->GetDeviceRemovedReason()));
+    device.Reset(), manager.Reset();
+  }
+  if (manager || failed) return manager;
+  D3D_FEATURE_LEVEL level;
+  ComPtr<ID3D11Device> d;
+  ComPtr<IMFDXGIDeviceManager> m;
+  UINT token = 0;
+  if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, nullptr,
+                               0, D3D11_SDK_VERSION, &d, &level, nullptr)) ||
+      FAILED(MFCreateDXGIDeviceManager(&token, &m))) {
+    failed = true;
+    return nullptr;
+  }
+  ComPtr<ID3D10Multithread> mt;
+  if (SUCCEEDED(d.As(&mt))) mt->SetMultithreadProtected(TRUE);
+  if (FAILED(m->ResetDevice(d.Get(), token))) {
+    failed = true;
+    return nullptr;
+  }
+  device = d, manager = m;
+  return manager;
 }
 
 // A source reader for `mp4` giving NV12 at w x h (scaled by the reader; on
@@ -275,10 +311,10 @@ IMFDXGIDeviceManager* GpuManager() {
 ComPtr<IMFSourceReader> OpenReader(const fs::path& mp4, uint32_t w, uint32_t h, bool gpu = false) {
   ComPtr<IMFAttributes> attrs;
   ComPtr<IMFSourceReader> reader;
-  IMFDXGIDeviceManager* manager = gpu ? GpuManager() : nullptr;
+  ComPtr<IMFDXGIDeviceManager> manager = gpu ? GpuManager() : nullptr;
   if (gpu && !manager) return nullptr;
   if (FAILED(MFCreateAttributes(&attrs, 3)) ||
-      (manager && FAILED(attrs->SetUnknown(MF_SOURCE_READER_D3D_MANAGER, manager))) ||
+      (manager && FAILED(attrs->SetUnknown(MF_SOURCE_READER_D3D_MANAGER, manager.Get()))) ||
       FAILED(attrs->SetUINT32(MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, TRUE)) ||
       FAILED(attrs->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, TRUE)) ||  // (the GPU's decoder where it has one)
       FAILED(MFCreateSourceReaderFromURL(mp4.wstring().c_str(), attrs.Get(), &reader)))
@@ -333,37 +369,41 @@ class Decoder : public DecoderBase {
     // (below the game's own threads: a frame late on the titantron is better
     // than a frame late in the match)
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
-    if (!MfOn()) return;
-    // (the GPU's decoder where it has one, else the CPU's)
+    if (!MfOn()) {
+      REXLOG_WARN("[svr2011] hd movies: no Media Foundation on the decoder's thread - {} stays black",
+                  movie_.mp4.filename().string());
+      return;
+    }
+    // (the GPU's decoder where it has one, else the CPU's; a GPU reader that
+    // gives no picture - no frame in kGpuWait, a failed read or copy before
+    // the first - goes over to the CPU's: a black screen otherwise)
+    constexpr auto kGpuWait = std::chrono::milliseconds(1500);
     bool gpu = true;
     ComPtr<IMFSourceReader> reader = OpenReader(movie_.mp4, w_, h_, true);
-    if (!reader) {
-      gpu = false;
-      reader = OpenReader(movie_.mp4, w_, h_);
-      // (the CPU's: its decoder on 2 threads - its own work queue took half
-      // a core next to the game's threads)
-      ComPtr<IMFSourceReaderEx> ex;
-      ComPtr<IMFTransform> decoder;
-      ComPtr<ICodecAPI> codec;
-      GUID category = {};
-      if (reader && SUCCEEDED(reader.As(&ex)) &&
-          SUCCEEDED(ex->GetTransformForStream(DWORD(MF_SOURCE_READER_FIRST_VIDEO_STREAM), 0, &category, &decoder)) &&
-          SUCCEEDED(decoder.As(&codec))) {
-        VARIANT v;
-        VariantInit(&v);
-        v.vt = VT_UI4;
-        v.ulVal = 2;
-        codec->SetValue(&CODECAPI_AVDecNumWorkerThreads, &v);
-      }
-    }
+    if (!reader) gpu = false, reader = OpenCpuReader();
     if (!reader) {
       REXLOG_WARN("[svr2011] hd movies: can't decode {}", movie_.mp4.string());
       return;
     }
     if (LogOn()) REXLOG_INFO("[svr2011] hd movies: decoding {} at {}x{} ({})", movie_.mp4.string(), w_, h_, gpu ? "GPU" : "CPU");
+    auto opened = std::chrono::steady_clock::now();
+    bool pictured = false;  // (a frame decoded and copied)
+    const auto to_cpu = [&](const char* why) {
+      REXLOG_WARN("[svr2011] hd movies: {} gave no picture on the GPU ({}) - decoding on the CPU",
+                  movie_.mp4.filename().string(), why);
+      reader = OpenCpuReader();
+      gpu = false;
+      opened = std::chrono::steady_clock::now();
+      return reader != nullptr;
+    };
     double last = -1;
     bool ended = false;
     while (!stop_) {
+      if (gpu && !pictured && std::chrono::steady_clock::now() - opened > kGpuWait) {
+        if (!to_cpu("nothing in 1.5 s")) break;
+        last = -1, ended = false;
+        Clear();
+      }
       if (Looped(last)) {
         PROPVARIANT p;
         PropVariantInit(&p);
@@ -381,14 +421,26 @@ class Decoder : public DecoderBase {
       DWORD flags = 0;
       LONGLONG t = 0;
       ComPtr<IMFSample> sample;
-      if (FAILED(reader->ReadSample(DWORD(MF_SOURCE_READER_FIRST_VIDEO_STREAM), 0, nullptr, &flags, &t, &sample)) ||
-          (flags & MF_SOURCE_READERF_ENDOFSTREAM)) {
+      const HRESULT read =
+          reader->ReadSample(DWORD(MF_SOURCE_READER_FIRST_VIDEO_STREAM), 0, nullptr, &flags, &t, &sample);
+      if (FAILED(read) || (flags & MF_SOURCE_READERF_ENDOFSTREAM)) {
+        if (!pictured && gpu) {
+          if (!to_cpu(FAILED(read) ? "a failed read" : "no frame before the end")) break;
+          last = -1;
+          continue;
+        }
+        if (!pictured && !ended)
+          REXLOG_WARN("[svr2011] hd movies: {}: no frame decoded (0x{:08X}) - it stays black",
+                      movie_.mp4.filename().string(), uint32_t(read));
         ended = true;  // (the end: the last frame stays until the game loops or closes)
         continue;
       }
       if (!sample) continue;
       ComPtr<IMFMediaBuffer> buffer;
-      if (FAILED(sample->ConvertToContiguousBuffer(&buffer))) continue;
+      if (FAILED(sample->ConvertToContiguousBuffer(&buffer))) {
+        if (!pictured && gpu && !to_cpu("a frame it couldn't copy")) break;
+        continue;
+      }
       Frame f;
       f.nv12.resize(size_t(w_) * h_ * 3 / 2);
       ComPtr<IMF2DBuffer> b2;
@@ -410,20 +462,51 @@ class Decoder : public DecoderBase {
           copied = true;
         }
       }
-      if (!copied) continue;
+      // (test aid: SVR2011_TEST_HD_NO_GPU_FRAMES=1 - the GPU's frames dropped, as if it gave none)
+      static const bool no_gpu_frames = std::getenv("SVR2011_TEST_HD_NO_GPU_FRAMES") != nullptr;
+      if (gpu && no_gpu_frames) copied = false;
+      if (!copied) {
+        if (!pictured && gpu && !to_cpu("a frame it couldn't copy")) break;
+        continue;
+      }
+      if (!pictured && (gpu ? LogOn() : true))
+        REXLOG_INFO("[svr2011] hd movies: {}: first frame after {} ms ({})", movie_.mp4.filename().string(),
+                    std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - opened)
+                        .count(),
+                    gpu ? "GPU" : "CPU");
+      pictured = true;
       f.time = double(t) / 1e7;
       f.ready = true;
       last = f.time;
       Push(std::move(f));
     }
   }
+
+  // The CPU's reader: its decoder on 2 threads (its own work queue took half
+  // a core next to the game's threads).
+  ComPtr<IMFSourceReader> OpenCpuReader() {
+    ComPtr<IMFSourceReader> reader = OpenReader(movie_.mp4, w_, h_);
+    ComPtr<IMFSourceReaderEx> ex;
+    ComPtr<IMFTransform> decoder;
+    ComPtr<ICodecAPI> codec;
+    GUID category = {};
+    if (reader && SUCCEEDED(reader.As(&ex)) &&
+        SUCCEEDED(ex->GetTransformForStream(DWORD(MF_SOURCE_READER_FIRST_VIDEO_STREAM), 0, &category, &decoder)) &&
+        SUCCEEDED(decoder.As(&codec))) {
+      VARIANT v;
+      VariantInit(&v);
+      v.vt = VT_UI4;
+      v.ulVal = 2;
+      codec->SetValue(&CODECAPI_AVDecNumWorkerThreads, &v);
+    }
+    return reader;
+  }
 };
 
 #elif defined(__ANDROID__)
 
-// Android: the NDK's MediaExtractor + MediaCodec into an image reader (the
-// phone's own decoder, its planes in whatever layout), scaled here to the
-// frame size.
+// Android: the NDK's MediaExtractor + MediaCodec (the phone's own decoder),
+// scaled here to the frame size.
 
 // The mp4's video track.
 struct Track {
@@ -476,40 +559,91 @@ bool Probe(const fs::path& mp4, double* seconds, uint32_t* sw, uint32_t* sh) {
   return true;
 }
 
+// The decoder's own output buffers, asked for as semi-planar (NV12), else
+// planar (I420), the planes `stride` bytes a row and `slice` rows apart. (Not
+// a surface into an image reader: on the Galaxy Z Fold7 that gave no picture
+// at all - every mod's tron black; and not "flexible": its buffers then say
+// only that - no telling NV12 from I420.)
+constexpr int32_t kColourPlanar = 19, kColourPackedPlanar = 20, kColourSemiPlanar = 21,
+                  kColourPackedSemiPlanar = 39, kColourQcom32m = 0x7FA30C04,  // (Qualcomm's NV12, 128 / 32 aligned)
+    kColourFlexible = 0x7F420888;
+
 class Decoder : public DecoderBase {
  public:
   explicit Decoder(HdMovie movie) : DecoderBase(std::move(movie)) { Start(); }
   ~Decoder() override { Stop(); }
 
  private:
+  // The output buffers' layout (the decoder's output format).
+  struct Layout {
+    int32_t w = 0, h = 0;          // (the picture: the crop's size)
+    int32_t left = 0, top = 0;     // (its corner in the buffer)
+    int32_t stride = 0, slice = 0;
+    int32_t colour = 0;
+    bool semi = false, known = false;
+  };
+
+  Layout ReadLayout(AMediaFormat* f) const {
+    Layout l;
+    int32_t bw = 0, bh = 0;
+    AMediaFormat_getInt32(f, AMEDIAFORMAT_KEY_WIDTH, &bw);
+    AMediaFormat_getInt32(f, AMEDIAFORMAT_KEY_HEIGHT, &bh);
+    AMediaFormat_getInt32(f, AMEDIAFORMAT_KEY_STRIDE, &l.stride);
+    AMediaFormat_getInt32(f, AMEDIAFORMAT_KEY_SLICE_HEIGHT, &l.slice);
+    AMediaFormat_getInt32(f, AMEDIAFORMAT_KEY_COLOR_FORMAT, &l.colour);
+    if (l.stride < bw) l.stride = bw;
+    if (l.slice < bh) l.slice = bh;
+    l.w = bw, l.h = bh;
+    int32_t cl = 0, ct = 0, cr = 0, cb = 0;
+    if (AMediaFormat_getRect(f, AMEDIAFORMAT_KEY_DISPLAY_CROP, &cl, &ct, &cr, &cb) && cr >= cl && cb >= ct &&
+        cr < l.stride && cb < l.slice)
+      l.left = cl & ~1, l.top = ct & ~1, l.w = cr - cl + 1, l.h = cb - ct + 1;
+    // (a decoder that still says only "flexible": the layout it took when asked)
+    const int32_t c = l.colour == kColourFlexible ? asked_ : l.colour;
+    l.semi = c == kColourSemiPlanar || c == kColourPackedSemiPlanar || c == kColourQcom32m;
+    l.known = l.w > 0 && l.h > 0 && (l.semi || c == kColourPlanar || c == kColourPackedPlanar);
+    return l;
+  }
+
+  int32_t asked_ = kColourFlexible;  // (the colour format the decoder took)
+
   void Run() override {
     setpriority(PRIO_PROCESS, 0, 10);  // (this thread: below the game's own)
     Track t;
-    AImageReader* images = nullptr;
-    ANativeWindow* window = nullptr;
     AMediaCodec* codec = nullptr;
-    bool ok = OpenTrack(movie_.mp4, &t) &&
-              AImageReader_new(t.w, t.h, AIMAGE_FORMAT_YUV_420_888, 4, &images) == AMEDIA_OK &&
-              AImageReader_getWindow(images, &window) == AMEDIA_OK;
+    bool ok = OpenTrack(movie_.mp4, &t);
     if (ok) {
       codec = AMediaCodec_createDecoderByType(t.mime);
-      ok = codec && AMediaCodec_configure(codec, t.format, window, nullptr, 0) == AMEDIA_OK &&
-           AMediaCodec_start(codec) == AMEDIA_OK;
+      ok = false;
+      for (const int32_t colour : {kColourSemiPlanar, kColourPlanar, kColourFlexible}) {
+        if (!codec) break;
+        AMediaFormat_setInt32(t.format, AMEDIAFORMAT_KEY_COLOR_FORMAT, colour);
+        if (AMediaCodec_configure(codec, t.format, nullptr, nullptr, 0) == AMEDIA_OK) {
+          asked_ = colour;
+          ok = AMediaCodec_start(codec) == AMEDIA_OK;
+          break;
+        }
+        // (refused: a fresh decoder for the next ask - a failed configure can leave it unusable)
+        AMediaCodec_delete(codec);
+        codec = AMediaCodec_createDecoderByType(t.mime);
+      }
     }
     if (!ok) {
       REXLOG_WARN("[svr2011] hd movies: can't decode {}", movie_.mp4.string());
     } else {
       if (LogOn())
         REXLOG_INFO("[svr2011] hd movies: decoding {} ({}x{}) at {}x{} (MediaCodec)", movie_.mp4.string(), t.w, t.h, w_, h_);
-      Decode(t, codec, images);
+      Decode(t, codec);
       AMediaCodec_stop(codec);
     }
     if (codec) AMediaCodec_delete(codec);
-    if (images) AImageReader_delete(images);
   }
 
-  void Decode(Track& t, AMediaCodec* codec, AImageReader* images) {
+  void Decode(Track& t, AMediaCodec* codec) {
     constexpr int64_t kWaitUs = 2000;
+    const auto opened = std::chrono::steady_clock::now();
+    Layout layout;
+    bool have_layout = false, pictured = false, told = false;
     double last = -1;
     bool input_done = false, ended = false;
     while (!stop_) {
@@ -542,59 +676,83 @@ class Decoder : public DecoderBase {
       }
       AMediaCodecBufferInfo info;
       const ssize_t out = AMediaCodec_dequeueOutputBuffer(codec, &info, kWaitUs);
+      if (out == AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED || (out >= 0 && !have_layout)) {
+        AMediaFormat* f = AMediaCodec_getOutputFormat(codec);
+        if (f) {
+          layout = ReadLayout(f);
+          AMediaFormat_delete(f);
+          have_layout = true;
+          if (LogOn() || !layout.known)
+            REXLOG_INFO("[svr2011] hd movies: {}: the decoder gives {}x{} (crop at {},{}), stride {}, {} rows, colour 0x{:X} (asked {}){}",
+                        movie_.mp4.filename().string(), layout.w, layout.h, layout.left, layout.top, layout.stride,
+                        layout.slice, uint32_t(layout.colour), asked_, layout.known ? "" : " - a layout not read here: black");
+        }
+      }
       if (out < 0) continue;
       const bool eos = (info.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM) != 0;
-      const bool picture = info.size > 0;
-      AMediaCodec_releaseOutputBuffer(codec, size_t(out), picture);  // (to the image reader)
-      if (eos) ended = true;  // (the end: the last frame stays until the game loops or closes)
-      if (!picture) continue;
-      AImage* image = nullptr;
-      for (int k = 0; k < 200; ++k) {  // (the picture arrives a moment later)
-        if (AImageReader_acquireNextImage(images, &image) == AMEDIA_OK) break;
-        image = nullptr;
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      size_t cap = 0;
+      const uint8_t* buffer = info.size > 0 ? AMediaCodec_getOutputBuffer(codec, size_t(out), &cap) : nullptr;
+      bool pushed = false;
+      if (buffer && layout.known && size_t(info.offset) < cap) {
+        Frame f;
+        f.nv12.resize(size_t(w_) * h_ * 3 / 2);
+        if (Scale(layout, buffer + info.offset, std::min(cap - size_t(info.offset), size_t(info.size)), f.nv12.data())) {
+          f.time = double(info.presentationTimeUs) / 1e6;
+          f.ready = true;
+          last = f.time;
+          Push(std::move(f));
+          pushed = true;
+        }
       }
-      if (!image) continue;
-      Frame f;
-      f.nv12.resize(size_t(w_) * h_ * 3 / 2);
-      const bool scaled = Scale(image, f.nv12.data());
-      AImage_delete(image);
-      if (!scaled) continue;
-      f.time = double(info.presentationTimeUs) / 1e6;
-      f.ready = true;
-      last = f.time;
-      Push(std::move(f));
+      AMediaCodec_releaseOutputBuffer(codec, size_t(out), false);
+      if (eos) ended = true;  // (the end: the last frame stays until the game loops or closes)
+      if (pushed && !pictured) {
+        pictured = true;
+        if (LogOn())
+          REXLOG_INFO("[svr2011] hd movies: {}: first frame after {} ms", movie_.mp4.filename().string(),
+                      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - opened).count());
+      } else if (!pushed && info.size > 0 && layout.known && !told) {
+        told = true;
+        REXLOG_WARN("[svr2011] hd movies: {}: a frame of {} bytes too small for its layout - skipped",
+                    movie_.mp4.filename().string(), info.size);
+      }
     }
   }
 
-  // The decoder's picture (any 4:2:0 plane layout) to the frame's NV12 at
+  // The decoder's picture (planar or semi-planar, `l`) to the frame's NV12 at
   // w_ x h_ (nearest pixel - the titantron's size is near the source's).
-  bool Scale(AImage* image, uint8_t* nv12) {
-    int32_t sw = 0, sh = 0;
-    AImage_getWidth(image, &sw);
-    AImage_getHeight(image, &sh);
-    uint8_t* plane[3] = {};
-    int len[3] = {}, row[3] = {}, pixel[3] = {1, 1, 1};
-    for (int p = 0; p < 3; ++p) {
-      AImage_getPlaneData(image, p, &plane[p], &len[p]);
-      AImage_getPlaneRowStride(image, p, &row[p]);
-      AImage_getPlanePixelStride(image, p, &pixel[p]);
+  // False: the buffer is shorter than its layout says.
+  bool Scale(const Layout& l, const uint8_t* data, size_t len, uint8_t* nv12) {
+    const size_t luma = size_t(l.stride) * l.slice;
+    const uint8_t* y0 = data + size_t(l.top) * l.stride + l.left;
+    const uint8_t *u0, *v0;
+    size_t crow, cpix;
+    if (l.semi) {
+      crow = size_t(l.stride), cpix = 2;
+      u0 = data + luma + size_t(l.top / 2) * crow + size_t(l.left / 2) * 2;
+      v0 = u0 + 1;
+    } else {
+      crow = size_t(l.stride / 2), cpix = 1;
+      u0 = data + luma + size_t(l.top / 2) * crow + l.left / 2;
+      v0 = u0 + crow * size_t(l.slice / 2);
     }
-    if (sw <= 0 || sh <= 0 || !plane[0] || !plane[1] || !plane[2]) return false;
+    // (the last byte read: the bottom right of the last chroma plane)
+    const uint8_t* end = std::max(u0, v0) + size_t((l.h + 1) / 2 - 1) * crow + size_t((l.w + 1) / 2 - 1) * cpix;
+    if (end >= data + len) return false;
     for (uint32_t y = 0; y < h_; ++y) {
-      const uint8_t* src = plane[0] + size_t(int64_t(y) * sh / h_) * row[0];
+      const uint8_t* src = y0 + size_t(int64_t(y) * l.h / h_) * l.stride;
       uint8_t* dst = nv12 + size_t(y) * w_;
-      for (uint32_t x = 0; x < w_; ++x) dst[x] = src[size_t(int64_t(x) * sw / w_) * pixel[0]];
+      for (uint32_t x = 0; x < w_; ++x) dst[x] = src[size_t(int64_t(x) * l.w / w_)];
     }
     uint8_t* uv = nv12 + size_t(w_) * h_;
     for (uint32_t y = 0; y < h_ / 2; ++y) {
-      const size_t sy = size_t(int64_t(y) * sh / h_);
-      const uint8_t* u = plane[1] + sy * row[1];
-      const uint8_t* v = plane[2] + sy * row[2];
+      const size_t sy = size_t(int64_t(y) * l.h / h_);
+      const uint8_t* u = u0 + sy * crow;
+      const uint8_t* v = v0 + sy * crow;
       uint8_t* dst = uv + size_t(y) * w_;
       for (uint32_t x = 0; x < w_ / 2; ++x) {
-        const size_t sx = size_t(int64_t(x) * sw / w_);
-        dst[2 * x] = u[sx * pixel[1]], dst[2 * x + 1] = v[sx * pixel[2]];
+        const size_t sx = size_t(int64_t(x) * l.w / w_);
+        dst[2 * x] = u[sx * cpix], dst[2 * x + 1] = v[sx * cpix];
       }
     }
     return true;
@@ -614,6 +772,104 @@ class Decoder : public DecoderBase {
 
 #endif
 
+// What a movie's probe found, kept beside the stubs (.hd/probes.txt): a probe opens the file and a decoder - a
+// tenth of a second a movie on a phone, 10 s before the first picture with 97 mod movies - and the answer only
+// changes with the file. Good answers only: one that doesn't play is asked again at the next start (a decoder may
+// have come). Made on another kind of machine (a copied folder): not used, its decoders aren't this one's.
+struct ProbeFacts {
+  uintmax_t size = 0;
+  int64_t time = 0;
+  double seconds = 0;
+  uint32_t sw = 0, sh = 0;
+};
+#if defined(_WIN32)
+constexpr const char* kProbesHeader = "svr2011 movie probes 1 windows";
+#else
+constexpr const char* kProbesHeader = "svr2011 movie probes 1 android";
+#endif
+
+class ProbeCache {
+ public:
+  // True: the file is as it was when it was probed.
+  bool Find(const fs::path& folder, const fs::path& mp4, ProbeFacts* out) {
+    if (Off()) return false;
+    std::lock_guard lock(mutex_);
+    Load(folder);
+    const auto it = facts_.find(Key(mp4));
+    if (it == facts_.end()) return false;
+    std::error_code ec, ec2;
+    const uintmax_t size = fs::file_size(mp4, ec);
+    const auto time = fs::last_write_time(mp4, ec2);
+    if (ec || ec2 || it->second.size != size || it->second.time != int64_t(time.time_since_epoch().count())) return false;
+    *out = it->second;
+    return true;
+  }
+  void Add(const fs::path& folder, const fs::path& mp4, double seconds, uint32_t sw, uint32_t sh) {
+    if (Off()) return;
+    std::lock_guard lock(mutex_);
+    Load(folder);
+    std::error_code ec, ec2;
+    ProbeFacts f;
+    f.size = fs::file_size(mp4, ec);
+    const auto time = fs::last_write_time(mp4, ec2);
+    if (ec || ec2) return;
+    f.time = int64_t(time.time_since_epoch().count());
+    f.seconds = seconds, f.sw = sw, f.sh = sh;
+    facts_[Key(mp4)] = f;
+    fs::create_directories(folder / kHdFolder, ec);
+    // (added a line at a time: a start closed half way keeps what it found)
+    std::ofstream file(folder / kHdFolder / "probes.txt", fresh_ ? std::ios::trunc : std::ios::app);
+    if (fresh_) file << kProbesHeader << '\n';
+    fresh_ = false;
+    Write(file, Key(mp4), f);
+  }
+
+ private:
+  static bool Off() {
+    static const bool off = std::getenv("SVR2011_TEST_NO_PROBE_CACHE") != nullptr;
+    return off;
+  }
+  static std::string Key(const fs::path& mp4) {
+    const auto u = mp4.u8string();
+    return std::string(reinterpret_cast<const char*>(u.data()), u.size());
+  }
+  static void Write(std::ostream& file, const std::string& key, const ProbeFacts& f) {
+    file << f.size << ' ' << f.time << ' ' << f.seconds << ' ' << f.sw << ' ' << f.sh << ' ' << key << '\n';
+  }
+  void Load(const fs::path& folder) {
+    if (folder_ == folder) return;
+    folder_ = folder;
+    facts_.clear();
+    fresh_ = true;
+    const fs::path name = folder / kHdFolder / "probes.txt";
+    std::ifstream file(name);
+    std::string line;
+    if (!std::getline(file, line) || line != kProbesHeader) return;
+    fresh_ = false;
+    size_t lines = 0;
+    while (std::getline(file, line)) {
+      ++lines;
+      std::istringstream in(line);
+      ProbeFacts f;
+      std::string key;
+      if (!(in >> f.size >> f.time >> f.seconds >> f.sw >> f.sh) || f.seconds <= 0 || !f.sw || !f.sh) continue;
+      std::getline(in >> std::ws, key);
+      if (!key.empty()) facts_[key] = f;  // (a movie changed: its newest line counts)
+    }
+    if (lines <= facts_.size() * 2 + 32) return;
+    file.close();  // (mostly old lines: written again)
+    std::ofstream out(name, std::ios::trunc);
+    out << kProbesHeader << '\n';
+    for (const auto& [key, f] : facts_) Write(out, key, f);
+  }
+
+  std::mutex mutex_;
+  fs::path folder_;
+  std::map<std::string, ProbeFacts> facts_;
+  bool fresh_ = true;  // (the file isn't there or isn't ours: started again at the first new line)
+};
+ProbeCache g_probes;
+
 std::mutex g_open_mutex;
 std::map<uint32_t, std::unique_ptr<Decoder>> g_open;  // by the guest Bink
 
@@ -630,11 +886,16 @@ bool PrepareHdMovie(const fs::path& movies, const std::string& file, const fs::p
   double seconds = 0;
   uint32_t sw = 0, sh = 0;
   bool decodes = false;
-  // (on a thread of its own: Media Foundation's COM set-up stays off the caller's)
-  std::thread([&] { decodes = Probe(mp4, &seconds, &sw, &sh); }).join();
-  if (!decodes || seconds <= 0) {
-    REXLOG_INFO("[svr2011] hd movies: {} doesn't play here (no decoder) - its .bik does", mp4.filename().string());
-    return false;
+  if (ProbeFacts known; g_probes.Find(movies, mp4, &known)) {
+    seconds = known.seconds, sw = known.sw, sh = known.sh, decodes = true;
+  } else {
+    // (on a thread of its own: Media Foundation's COM set-up stays off the caller's)
+    std::thread([&] { rex::thread::set_current_thread_name("hd movie probe"); decodes = Probe(mp4, &seconds, &sw, &sh); }).join();
+    if (!decodes || seconds <= 0) {
+      REXLOG_INFO("[svr2011] hd movies: {} doesn't play here (no decoder) - its .bik does", mp4.filename().string());
+      return false;
+    }
+    g_probes.Add(movies, mp4, seconds, sw, sh);
   }
   HdMovie m;
   m.mp4 = mp4;
@@ -642,7 +903,8 @@ bool PrepareHdMovie(const fs::path& movies, const std::string& file, const fs::p
   m.square = sw * 10 / sh >= 9 && sw * 10 / sh <= 11;
   // (no .bik: a square .mp4 - a shrunk 320 x 320 entrance .bik, movie_shrink.py - at the
   // first of the game's sizes it fits, not 1024: ten times the pixels to decode for nothing)
-  m.size = fallback ? fallback : !m.square ? 1024 : sw <= 320 ? 320 : sw <= 640 ? 640 : 1024;
+  // (640: its luma drew a third of a screen to the right - 1024 instead)
+  m.size = (fallback ? fallback == 320 : m.square && sw <= 320) ? 320 : 1024;
   const int frames = std::max(1, int(seconds * kFps + 0.5));
   const fs::path stub = movies / kHdFolder / file;
   // (made again when the mp4 or the size changed: the stub's own size and
@@ -676,6 +938,12 @@ bool RegisterHdMovie(const std::string& file, const fs::path& mp4) {
 std::string HdMovieFile(const std::string& file) {
   std::lock_guard lock(g_mutex);
   return g_movies.count(Lower(file)) ? std::string(kHdFolder) + "\\" + file : file;
+}
+
+fs::path HdMovieMp4(const std::string& file) {
+  std::lock_guard lock(g_mutex);
+  const auto it = g_movies.find(Lower(file));
+  return it != g_movies.end() ? it->second.mp4 : fs::path();
 }
 
 }  // namespace svr2011
@@ -726,22 +994,26 @@ REX_HOOK_RAW(sub_82592B90) {
   const uint32_t movie = ctx.r3.u32;
   __imp__sub_82592B90(ctx, base);
   if (!movie) return;
-  const uint32_t bink = Rd32(base + movie + 12), sets = Rd32(base + movie + 32);
+  // (guest E0000000+ - physical, where the movie's planes are - sits REX_PHYS_HOST_OFFSET further on the host, as
+  // the game's own loads have it: written at base + address the frames went 4 KB early on Windows - the planes'
+  // last rows never written, and the 4 KB before each plane overwritten: coloured / green lines (2.1.9 reports))
+  const auto at = [&](uint32_t a) { return base + a + REX_PHYS_HOST_OFFSET(a); };
+  const uint32_t bink = Rd32(at(movie + 12)), sets = Rd32(at(movie + 32));
   if (!bink || !sets) return;
   std::lock_guard lock(g_open_mutex);
   const auto it = g_open.find(bink);
   if (it == g_open.end()) return;
-  const uint32_t frame = Rd32(base + bink + 12), i = Rd32(base + sets + 148);
+  const uint32_t frame = Rd32(at(bink + 12)), i = Rd32(at(sets + 148));
   if (!frame || i > 1) return;
   const uint32_t set = sets + 152 + i * 48;
-  const uint32_t y = Rd32(base + set + 4), yp = Rd32(base + set + 8);
-  const uint32_t cr = Rd32(base + set + 16), cp = Rd32(base + set + 20), cb = Rd32(base + set + 28);
+  const uint32_t y = Rd32(at(set + 4)), yp = Rd32(at(set + 8));
+  const uint32_t cr = Rd32(at(set + 16)), cp = Rd32(at(set + 20)), cb = Rd32(at(set + 28));
   if (!y || !cr || !cb || !yp || !cp) return;
   static int told = 0;
   if (LogOn() && told < 3) {
     ++told;
-    REXLOG_INFO("[svr2011] hd movies: frame {} set {} Y {:08X}/{} cR {:08X} cB {:08X}/{} planes {}x{}", frame, i, y, yp, cr,
-                cb, cp, Rd32(base + sets + 132), Rd32(base + sets + 136));
+    REXLOG_INFO("[svr2011] hd movies: frame {} set {} Y {:08X}/{} cR {:08X} cB {:08X}/{} planes {}x{} chroma {}x{}", frame, i, y, yp, cr,
+                cb, cp, Rd32(at(sets + 132)), Rd32(at(sets + 136)), Rd32(at(sets + 140)), Rd32(at(sets + 144)));
   }
-  it->second->Write(double(frame - 1) / kFps, base + y, yp, base + cr, base + cb, cp);
+  it->second->Write(double(frame - 1) / kFps, at(y), yp, at(cr), at(cb), cp);
 }

@@ -81,7 +81,7 @@ def mark_items(game, items):
         key = it.get('key', '')
         if (game, key) in KNOWN_CRASHES:
             it['status'], it['reason'] = 'crashes', KNOWN_CRASHES[(game, key)]
-        elif game in NATIVE_GAMES and key[:2] == 'bg' and key[2:4].isdigit() and int(key[2:4]) >= 60:
+        elif game in NATIVE_GAMES and not it.get('dlc') and key[:2] == 'bg' and key[2:4].isdigit() and int(key[2:4]) >= 60:
             it['status'], it['reason'] = 'special', 'a backstage room or studio / photo stage, not an arena'
         else:
             it.setdefault('status', 'ok')
@@ -161,14 +161,21 @@ MOTION_BANK = 0x7922
 HOST_COVERS = (0x3C4, 0x3C5, 0x3C6, 0x3C7)
 MAX_ARENA = 9_400_000  # bytes: the smaller 2011 hosts (until 2.1.6 a bigger file than its slot's crashed)
 # Since 2.1.6 an arena may be bigger than its slot's shipped file (the game reads its stage at its own size:
-# src/arena_mods.cpp) - up to ARENA_FILE_MAX (tested 18.1 MB) - and hold more 3D detail than 2011's own (STOCK_VERTS;
-# src/ring_rules.cpp): such an arena says needs=model_budget.NEEDS_VERSION, older games crash loading it.
-ARENA_FILE_MAX = 17 << 20
+# src/arena_mods.cpp) - up to ARENA_FILE_MAX (tested 21.5 MB: 1v1 and a 6-man at 60 fps, 27 Oct) - and hold more 3D
+# detail than 2011's own (STOCK_VERTS; src/ring_rules.cpp): such an arena says needs=model_budget.NEEDS_VERSION, older
+# games crash loading it.
+ARENA_FILE_MAX = 21 << 20
 STOCK_VERTS = 65450
+# Meshes (the stage's drawn pieces): the game's own arenas have up to STOCK_MESHES (bg01). Each is drawn with its own
+# render commands every frame; past MAX_MESHES the match's command queue runs full in a 6-man and the game crashes
+# (27 Oct: 1,770 meshes crashed with stock wrestlers; 1,062 held 5 minutes with six 1,489-page superstars) - the same
+# numbers as the Mod Maker's (modmaker/svrfmt/arena.h kMaxArenaMeshes / kMaxArenaMeshesNew).
+STOCK_MESHES = 446
+MAX_MESHES = 900
 
 
-def stage_vertices(data):
-    """every JBOY model's vertices in an arena pac's STG entries"""
+def stage_vertices(data, meshes_out=None):
+    """every JBOY model's vertices in an arena pac's STG entries (and their meshes into meshes_out[0])"""
     import jboy
     n = 0
     for typ, ents in svrfmt.epac_read(data)[1]:
@@ -181,16 +188,35 @@ def stage_vertices(data):
                 raw = svrfmt.bpe_decode(cb) if cb[:4] == b'BPE ' else cb
                 if raw[:4] == b'JBOY':
                     try:
-                        n += sum(len(s.verts) for s in jboy.read(raw).meshes)
+                        m = jboy.read(raw)
+                        n += sum(len(s.verts) for s in m.meshes)
+                        if meshes_out is not None:
+                            meshes_out[0] += len(m.meshes)
                     except Exception:  # noqa: BLE001
                         pass
     return n
 
 
+def crowd_area_line(data):
+    """the manifest's crowd_area= line from an SvR 2008 arena's own crowd fighting areas ('' when it has none)"""
+    import crowd_walkway
+    try:
+        area = crowd_walkway.crowd_area(data)
+    except Exception:  # (an arena without the stage text)
+        return ''
+    return 'crowd_area=%s\n' % area if area else ''
+
+
 def needs_line(data, host_size):
-    """the manifest's needs= line for an arena bigger than its slot's file or with more 3D detail ('' when neither)"""
+    """the manifest's needs= line for an arena bigger than its slot's file or with more 3D detail ('' when neither);
+    BadInput for more meshes than the game can draw (MAX_MESHES)"""
     import model_budget
-    if len(data) > host_size or stage_vertices(data) > STOCK_VERTS:
+    meshes = [0]
+    verts = stage_vertices(data, meshes)
+    if meshes[0] > MAX_MESHES:
+        raise BadInput('the arena has %d separate meshes; SvR 2011 can draw up to %d in a match (more crash a 6-man): '
+                       'leave some objects out or join small ones' % (meshes[0], MAX_MESHES))
+    if len(data) > host_size or verts > STOCK_VERTS or meshes[0] > STOCK_MESHES:
         return 'needs=%s\n' % model_budget.NEEDS_VERSION
     return ''
 
@@ -340,6 +366,21 @@ def svr2010_convert(disc, key, out, base=None, name=None, pac11=None, year='2010
             warnings.append('motion bank not replaced: %s' % e)
     with open(os.path.join(mod, 'arena.pac'), 'wb') as f:
         f.write(arena)
+    # (SvR 2010's match light sets are far darker than 2011's in some arenas - WrestleMania 25: set 10 ground 0.20 against
+    # RAW's 0.78 - wrestlers and ring dark in the match: those sets from 2011 RAW, as the Mod Maker's "Repair it" and
+    # its WWE '12+ converter do; svrmod lights, which leaves an arena that isn't dark as it is)
+    if pac11:
+        try:
+            import subprocess
+            import wwe13_entrance as WE
+            pac = os.path.join(mod, 'arena.pac')
+            r = subprocess.run([WE.find_svrmod(None), 'lights', pac, find_host(pac11, 1), pac], capture_output=True,
+                               text=True, timeout=120)
+            dark = [ln.split(':', 1)[1].strip() for ln in r.stdout.splitlines() if ln.startswith('dark sets:')]
+            if dark and dark[0]:
+                notes.append('match lighting too dark for SvR 2011 - 2011 RAW\'s sets used: %s' % dark[0])
+        except Exception as e:  # noqa: BLE001 - no svrmod.exe: the arena's own lights (the doctor offers the repair)
+            warnings.append('match lighting not checked: %s' % e)
 
     progress(40, 'pictures')
     match = disc.read('pac/menu/MatchHD.pac') if disc.exists('pac/menu/MatchHD.pac') else None
@@ -401,7 +442,7 @@ def svr2010_convert(disc, key, out, base=None, name=None, pac11=None, year='2010
     with open(os.path.join(mod, 'manifest.txt'), 'w', newline='\n') as f:
         f.write('type=arena\nid=%s\nname=%s\nauthor=SvR %s arena %s, ported by port tools\nversion=1.0\nbase=%s\n'
                 % (mod_id, name, year, 'bg%02d' % n, BASE_NAMES[base]) + needs_line(arena, host_size)
-                + ('vs_theme=%s\n' % vs_theme if vs_theme else ''))
+                + ('vs_theme=%s\n' % vs_theme if vs_theme else '') + crowd_area_line(arena))
     progress(80, 'packing')
     import wwe13_pack
     svrmod = os.path.join(out, mod_id + '.svrmod')
@@ -681,6 +722,9 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
     os.makedirs(os.path.join(mod, 'vs'), exist_ok=True)
     with open(os.path.join(mod, 'arena.pac'), 'wb') as f:
         f.write(data)
+    if game == 'svr2008':  # (its crowd area opened for 2011's crowd fighting: a walkway, the climb's area)
+        import crowd_walkway
+        notes.append('crowd area: %s' % crowd_walkway.patch_pac(os.path.join(mod, 'arena.pac')))
     progress(85, 'pictures')
     art = None
     if disc.exists('pac/menu/MatchHD.pac'):
@@ -732,7 +776,8 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
         os.rmdir(os.path.join(mod, 'vs'))
     with open(os.path.join(mod, 'manifest.txt'), 'w', newline='\n') as f:
         f.write('type=arena\nid=%s\nname=%s\nauthor=%s arena bg%02d, ported by port tools\nversion=1.0\nbase=%s\n'
-                % (mod_id, name, label, n, BASE_NAMES[base]) + needs_line(data, len(host)))
+                % (mod_id, name, label, n, BASE_NAMES[base]) + needs_line(data, len(host))
+                + (crowd_area_line(data) if game == 'svr2008' else ''))
     progress(92, 'packing the mod')
     import wwe13_pack
     svrmod = os.path.join(out, mod_id + '.svrmod')
@@ -754,11 +799,34 @@ def bg_list(disc):
     import re
     items = []
     for nm in disc.listdir('pac/bg'):
-        m = re.fullmatch(r'bg(\d+)\.pac', nm.lower())
+        m = re.fullmatch(r'bg(\d+)(_dlc\d+)?\.pac', nm.lower())   # (a package's: 2K15 bg51.pac, 2K16 bg60_dlc40.pac)
         if m:
             items.append({'key': nm.lower()[:-4], 'name': nm.lower()[:-4], 'arena': int(m.group(1)),
                           'size': disc.size('pac/bg/' + nm), 'in_2011': None})
+            if hasattr(disc, 'dlc') and not disc.disc.exists('pac/bg/' + nm):
+                items[-1]['dlc'] = True
     return sorted(items, key=lambda it: it['arena'])
+
+
+def dlc_files(disc, game, src, items, cache_root=None):
+    """a package's arena, copied out once: 'dlc_file' (the Mod Maker's own converter takes a file). 'name' ends " (DLC)"."""
+    import arena_names as AN
+    folder = os.path.join(AN.cache_dir(os.path.abspath(cache_root or arena_cache_root()), game, src), 'dlc')
+    for it in items:
+        if not it.get('dlc'):
+            continue
+        dst = os.path.join(folder, it['key'] + '.pac')
+        if not os.path.exists(dst) or os.path.getsize(dst) != it['size']:
+            os.makedirs(folder, exist_ok=True)
+            tmp = dst + '.part'
+            with open(tmp, 'wb') as f:
+                f.write(disc.read('pac/bg/' + it['key'] + '.pac'))
+            os.replace(tmp, dst)
+        it['dlc_file'] = dst
+        # (2K15's six are all named RAW; 2K16's have no name in the game's tables)
+        named = it['name'] if it['name'] != it['key'] else 'Arena'
+        it['name'] = '%s bg%d (DLC)' % (named, it['arena'])
+    return items
 
 
 # -- a lone arena file (no disc) -------------------------------------------------
@@ -1059,11 +1127,15 @@ def main(argv):
     p.add_argument('--base', type=int)
     p.add_argument('--name')
     p.add_argument('--pac11')
+    for k in ('list', 'scan', 'convert'):   # (the source game's DLC packages: read beside the disc)
+        sub.choices[k].add_argument('--dlc')
     try:
         a = ap.parse_args(argv)
     except SystemExit:
         print(json.dumps({'ok': False, 'error': 'bad arguments'}))
         return 2
+    if getattr(a, 'dlc', None):
+        os.environ['SVR2011_PORT_DLC'] = a.dlc
     if a.cmd == 'games':
         print(json.dumps(GAMES))
         return 0
@@ -1119,6 +1191,9 @@ def main(argv):
             if a.game not in GAME_NAMES or a.game == 'svr2011':
                 raise BadInput('unknown game %r' % a.game)
             disc = discfs.open(a.src)
+            if a.game in NATIVE_GAMES:   # (the game's DLC packages beside the disc: --dlc)
+                import dlc_src
+                disc = dlc_src.view(disc)
             item, game_id = getattr(a, 'item', None), a.game  # (list / scan have no --item)
         with disc:
             if not disc.isdir('pac/bg'):
@@ -1131,6 +1206,7 @@ def main(argv):
                 items = lists.get(game_id, bg_list)(disc)
                 if game_id in NATIVE_GAMES:
                     items, _ = named_list(disc, game_id, a.src, items, a.cache, scan=a.cmd == 'scan')
+                    items = dlc_files(disc, game_id, a.src, items, a.cache)
                 print(json.dumps(mark_items(game_id, items)))
                 return 0
             if game_id not in FAMILY:

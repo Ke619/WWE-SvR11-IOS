@@ -51,7 +51,11 @@ void ShellOpen(const std::wstring& what);
 // An RGBA picture as a shader resource (nullptr for an empty picture).
 ID3D11ShaderResourceView* MakeTexture(const Image& img);
 inline ImTextureID Tex(ID3D11ShaderResourceView* v) { return ImTextureID(reinterpret_cast<uintptr_t>(v)); }
-inline void Release(ID3D11ShaderResourceView*& v) { if (v) v->Release(), v = nullptr; }
+// A texture let go of while the UI is being built is released after the frame is drawn and presented: this frame's
+// draw list may still hold it (a picture box's thumbnail replaced by the picture just picked - report
+// 20261102-050209: Intel's D3D11 driver crashed binding the freed view when the frame was drawn).
+void ReleaseAfterFrame(IUnknown* v);
+inline void Release(ID3D11ShaderResourceView*& v) { if (v) ReleaseAfterFrame(v), v = nullptr; }
 
 // A picture kept with its GPU copy (the copy is made on first use, on the UI thread).
 struct Picture {
@@ -90,10 +94,18 @@ std::string Value(const std::string& text, const char* key);
 std::vector<std::string> Values(const std::string& text, const char* key);  // every line with that key
 
 // Dialogs (on the UI thread).
+// `start`: the folder the dialog opens in (a folder picker: its parent, with that folder picked; "" = Windows' choice).
 std::wstring PickFile(bool save, const wchar_t* title, const COMDLG_FILTERSPEC* spec, UINT nspec,
-                      const wchar_t* def_ext = nullptr, const wchar_t* def_name = nullptr);
+                      const wchar_t* def_ext = nullptr, const wchar_t* def_name = nullptr, const std::wstring& start = {});
 std::vector<std::wstring> PickFiles(const wchar_t* title, const COMDLG_FILTERSPEC* spec, UINT nspec);
-std::wstring PickFolder(const wchar_t* title);
+std::wstring PickFolder(const wchar_t* title, const std::wstring& start = {});
+// Another game's files: where they were last picked (a disc folder, a pac file), per game (a My game discs key; "" any
+// game) - the From another game pickers open there (2.1.8 report 20261103-040523-d343a2: "doesn't default to the folder
+// extracted"). OtherGameStart: that game's, else the last one picked, else the game's My game discs folder.
+std::wstring OtherGameStart(const std::string& game = "");
+void OtherGamePicked(const std::wstring& path, const std::string& game = "");
+// Test aid --test-pick <path>: a hidden run's next file / folder dialog answers <path> (once).
+void TestPick(const std::wstring& path);
 extern const COMDLG_FILTERSPEC kPictureFilter[1], kSoundFilter[1], kBinkFilter[1], kPacFilter[1], kModFilter[1],
     kProjectFilter[1], kOpenFilter[1];
 // A picture file -> Image (false logged).
@@ -203,6 +215,13 @@ struct StarInfo {
 // Loaded on first use (quick).
 const std::vector<StarInfo>& Stars();
 const StarInfo* StarById(int id);
+// The installed DLC's superstars (ids 51-58: a model pac pac\ch\ch<id>_dlcNN.pac in a package the game unpacked,
+// <game>\UserData\0000000000000000\5451085D\00000002\<package>; names from its chEtc.pac, "(DLC)" added), sorted by
+// name - attire mods can take them (the Attires page). DlcModelPacs: a superstar's model pacs in those packages (a
+// DLC superstar's own; DLC attires of disc superstars, e.g. ch145_dlc02.pac). StarOrDlcById: either list.
+const std::vector<StarInfo>& DlcStars();
+std::vector<std::filesystem::path> DlcModelPacs(int id);
+const StarInfo* StarOrDlcById(int id);
 // A superstar's 7 ratings (record +0..+6), 74 if unknown.
 int StarRating(int id, int k);
 // A superstar's body scale (record +28, 4.12 fixed point: the game stretches the
@@ -324,7 +343,7 @@ struct ProjectIn {
 
 // The project's type is its page. Pages the rail shows.
 enum class PageId { kArena, kEditor, kBackstage, kStar, kMoves, kSigns, kBackgrounds, kMedia, kMatch, kOther, kCaw, kAssets, kAnims, kIcons, kHelp, kPort, kAttire, kInstalled, kDiscs, kPortEntrance, kPortMoves, kPortTaunts,
-                    kStarPort, kArenaPort, kMovesPort, kBelts, kThreads, kCount };  // (the last four: "From another game" / belt tabs)
+                    kStarPort, kArenaPort, kMovesPort, kBelts, kThreads, kTitle, kForFun, kCount };  // (the last four: "From another game" / belt tabs)
 // What only a project holds (materials, the FBX steps, Reduce detail, gear picks, an arena's camera...) for a mod:
 // the page's project keys without its files, every absolute path cut to its file name (nothing of the author's
 // folders goes out with a shared mod). UI thread (it reads the page). "" for a page with no project keys.
@@ -378,11 +397,13 @@ struct Settings {
   struct MyDisc {
     std::string key, id;
     std::wstring path;
+    std::wstring dlc;  // the game's DLC packages: a folder (superstar_port --dlc), "" none
   };
   std::vector<MyDisc> my_discs;
   bool discs_seeded = false;  // the old disc folders were searched once to fill My game discs
   bool keep_bik = false;      // mods keep a movie's Bink beside its .mp4 (the game's fallback where MP4 can't play)
   bool moves_warning_off = false;  // "Don't show this again" on the move-converting warning
+  std::vector<std::pair<std::string, std::wstring>> other_game;  // OtherGamePicked: game key ("" any) -> the path
 };
 extern Settings g_settings;
 void SaveSettings();
@@ -449,7 +470,7 @@ extern PageHooks hooks; std::string SlotName(int slot); void ShowPose(int motion
                       const std::wstring& picture, const std::wstring& save);
                       void SetModel(const std::wstring& ch_pac);  // (a converted model)
                       void TestFiles(const std::wstring& song, const std::wstring& movie, const std::wstring& voice, int call);
-                      void TestHeight(float scale); void TestCallGain(float db); void TestMoveset(const std::string& spec); void ThreadsDraw(); void ThreadsTest(const std::string& spec); void TestCae(const std::string& id); void TestImportMoveset(const std::string& spec); void TestEntrance(int n); void TestVictory(int n); void TestInstall(); void TestWatchSlot(int off); void TestFull(const std::wstring& png); void TestLoad(const std::wstring& png); void TestHometown(const std::string& h); void TestPose(int id);
+                      void TestHeight(float scale); void TestCallGain(float db); void TestVictorySong(const std::wstring& file, float db); void TestMoveset(const std::string& spec); void ThreadsDraw(); void ThreadsTest(const std::string& spec); void TestCae(const std::string& id); void TestImportMoveset(const std::string& spec); void TestEntrance(int n); void TestVictory(int n); void TestVictoryPort(const std::string& spec); void TestInstall(); void TestWatchSlot(int off); void TestFull(const std::wstring& png); void TestLoad(const std::wstring& png); void TestHometown(const std::string& h); void TestPose(int id);
                       void TestFbx(const std::wstring& fbx, const std::string& map); void TestSimple(int step); void TestSimpleFrom(int step); void TestSimpleChain(const std::string& spec);
                       // entrance gear from another superstar (tools/svr11_build.py --gear-from / --onto): the game superstars
                       // with gear, a popup to pick one, and the transplant onto <target pac>'s attire (done(new pac) on success)
@@ -460,7 +481,9 @@ extern PageHooks hooks; std::string SlotName(int slot); void ShowPose(int motion
                       bool PickClip(const char* label, char* buf, size_t size, const std::vector<std::string>& clips, const char* none, float width);
                       bool PickEntrance(const char* label, int& value, const char* none, float width = 320);
                       bool EntranceOutfit(const std::wstring& pac); }
-namespace attire_page { extern PageHooks hooks; void TestPacAttires(const std::wstring& spec); void TestStart(int star, const std::wstring& model, int slot, const std::wstring& save); void TestKeepEntrance(); }
+namespace attire_page { extern PageHooks hooks; void TestPacAttires(const std::wstring& spec); void TestStart(int star, const std::wstring& model, int slot, const std::wstring& save); void TestKeepEntrance(); void TestFrom(int from, const std::string& name);
+                       // a superstar mod (a converted one: the From another game result) taken in as the model of a new attire
+                       void UseStarMod(const std::wstring& src); }
 namespace signs_page { extern PageHooks hooks; void TestStart(const std::vector<std::wstring>& files, const std::wstring& save);
                        Image SignPicture(const Image& src);
                        // a sign pack's files (manifest.txt + NN_<name>.dds) from 128 x 64 signs; installed into
@@ -468,12 +491,14 @@ namespace signs_page { extern PageHooks hooks; void TestStart(const std::vector<
                        std::vector<ZipEntry> PackFiles(const std::string& id, const std::string& name, const std::string& author,
                                                        const std::vector<std::pair<std::string, Image>>& signs);
                        bool InstallPack(const std::string& id, const std::vector<ZipEntry>& files); }
+namespace title_page { extern PageHooks hooks; void TestStart(const std::wstring& spec, const std::wstring& save); }
 namespace backgrounds_page { extern PageHooks hooks; void TestStart(const std::vector<std::wstring>& files, const std::wstring& save); }
-namespace media_page { extern PageHooks hooks; void SetTab(int tab); int Tab();  // 0 videos, 1 menus & renders, 2 audio
+namespace media_page { extern PageHooks hooks; void SetTab(int tab); int Tab(); void TestVictory(int id, const std::wstring& song);  // 0 videos, 1 menus & renders, 2 audio
                        void TestStart(int arena, const std::wstring& video,
                        const std::vector<std::wstring>& pictures, const std::wstring& save); }
 namespace moves_page { extern PageHooks hooks; void OpenPack(const std::wstring& folder); void TestPut(const std::wstring& spec); void TestOpen(const std::wstring& folder); void TestSave(const std::wstring& file); }
 namespace caw_page { void Draw(); void TestStart(int index, int attire, const std::wstring& picture, bool save); void TestAnnouncer(const std::string& clip); }
+namespace forfun_page { void Draw(); void TestStart(const std::wstring& arena, const std::wstring& star); }
 namespace other_page { void Draw();
                        // only the tabs in mask, for the "From another game" tabs
                        enum : unsigned { kW13Arena = 1, kStarFile = 2, kW13Star = 4, kSvr10Star = 8, kSvr10Moves = 16, kSvr08 = 32 };
@@ -494,7 +519,8 @@ namespace port_page { void Draw();
                       enum : unsigned { kSuperstars = 1, kMovesKind = 2, kEntrances = 4, kArenas = 8, kAttires = 16, kBelts = 32,
                                         kWeapons = 64, kBackstageKind = 128, kVsScreens = 256 };
                       void DrawKinds(unsigned mask); int Kind();
-                      void TestStart(const std::string& spec); void TestClear(); void TestFullPreview();
+                      void TestAsAttire(const std::string& spec);  // (--port-as-attire)
+                      void TestStart(const std::string& spec); void TestClear(); void TestTrim(); void TestFullPreview();
                       // the superstar steps alone (Simple mode): a converted .svrmod comes back in EmbeddedResult()
                       void SuperstarFlow(); std::wstring EmbeddedResult(); void ClearEmbeddedResult();
                       // with an arena EmbeddedResult(): the disc's picture of it (a PNG from the scan), "" none
@@ -541,9 +567,11 @@ namespace help_page { void Draw(); }
 void ExportModelFbx(const std::wstring& pac, int attire, const std::string& name);
 // A character model pac's match memory (D12): per wrestler attire entry (EMD ...2) the 4 KB pages its meshes'
 // vertex and index buffers take - the game gives each wrestler 192; over that the match load crashes.
-// A wrestler's vertex memory (tools/model_budget.py): 1024 pages since 2.1.6 (the game's big-model memory), 192 before
-// - a model over that needs kNeedsVersion (its manifest says so; older games leave it out).
-constexpr int kModelPages = 1024, kModelPagesWarn = 980, kModelPagesOld = 192;
+// A wrestler's vertex memory (tools/model_budget.py): 1600 pages since 2.1.6 (the game's big-model memory), 192 before
+// - a model over that needs kNeedsVersion (its manifest says so; older games leave it out). Six 1,489-page superstars
+// in a 6-man play at 60 fps at 1080p, about 40 at 4x supersampling with 2x AA (the warning's text says so).
+constexpr int kModelPages = 1600, kModelPagesWarn = 1530, kModelPagesOld = 192;
+constexpr int kModelPagesHeavy = 1024;  // (over it: the frame-rate note - the old limit, six of which keep 60 fps anywhere)
 constexpr const char* kNeedsVersion = "2.1.6";
 struct ModelPages {
   std::string entry;  // the EMD entry ("00013902": attire 1)

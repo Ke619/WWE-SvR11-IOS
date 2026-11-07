@@ -110,5 +110,7 @@ void StallQueue(plume::RenderCommandQueue* queue);
 bool VideoMemory(uint64_t* used, uint64_t* budget);
 bool DxgiVideoMemory(uint64_t* used, uint64_t* budget);    // (backend_d3d12.cpp; Windows)
 bool VulkanVideoMemory(uint64_t* used, uint64_t* budget);  // (backend_vulkan.cpp)
+// Vulkan: the GPU's largest 2D image side (maxImageDimension2D; 0: not Vulkan / not known yet).
+uint32_t VulkanMaxImageSide();
 
 }  // namespace svr2011::native::backend

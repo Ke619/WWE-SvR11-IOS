@@ -3,6 +3,7 @@ bone k = node named root / boneNN (tblSD3WEP); translation of bone = rest t + 0x
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # (its own folder: the embeddable Python doesn't add it)
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))  # (tools\: ymks.py)
 import numpy as np
 import hmot, ymks as Y, fk
 

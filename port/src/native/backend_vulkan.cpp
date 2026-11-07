@@ -9,6 +9,7 @@
 #include "native/gpu.h"
 #include "frame_rate.h"
 
+#include <atomic>
 #include <cstring>
 #include <deque>
 #include <fstream>
@@ -40,6 +41,8 @@ namespace {
 
 // The depth buffers' format (DepthFormat): ReportDevice picks it.
 plume::RenderFormat g_depth_format = plume::RenderFormat::D24_UNORM_S8_UINT;
+// The GPU's largest 2D image side (VkPhysicalDeviceLimits; 0 until ReportDevice): the render scale's limit.
+std::atomic<uint32_t> g_max_image_side{0};
 
 // What a player's log needs to tell why the native renderer does or doesn't
 // run on their GPU (Mali, old Adreno drivers): the device, the features it
@@ -60,6 +63,7 @@ bool ReportDevice(const rex::external_frame::VulkanDevice& d) {
   get_properties(physical, &props);
   VkPhysicalDeviceFeatures features;
   get_features(physical, &features);
+  g_max_image_side = props.limits.maxImageDimension2D;
   // (vulkan_simulate_mali: the SDK hides Mali's missing features - here the
   // formats it can't filter or read too, so their paths run on another GPU)
   const bool simulated = rex::cvar::GetFlagByName("vulkan_simulate_mali") == "true";
@@ -325,6 +329,8 @@ class VulkanBackend final : public Backend {
 
 std::unique_ptr<Backend> CreateVulkanBackend() { return std::make_unique<VulkanBackend>(); }
 
+
+uint32_t VulkanMaxImageSide() { return g_max_image_side.load(); }
 
 // VK_EXT_memory_budget on the emulator's physical device: the device-local heaps' use and budget (phones: the shared
 // memory the driver gives the GPU).

@@ -44,10 +44,11 @@ def address(ip, port):
 
 
 class UdpGame:
-    def __init__(self, gid, addr):
-        self.id, self.addr = gid, addr
+    def __init__(self, gid, addr, account=0):
+        self.id, self.addr, self.account = gid, addr, account  # (account 0: a first-format ticket)
         self.seen = time.monotonic()
         self.window, self.count = 0.0, 0
+        self.sent = 0  # (forwards since the last state home)
 
     def fresh(self):
         return time.monotonic() - self.seen < UDP_QUIET
@@ -61,14 +62,18 @@ class UdpGame:
 
 
 class Endpoint(asyncio.DatagramProtocol):
-    def __init__(self, handler, log):
-        self.handler, self.log = handler, log
+    def __init__(self, handler, log, on_error=None):
+        self.handler, self.log, self.on_error = handler, log, on_error
 
     def datagram_received(self, data, addr):
         try:
             self.handler(data, addr)
         except Exception as e:  # (one bad datagram never stops the relay)
             self.log("edge: packet from %s:%d dropped (%s)" % (addr[0], addr[1], e))
+
+    def error_received(self, exc):
+        if self.on_error:
+            self.on_error()
 
 
 class Edge:
@@ -83,6 +88,9 @@ class Edge:
         self.other_logged = 0.0  # (a second server's link attempts: logged once a minute)
         self.relayed = 0     # since the last state sent home
         self.total_local = self.total_home = self.total_from_home = 0
+        self.network = rl.AUTO   # the server's match network (its keepalives)
+        self.pairs = rl.PairLimit()
+        self.kicked = {}     # account -> when (unix): banned - its tickets made until then are refused
 
     # -- home
     def home_up(self):
@@ -95,9 +103,28 @@ class Edge:
         return False
 
     def send_state(self):
-        ids = [g.id for g in self.games.values() if g.fresh()]
-        if self.to_home(rl.STATE, rl.state_body(self.relayed, ids)):
+        fresh = [g for g in self.games.values() if g.fresh()]
+        games = {g.id: (g.account, address(*g.addr), g.sent) for g in fresh}
+        if self.to_home(rl.STATE, rl.state_body(self.relayed, [g.id for g in fresh], games)):
             self.relayed = 0
+            for g in fresh:
+                g.sent = 0
+
+    def kick(self, accounts):
+        now = time.time()
+        for aid in accounts:
+            if not aid:
+                continue
+            first = aid not in self.kicked
+            self.kicked[aid] = now
+            gone = [g for g in self.games.values() if g.account == aid]
+            for g in gone:
+                self.games.pop(g.id, None)
+                self.by_addr.pop(g.addr, None)
+            if first or gone:
+                self.log("edge: account %d banned - %d game(s) dropped, its tickets refused" % (aid, len(gone)))
+        for aid in [a for a, at in self.kicked.items() if now - at > 2 * rl.TICKET_LIFE]:
+            del self.kicked[aid]  # (every ticket made before it has expired)
 
     def on_link(self, data, addr):
         got = rl.read_link(self.secret, data)
@@ -119,7 +146,15 @@ class Edge:
             self.log("edge: server linked from %s:%d" % addr)
         self.home, self.home_seen = addr, time.monotonic()
         if kind == rl.STATE:
+            network = rl.read_home_state(body)
+            if network != self.network:
+                self.log("edge: match network %s" % {rl.AUTO: "auto", rl.RELAY: "relay", rl.P2P: "p2p"}[network] +
+                         (" - one game to another: %d packets, then %g a second (no match data)" %
+                          (rl.PAIR_BURST, rl.PAIR_RATE) if network == rl.P2P else ""))
+                self.network = network
             self.send_state()
+        elif kind == rl.KICK:
+            self.kick(rl.read_kick(body))
         elif kind == rl.FORWARD and len(body) > 6:
             to, out = body[:6], body[6:]
             g = self.games.get(to)
@@ -143,20 +178,25 @@ class Edge:
         kind = data[5]
         if kind == REGISTER and len(data) >= 6 + 6 + 16:
             gid, ticket = data[6:12], data[12:28]
-            if not rl.check_ticket(self.secret, gid, ticket):
+            t = rl.read_ticket(self.secret, gid, ticket)
+            if not t:
                 return
+            account, made = t
+            if account in self.kicked and made <= self.kicked[account]:
+                return  # (banned since: a new ticket needs a sign-in it can't have)
             g = self.games.get(gid)
-            if not g or g.addr != addr:
+            if not g or g.addr != addr or g.account != account:
                 if not g and len(self.games) >= MAX_GAMES:
                     self.forget_quiet()
                     if len(self.games) >= MAX_GAMES:
                         return
                 if g:
                     self.by_addr.pop(g.addr, None)
-                g = UdpGame(gid, addr)
+                g = UdpGame(gid, addr, account)
                 self.games[gid] = g
                 self.by_addr[addr] = gid
-                self.log("edge: %s on UDP from %s:%d, %d game(s)" % (gid.hex(), addr[0], addr[1], len(self.games)))
+                self.log("edge: %s (account %s) on UDP from %s:%d, %d game(s)" % (
+                    gid.hex(), account or "? - an older ticket", addr[0], addr[1], len(self.games)))
                 g.seen = time.monotonic()
                 self.send_state()  # (home sends its packets here from now on - before the welcome)
             g.seen = time.monotonic()
@@ -173,6 +213,9 @@ class Edge:
                 self.search_local(gid, out)
                 self.to_home(rl.SEARCH, gid + out)
                 return
+            g.sent += 1  # (what it tries: in p2p a game sending match data shows on the dashboard, held back or not)
+            if self.network == rl.P2P and not self.pairs.allowed(gid, to):
+                return  # (p2p: no match data through the relay - whatever the game was told)
             t = self.games.get(to)
             if t and t.fresh():
                 self.players.sendto(out, t.addr)
@@ -189,10 +232,22 @@ class Edge:
 
     async def run(self, udp_port, link_addr, report=60):
         loop = asyncio.get_running_loop()
-        self.players, _ = await loop.create_datagram_endpoint(
-            lambda: Endpoint(self.on_player, self.log), local_addr=("0.0.0.0", udp_port))
-        self.link, _ = await loop.create_datagram_endpoint(
-            lambda: Endpoint(self.on_link, self.log), local_addr=link_addr)
+
+        async def open_players():
+            if self.players:
+                self.players.close()
+            self.players, _ = await loop.create_datagram_endpoint(
+                lambda: Endpoint(self.on_player, self.log, again_players), local_addr=("0.0.0.0", udp_port))
+
+        async def open_link():
+            if self.link:
+                self.link.close()
+            self.link, _ = await loop.create_datagram_endpoint(
+                lambda: Endpoint(self.on_link, self.log, again_link), local_addr=link_addr)
+        again_players = rl.reopen_on_windows(open_players, self.log, "edge: players' port")
+        again_link = rl.reopen_on_windows(open_link, self.log, "edge: link")
+        await open_players()
+        await open_link()
         self.log("edge: players' UDP on port %d, link on %s:%d" % (udp_port, link_addr[0], link_addr[1]))
         last_report = time.monotonic()
         while True:

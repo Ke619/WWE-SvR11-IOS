@@ -43,6 +43,9 @@ struct Convert13Stats {
 // Unused texture names are pruned (slots renumbered).
 void ConvertModel13(Model& m, float scale, Convert13Stats& st);
 
+// An entrance prop's evtobj entry (PACH {0: model, 10: textures, ...}) from WWE '12 - 2K16: its model converted, the rest kept.
+bool ConvertProp13(const Bytes& in, Bytes& out, float scale, std::string* error = nullptr);
+
 // HMD collision in cm -> 10 cm.
 Bytes ConvertHmd13(const Bytes& raw, float scale);
 // c351 model flags: shadow flags of floor pieces dropped (the light numbers stay:
@@ -76,6 +79,13 @@ std::set<int> DarkLightSets(const Bytes& bank);
 // `bank` with the sets `ids` taken from `host` (the others kept) -> the ids replaced.
 Bytes ReplaceLightSets(const Bytes& bank, const Bytes& host, const std::set<int>& ids,
                        std::vector<int>* replaced = nullptr);
+
+// The announce tables' lid (SvR2011 puts set 0x192's ji_top on it): WWE '13's
+// ji_top is the black cloth its separate desk (ji_desk) covers, so on
+// SvR2011's table the whole lid shows black. A dark ji_top is tinted with the
+// desk's colour (mid grey without a brighter ji_desk), its grain and logo
+// kept -> pictures changed (0: none dark).
+int LiftTableLids(Arena& a);
 
 // ---- the whole arena
 struct Wwe13Options {

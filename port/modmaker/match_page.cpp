@@ -31,7 +31,7 @@ const Builtin kBuiltins[] = {
     {"championship_scramble", "Championship Scramble", "FATAL-4-WAY: five superstars, one more each minute, interim champions, the title holder at the bell wins."},
     {"royal_rumble_15_25", "15- and 25-Man Royal Rumble", "ROYAL RUMBLE: 15-MAN and 25-MAN beside 10, 20 and 30."},
     {"lumberjack", "Lumberjack", "6-MAN: LUMBERJACK, with lumberjacks who attack whoever lands on the floor."},
-    {"free_roaming_backstage", "Free-Roaming Backstage", "BACKSTAGE: the whole backstage area to fight through."},
+    // (free_roaming_backstage: removed from the game for 2.1.6 - src/match_types.cpp MatchTypeSwitches)
     {"backstage_more_people", "Backstage for 3, 4 and 6", "BACKSTAGE brawls in TRIPLE THREAT, FATAL-4-WAY and 6-MAN."},
     {"weapons_everywhere", "Weapons Everywhere", "EXTREME RULES: weapons already lying in and around the ring."},
     {"slobber_knocker", "Slobber Knocker", "One wrestler against an endless line of opponents."},
@@ -261,9 +261,8 @@ void SwitchTab() {
 
 void CustomTab() {
   ImGui::TextWrapped("A match type of your own: one of the game's matches as the base, under a new row in a menu "
-                     "list, with its own people, slots, arena, option rules and weapons. The game builds it at start "
-                     "the way it builds the port's added matches.");
-  ImGui::TextColored(kWarn, "The game side is being built (Limit Breaking): this page writes the format it will read.");
+                     "list, with its own people, slots, arena, option rules and weapons.");
+  ImGui::TextColored(kWarn, "The game doesn't play custom match types yet: this page saves them in the format a later update will read.");
   ImGui::Spacing();
   TextField("Name", g_p.name, sizeof g_p.name, "the match type's name");
   TextField("About (optional)", g_p.about, sizeof g_p.about, "one line for the launcher", 420);

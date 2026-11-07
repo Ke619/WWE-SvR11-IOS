@@ -103,12 +103,6 @@ void ReadBundle(const Bytes& b, std::map<std::string, Bytes>& out) {
   }
 }
 
-int DiffuseSlot(const Mesh& s, const char* name = "texDiffuse") {
-  for (const auto& p : s.params)
-    if (p.type == 0x0f && p.name == name && p.value.size() >= 4) return int(Be32(p.value.data()));
-  return -1;
-}
-
 struct Bone {
   std::string name;
   int parent = -1;
@@ -117,6 +111,7 @@ struct Bone {
 struct Part {
   std::string name, texture;
   std::string normal_texture;  // (texNormal: its alpha is a skin's shine mask - exported as the material's NormalMap)
+  bool cutout = false;         // (render flags 0x100: the colour's alpha is opacity)
   std::vector<std::array<double, 3>> pos, nrm;
   std::vector<std::array<double, 2>> uv;
   std::vector<std::array<std::pair<int, double>, 4>> inf;  // (bone, weight), weight 0 = none
@@ -199,6 +194,7 @@ bool ReadCharacter(const Bytes& pac, int attire, Character& ch, std::string& err
       p.texture = slot >= 0 && slot < int(m.textures.size()) ? m.textures[size_t(slot)] : "";
       const int nslot = DiffuseSlot(s, "texNormal");
       p.normal_texture = nslot >= 0 && nslot < int(m.textures.size()) ? m.textures[size_t(nslot)] : "";
+      p.cutout = s.raw.size() >= 0x8C && (s.raw[0x8A] & 1) != 0;
       auto bone_of = [&](int palette_slot) {
         if (palette_slot < 0 || palette_slot >= int(s.palette.size())) return 0;
         const int local = s.palette[size_t(palette_slot)] - 1;
@@ -410,7 +406,8 @@ bool IsHairBoneName(const std::string& name) {
   return false;
 }
 
-bool ExportCharacterFbx(const Bytes& pac, int attire, const std::string& out_dir, const std::string& name, CharExportReport& rep) {
+bool ExportCharacterFbx(const Bytes& pac, int attire, const std::string& out_dir, const std::string& name, CharExportReport& rep,
+                        bool opaque_colour) {
   Character ch;
   std::string err;
   if (!ReadCharacter(pac, attire, ch, err)) {
@@ -555,7 +552,18 @@ bool ExportCharacterFbx(const Bytes& pac, int attire, const std::string& out_dir
           t = w;
       return t;
     };
-    for (const auto& [tex, slot_name] : {std::make_pair(written_name(part.texture), "DiffuseColor"),
+    std::string colour = written_name(part.texture);
+    if (opaque_colour && !colour.empty() && !part.cutout) {
+      Image img;
+      const std::string opaque = colour + "_opaque";
+      if (written.count(opaque)) {
+        colour = opaque;
+      } else if (LoadImageFile(PathStr(fs::u8path(out_dir) / "textures" / fs::u8path(colour + ".png")), img)) {
+        for (size_t i = 3; i < img.rgba.size(); i += 4) img.rgba[i] = 255;
+        if (SavePng(PathStr(fs::u8path(out_dir) / "textures" / fs::u8path(opaque + ".png")), img)) written.insert(opaque), colour = opaque;
+      }
+    }
+    for (const auto& [tex, slot_name] : {std::make_pair(colour, "DiffuseColor"),
                                          std::make_pair(written_name(part.normal_texture), "NormalMap")}) {
       if (tex.empty()) continue;
       const std::string rel = "textures/" + tex + ".png";
@@ -1315,6 +1323,14 @@ bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>
     turn(te->second, rot);
   };
   int aimed = 0;
+  const auto head_of = src_of.find("atama");
+  auto holds_head = [&](int i) {
+    if (head_of == src_of.end()) return false;
+    for (int k = head_of->second; k >= 0; k = parent[size_t(k)])
+      if (k == i) return true;
+    return false;
+  };
+  M head_turned;  // (what the aims above the head did to it)
   for (const auto& pr : kAimPairs) {
     const auto a = src_of.find(pr[0]), b = src_of.find(pr[1]);
     V3 ta, tb;
@@ -1326,10 +1342,21 @@ bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>
     const V3 r_pa = ApplyDir(sw, pa);
     for (int k = 0; k < 3; ++k) rot.t[k] = pa[k] - r_pa[k];  // (about the bone's own joint)
     turn(a->second, rot);
+    if (holds_head(a->second)) head_turned = Mul(rot, head_turned);
     ++aimed;
     if (std::string(pr[1]).ends_with("_yubi20")) roll(pr[0][0]);
   }
   rep.aimed = aimed;
+  // The head has no bone to aim at, so it took every turn of the spine and the neck: a model whose neck or spine stands
+  // straighter than the template's (report ac68af) looked at the floor. It keeps the way it faces in the FBX: turned
+  // back about its own joint. (The neck's vertices blend between the two, as a neck does.)
+  if (head_of != src_of.end()) {
+    const V3 p = origin(posed[size_t(head_of->second)]);
+    M back = Inv(head_turned);
+    const V3 r_p = ApplyDir(back, p);
+    for (int k = 0; k < 3; ++k) back.t[k] = p[k] - r_p[k];
+    turn(head_of->second, back);
+  }
 
   // the output frame: game axes, the hips at 0; scaled (below, once the meshes are posed) so the soles sit as far
   // below the hips as the template's (the game's motions hold the hips at its height: the feet then meet the floor)
@@ -1398,6 +1425,7 @@ bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>
   for (size_t i = 0; i < nb; ++i) skin[i] = Mul(posed[i], InvAffine(bind[i]));
   const fs::path fbx_dir = fs::u8path(fbx_path).parent_path();
   std::vector<OutMesh> meshes;
+  int bad_influences = 0, lost_vertices = 0;
   std::map<std::string, const ufbx_material*> tex_material;  // texture key -> a material using it
   std::vector<uint32_t> tri(64);
   for (size_t ni = 0; ni < scene->nodes.count; ++ni) {
@@ -1472,6 +1500,11 @@ bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>
         double sum = 0;
         auto add = [&](int b, double w, const V3& wp, const V3& wn) {
           const V3 q = Apply(skin[size_t(b)], wp), qn = ApplyDir(skin[size_t(b)], wn);
+          // (a bone whose bind can't be inverted - scaled to nothing to hide a part - gives no position: not an influence)
+          if (!std::isfinite(q[0]) || !std::isfinite(q[1]) || !std::isfinite(q[2])) {
+            ++bad_influences;
+            return;
+          }
           for (int k = 0; k < 3; ++k) p[k] += w * q[k], nn[k] += w * qn[k];
           w2011[bone_id(wbone[size_t(b)])] += w;
           sum += w;
@@ -1490,6 +1523,10 @@ bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>
         if (sum <= 0) {  // (no weights: rides on its node's bone)
           const int b = rigid >= 0 ? rigid : src_of["root"];
           add(b, 1.0, Apply(geo_world, g), ApplyDir(geo_world, n));
+        }
+        if (sum <= 0) {  // (nothing usable at all: on the root, not NaN - it would make the whole file unreadable)
+          add(src_of["root"], 1.0, V3{0, 0, 0}, V3{0, 0, 1});
+          ++lost_vertices;
         }
         for (int k = 0; k < 3; ++k) p[k] /= sum;
         om.pos.push_back(out_pos(p));
@@ -1562,6 +1599,9 @@ bool FbxToBuildInput(const std::string& fbx_path, const std::vector<std::string>
       for (auto& v : m.pos) v = {v[0] * scale, v[1] * scale, v[2] * scale};
   }
   rep.scale = scale;
+  if (bad_influences || lost_vertices)
+    rep.warnings.push_back(std::to_string(bad_influences) + " vertex weight(s) on bones with no usable bind (scaled to nothing?) left out, " +
+                           std::to_string(lost_vertices) + " vertices put at the root: check those parts of the model");
   // Reduce detail (only when asked: max_vertices > 0 - it used to cut every model over the budget, a face too,
   // crumpled - user report 21 Oct): fewer vertices on the big meshes (eyes and lashes are left as they are);
   // keep_face: vertices that are mostly the head's (atama and the bones under it) stay

@@ -32,6 +32,9 @@
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
+#include <rex/thread.h>
+
+#include "startup_pump.h"
 
 #if SVR2011_ADRENOTOOLS
 #include <dlfcn.h>
@@ -138,12 +141,16 @@ void StartStuckWatch(const std::string& driver) {
   if (started) return;
   started = true;
   std::thread([driver] {
+    rex::thread::set_current_thread_name("gpu driver check");
     constexpr int kSeconds = 60;
-    const auto t0 = std::chrono::steady_clock::now();
+    // (counted from the end of the start-up's mod preparation - startup_pump.h: a first start merging many move
+    // packs ran minutes before the first frame and was called a stuck driver, 2.1.9 report b7f723)
+    auto t0 = std::chrono::steady_clock::now();
     while (rex::external_frame::SwapCount() == 0) {
       std::this_thread::sleep_for(std::chrono::seconds(1));
+      if (svr2011::StartupBusy()) t0 = std::chrono::steady_clock::now();
       if (std::chrono::steady_clock::now() - t0 < std::chrono::seconds(kSeconds)) continue;
-      REXLOG_ERROR("GPU: no frame {} s after the start - the graphics driver ({}) seems stuck; try another "
+      REXLOG_ERROR("GPU: no frame {} s after the start (and the mods' preparation) - the graphics driver ({}) seems stuck; try another "
                    "driver (launcher: Settings, Graphics driver)",
                    kSeconds, driver.empty() ? "the phone's own" : driver);
       const char* cache = std::getenv("SVR2011_CACHE_DIR");

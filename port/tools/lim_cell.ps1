@@ -5,6 +5,7 @@
 #   .\lim_cell.ps1 -Name cell1 -Rule 31 [-Env "SVR2011_TEST_CELL=1","SVR2011_TEST_CELL_ROOF=-80"] [-Secs 90]
 param([string]$Name = "cell", [string]$Rule = "", [string[]]$Env = @(), [int]$Secs = 90, [int]$ShotEvery = 15,
       [string]$People = "JOHN CENA,RANDY ORTON", [string]$Arena = "1", [string[]]$Extra = @(), [string[]]$AfterStart = @(), [switch]$Human)
+$env:SVR2011_AUDIO_MUTE = "1"  # (test games stay muted even if their command line is lost)
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Drawing
 if (-not ("WC" -as [type])) {

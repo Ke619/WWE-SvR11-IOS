@@ -1,4 +1,4 @@
-// WWE SmackDown vs. Raw 2011 - Road to WrestleMania's Streak story ("vs Undertaker") played as a superstar mod.
+﻿// WWE SmackDown vs. Raw 2011 - Road to WrestleMania's Streak story ("vs Undertaker") played as a superstar mod.
 //
 // The story is for Created Superstars only: its select is a list menu of Create-a-Superstar slots (sort_filters.cpp
 // keeps the game's lists there), and the story keeps the player as that CAW slot throughout - its saves, events and
@@ -6,8 +6,9 @@
 // hands the story a CAW (the list's first) so it starts, and the new story remembers the mod (UserData/
 // rtwm_streak.txt: the mod's folder and the CAW slot the story got - kept for CONTINUE). In its matches, the person
 // who is that CAW becomes the mod (the match's people, test_match.cpp's hook: RtwmStreakPeople). Undertaker stays
-// himself. Scenes with the player alone (the backstage walks) keep the CAW: with the mod there the walk never loaded
-// (its loader spun at the night-drive scene). Picking a CAW plays the story as it is.
+// himself. The scenes with the player alone (the backstage walks) are the mod's too: the swap writes model kind 2 (a
+// CAW's pick ends in 0 there, which no model pac has) and the story still finds its player by the CAW's id
+// (sub_825344E0's hook) and numbers its people by it (sub_8253D008's). Picking a CAW plays the story as it is.
 
 #include <cmath>
 #include <cstdint>
@@ -25,9 +26,12 @@
 #include <rex/logging.h>
 #include <rex/ppc.h>
 
+#include "cae_mod_motions.h"
 #include "generated/default/svr2011_init.h"
 #include "rtwm_streak.h"
+#include "script_input.h"
 #include "superstar_mods.h"
+#include "../modmaker/svrfmt/bytes.h"
 
 namespace svr2011 {
 bool InRoadToWrestleMania();  // (menu_hooks.cpp: the main menu's last choice)
@@ -35,21 +39,12 @@ bool InRoadToWrestleMania();  // (menu_hooks.cpp: the main menu's last choice)
 
 namespace {
 
-uint32_t Rd32(const uint8_t* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; }
-void Wr32(uint8_t* p, uint32_t v) { p[0] = uint8_t(v >> 24), p[1] = uint8_t(v >> 16), p[2] = uint8_t(v >> 8), p[3] = uint8_t(v); }
+using svrfmt::Rd32, svrfmt::RdF, svrfmt::Wr32, svrfmt::WrF;
 void Wr16(uint8_t* p, uint32_t v) { p[0] = uint8_t(v >> 8), p[1] = uint8_t(v); }
-float RdF(const uint8_t* p) {
-  const uint32_t v = Rd32(p);
-  float f;
-  std::memcpy(&f, &v, 4);
-  return f;
-}
-void WrF(uint8_t* p, float f) {
-  uint32_t v;
-  std::memcpy(&v, &f, 4);
-  Wr32(p, v);
-}
-uint32_t g_solo_frames = 0;  // (world frames since the last scene with the player alone was set up; 0: none)
+uint32_t g_solo_frames = 0;
+// The swap in force: the story's player is the CAW (its person id, the save slot) but his character carries the
+// mod's id - sub_825344E0 below finds him by either (0 / 0: none)
+uint32_t g_swap_caw = 0, g_swap_id = 0, g_swap_person = 0;
 
 std::filesystem::path StateFile() {
   std::filesystem::path dir = rex::filesystem::GetExecutableFolder() / "UserData";
@@ -87,7 +82,7 @@ void Save(const Choice& c) {
 // The mod's id now (a mod keeps its id, slots.txt; 0: not installed / off).
 uint32_t ModNow(const std::string& folder) {
   if (folder.empty()) return 0;
-  for (uint32_t id : svr2011::SuperstarModIds())
+  for (uint32_t id : svr2011::SuperstarModIds(false))
     if (svr2011::SuperstarModFolder(id) == folder) return id;
   return 0;
 }
@@ -98,6 +93,9 @@ bool g_cas_list = false;    // (the list shown is the Streak's - Create-a-Supers
 // only browse until then - the select's own pick of its first entry as it opens too.
 bool g_pending = false;
 std::string g_pending_folder;
+// The mod the cursor rests on (0: none) and where its pick is kept - the player's record +120, which holds the CAW
+// slot for the story; the select's panel is shown the mod (sub_82466830 below).
+uint32_t g_pick_mod = 0, g_pick_word = 0;
 
 }  // namespace
 
@@ -113,6 +111,7 @@ void RtwmStreakPeople(uint8_t* base, uint32_t match) {
   Choice& c = State();
   if (g_pending) {  // (a new story: the select's last pick)
     g_pending = false;
+    g_pick_mod = 0;  // (the select is gone: its panel no longer shown the mod)
     if (g_pending_folder != c.folder || (!c.folder.empty() && c.caw != int(g_first_caw))) {
       c.folder = g_pending_folder, c.caw = c.folder.empty() ? -1 : int(g_first_caw);
       Save(c);
@@ -133,26 +132,82 @@ void RtwmStreakPeople(uint8_t* base, uint32_t match) {
   constexpr uint32_t kSlots = 432, kSlotSize = 2116, kNoPick = 51200;
   uint32_t people = 0;
   for (uint32_t i = 0; i < 6; ++i) people += Rd32(base + match + kSlots + i * kSlotSize + 8) != kNoPick;
-  if (people < 2) {  // (the player alone: a backstage walk - the CAW, see above)
+  if (people < 2) {  // (the player alone: a backstage walk - the mod plays it too)
     g_solo_frames = 1;  // (SVR2011_TEST_RTWM_WARP counts from here)
     static uint32_t said = 0;
-    if (said++ < 3) REXLOG_INFO("[svr2011] rtwm streak: a scene with the player alone - the CAW plays it (the mod {} in matches)", c.folder);
-    return;
+    if (said++ < 3) REXLOG_INFO("[svr2011] rtwm streak: a scene with the player alone - the mod {} plays it", c.folder);
   }
   for (uint32_t i = 0; i < 6; ++i) {
     uint8_t* slot = base + match + kSlots + i * kSlotSize;
     const uint32_t v = Rd32(slot + 8);
     if (v == kNoPick || v / 100 != uint32_t(c.caw)) continue;
-    Wr32(slot + 8, id * 100 + v % 100);  // (the attire digits kept: the mod's attire 1 for the CAW's first)
+    // (the attire digit kept - the mod's attire 1 for the CAW's first - and the model kind always 2, a real
+    // model's EMD "<id>x2": a CAW's pick ends in 0 in the solo scenes - the walk asked for '/EMD/00011100', which
+    // no pac has, and the loader spun on its 0 bytes; in matches it ends in 2 already)
+    static const bool kind0 = std::getenv("SVR2011_TEST_RTWM_KIND0") != nullptr;  // (test: the old digits - the 0-byte guard)
+    Wr32(slot + 8, kind0 ? id * 100 + v % 100 : id * 100 + (v % 100) / 10 * 10 + 2);
     Wr16(slot + 54, id);
+    g_swap_caw = uint32_t(c.caw), g_swap_id = id, g_swap_person = i;
     REXLOG_INFO("[svr2011] rtwm streak: person {} - the CAW (slot {}) plays as the mod {} (id {})", i, c.caw, c.folder, id);
   }
+}
+
+// Test aid: SVR2011_TEST_RTWM_ROUTE=x,z[;x,z...] (with SVR2011_TEST_RTWM_ROUTE_DELAY=<frames>, default 6000) - a real
+// walk for hidden tests, on the scripted pad's left stick: from the walk's start on, it steers for each place in turn.
+// The walk's camera turns as he goes, so the stick's angle is learnt from where the last push took him; when he stops
+// against something it pushes aside for a moment. The game moves him, collision and all: only the stick is given.
+static void RouteStick(uint8_t* base, uint32_t fighter, const char* route) {
+  static const uint32_t delay = [] { const char* v = std::getenv("SVR2011_TEST_RTWM_ROUTE_DELAY"); return v ? uint32_t(std::atoi(v)) : 6000u; }();
+  static uint32_t armed = 0, leg = 0, tick = 0, stuck = 0, aside = 0;
+  static float turn = 0, last_x = 0, last_z = 0, angle = 0;
+  static bool done = false;
+  if (done) return;
+  const float x = RdF(base + fighter + 288), z = RdF(base + fighter + 296);
+  if (!armed) {
+    if (std::fabs(x - 86.7f) < 3 && std::fabs(z + 440.1f) < 3) armed = 1, last_x = x, last_z = z;
+    return;
+  }
+  if (armed < delay) {
+    ++armed;
+    return;
+  }
+  const char* q = route;
+  for (uint32_t i = 0; i < leg && q; ++i) q = std::strchr(q, ';'), q = q ? q + 1 : nullptr;
+  float tx = 0, tz = 0;
+  if (!q || std::sscanf(q, "%f,%f", &tx, &tz) < 2) {
+    done = true;
+    ScriptStickOverride(false, 0, 0);
+    REXLOG_INFO("[svr2011] rtwm: test - the route's end, at {:.1f} {:.1f}", x, z);
+    return;
+  }
+  if (std::hypot(tx - x, tz - z) < 8) {
+    REXLOG_INFO("[svr2011] rtwm: test - route place {} reached ({:.1f} {:.1f})", leg, x, z);
+    ++leg, stuck = 0, aside = 0;
+    return;
+  }
+  if (++tick % 20 == 0) {
+    const float dx = x - last_x, dz = z - last_z, moved = std::hypot(dx, dz);
+    if (moved > 3 && !aside) turn = std::atan2(dz, dx) - angle;
+    stuck = moved < 1.5f ? stuck + 1 : 0;
+    last_x = x, last_z = z;
+    if (stuck >= 3 && !aside) {
+      aside = 3, stuck = 0;
+      REXLOG_INFO("[svr2011] rtwm: test - stopped at {:.1f} {:.1f} on the way to place {}, pushing aside", x, z, leg);
+    } else if (aside) {
+      --aside;
+    }
+  }
+  static uint32_t side = 0;
+  if (aside == 3 && tick % 20 == 1) ++side;
+  angle = std::atan2(tz - z, tx - x) - turn + (aside ? (side % 2 ? 1.75f : -1.75f) : 0.f);
+  ScriptStickOverride(true, int16_t(std::cos(angle) * 32000), int16_t(std::sin(angle) * 32000));
 }
 
 void RtwmBeforeFrame(uint8_t* base) {
   static const bool pos_log = std::getenv("SVR2011_TEST_POS_LOG") != nullptr;
   static const char* warp = std::getenv("SVR2011_TEST_RTWM_WARP");
-  if ((!pos_log && !warp) || !InRoadToWrestleMania()) return;
+  static const char* route = std::getenv("SVR2011_TEST_RTWM_ROUTE");
+  if ((!pos_log && !warp && !route) || !InRoadToWrestleMania()) return;
   constexpr uint32_t kChars = 0x82E3CC50;  // (the match's characters: hctp_room.cpp)
   const uint32_t f = Rd32(base + kChars);
   if (!f) return;
@@ -162,13 +217,20 @@ void RtwmBeforeFrame(uint8_t* base) {
     std::string s;
     for (uint32_t i = 0; i < 8; ++i)
       if (const uint32_t c = Rd32(base + kChars + i * 4))
-        s += fmt::format(" [{} {:08X} {:.1f} {:.1f} {:.1f}]", i, c, RdF(base + c + 288), RdF(base + c + 292), RdF(base + c + 296));
+        s += fmt::format(" [{} {:08X} {:.1f} {:.1f} {:.1f} pick {}]", i, c, RdF(base + c + 288), RdF(base + c + 292), RdF(base + c + 296),
+                         Rd32(base + c + 80));
     REXLOG_INFO("[svr2011] rtwm: characters {}:{}", Rd32(base + kCharCount), s);
   }
+  if (route) RouteStick(base, f, route);
+  // (SVR2011_TEST_RTWM_WARP_ANY=1: the warps start with any Road to WrestleMania scene's first frames, not only a
+  // mod-played one - a stock story's backstage walk)
+  static const bool any = std::getenv("SVR2011_TEST_RTWM_WARP_ANY") != nullptr;
+  if (warp && any && !g_solo_frames && Rd32(base + 0x82E3CD0C) < 10) g_solo_frames = 1;
   if (!warp || !g_solo_frames) return;
   ++g_solo_frames;
   // (5 s in, then each next place of "x,z[,y];x,z..." 6 s later; each held for 10 frames, as hctp_room's doors)
-  constexpr uint32_t kAt = 300, kEvery = 360, kHeld = 10;
+  static const uint32_t kEvery = [] { const char* v = std::getenv("SVR2011_TEST_RTWM_WARP_EVERY"); return v ? uint32_t(std::atoi(v)) : 360u; }();  // (frames)
+  constexpr uint32_t kAt = 300, kHeld = 10;
   if (g_solo_frames < kAt || (g_solo_frames - kAt) % kEvery >= kHeld) return;
   const uint32_t k = (g_solo_frames - kAt) / kEvery;
   const char* q = warp;
@@ -204,14 +266,127 @@ REX_HOOK_RAW(sub_82732938) {
   const uint32_t id = ctx.r5.u32;
   static const bool log = std::getenv("SVR2011_TEST_PICK_LOG") != nullptr;
   if (log) REXLOG_INFO("[svr2011] pick: player {} id {:X} (rtwm {})", ctx.r4.u32, id, svr2011::InRoadToWrestleMania());
+  svr2011::CaeNotePick(id);  // (CREATE AN ENTRANCE: the picked mod's own MOD: row - cae_mod_motions.cpp)
+  g_pick_mod = 0;
   if (svr2011::InRoadToWrestleMania() && g_cas_list) {
     g_pending = true;
     g_pending_folder = svr2011::IsSuperstarMod(id) ? svr2011::SuperstarModFolder(id) : std::string();
     if (!g_pending_folder.empty()) {
       REXLOG_INFO("[svr2011] rtwm streak: {} picked - the story gets CAW slot {}, its matches the mod", g_pending_folder,
                   g_first_caw);
-      ctx.r5.u64 = g_first_caw;
+      // (the mod's id stored: the panel's picture is filled from it as the cursor moves; the CAW slot replaces it at
+      // the end of the cursor's update - RtwmShowModEnd - before the story copies it)
+      // (the record as the function finds it: state + its table [+13520] * 1352 + player * 204)
+      g_pick_mod = id;
+      g_pick_word = ctx.r3.u32 + Rd32(base + ctx.r3.u32 + 13520) * 1352 + ctx.r4.u32 * 204 + 120;
     }
   }
   __imp__sub_82732938(ctx, base);
+}
+
+// The select panel reads the player's pick (the record's +120) each frame. With a mod under the cursor the record
+// holds the CAW slot the story gets, so the panel showed the CAW (DEFAULT / RAW / 78, 28 Oct): its readers are shown
+// the mod while they run, the CAW slot put back after - the cursor's update (sub_82465038, mystery_opponent.cpp's
+// hook), the "MODDED" badge's sub_82466830 (superstar_mods.cpp), sub_82465E88 and the text's sub_824678C8 (found with
+// SVR2011_WATCH_ADDR + _READ). The story's own copy of the pick is taken outside them: with the mod's id left in +120
+// the story began as the mod; with these it begins as the CAW slot.
+namespace svr2011 {
+bool RtwmShowModBegin(uint8_t* base) {
+  const bool swap = g_pick_mod && g_pick_word && g_cas_list && InRoadToWrestleMania() &&
+                    Rd32(base + g_pick_word) == g_first_caw;
+  if (swap) Wr32(base + g_pick_word, g_pick_mod);
+  return swap;
+}
+void RtwmShowModEnd(uint8_t* base, bool swapped) {
+  if (swapped || (g_pick_mod && g_pick_word && g_cas_list && Rd32(base + g_pick_word) == g_pick_mod))
+    Wr32(base + g_pick_word, g_first_caw);
+}
+}  // namespace svr2011
+namespace {
+template <void (*F)(PPCContext&, uint8_t*)>
+void ShownTheMod(PPCContext& ctx, uint8_t* base) {
+  const bool swapped = svr2011::RtwmShowModBegin(base);
+  F(ctx, base);
+  svr2011::RtwmShowModEnd(base, swapped);
+}
+}  // namespace
+REX_EXTERN(__imp__sub_82466830);
+REX_HOOK_RAW(sub_82466830) { ShownTheMod<__imp__sub_82466830>(ctx, base); }
+REX_EXTERN(__imp__sub_82465E88);
+REX_HOOK_RAW(sub_82465E88) { ShownTheMod<__imp__sub_82465E88>(ctx, base); }
+// (name, brand and overall: sub_824678C8 and under it sub_82465728 / sub_824613E0 - with the others alone the panel
+// had the mod's picture and badge over DEFAULT / 78)
+REX_EXTERN(__imp__sub_824678C8);
+REX_HOOK_RAW(sub_824678C8) { ShownTheMod<__imp__sub_824678C8>(ctx, base); }
+
+// The story finds its player's character by his person id (sub_825344E0(id): the characters table, each one's
+// person +80 -> sub_828B7028). That id is the CAW's; the character playing him is the mod's: without this the walk
+// found no player (sub_82535018 -> 0) and crashed reading its +304 (sub_825484A0, 29 Oct).
+REX_EXTERN(__imp__sub_825344E0);
+REX_HOOK_RAW(sub_825344E0) {
+  const uint32_t want = ctx.r3.u32;
+  __imp__sub_825344E0(ctx, base);
+  if (ctx.r3.u32 || !g_swap_id || !svr2011::InRoadToWrestleMania()) return;
+  const uint32_t c = g_swap_person < 9 ? Rd32(base + 0x82E3CC50 + g_swap_person * 4) : 0;
+  if (!c) return;
+  const auto saved = ctx;
+  ctx.r3.u64 = Rd32(base + c + 80);
+  sub_828B7028(ctx, base);
+  const uint32_t is = ctx.r3.u32;
+  ctx = saved;
+  if (want != g_swap_caw) {
+    // (another person's id finds nobody: the game's own answer stands - logged)
+    static uint32_t said = 0;
+    if (said++ < 5)
+      REXLOG_INFO("[svr2011] rtwm streak: no character for person id {} (the player's {} reads {})", int32_t(want),
+                  g_swap_caw, is);
+    return;
+  }
+  // (the swapped person's character - characters-table entry = person - whatever his id reads: the mod's id, its
+  // base's (the mod's record is a copy of the base's), or another later on - JBL's walk read neither some seconds
+  // in and crashed as before, 29 Oct)
+  ctx.r3.u64 = c;
+  static uint32_t said = 0;
+  if (said < 4 && (said == 0 || (is != g_swap_id && is != svr2011::SuperstarModBase(g_swap_id)))) {
+    ++said;
+    REXLOG_INFO("[svr2011] rtwm streak: the story's player (CAW {}) is the mod's character (his id reads {})", want, is);
+  }
+}
+
+// The scene numbers its people in sub_8253D008, from the person records' picks: the person whose id is the story's
+// player (the CAW's) gets number 1 and those after him count on from there; with no such person they count from 0, and
+// the walk loads each of its NPCs into the person its number names. The mod's pick there meant no player: the walk's
+// first NPC - Chris Jericho, patrolling - was loaded into person 0, the player's own character, and drove him: straight
+// through the walls to Jericho's path, then still (report 80a2a3, 31 Oct, one character too few). So for this one
+// function the record holds the CAW's pick - everywhere else, the model's load first, it stays the mod's.
+REX_EXTERN(__imp__sub_8253D008);
+REX_HOOK_RAW(sub_8253D008) {
+  uint8_t* key = nullptr;
+  uint32_t was = 0;
+  if (g_swap_id && g_swap_person < 9 && svr2011::InRoadToWrestleMania())
+    if (const uint32_t table = Rd32(base + 0x82E3DDFC)) {
+      uint8_t* k = base + table + 132 + g_swap_person * 52 + 16;
+      if (Rd32(k) / 100 == g_swap_id) key = k, was = Rd32(k), Wr32(k, g_swap_caw * 100 + 2);
+    }
+  __imp__sub_8253D008(ctx, base);
+  if (!key) return;
+  Wr32(key, was);
+  static uint32_t said = 0;
+  if (said++ < 4)
+    REXLOG_INFO("[svr2011] rtwm streak: the scene numbers its people with person {} as the CAW {} (his record: {})", g_swap_person,
+                g_swap_caw, was);
+}
+
+// (research, SVR2011_TEST_RTWM_BUILD_LOG=1: each build's entry and the characters' +80 after)
+REX_EXTERN(__imp__sub_82195BA0);
+REX_HOOK_RAW(sub_82195BA0) {
+  static const bool log = std::getenv("SVR2011_TEST_RTWM_BUILD_LOG") != nullptr;
+  const uint32_t r3 = ctx.r3.u32, entry = ctx.r4.u32;
+  __imp__sub_82195BA0(ctx, base);
+  if (!log) return;
+  std::string chars;
+  for (uint32_t i = 0; i < 3; ++i)
+    if (const uint32_t c = Rd32(base + 0x82E3CC50 + i * 4)) chars += fmt::format(" {}:{:08X}+80={}", i, c, Rd32(base + c + 80));
+  REXLOG_INFO("[svr2011] rtwm build: sub_82195BA0({:08X}, entry {:08X} pick {}) ->{}", r3, entry,
+              entry ? Rd32(base + entry) : 0, chars);
 }

@@ -95,6 +95,12 @@ pacentry evt\Nyujyo5.pac EVPE 504 entrance/504_evp.bin
 pacentry evt\Nyujyo5.pac EVTE 504 entrance/504_evt.bin
 ```
 
+A pac named `dlc\<path under the package's pac\>` is an installed DLC package's own file, e.g.
+`pacentry dlc\ch\ch52_dlc02.pac EMD 00005202 entry.bin` (attire mods replacing a DLC attire,
+docs/SUPERSTAR_MODS.md): its copy with the entry goes to `Mods/PacOverlay/dlc/<package>/`, the package's
+catalogs get the copy's places, and both are served when the game mounts the package - as the DLC
+m / mpsp / misc copies below. The package's files are never written.
+
 The pac is copied to `Mods/PacOverlay/evt/Nyujyo5.pac` with the entries in
 (numeric name order, the `65535` end mark last, BPE-packed, the packer's
 footer kept) and the overlay pac list names the copy
@@ -108,6 +114,21 @@ Where a pack goes:
 
 A `disabled` file in the mod or pack folder turns it off. Keys the game
 already has are left alone.
+
+Every move a pack defines (a `waze`, `wazename` or `wazecopy` line) is named
+`MOD: <name>` in its record, so the game lists it so everywhere (CREATE A
+MOVE-SET, the moves lists): `MOD: Mandible Claw`. The game's own moves keep
+their names.
+
+Installing a mod with custom moves (a pack, or a superstar mod's `moves/pack.txt`)
+asks first - "experimental and most likely broken", Yes / No, No the default,
+"Don't warn me again": the launcher (+ and Discovery) and the Mod Maker
+(`launcher/move_warning.c`; the tick is `Mods\.no_move_warning`), the Android
+launcher's Add a mod (`ModsPage.askMoves`; the tick in its preferences). With no
+one to ask (`--mods-add`, a hidden Mod Maker test) it is only logged
+(`Mods\.install.log`, the Mod Maker's log); the port's bundled mods aren't asked
+about. Test aid `SVR2011_MOVE_WARNING_SHOT=<file.bmp>`: the box drawn off-screen,
+saved and answered No.
 
 A pack of its own may carry a `manifest.txt` (`type=moves`, `name=`): its
 entrances are listed in CREATE AN ENTRANCE as `MOD: <name>` (as a superstar

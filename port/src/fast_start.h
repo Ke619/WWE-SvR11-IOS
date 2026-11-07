@@ -19,4 +19,10 @@ void FastStartPressStart(uint8_t* base, uint32_t screen, uint32_t pad);
 // X_INPUT_STATE, +0 packet number, +4 buttons): the skips press START.
 void FastStartInput(uint8_t* base, uint32_t state);
 
+// A match's people committed (after test_match.cpp's sub_828BC5E8 hook): leaving
+// Road to WrestleMania (START > QUIT) sets up the practice ring, which then
+// waits for START under its loading tips with no prompt - START is pressed
+// for the player, on to the main menu.
+void FastStartPeopleCommitted(uint8_t* base);
+
 }  // namespace svr2011

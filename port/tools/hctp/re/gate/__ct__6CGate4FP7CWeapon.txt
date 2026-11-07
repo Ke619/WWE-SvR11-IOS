@@ -1,0 +1,122 @@
+; __ct__6CGate4FP7CWeapon size 0x1e4
+0022f200:  addiu    $sp, $sp, -0xb0
+0022f204:  sd       $ra, 0x20($sp)
+0022f208:  addu.qb  $zero, $sp, $s1
+0022f20c:  ext      $s0, $sp, 0, 1
+0022f210:  move     $s1, $a0
+0022f214:  jal      0x13e370    ; __ct__7CObjectFv
+0022f218:  move     $s0, $a1
+0022f21c:  addiu    $a0, $s1, 0x10
+0022f220:  jal      0x13e440    ; __ct__7CActionFUi
+0022f224:  addiu    $a1, $zero, 1
+0022f228:  addiu    $a0, $s1, 0x18
+0022f22c:  jal      0x13e560    ; __ct__5CDrawFUi
+0022f230:  addiu    $a1, $zero, 3
+0022f234:  addiu    $a0, $s1, 0x24
+0022f238:  jal      0x13c330    ; __ct__5CLinkFPv
+0022f23c:  move     $a1, $s1
+0022f240:  lui      $v1, 0x48
+0022f244:  lui      $v0, 0x48
+0022f248:  addiu    $v1, $v1, -0x14a0    ; = 0x47eb60 __vt__6CGate4
+0022f24c:  addiu    $v0, $v0, -0x1490    ; = 0x47eb70 __vt__6CGate4+0x10
+0022f250:  sw       $v1, ($s1)
+0022f254:  lui      $v1, 0x48
+0022f258:  sw       $v0, 0x10($s1)
+0022f25c:  addiu    $v1, $v1, -0x1480    ; = 0x47eb80 __vt__6CGate4+0x20
+0022f260:  lui      $v0, 0x48
+0022f264:  sw       $v1, 0x18($s1)
+0022f268:  addiu    $v0, $v0, -0x1470    ; = 0x47eb90 __vt__6CGate4+0x30
+0022f26c:  addiu    $v1, $s1, 0x60
+0022f270:  sw       $v0, 0x3c($s1)
+0022f274:  bbit132  $v1, 0, 0x22f278
+0022f278:  addiu    $v0, $s1, 0x70
+0022f27c:  bbit132  $v0, 0, 0x22f280
+0022f280:  lui      $v1, 0x42
+0022f284:  addiu    $v1, $v1, -0x6050    ; = 0x419fb0 g_stg_audi_list$9109
+0022f288:  sw       $s0, 0x40($s1)
+0022f28c:  lui      $v0, 0x42
+0022f290:  lw       $a0, 0x30($s0)
+0022f294:  addiu    $v0, $v0, -0x604f    ; = 0x419fb1 g_stg_audi_list$9109+0x1
+0022f298:  sll      $a0, $a0, 1
+0022f29c:  addu     $v1, $v1, $a0
+0022f2a0:  lbu      $v1, ($v1)
+0022f2a4:  andi     $v1, $v1, 0xff
+0022f2a8:  sw       $v1, 0x44($s1)
+0022f2ac:  lw       $v1, 0x30($s0)
+0022f2b0:  sll      $v1, $v1, 1
+0022f2b4:  addu     $v0, $v0, $v1
+0022f2b8:  lbu      $v0, ($v0)
+0022f2bc:  andi     $v0, $v0, 0xff
+0022f2c0:  sw       $v0, 0x48($s1)
+0022f2c4:  lw       $v0, 0x44($s1)
+0022f2c8:  bnez     $v0, 0x22f2dc
+0022f2cc:  nop      
+0022f2d0:  jal      0x1f5bb0    ; CommonStartStage__Fv
+0022f2d4:  nop      
+0022f2d8:  sw       $v0, 0x44($s1)
+0022f2dc:  lw       $v1, 0x30($s0)
+0022f2e0:  lui      $v0, 0x42
+0022f2e4:  addiu    $v0, $v0, -0x6070    ; = 0x419f90 bord_group_list+0x10
+0022f2e8:  addiu    $a0, $sp, 0x80
+0022f2ec:  sll      $v1, $v1, 1
+0022f2f0:  addu     $v0, $v0, $v1
+0022f2f4:  lh       $v0, ($v0)
+0022f2f8:  dsll32   $v0, $v0, 0x10
+0022f2fc:  dsra32   $v0, $v0, 0x10
+0022f300:  sw       $v0, 0x4c($s1)
+0022f304:  sw       $zero, 0x50($s1)
+0022f308:  sw       $zero, 0x94($s1)
+0022f30c:  bbit132  $a0, 0, 0x22f310
+0022f310:  addiu    $v0, $sp, 0x90
+0022f314:  bbit132  $v0, 0, 0x22f318
+0022f318:  addiu    $a0, $sp, 0x40
+0022f31c:  addiu    $a1, $sp, 0x80
+0022f320:  lw       $v0, 0x40($s1)
+0022f324:  addiu    $v1, $v0, 0xd0    ; = 0x41a060 @8445
+0022f328:  andi.b   $w0, $w0, 0x62
+0022f32c:  ext      $v0, $sp, 2, 1
+0022f330:  add_a.d  $w0, $w0, $w2
+0022f334:  jal      0x144fa0    ; RotXYZ__9objMatrixFRC9objVector
+0022f338:  .word 7fa20090
+0022f33c:  aver_u.h $w2, $w0, $w4
+0022f340:  lui      $v0, 0x42
+0022f344:  addiu    $v0, $v0, -0x5ea0    ; = 0x41a160 @9394
+0022f348:  addiu    $v1, $sp, 0x30
+0022f34c:  addiu    $a2, $sp, 0x40
+0022f350:  addiu    $a1, $sp, 0x30
+0022f354:  addiu    $a3, $sp, 0x30
+0022f358:  dps.w.ph $ac0, $sp, $a0
+0022f35c:  andi.b   $w0, $w0, 0x42
+0022f360:  ext      $v0, $v1, 0, 1
+0022f364:  bbit032  $a2, 4, 0x22f368
+0022f368:  bbit032  $a2, 5, 0x22f3ac
+0022f36c:  bbit032  $a2, 6, 0x22f3f0
+0022f370:  bbit032  $a2, 7, 0x22f434
+0022f374:  bbit032  $a1, 8, 0x22f378
+0022f378:  .word 4be821bc
+0022f37c:  .word 4be828bd
+0022f380:  .word 4be830be
+0022f384:  .word 4be83b0b
+0022f388:  bbit132  $a3, 0xc, 0x22f38c
+0022f38c:  lui      $v0, 0x3f80
+0022f390:  mtc1     $v0, $f1
+0022f394:  lui      $v0, 0x4120
+0022f398:  .word 7ba40030
+0022f39c:  mtc1     $v0, $f0
+0022f3a0:  xori.b   $w2, $w0, 0xa3
+0022f3a4:  move     $v0, $s1
+0022f3a8:  .word 7fa40090
+0022f3ac:  .word 7e230060
+0022f3b0:  aver_u.h $w2, $w0, $w3
+0022f3b4:  dps.w.ph $ac0, $s1, $v1
+0022f3b8:  lwc1     $f2, 0x74($s1)
+0022f3bc:  sub.s    $f1, $f2, $f1
+0022f3c0:  swc1     $f1, 0x74($s1)
+0022f3c4:  lwc1     $f1, 0x74($s1)
+0022f3c8:  sub.s    $f0, $f1, $f0
+0022f3cc:  swc1     $f0, 0x74($s1)
+0022f3d0:  ld       $ra, 0x20($sp)
+0022f3d4:  aver_u.h $w0, $w0, $w17
+0022f3d8:  xori.b   $w0, $w0, 0xb0
+0022f3dc:  jr       $ra
+0022f3e0:  addiu    $sp, $sp, 0xb0

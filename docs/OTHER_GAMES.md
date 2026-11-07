@@ -20,10 +20,11 @@ slot it is played in (`arena_mods.cpp` RedirectArena), so any base slot works.
 | **SvR 2008 (360)** | `pac/bg/bgNN.pac`, EPAC | **ready** | texture sets moved to 2011's ids, crowd from a 2011 arena (`--pac11`) |
 | **SvR 2009 (360)** | `pac/bg/bgNN.pac`, EPAC | **ready** | as 2008, plus light numbers remapped |
 | **Legends of WrestleMania (360)** | `pac/bg/bg201-216, 219.pac`, EPAC | **ready** | SvR 2009's format (the 2008 path); see below |
-| **SvR 2010 (360)** | `pac/bg/bgNN.pac`, EPAC | **ready** | the same format as 2011: the file is used as it is |
+| **SvR 2010 (360)** | `pac/bg/bgNN.pac`, EPAC | **ready** | the same format as 2011: the file is used as it is, except its motion bank (2011 RAW's) and match light sets too dark for 2011 (WrestleMania 25: set 10 ground 0.20 - 2011 RAW's, via `svrmod lights`) |
 | **WWE '12 (360)** | `pac/bg/bgNN.pac`, plain EPAC | **ready (in the Mod Maker)** | the WWE '13 converter (`svrmod wwe13`) takes it as is |
 | **WWE '13 (360)** | `pac/bg/bgNN.pac`, `0x0FF512ED` LZX container around an EPK8 | **ready (in the Mod Maker)** | `svrfmt/wwe13.cpp` (`svrmod wwe13`); see below |
 | **WWE 2K14 (360)** | `pac/bg/bgNN.pac`, EPAC with ZLIB entries | **ready (in the Mod Maker)** | the WWE '13 converter: ZLIB unpacked, the host's arena motions |
+| **WWE 2K15 - 2K17 (360)** | `pac/bg/bgNN.pac`: 2K15 as 2K14, 2K16 in the LZX container, 2K17 an HSPC of SHDCs | **ready (in the Mod Maker)** | the WWE '13 converter. Their screens (`layout_<show>_movie` / `layout_arena_movie` / `layout_mini_tron`) become 2011's `titantron_movie` / `arena_movie`, and move to the ids 2011 plays videos on (entrance 803 / 806 / 808, loop 801 / 807; the rest merged into the biggest of their kind; announce-table monitors kept): otherwise they played the live camera, in entrances too. 2K17's select pictures: MatchHD.pac `Ar<NN>`. WWE 2K14's screens are main&banner (titantron), <show>_header&wall and mini_tron (loops); WWE '12's minitron_movie and any other ...movie name are loops. A picture an arena names but doesn't carry (2K17 WCW Nitro's light cards pas_light / pas_light02) gets a clear one instead of drawing white. Long names get "(2K17)" or no game (the select shows ~30 letters). Tested in a match (27 Oct): 2K17 SummerSlam, RAW, WrestleMania 32 (85,915 points: 2.1.6+), WCW Nitro, NXT TakeOver: Brooklyn; 2K16 SmackDown, Royal Rumble '15, WrestleMania 15; 2K15 NXT, Hell in a Cell; 2K14 Raw, WrestleMania 29, WrestleMania 3. |
 
 ### SvR 2010
 
@@ -243,6 +244,64 @@ Fallback limits: 2540 under an HCTP track keeps the position, not the wheels.
 
 States: **decoded** = we read it and a tool uses it or could; **partly** =
 layout known, some fields not; **unknown** = not looked at or not found.
+
+### A game's DLC superstars (`--dlc`)
+
+`superstar_port.py ... --dlc <folder>` (the Mod Maker: My game discs, a game's **Add DLC folder**) adds the source
+game's DLC superstars to `list` and `convert`, beside the disc, which is still needed. The folder holds packages as the
+console keeps them (STFS, up to 3 levels down) or unpacked; another game's packages in it are skipped by title id.
+`tools/dlc_src.py` reads them, `Src` falls back to them for files the disc doesn't have, and `merge_dlc` takes each
+package's own superstars: those with a model pac the disc doesn't have (`pac/ch/ch<id>[_dlc<nn>].pac`). A list row has
+`dlc: true` and its name ends " (DLC)".
+
+| Game | Tables (`chEtc`, a whole table in the disc's format) | Renders | DLC superstars seen |
+|---|---|---|---|
+| SvR 2009 | `pac/ch/chEtc.pac` CHAR | `pac/DLC_HD.pac` | 10 (ids 54-68) |
+| WWE '12 | `pac/ch/chEtc.pac` CHAR (its CHCM group also has a DAT: not the table) | `pac/DLC_HD_dlc<nn>.pac` | 11 (61-82) |
+| WWE '13 | `chEtc_dlc<nn>.pac` CHAR | `DLC_HD_dlc<nn>.pac` | 14 (52, 65-85) |
+| WWE 2K14 | `chEtc_dlc<nn>.pac` CHAR; names in `string_dlc<nn>.pac` | `DLC_HD_dlc<nn>.pac` | 20 (377-396) |
+| WWE 2K15 | `chEtc_dlc<nn>.pac` CHAR; names as 2K14 | `dlc_hd_dlc<nn>.pac` | 19 |
+| WWE 2K16 | `chEtc_dlc<nn>.pac` CH20 / CH40, id at +4; names as 2K14 | `dlc_hd_dlc<nn>.pac` | 32; model pacs are EPK8 (2K15's form), not the disc's EPAC |
+
+The theme comes from the package's own bank (`sound/DLC_<nn>.pck` and kin), else the disc's.
+
+Entrances and titantrons come from the packages too: `entrance_port.py` reads through `dlc_src.view` (the disc with the
+packages of `SVR2011_PORT_DLC` beside it; `--dlc` sets it for the run). `reads` gives every copy of a file, since two
+packages can hold the same name.
+
+| Game | Entrance file in a package | Titantron in a package |
+|---|---|---|
+| SvR 2009 | `pac/evt/NyujyoD.pac` (`entrance_port` lists it; `superstar_port` takes 2011's by name, as for its disc superstars) | `NNN.bik`: Bink 1, as it is |
+| WWE '12 | `pac/evt/NyujyoC.pac`, same name in Pack 3 and Pack 4, each with its own entrances | `.bik`: as it is |
+| WWE '13 | `Entrance_dlc<nn>.pac` | `NNN.bik2`: early Bink 2 (KB2d), neither RAD Video Tools nor FFmpeg can open it, so no titantron |
+| WWE 2K14 | `Entrance_dlc<nn>.pac` | `NNN.bik2`: Bink 2 (KB2f), needs the player's decoder |
+| WWE 2K15 | `entrance_dlc<nn>[b].pac` | `ent_NNNN_V_0.bk2`: Bink 2, needs the player's decoder |
+| WWE 2K16 | `<5 digits>_dlc<nn>.pac`, EPK8 where the disc has EPAC | `ent_NNNN_V_0.bk2`: as 2K15 |
+
+Props a DLC entrance uses that 2011's `evtobj.pac` lacks come from the packages' `evtobj_dlc<nn>.pac` (2K16: `pac/prop/<id>_dlc<nn>.pac`): the model
+goes through `svrmod wwe13prop` and the pack adds it under its own id. '13: 1 prop, 2K14: 3, 2K16: 5. Props no package holds don't show, and the conversion
+warns, as for a disc entrance. SvR 2007 / 2008 / Legends use the 2009 reader but no package has been tried.
+
+WWE All Stars isn't a source game (Unreal Engine 3 packages, nothing of it converts) and needs no disc for this: its DLC's 13
+jumbotrons (`phase<n>/<nnn>_JumboTron.bik`, Bink 1, 512 x 512) work as a superstar mod's entrance movie as they are. My game
+discs: **WWE All Stars DLC: get the jumbotrons...**, or `dlc_src.py movies <folder> 54510866 <out>`. They're named by number.
+
+Moves only the DLC has come from the packages too (`moves_port`, and so a whole superstar's moveset): a package's table
+names the move and the disc has no motion for it. The Mod Maker gives the DLC folder to `moves_port`, `entrance_port` and
+`arena_port` as well as `superstar_port`.
+
+| Game | Motions in a package | Move records in a package | DLC-only moves |
+|---|---|---|---|
+| SvR 2009 | the whole `pac/m.pac`: used in place of the disc's | the whole `pac/misc.pac`; names start "DLC " | 43 |
+| WWE '12 | `m_dlc<nn>.pac` ZMOT | `pac/misc.pac` MOVS/WAZE | 47 |
+| WWE '13 | `dlc_mot<nn>.pac` ZMOT | `misc_dlc<nn>.pac` MOVS/WAZE | 87 |
+| WWE 2K14 | `dlc_mot<nn>.pac` ZMVM | `misc_dlc<nn>.pac` MOVS/WAZE | 87 |
+| WWE 2K15 | `mot_dlc<nn>.pac` ZMVM, ZMOT | `misc01_start_dlc<nn>.pac` MOVS/WA20, WAZ3, WA50 | 8 |
+| WWE 2K16 | `mot_dlc<nn>.pac` MOT/DL<nn> | `createmode_dlc<nn>.pac` MOVS/DL<nn>: a PACH, entry 20 has 96-byte records (id +0, name +0x20) | 116 |
+
+The small packages holding only `asset_v2.bin` and `icon.png` (shirts, outfits, masks, title belts) are Xbox avatar items,
+not game content, and those holding only `info/catalog.dlc` have nothing to take.
+A disc model with the same id wins: DLC attires of disc superstars aren't taken.
 
 ### What SvR 2011 has (the target)
 

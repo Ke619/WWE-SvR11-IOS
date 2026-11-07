@@ -10,6 +10,7 @@
 #endif
 #define COBJMACROS
 #include "discover_tab.h"
+#include "test_run.h"
 
 #include <commctrl.h>
 #include <shobjidl.h>
@@ -403,6 +404,8 @@ static int http(const Job *j, const WCHAR *method, const WCHAR *path, const char
     uc.lpszHostName = host; uc.dwHostNameLength = 256;
     uc.lpszUrlPath = upath; uc.dwUrlPathLength = 900;
     if (!WinHttpCrackUrl(url, 0, 0, &uc)) return 0;
+    /* (a test run's upload / edit / new version / delete: never a server off this PC - test_run.h) */
+    if (wcscmp(method, L"GET") && test_run_refuses(host, "discovery write")) return 403;
     ses = WinHttpOpen(L"SvR2011 Launcher", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME,
                       WINHTTP_NO_PROXY_BYPASS, 0);
     if (ses) {
@@ -533,6 +536,7 @@ static int download_to(Job *j, const WCHAR *part, WCHAR *why)
         HINTERNET ses = NULL, con = NULL, req = NULL;
         DWORD status = 0, sz = sizeof status;
         int broke = 1;   /* (no answer, or it stopped part way: worth another try) */
+        int busy = 0;    /* (502 / 503 / 504: worth another try too) */
         ses = WinHttpOpen(L"SvR2011 Launcher", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME,
                           WINHTTP_NO_PROXY_BYPASS, 0);
         if (ses) {
@@ -594,6 +598,8 @@ static int download_to(Job *j, const WCHAR *part, WCHAR *why)
                         }
                     }
                     if (!s_dl_cancel && !broke && !why[0]) done = 1;
+                } else if (status == 502 || status == 503 || status == 504) {
+                    busy = 1;   /* (the server is there but its storage is slow just now: tried again) */
                 } else if (status) {
                     broke = 0;   /* (the server said no - 404, 403...: not worth trying again) */
                     swprintf_s(why, 200, L"the server said %d", (int)status);
@@ -610,8 +616,8 @@ static int download_to(Job *j, const WCHAR *part, WCHAR *why)
         }
         {
             WCHAR t[120];
-            swprintf_s(t, 120, L" - connection lost, %s in %d s (try %d of %d)", have > 0 ? L"resuming" : L"starting again",
-                       backoff(tries - 1), tries + 1, DL_TRIES);
+            swprintf_s(t, 120, L" - %s, %s in %d s (try %d of %d)", busy ? L"the server is busy" : L"connection lost",
+                       have > 0 ? L"resuming" : L"starting again", backoff(tries - 1), tries + 1, DL_TRIES);
             dl_progress(j, have, total, 0, t);
         }
         wait_while(j, backoff(tries - 1) * 1000, 1);

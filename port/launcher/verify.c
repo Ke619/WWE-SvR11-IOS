@@ -81,6 +81,59 @@ static void add_bad(VerifyResult *r, const WCHAR *path, int missing)
     }
 }
 
+uint32_t verify_crc32(uint32_t crc, const void *data, size_t n)
+{
+    crc_init();
+    return crc_update(crc, (const uint8_t *)data, n);
+}
+
+/* (the list's first entry is default.xex) */
+int verify_xex_size_supported(uint64_t size) { return size == k_files[0].size; }
+int verify_xex_crc_supported(uint32_t crc) { return crc == k_files[0].crc; }
+
+int verify_xex_supported(const WCHAR *path)
+{
+    static WCHAR cached[MAX_PATH];
+    static FILETIME cached_t;
+    static uint64_t cached_size;
+    static int cached_answer = -1;
+    WIN32_FILE_ATTRIBUTE_DATA fa;
+    uint64_t size;
+    HANDLE h;
+    uint8_t *buf;
+    uint32_t c = 0;
+    DWORD got;
+    int answer = -1;
+    if (!GetFileAttributesExW(path, GetFileExInfoStandard, &fa))
+        return -1;
+    size = (uint64_t)fa.nFileSizeHigh << 32 | fa.nFileSizeLow;
+    if (!wcscmp(cached, path) && size == cached_size && !CompareFileTime(&fa.ftLastWriteTime, &cached_t))
+        return cached_answer;
+    if (!verify_xex_size_supported(size)) {
+        answer = 0;   /* (another size: no need to read it) */
+    } else if ((h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING,
+                                FILE_FLAG_SEQUENTIAL_SCAN, NULL)) != INVALID_HANDLE_VALUE) {
+        if ((buf = (uint8_t *)malloc(READ_CHUNK)) != NULL) {
+            uint64_t at = 0;
+            crc_init();
+            while (ReadFile(h, buf, READ_CHUNK, &got, NULL) && got) {
+                c = crc_update(c, buf, got);
+                at += got;
+            }
+            free(buf);
+            answer = at == size ? verify_xex_crc_supported(c) : -1;
+        }
+        CloseHandle(h);
+    }
+    if (answer >= 0) {
+        wcscpy_s(cached, MAX_PATH, path);
+        cached_t = fa.ftLastWriteTime;
+        cached_size = size;
+        cached_answer = answer;
+    }
+    return answer;
+}
+
 int verify_game_files(const WCHAR *game, volatile LONG *cancel, VerifyProgress progress, void *ctx,
                       VerifyResult *out)
 {
@@ -118,6 +171,8 @@ int verify_game_files(const WCHAR *game, volatile LONG *cancel, VerifyProgress p
             progress(done, total, g->path, ctx);
         if (!GetFileSizeEx(h, &sz) || (uint64_t)sz.QuadPart != g->size) {
             CloseHandle(h);
+            if (i == 0)   /* (default.xex: another release's) */
+                out->other_release = 1;
             add_bad(out, p, 0);
             done += g->size;
             continue;
@@ -152,8 +207,11 @@ int verify_game_files(const WCHAR *game, volatile LONG *cancel, VerifyProgress p
         CloseHandle(h);
         if (!ok)
             break;
-        if (at != g->size || (c != g->crc && (!g->crc_ported || c != g->crc_ported)))
+        if (at != g->size || (c != g->crc && (!g->crc_ported || c != g->crc_ported))) {
+            if (i == 0 && at == g->size)   /* (default.xex: another release's) */
+                out->other_release = 1;
             add_bad(out, p, 0);
+        }
     }
     free(buf);
     /* Most of the files different: another edition of the game, not damage. */
@@ -167,6 +225,10 @@ void verify_describe(const VerifyResult *r, WCHAR *out, size_t n)
     const WCHAR *name;
     if (!r->files) {
         swprintf_s(out, n, L"No game files were found in the game folder: install the game first.");
+        return;
+    }
+    if (r->other_release) {   /* (Repair can't help: the disc is another release) */
+        swprintf_s(out, n, L"%s", VERIFY_OTHER_RELEASE);
         return;
     }
     if (r->other_edition) {

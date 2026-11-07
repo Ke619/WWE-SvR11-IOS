@@ -38,6 +38,7 @@
 #include <rex/ui/keybinds.h>
 #include <rex/ui/window.h>
 #include <rex/ui/windowed_app_context.h>
+#include <rex/thread.h>
 
 #include "generated/default/svr2011_init.h"
 #include "json_lite.h"
@@ -47,7 +48,11 @@
 #include "online_net.h"
 #include "graphics_page.h"
 #include "p2p.h"
+#include "mod_transfer.h"
+#include "online_mods.h"
 #include "script_input.h"
+#include "frame_rate.h"
+#include "util.h"
 
 // The game's own Xbox LIVE invite path (it restarts itself to join): off - the
 // restarted game says "a sign-in change has occurred" (see the notes below).
@@ -103,10 +108,7 @@ void Put64(uint8_t* p, uint64_t v) {
   Put32(p, uint32_t(v >> 32)), Put32(p + 4, uint32_t(v));
 }
 
-std::string Upper(std::string s) {
-  for (char& c : s) c = char(std::toupper(uint8_t(c)));
-  return s;
-}
+using svr2011::Upper;
 
 // -- the server's list, polled in the background ------------------------------------
 
@@ -144,6 +146,11 @@ bool g_poll_now = false;
 std::atomic<bool> g_toggle{false}, g_open{false}, g_wait_release{false};
 std::atomic<uint16_t> g_guest_pad{0};  // (OnlineOverlayPad)
 std::atomic<bool> g_relay_dialog{false};  // the relay warning is up (it holds the input)
+std::atomic<bool> g_mods_dialog{false};   // the host's mods question is up (it holds the input too)
+bool LobbyShown();  // (below: a session's lobby is on screen - the join done)
+void RestartAndRejoin();  // (below: the mods question's RESTART AND REJOIN)
+void ResumeRejoin();      // (below: a copy started by it - back to the session)
+std::atomic<int> g_leave_yes{0};  // (the mods question's DON'T JOIN / LEAVE: then the lobby's "Leave this session?" YES)
 std::atomic<int> g_press_b{0};            // its BACK: the game reads B for these many more pad reads
 
 // Touches while it's open (a phone): taps, as fractions of the window, for the
@@ -209,21 +216,33 @@ void Poll() {
     g_state = State{};
     return;
   }
-  // (?here=1: this game is in online mode - its friends see it Online; leaving
-  // online mode says bye: the offline menus show nobody online)
+  // (?here=1: this game runs, signed in - its friends can invite it from anywhere in the game (it walks there);
+  // &mode=online: in online mode - its friends see it Online. Leaving online mode says bye: friends see it
+  // in the game, not online)
   static bool was_online = false;
   const bool online = P2POnlineMode();
   if (was_online && !online) SayGoodbye();
   was_online = online;
-  // (&mode=online: counted "in online mode" - the server counts only games that say so)
-  auto r = net::ServerRequest("GET", online ? "/api/friends?here=1&mode=online" : "/api/friends");
+  // (&mode=online: counted "in online mode" - the server counts only games that say so; &place=: where in
+  // the game, the dashboard's - older servers ignore it)
+  std::string kind;
+  const std::string place = PresencePlace(&kind);
+  auto r = net::ServerRequest("GET", std::string(online ? "/api/friends?here=1&mode=online" : "/api/friends?here=1") +
+                                         "&place=" + place + (kind.empty() ? "" : "&kind=" + kind) + "&client=2");
   State s;
   s.signed_in = true;
   Json j;
+  // (2.1.6 servers: an account without its re-activation code / a confirmed email is refused - 403 and why)
+  if (r && r->status == 403 && JsonReader{r->body}.Value(j) && j["error"]) SetOnlineAccountBlock(j.Str("error"));
   if (r && r->status == 200 && JsonReader{r->body}.Value(j) && j["friends"]) {
     s.answered = true;
+    SetOnlineAccountBlock("");
     if (const Json* c = j["config"]; c && (*c)["mods_online"]) SetOnlineModsAllowed((*c)["mods_online"]->b);
     if (const Json* c = j["config"]; c && (*c)["match_network"]) P2PSetServerNetwork((*c)["match_network"]->s);
+    P2PSetServerNetcode([&] {  // (a server without it: lockstep)
+      const Json* c = j["config"];
+      return c && (*c)["netcode"] ? (*c)["netcode"]->s : std::string("lockstep");
+    }());
     if (const Json* c = j["config"]; c && (*c)["news"]) SetOnlineNews((*c)["news"]->s);
     for (const Json& f : j["friends"]->items) s.friends.push_back({f.Str("name"), f.Str("status"),
                                                                    f["mutual"] && f["mutual"]->b});
@@ -233,7 +252,7 @@ void Poll() {
       for (const Json& v : a->items) s.invites.push_back({v.Str("from"), v.Str("xuid"), v.Str("session"), v.Str("kind")});
   } else {
     OnlineServerUnanswered();  // (mods_online unknown: online matches with mods stay off - online_files.h)
-    if (!r) P2PSetServerNetwork("auto");  // (no server: today's way - direct, the relay if it answers)
+    if (!r) P2PSetServerNetwork("auto"), P2PSetServerNetcode("lockstep");  // (no server: today's way)
     s.error = !r ? "THE SERVER DIDN'T ANSWER" : r->status == 404 ? "THIS SERVER HAS NO FRIENDS LIST YET"
                                                                  : "THE SERVER REFUSED (" + std::to_string(r->status) + ")";
   }
@@ -242,6 +261,7 @@ void Poll() {
 }
 
 void PollThread() {
+  rex::thread::set_current_thread_name("online poll");
   for (;;) {
     Poll();
     std::unique_lock lock(g_mutex);
@@ -262,13 +282,13 @@ void PollSoon() {
 
 // -- actions (each on a thread of its own) -------------------------------------------
 
-void SendInvite(std::string name) {
+void SendInvite(std::string name, std::string status) {
   uint8_t info[60];
   uint32_t slots = 0;
   if (!P2PSessionInfo(info, &slots)) return Say("YOU'RE NOT IN A SESSION: CREATE OR JOIN ONE FIRST");
   const std::string key = Base64(info, 8) + name;
   const std::string kind = slots > 6 ? "Royal Rumble" : "Match";
-  std::thread([name, key, kind, session = Base64(info, 60)] {
+  std::thread([name, status, key, kind, session = Base64(info, 60)] {
     auto r = net::ServerRequest("POST", "/api/invite",
                                 "{\"to\": " + Quote(name) + ", \"session\": \"" + session + "\", \"kind\": " + Quote(kind) + "}",
                                 {{"Content-Type", "application/json"}});
@@ -277,12 +297,14 @@ void SendInvite(std::string name) {
         std::lock_guard lock(g_mutex);
         g_invited.insert(key);
       }
-      REXLOG_INFO("online overlay: invited {}", name);
-      Say("INVITE SENT TO " + Upper(name));
+      REXLOG_INFO("online overlay: invited {} ({})", name, status);
+      // (not in the game: the server keeps it a while - they see it if they start the game soon)
+      Say("INVITE SENT TO " + Upper(name) + (status == "offline" ? " - THEY SEE IT WHEN THEY START THE GAME" : ""));
     } else {
       Json j;
       std::string error;
       if (r && JsonReader{r->body}.Value(j)) error = j.Str("error");
+      REXLOG_WARN("online overlay: invite to {} refused: {}", name, r ? std::to_string(r->status) + " " + error : "no answer");
       Say(error.empty() ? "THE INVITE DIDN'T GO" : Upper(error));
     }
   }).detach();
@@ -469,6 +491,11 @@ class OnlineOverlay final : public rex::ui::ImGuiDialog {
   void Close();
   void Toast(ImGuiIO& io);
   bool RelayDialog(ImGuiIO& io);  // (true: up - nothing else this frame)
+  // The host's mods this game lacks (mod_transfer.h): DOWNLOAD / DON'T JOIN; through the relay, after a failed
+  // download: STAY / LEAVE; done: OK. (true: up)
+  bool ModsDialog(ImGuiIO& io);
+  void ModsProgress(ImGuiIO& io);  // (a download: bottom right)
+  enum ModsMode { kModsAsk, kModsRelay, kModsFailed, kModsDone };
 
   int sel_ = 0, top_ = 0;
   std::string typed_;  // ADD FRIEND
@@ -488,6 +515,14 @@ class OnlineOverlay final : public rex::ui::ImGuiDialog {
   uint64_t relay_warned_ = 0;  // (the session it was shown for: once each)
   std::string relay_body_;
   Clock::time_point relay_opened_at_{};
+  bool mods_open_ = false, mods_wait_ = false;
+  ModsMode mods_mode_ = kModsAsk;
+  int mods_sel_ = 0;
+  uint16_t mods_prev_ = 0;
+  ModLobbyOffer mods_offer_;
+  std::string mods_title_, mods_body_;
+  Clock::time_point mods_opened_at_{};
+  int mods_phase_ = 0;  // (the download's phase last seen: its end opens the dialog again)
 };
 
 void OnlineOverlay::Close() {
@@ -508,7 +543,9 @@ void OnlineOverlay::Toast(ImGuiIO& io) {
   // of the screen (INVITE POP-UPS on the overlay turns it off).
   const bool popups = rex::cvar::Query<bool>("online_invite_popups");
   for (const Invite& i : s.invites) {
-    if (!seen_invites_.insert(i.from + i.session).second || !popups) continue;
+    if (!seen_invites_.insert(i.from + i.session).second) continue;
+    REXLOG_INFO("online overlay: invite from {} ({}){}", i.from, i.kind, popups ? "" : " - pop-ups off: on the list only");
+    if (!popups) continue;
     toast_ = Upper(i.from) + " INVITED YOU";
     toast_line2_ = "TO A " + Upper(i.kind.empty() ? "match" : i.kind) + "  -  " +
                    Upper(rex::cvar::Query<std::string>("bind_online_menu")) + " OR BACK + RB TO ANSWER";
@@ -625,6 +662,181 @@ bool OnlineOverlay::RelayDialog(ImGuiIO& io) {
   return true;
 }
 
+namespace {
+std::string Megabytes(uint64_t n) {
+  char b[32];
+  std::snprintf(b, sizeof b, n < (10ull << 20) ? "%.1f MB" : "%.0f MB", n / 1048576.0);
+  return b;
+}
+// "A, B, C +2" (a line's worth)
+std::string NameList(const std::vector<std::string>& v) {
+  std::string s;
+  size_t k = 0;
+  for (; k < v.size(); ++k) {
+    if (s.size() + v[k].size() > 90 && k) break;
+    s += (k ? ", " : "") + v[k];
+  }
+  if (k < v.size()) s += " +" + std::to_string(v.size() - k);
+  return s;
+}
+}  // namespace
+
+bool OnlineOverlay::ModsDialog(ImGuiIO& io) {
+  using namespace rex::input;
+  auto open = [&](ModsMode mode, std::string title, std::string body) {
+    mods_mode_ = mode, mods_title_ = std::move(title), mods_body_ = std::move(body);
+    mods_sel_ = 0, mods_open_ = true, mods_wait_ = true, mods_opened_at_ = Clock::now();
+    g_mods_dialog = true;
+    REXLOG_INFO("online overlay: mods question ({}): {}", int(mode), mods_title_);
+  };
+  if (!mods_open_) {
+    // (a download that ended: done or failed - said once)
+    const ModDownloadState d = ModDownload();
+    const int phase = int(d.phase);
+    if (phase != mods_phase_) {
+      const bool was_running = mods_phase_ == ModDownloadState::kAsking || mods_phase_ == ModDownloadState::kFetching;
+      mods_phase_ = phase;
+      if (was_running && d.phase == ModDownloadState::kDone)
+        open(kModsDone, "THE MODS ARE DOWNLOADED",
+             std::to_string(d.mods) + (d.mods == 1 ? " mod is" : " mods are") + " on this PC for this session (" +
+                 Megabytes(d.total) + "). The game loads them when it starts again: RESTART AND REJOIN starts it "
+                 "again and takes you back to this session. They're removed when the game closes.");
+      else if (was_running && d.phase == ModDownloadState::kFailed && d.error != "Cancelled.")
+        open(kModsFailed, "THE MODS DIDN'T DOWNLOAD", d.error + "\n\nYou can stay in the session, but you can't "
+                                                     "play with the mods you don't have.");
+    }
+    ModLobbyOffer offer;
+    // (only once the lobby is up: the question holds the pad, and the game's join needs it until then)
+    if (!mods_open_ && !g_open && LobbyShown() && TakeModLobbyOffer(&offer)) {
+      mods_offer_ = offer;
+      if (offer.relayed) {
+        open(kModsRelay, "THIS MATCH USES MODS YOU DON'T HAVE",
+             "You don't have: " + NameList(offer.lacking) + ".\n\nMods only come straight from the host's game, and "
+             "your connection to the host goes through the relay, so they can't be downloaded. You can stay, but "
+             "you can't play with them.");
+      } else if (offer.mods.empty() && offer.unsendable.empty()) {
+        open(kModsRelay, "YOU AND THE HOST HAVE DIFFERENT COPIES OF A MOD",
+             NameList(offer.differ) + "\n\nNobody can pick " + (offer.differ.size() == 1 ? "it" : "them") +
+                 " in this session unless you both have the same copy: update the game, or install the mod again "
+                 "from the same place. You can stay and play with everything else.");
+      } else if (offer.mods.empty()) {
+        open(kModsRelay, "THIS MATCH USES MODS THE HOST CAN'T SEND",
+             NameList(offer.unsendable) + "\n\nOnly the game's and mods' own kinds of files travel. You can stay, "
+             "but you can't play with them.");
+      } else {
+        std::vector<std::string> names;
+        for (const ModOffer& m : offer.mods) names.push_back(m.name.empty() ? m.id : m.name);
+        std::string cant = offer.unsendable.empty() ? std::string()
+                                                    : "\n\nThe host can't send: " + NameList(offer.unsendable) + ".";
+        if (!offer.differ.empty()) cant += "\n\nDifferent copies, which nobody can pick: " + NameList(offer.differ) + ".";
+        open(kModsAsk,
+             "THIS MATCH USES " + std::to_string(offer.mods.size()) + (offer.mods.size() == 1 ? " MOD" : " MODS") +
+                 " YOU DON'T HAVE (" + Megabytes(offer.bytes) + ")",
+             NameList(names) + "\n\nDownload " + (offer.mods.size() == 1 ? "it" : "them") +
+                 " from the host? They come straight from the host's game and are removed when you leave "
+                 "online. If you don't, you leave this session." + cant);
+      }
+    }
+    if (!mods_open_) return false;
+  }
+  static const char* const kAsk[] = {"DOWNLOAD", "DON'T JOIN"};
+  static const char* const kStay[] = {"STAY", "LEAVE"};
+  static const char* const kDone[] = {"RESTART AND REJOIN", "LATER"};
+  const char* const* labels = mods_mode_ == kModsAsk ? kAsk : mods_mode_ == kModsDone ? kDone : kStay;
+  const int count = 2;
+  const float sc = std::min(io.DisplaySize.x / 1280.0f, io.DisplaySize.y / 720.0f);
+  const float title_size = 28 * sc, size = 21 * sc, pad = 28 * sc, w = 820 * sc;
+  ImFont* font = g_menu_font;
+  ImFont* tfont = g_title_font ? g_title_font : g_menu_font;
+  const float wrap = w - 2 * pad;
+  const ImVec2 body = (font ? font : ImGui::GetFont())->CalcTextSizeA(size, FLT_MAX, wrap, mods_body_.c_str());
+  const ImVec2 tsz = (tfont ? tfont : ImGui::GetFont())->CalcTextSizeA(title_size, FLT_MAX, wrap, mods_title_.c_str());
+  const float button_h = 44 * sc, h = pad + tsz.y + 18 * sc + body.y + 26 * sc + button_h + pad;
+  const ImVec2 a((io.DisplaySize.x - w) * 0.5f, (io.DisplaySize.y - h) * 0.5f), b(a.x + w, a.y + h);
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  dl->AddRectFilled(ImVec2(0, 0), io.DisplaySize, IM_COL32(0, 0, 0, 140));
+  dl->AddRectFilled(a, b, IM_COL32(10, 10, 14, 245), 8 * sc);
+  dl->AddRectFilled(a, ImVec2(a.x + 8 * sc, b.y), mods_mode_ == kModsAsk || mods_mode_ == kModsDone
+                                                      ? IM_COL32(200, 30, 32, 255) : IM_COL32(230, 160, 30, 255), 8 * sc);
+  dl->AddRect(a, b, IM_COL32(235, 235, 240, 255), 8 * sc, 0, 2 * sc);
+  dl->AddText(tfont ? tfont : ImGui::GetFont(), title_size, ImVec2(a.x + pad, a.y + pad), IM_COL32(255, 255, 255, 255),
+              mods_title_.c_str(), nullptr, wrap);
+  dl->AddText(font ? font : ImGui::GetFont(), size, ImVec2(a.x + pad, a.y + pad + tsz.y + 18 * sc),
+              IM_COL32(225, 225, 230, 255), mods_body_.c_str(), nullptr, wrap);
+  float bw[2], total = 0;
+  for (int k = 0; k < count; ++k) total += bw[k] = TextSize(font, size, labels[k]).x + 40 * sc;
+  total += (count - 1) * 16 * sc;
+  float x = b.x - pad - total;
+  const float y = b.y - pad - button_h;
+  int hovered = -1;
+  ImVec2 box[2][2];
+  for (int k = 0; k < count; ++k) {
+    box[k][0] = ImVec2(x, y), box[k][1] = ImVec2(x + bw[k], y + button_h);
+    if (io.MousePos.x >= x && io.MousePos.x < x + bw[k] && io.MousePos.y >= y && io.MousePos.y < y + button_h) hovered = k;
+    x += bw[k] + 16 * sc;
+  }
+  // input: LEFT / RIGHT move, A chooses, B is the second (DON'T JOIN / LEAVE; OK alone: OK); the mouse
+  const uint16_t buttons = PadButtons();
+  if (mods_wait_) {  // (a button still down from the lobby: not a choice)
+    if (buttons == 0 && Clock::now() - mods_opened_at_ > std::chrono::milliseconds(300)) mods_wait_ = false;
+    mods_prev_ = buttons;
+  }
+  const uint16_t pressed = mods_wait_ ? 0 : uint16_t(buttons & ~mods_prev_);
+  mods_prev_ = buttons;
+  if (pressed & (X_INPUT_GAMEPAD_DPAD_LEFT | X_INPUT_GAMEPAD_DPAD_UP | X_INPUT_GAMEPAD_DPAD_RIGHT |
+                 X_INPUT_GAMEPAD_DPAD_DOWN))
+    mods_sel_ = (mods_sel_ + 1) % count;
+  if (hovered >= 0 && (io.MouseDelta.x != 0 || io.MouseDelta.y != 0)) mods_sel_ = hovered;
+  int chosen = -1;
+  if (pressed & X_INPUT_GAMEPAD_A) chosen = mods_sel_;
+  if (pressed & X_INPUT_GAMEPAD_B) chosen = count - 1;
+  if (hovered >= 0 && io.MouseClicked[0] && !mods_wait_) chosen = hovered;
+  for (int k = 0; k < count; ++k) {
+    const bool on = k == mods_sel_;
+    dl->AddRectFilled(box[k][0], box[k][1], on ? IM_COL32(200, 30, 32, 255) : IM_COL32(40, 40, 48, 255), 6 * sc);
+    dl->AddRect(box[k][0], box[k][1], IM_COL32(235, 235, 240, on ? 255 : 120), 6 * sc, 0, 1.5f * sc);
+    const ImVec2 ts = TextSize(font, size, labels[k]);
+    Text(dl, font, size, ImVec2((box[k][0].x + box[k][1].x - ts.x) * 0.5f, (box[k][0].y + box[k][1].y - ts.y) * 0.5f),
+         IM_COL32(255, 255, 255, 255), labels[k]);
+  }
+  if (chosen >= 0) {
+    REXLOG_INFO("online overlay: mods question - {}", labels[chosen]);
+    if (mods_mode_ == kModsAsk) AnswerModLobbyOffer(mods_offer_, chosen == 0);
+    // (DON'T JOIN / LEAVE: the lobby's B, a few frames - its EXIT SESSION question)
+    if (mods_mode_ != kModsDone && chosen == 1) g_press_b = 8, g_leave_yes = 1;
+    if (mods_mode_ == kModsDone && chosen == 0) RestartAndRejoin();
+    mods_open_ = false;
+    g_mods_dialog = false;
+    g_wait_release = true;  // (the choosing button: not to the game too)
+  }
+  return true;
+}
+
+void OnlineOverlay::ModsProgress(ImGuiIO& io) {
+  const ModDownloadState d = ModDownload();
+  if (d.phase != ModDownloadState::kAsking && d.phase != ModDownloadState::kFetching) return;
+  const float sc = std::min(io.DisplaySize.x / 1280.0f, io.DisplaySize.y / 720.0f);
+  const float size = 18 * sc, size2 = 15 * sc, pad = 14 * sc, w = 420 * sc, bar_h = 10 * sc;
+  std::string line1 = d.phase == ModDownloadState::kAsking ? "ASKING THE HOST FOR ITS MODS..."
+                                                           : "DOWNLOADING MODS (" + std::to_string(d.mod) + " OF " +
+                                                                 std::to_string(d.mods) + ")";
+  char line2[96];
+  std::snprintf(line2, sizeof line2, "%s OF %s  -  %.1f MB/S", Megabytes(d.done).c_str(), Megabytes(d.total).c_str(),
+                d.rate / 1048576.0);
+  const float h = pad + size + 6 * sc + size2 + 10 * sc + bar_h + pad;
+  const ImVec2 b(io.DisplaySize.x - 24 * sc, io.DisplaySize.y - 24 * sc), a(b.x - w, b.y - h);
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  dl->AddRectFilled(a, b, IM_COL32(8, 8, 12, 230), 8 * sc);
+  dl->AddRectFilled(a, ImVec2(a.x + 6 * sc, b.y), IM_COL32(200, 30, 32, 255), 8 * sc);
+  dl->AddRect(a, b, IM_COL32(235, 235, 240, 200), 8 * sc, 0, 1.5f * sc);
+  Text(dl, g_menu_font, size, ImVec2(a.x + pad + 6 * sc, a.y + pad), IM_COL32(255, 255, 255, 255), line1.c_str());
+  Text(dl, g_menu_font, size2, ImVec2(a.x + pad + 6 * sc, a.y + pad + size + 6 * sc), IM_COL32(255, 200, 60, 255), line2);
+  const ImVec2 ba(a.x + pad + 6 * sc, b.y - pad - bar_h), bb(b.x - pad, b.y - pad);
+  dl->AddRectFilled(ba, bb, IM_COL32(40, 40, 48, 255), 4 * sc);
+  const float f = d.total ? std::min(1.0f, float(double(d.done) / double(d.total))) : 0.0f;
+  if (f > 0) dl->AddRectFilled(ba, ImVec2(ba.x + (bb.x - ba.x) * f, bb.y), IM_COL32(200, 30, 32, 255), 4 * sc);
+}
+
 void OnlineOverlay::OnDraw(ImGuiIO& io) {
   using namespace rex::input;
   // BACK + RB opens / closes it (from any screen; closed, the pad as the game
@@ -663,6 +875,8 @@ void OnlineOverlay::OnDraw(ImGuiIO& io) {
   }
   Toast(io);
   if (RelayDialog(io)) return;
+  ModsProgress(io);
+  if (ModsDialog(io)) return;
   if (!g_open) {
     if (g_wait_release && PadButtons() == 0) g_wait_release = false;
     return;
@@ -825,8 +1039,7 @@ void OnlineOverlay::OnDraw(ImGuiIO& io) {
     } else if (row.kind == kFriendRow && choose) {
       const Friend& f = st.friends[row.index];
       if (!in_session) Say("CREATE OR JOIN A SESSION FIRST, THEN INVITE");
-      else if (f.status == "offline") Say(Upper(f.name) + " ISN'T ONLINE");
-      else SendInvite(f.name);
+      else SendInvite(f.name, f.status);  // (any friend: an offline one sees it when their game polls next)
     } else if (row.kind == kAddedRow && choose) {
       AddFriend(st.added_you[row.index]);
     } else if (row.kind == kPopupRow && choose) {
@@ -896,6 +1109,7 @@ void OnlineOverlay::OnDraw(ImGuiIO& io) {
         name = Upper(f.name);
         if (f.status == "playing") right = "IN AN ONLINE MATCH", rc = kGreen;
         else if (f.status == "online") right = "ONLINE", rc = kGreen;
+        else if (f.status == "ingame") right = "IN THE GAME", rc = kGreen;
         else right = f.mutual ? "OFFLINE" : "OFFLINE (HASN'T ADDED YOU)", rc = kDim;
         if (in_session && invited.count(session_key + f.name)) right = "INVITED", rc = kGold;
         break;
@@ -1050,11 +1264,12 @@ void LoadRelaunch() {
 }
 
 // A new copy of the game, with this one's command line, folder and settings.
-bool StartNewCopy() {
+bool StartNewCopy(const std::wstring& extra = {}) {
 #ifdef _WIN32
   wchar_t exe[MAX_PATH];
   if (!GetModuleFileNameW(nullptr, exe, MAX_PATH)) return false;
   std::wstring cmd = GetCommandLineW();
+  if (!extra.empty() && cmd.find(extra) == std::wstring::npos) cmd += L" " + extra;
   SetEnvironmentVariableW(L"SVR2011_RELAUNCHED", L"1");  // (inherited)
   STARTUPINFOW si = {sizeof(si)};
   PROCESS_INFORMATION pi = {};
@@ -1079,6 +1294,7 @@ void InstallOnlineOverlay(rex::ui::ImGuiDrawer* drawer, rex::ui::Window* window,
   g_kernel = kernel;
   g_relaunch_file = user_data / "relaunch.bin";
   LoadRelaunch();
+  ResumeRejoin();  // (a copy RESTART AND REJOIN started: back to the session)
   new OnlineOverlay(drawer);  // lives for the whole run
   rex::ui::RegisterBind("bind_online_menu", "F1", "Online menu (friends, invites)", [] { g_toggle = true; });
   std::thread(PollThread).detach();
@@ -1106,7 +1322,9 @@ void OnlineOverlaySayGoodbye() {
 
 void ToggleOnlineOverlay() { g_toggle = true; }
 
-bool OnlineOverlayHoldsInput() { return g_open.load() || g_wait_release.load() || g_relay_dialog.load(); }
+bool OnlineOverlayHoldsInput() {
+  return g_open.load() || g_wait_release.load() || g_relay_dialog.load() || g_mods_dialog.load();
+}
 
 uint16_t OnlineRawPad() { return g_guest_pad.load(); }
 
@@ -1152,8 +1370,21 @@ constexpr uint32_t kBarMessage = 2;        // a message box (A SELECT)
 std::atomic<int64_t> g_seen[std::size(kWatched)];  // (Clock ticks of each one's last lookup)
 std::atomic<uint32_t> g_help_bar{0};
 std::atomic<int64_t> g_help_bar_at{0};
+std::atomic<int64_t> g_lobby_bar_at{0};  // (the last time a session's lobby bar - 1200..1239 - came up)
+
+bool LobbyBar(uint32_t bar) { return bar >= 1200 && bar < 1240; }
 
 int64_t Ticks() { return Clock::now().time_since_epoch().count(); }
+
+// A session's lobby on screen (its help bars are 1200..1239), for a second and a half: the join is done.
+bool LobbyShown() {  // (the overlay's thread)
+  static uint32_t last = 0;
+  static int64_t since = 0;
+  const uint32_t bar = g_help_bar.load();
+  if (bar != last) last = bar, since = Ticks();
+  return bar >= 1200 && bar < 1240 &&
+         Ticks() - since > std::chrono::duration_cast<Clock::duration>(std::chrono::milliseconds(1500)).count();
+}
 
 int64_t SeenAt(uint32_t id) {
   for (size_t k = 0; k < std::size(kWatched); ++k)
@@ -1290,12 +1521,22 @@ void WalkTick() {
   const uint32_t bar = g_help_bar.load();
   // (a session's lobby: its bars are 1200..1239 - one per match size and
   // cursor - and the joining box's)
-  const bool in_lobby = group == kOnlineScreen && ((bar >= 1200 && bar < 1240) || bar == kBarJoining);
+  const bool in_lobby = group == kOnlineScreen && (LobbyBar(bar) || bar == kBarJoining);
   const auto in_step = now - g_walk.step_at;
   switch (g_walk.step) {
     case Step::kWait: {
+      // (in the online menus: from the screen the cursor shows)
+      int64_t t_on = 0, t_ma = 0, t_pm = 0, t_cm = 0;
+      Latest(kOnlineRows, &t_on), Latest(kMatchRows, &t_ma), Latest(kPlayerRows, &t_pm), Latest(kCustomRows, &t_cm);
+      const int64_t newest = std::max({t_on, t_ma, t_pm, t_cm});
       // (a match, an editor, a session's lobby: until the player is at a menu)
-      const bool drivable = menu && (group < 1000 || group == kOnlineScreen) && !in_lobby;
+      const bool at_menu = menu && (group < 1000 || group == kOnlineScreen) && !in_lobby;
+      // (after an online match the game comes back to its PLAYER MATCH menu without a menu select: the menu
+      // object keeps the group it had before - an online menu's row looked up since the last lobby says the
+      // player is in the online menus)
+      const bool after_match = !at_menu && InMatch() && newest > g_lobby_bar_at.load() && !LobbyBar(bar) &&
+                               bar != kBarJoining;
+      const bool drivable = at_menu || after_match;
       if (!drivable) {
         if (!g_walk.told_wait) {
           Say("INVITE ACCEPTED: BACK AT A MENU, THE GAME TAKES YOU TO " + Upper(g_walk.from) + "'S SESSION");
@@ -1310,11 +1551,8 @@ void WalkTick() {
         g_walk.told_wait = false;
         return;
       }
-      if (group < 1000) return Goto(Step::kMainTop);
-      // (in the online menus: from the screen the cursor shows)
-      int64_t t_on = 0, t_ma = 0, t_pm = 0, t_cm = 0;
-      Latest(kOnlineRows, &t_on), Latest(kMatchRows, &t_ma), Latest(kPlayerRows, &t_pm), Latest(kCustomRows, &t_cm);
-      const int64_t newest = std::max({t_on, t_ma, t_pm, t_cm});
+      if (at_menu && group < 1000) return Goto(Step::kMainTop);
+      if (after_match) REXLOG_INFO("online overlay: invite walk: the online menus after a match (no menu select)");
       if (bar == kBarList) return Goto(Step::kList);
       if (!newest) return Goto(Step::kOnline);
       if (newest == t_cm) return Goto(Step::kCustom);
@@ -1395,7 +1633,8 @@ void WalkTick() {
       Press(X_INPUT_GAMEPAD_A, 1500);  // (YES)
       return Goto(Step::kJoining);
     case Step::kJoining:
-      if (in_lobby && bar != kBarJoining) {
+      // (the lobby's bar alone: after an online match the menu object's group isn't the online menus')
+      if (LobbyBar(bar) && g_help_bar_at.load() >= g_walk.step_at.time_since_epoch().count()) {
         REXLOG_INFO("online overlay: invite walk: in {}'s session", g_walk.from);
         Say("JOINED " + Upper(g_walk.from) + "'S SESSION");
         g_walk = Walk{};
@@ -1409,6 +1648,70 @@ void WalkTick() {
 }
 
 // (Accept(): the walk, from the next pad read)
+// RESTART AND REJOIN (the fetched mods load at a start: mod_transfer.h OnlineModsLoad): the session to go back
+// to into OnlineMods\rejoin.bin ("SVRJ", its 60-byte XSESSION_INFO, the host's name), the session left as DON'T
+// JOIN does, then a new copy with --online_mods_load=true and this one ends. The new copy reads the file
+// (ResumeRejoin) and walks back as an accepted invite does (the session first in its searches).
+uint64_t SessionId(const uint8_t* info) {
+  uint64_t v = 0;
+  for (int i = 0; i < 8; ++i) v = v << 8 | info[i];
+  return v;
+}
+
+void RestartAndRejoin() {
+  uint8_t info[60];
+  uint32_t slots = 0;
+  if (!P2PSessionInfo(info, &slots)) return Say("NOT IN A SESSION ANY MORE - JOIN IT AGAIN AFTER A RESTART");
+  std::string host = OnlineModsHostName();
+  if (host.empty()) host = "the host";
+  const std::filesystem::path file = OnlineModsRoot() / "rejoin.bin";
+  std::string out = "SVRJ";
+  out.append(reinterpret_cast<const char*>(info), 60);
+  out.push_back(char(slots > 6));
+  out.push_back(char(std::min<size_t>(host.size(), 64)));
+  out.append(host.substr(0, 64));
+  std::error_code ec;
+  std::filesystem::create_directories(file.parent_path(), ec);
+  if (FILE* f = std::fopen(file.string().c_str(), "wb")) {
+    std::fwrite(out.data(), 1, out.size(), f);
+    std::fclose(f);
+  } else {
+    return Say("COULDN'T SAVE THE SESSION TO GO BACK TO");
+  }
+  REXLOG_INFO("online overlay: restart and rejoin - {}'s session {:016X}", host, SessionId(info));
+  g_press_b = 8, g_leave_yes = 1;  // (out of the session first: the host keeps no stale slot for this game)
+  std::thread([] {
+    for (int i = 0; i < 100 && P2PSessionHost() != 0; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    const bool started = StartNewCopy(L"--online_mods_load=true");
+    REXLOG_INFO("online overlay: restart and rejoin - {}", started ? "a new copy started, this one ends" : "couldn't start a new copy");
+    if (!started) return Say("COULDN'T START THE GAME AGAIN - START IT YOURSELF, THEN JOIN THE SESSION");
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));  // (the log written)
+    std::_Exit(0);
+  }).detach();
+}
+
+void ResumeRejoin() {
+  if (!OnlineModsLoad()) return;
+  const std::filesystem::path file = OnlineModsRoot() / "rejoin.bin";
+  std::ifstream in(file, std::ios::binary);
+  std::string b((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  in.close();
+  std::error_code ec;
+  std::filesystem::remove(file, ec);
+  if (b.size() < 66 || b.compare(0, 4, "SVRJ") != 0) return;
+  std::vector<uint8_t> info(b.begin() + 4, b.begin() + 64);
+  const bool rumble = b[64] != 0;
+  const std::string host = b.substr(66, size_t(uint8_t(b[65])));
+  REXLOG_INFO("online overlay: back to {}'s session {:016X} with its mods loaded", host, SessionId(info.data()));
+  P2PExpectInvite(info.data());
+  RequestInviteWalk(rumble, host);
+  std::thread([info] {
+    std::this_thread::sleep_for(std::chrono::seconds(20));  // (the network up)
+    P2PReachHost(info.data());
+  }).detach();
+  OnlineOverlayNotice("THE MODS ARE LOADED", "AT A MENU, THE GAME TAKES YOU BACK TO " + Upper(host) + "'S SESSION", 15);
+}
+
 void RequestInviteWalk(bool rumble, const std::string& from) {
   std::lock_guard lock(g_walk_mutex);
   g_walk_request = WalkRequest{rumble, from, Clock::now() + std::chrono::minutes(15)};
@@ -1426,9 +1729,84 @@ void OnlineNoteString(uint32_t id) {
   }
 }
 
+// -- where the player is (the presence poll's &place=) ------------------------------------
+
+std::atomic<int64_t> g_activity_at[size_t(OnlineActivity::kCount)];
+
+void NoteOnlineActivity(OnlineActivity what) { g_activity_at[size_t(what)] = Ticks(); }
+
+std::string PresencePlace(std::string* kind) {
+  const auto lately = [](OnlineActivity a, int seconds) {
+    const int64_t at = g_activity_at[size_t(a)].load();
+    return at && Ticks() - at < std::chrono::duration_cast<Clock::duration>(std::chrono::seconds(seconds)).count();
+  };
+  const int role = P2PSessionRole();  // (a match session: 1 hosts it, 2 joined)
+  if (InMatch()) {
+    if (role || P2POnlineMode()) {
+      if (const auto ranked = P2PRanked(); ranked && kind) *kind = *ranked ? "ranked" : "player";
+      return "match_online";
+    }
+    return "match_offline";
+  }
+  if (role) return role == 1 ? "lobby_host" : "lobby_join";
+  uint32_t group = 0, row = 0;
+  const bool menu = ScriptMenuState(&group, &row);
+  if (P2POnlineMode()) {
+    // (Community Creations and the leaderboards: the server requests they make, the last 30 s)
+    if (lately(OnlineActivity::kCcUpload, 30)) return "cc_upload";
+    if (lately(OnlineActivity::kCcDownload, 30)) return "cc_download";
+    if (lately(OnlineActivity::kCcBrowse, 30)) return "cc";
+    if (lately(OnlineActivity::kLeaderboards, 30)) return "leaderboards";
+    if (lately(OnlineActivity::kSearch, 30)) return "matchmaking";
+    // (else the ONLINE menu's row the cursor was on last, and whether the MATCH screens came after it)
+    int64_t online_at = 0, match_at = 0, player_at = 0, custom_at = 0;
+    const uint32_t online_row = Latest(kOnlineRows, &online_at);
+    Latest(kMatchRows, &match_at), Latest(kPlayerRows, &player_at), Latest(kCustomRows, &custom_at);
+    if (std::max({match_at, player_at, custom_at}) > online_at || online_row == kOnRumble) return "matchmaking";
+    if (online_row == kOnCc) return "cc";
+    if (online_row == kOnBoards) return "leaderboards";
+    return "online_menu";
+  }
+  if (!menu) return "menus";
+  if (group < 1000) {  // (a main-menu group: the suites' own menus, MY WWE, OPTIONS, the match setup)
+    switch (group) {
+      case 0xD: return "create_story";      // (NEW | LIST | ONLINE)
+      case 0xE: return "create_superstar";  // (NEW | EDIT | SUPERSTAR THREADS | PAINT TOOL | ONLINE)
+      case 0xF: return "create_finisher";
+      case 4: return "create_menu";         // (CREATE MODES)
+      case 5: return "my_wwe";
+      case 0x10: return "practice";
+      case 0x11: case 0x19: case 0x20: case 0x21: case 0x25: return "options";
+      default: break;
+    }
+    if (group == 2 || (group >= 6 && group <= 0xC) || group == 0x18 || (group >= 0x1A && group <= 0x1F) ||
+        (group >= 0x22 && group <= 0x27))
+      return "match_setup";
+    return "menus";
+  }
+  // (a screen opened from the main menu: what was picked last - by its place, not its label)
+  uint32_t g = 0, r = 0;
+  ScriptMenuSelects(&g, &r);
+  if (g == 1) return r == 1 ? "universe" : r == 2 ? "rtwm" : r == 6 ? "shop" : "menus";
+  if (g == 4) {
+    static const char* const create[] = {"create_story", "create_superstar", "create_finisher", "create_entrance",
+                                         "highlight_reel", "create_moveset"};
+    return r < std::size(create) ? create[r] : "menus";
+  }
+  if (g == 0xD) return r == 2 ? "cc" : "create_story";          // (NEW | LIST | ONLINE)
+  if (g == 0xE) return r == 2 ? "threads" : r == 3 ? "paint_tool" : r == 4 ? "cc" : "create_superstar";
+  if (g == 0xF) return "create_finisher";
+  if (g == 5) return r == 2 ? "practice" : "my_wwe";
+  if (g == 0x11) return "options";
+  if (g == 2 || (g >= 6 && g <= 0xC) || g == 0x18 || (g >= 0x1A && g <= 0x1F) || (g >= 0x22 && g <= 0x27))
+    return "match_setup";
+  return "menus";
+}
+
 void OnlineNoteHelpBar(uint32_t id) {
   g_help_bar = id;
   g_help_bar_at = Ticks();
+  if (LobbyBar(id)) g_lobby_bar_at = Ticks();
 }
 
 uint16_t OnlineOverlayPad(uint16_t buttons) {
@@ -1439,6 +1817,24 @@ uint16_t OnlineOverlayPad(uint16_t buttons) {
   if (g_press_b > 0) {  // (the relay warning's BACK: the lobby's own B)
     if (--g_press_b == 0) return 0;
     return g_press_b > 2 ? uint16_t(X_INPUT_GAMEPAD_B) : 0;
+  }
+  if (g_leave_yes > 0) {  // (its box opens on NO: LEFT to YES, A - for up to ~5 s of pad reads, then left alone)
+    static int reads = 0;
+    const int step = g_leave_yes.load();
+    if (step == 1) {
+      if (g_help_bar.load() == kBarMessage) g_leave_yes = 2, reads = 0;
+      else if (++reads > 300) g_leave_yes = 0, reads = 0;
+      return buttons;
+    }
+    // (the box takes no input while it opens: a wait, then the press held a while, then a gap)
+    ++reads;
+    const int wait = step == 2 ? 45 : 20;
+    if (reads > wait + 10 + 20) {
+      reads = 0;
+      if (step == 3) REXLOG_INFO("online overlay: mods question - YES to the lobby's \"Leave this session?\"");
+      g_leave_yes = step == 3 ? 0 : 3;
+    }
+    return reads > wait && reads <= wait + 10 ? uint16_t(step == 2 ? X_INPUT_GAMEPAD_DPAD_LEFT : X_INPUT_GAMEPAD_A) : 0;
   }
   // An accepted invite's walk: its presses instead of the pad's; BACK stops it.
   {

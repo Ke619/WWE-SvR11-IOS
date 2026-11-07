@@ -4,6 +4,9 @@
 
 #include <share.h>
 #include <shlobj.h>
+#include <dbghelp.h>
+#include <csignal>
+#include <exception>
 #include <commdlg.h>
 #include <wincodec.h>
 #include <wrl/client.h>
@@ -21,6 +24,9 @@
 #include "mod_check.h"
 #include "tool_run.h"
 #include "../launcher/report_send.h"
+#include "../launcher/report_urls.h"
+#include "../launcher/update_log.h"
+#include "../launcher/report_receipts.h"
 
 #ifndef PORT_VERSION
 #define PORT_VERSION "dev"
@@ -125,13 +131,20 @@ std::string SystemText() {
   t += "settings: text size " + std::to_string(g_settings.font) + " px, UI scale " + scale + ", log " +
        (g_settings.log_open ? "open" : "closed") + ", Bink 2 tool " +
        (g_settings.bink2_tool.empty() ? std::string("(look for one)") : Utf8(g_settings.bink2_tool)) + "\n";
-  for (const auto& d : g_settings.my_discs) t += "my game discs: " + d.key + " (" + d.id + ") " + Utf8(d.path) + "\n";
+  for (const auto& d : g_settings.my_discs)
+    t += "my game discs: " + d.key + " (" + d.id + ") " + Utf8(d.path) + (d.dlc.empty() ? "" : ", DLC " + Utf8(d.dlc)) + "\n";
   if (g_settings.my_discs.empty()) t += "my game discs: (none set)\n";
   for (const auto& r : g_settings.recent) t += "settings: recent project " + Utf8(r) + "\n";
   return t;
 }
 
+// the last lines, for a crash file (kept apart from the file: a crash can't wait for g_mutex)
+constexpr size_t kTail = 40;
+std::string g_tail[kTail];
+std::atomic<size_t> g_tail_n{0};
+
 void WriteLine(const std::string& line) {  // (g_mutex held)
+  g_tail[g_tail_n.fetch_add(1) % kTail] = line;
   if (!g_file) {
     if (g_pending.size() < 20000) g_pending.push_back(line);
     return;
@@ -140,6 +153,119 @@ void WriteLine(const std::string& line) {  // (g_mutex held)
   std::fputc('\n', g_file);
   std::fflush(g_file);
 }
+
+// ---------------------------------------------------------------- crashes
+
+std::atomic<bool> g_crashed{false};
+
+std::string ModuleAt(DWORD64 addr) {  // "<module>+0x<offset>"
+  HMODULE m = nullptr;
+  char name[MAX_PATH] = "?";
+  if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                         reinterpret_cast<LPCSTR>(addr), &m) && m) {
+    GetModuleFileNameA(m, name, MAX_PATH);
+    const char* base = std::strrchr(name, '\\');
+    char b[MAX_PATH + 32];
+    std::snprintf(b, sizeof b, "%s+0x%llx", base ? base + 1 : name, static_cast<unsigned long long>(addr - DWORD64(m)));
+    return b;
+  }
+  char b[32];
+  std::snprintf(b, sizeof b, "0x%llx", static_cast<unsigned long long>(addr));
+  return b;
+}
+
+std::string StackText(CONTEXT* from) {  // up to 40 frames, module+offset each
+  CONTEXT c;
+  if (from) c = *from;
+  else RtlCaptureContext(&c);
+  STACKFRAME64 f = {};
+  f.AddrPC.Offset = c.Rip, f.AddrPC.Mode = AddrModeFlat;
+  f.AddrFrame.Offset = c.Rbp, f.AddrFrame.Mode = AddrModeFlat;
+  f.AddrStack.Offset = c.Rsp, f.AddrStack.Mode = AddrModeFlat;
+  const HANDLE proc = GetCurrentProcess();
+  static bool sym = SymInitialize(proc, nullptr, TRUE) != FALSE;
+  (void)sym;
+  std::string out;
+  for (int i = 0; i < 40 && StackWalk64(IMAGE_FILE_MACHINE_AMD64, proc, GetCurrentThread(), &f, &c, nullptr,
+                                         SymFunctionTableAccess64, SymGetModuleBase64, nullptr); ++i) {
+    if (!f.AddrPC.Offset) break;
+    out += "  " + ModuleAt(f.AddrPC.Offset) + "\n";
+  }
+  return out;
+}
+
+void WriteCrash(const std::string& what, CONTEXT* ctx) {
+  if (g_crashed.exchange(true)) return;  // (one report: a crash while writing this one stays quiet)
+  std::string t = "==== SvR2011 Mod Maker crash ====\nMod Maker " PORT_VERSION "\nwhen " + Stamp("%Y-%m-%d %H:%M:%S") +
+                  "\nwhat " + what + "\npage " + PageName(g_page) + "\nthread " +
+                  std::to_string(GetCurrentThreadId()) + "\nstack:\n" + StackText(ctx) + "last log lines:\n";
+  const size_t n = g_tail_n.load();
+  for (size_t i = n > kTail ? n - kTail : 0; i < n; ++i) t += "  " + g_tail[i % kTail] + "\n";
+  std::error_code ec;
+  const fs::path dir = g_path.empty() ? LogDir() : g_path.parent_path();
+  fs::create_directories(dir, ec);
+  if (FILE* f = _wfopen((dir / Wide("modmaker_crash_" + Stamp("%Y%m%d-%H%M%S") + ".txt")).c_str(), L"wb")) {
+    std::fputs(t.c_str(), f);
+    std::fclose(f);
+  }
+  if (g_mutex.try_lock()) {  // (the session log: its CRASH line - not when the crash came while the log was held)
+    if (g_file) std::fprintf(g_file, "%sCRASH: %s (modmaker_crash_*.txt in the logs folder)\n", TimePrefix().c_str(), what.c_str()), std::fflush(g_file);
+    g_mutex.unlock();
+  }
+}
+
+LONG WINAPI OnException(EXCEPTION_POINTERS* e) {
+  const EXCEPTION_RECORD* r = e->ExceptionRecord;
+  char b[256];
+  std::snprintf(b, sizeof b, "exception 0x%08lx at %s", r->ExceptionCode, ModuleAt(DWORD64(r->ExceptionAddress)).c_str());
+  std::string what = b;
+  if (r->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && r->NumberParameters >= 2) {
+    std::snprintf(b, sizeof b, " (%s 0x%llx)", r->ExceptionInformation[0] == 1 ? "writing" : r->ExceptionInformation[0] == 8 ? "running" : "reading",
+                  static_cast<unsigned long long>(r->ExceptionInformation[1]));
+    what += b;
+  }
+  if (r->ExceptionCode == EXCEPTION_STACK_OVERFLOW) what += " (stack overflow)";
+  WriteCrash(what, e->ContextRecord);
+  return EXCEPTION_CONTINUE_SEARCH;
+}
+
+}  // namespace
+
+void InstallCrashHandler() {
+  ULONG guarantee = 64 * 1024;  // (room for the handler on the UI thread when its stack overflows)
+  SetThreadStackGuarantee(&guarantee);
+  SetUnhandledExceptionFilter(OnException);
+  std::set_terminate([] {
+    std::string what = "std::terminate";
+    try {
+      if (auto p = std::current_exception()) std::rethrow_exception(p);
+    } catch (const std::exception& x) {
+      what += std::string(" (") + x.what() + ")";
+    } catch (...) {
+    }
+    WriteCrash(what, nullptr);
+    std::abort();
+  });
+  std::signal(SIGABRT, [](int) { WriteCrash("abort", nullptr); });
+  _set_purecall_handler([] { WriteCrash("pure virtual call", nullptr); std::abort(); });
+  _set_invalid_parameter_handler([](const wchar_t*, const wchar_t*, const wchar_t*, unsigned, uintptr_t) {
+    WriteCrash("bad CRT parameter", nullptr);
+    std::abort();
+  });
+}
+
+void PresentResult(long hr) {
+  static bool told = false;
+  if (SUCCEEDED(hr) || told) return;
+  told = true;
+  char b[160];
+  const long why = g_dev ? long(g_dev->GetDeviceRemovedReason()) : 0;
+  std::snprintf(b, sizeof b, "GPU: Present failed 0x%08lx, device removed reason 0x%08lx (a driver reset or crash: the 3D views stop)",
+                static_cast<unsigned long>(hr), static_cast<unsigned long>(why));
+  Line(b);
+}
+
+namespace {
 
 void Open() {
   std::lock_guard lock(g_mutex);
@@ -394,6 +520,14 @@ std::wstring BuildReport(const Snapshot& s) {
     for (const auto& p : Logs(SettingsDir() / L"logs")) logs.push_back(p);
   for (size_t i = 0; i < logs.size() && i < kReportLogs; ++i)
     add("logs/" + PathStr(logs[i].filename()), ReadTail(logs[i], kTextCap));
+  {  // the newest two crash files (InstallCrashHandler)
+    std::vector<fs::path> crashes;
+    std::error_code ec;
+    for (const auto& e : fs::directory_iterator(log_dir, ec))
+      if (e.path().filename().wstring().rfind(L"modmaker_crash_", 0) == 0) crashes.push_back(e.path());
+    std::sort(crashes.begin(), crashes.end(), [](const fs::path& a, const fs::path& b) { return a.filename() > b.filename(); });
+    for (size_t i = 0; i < crashes.size() && i < 2; ++i) add("logs/" + PathStr(crashes[i].filename()), ReadTail(crashes[i], kSmallCap));
+  }
   // the open project: its state, and the text files in its .svrproj / mod folder
   add("project/state.txt", s.project);
   if (!s.project_file.empty()) {
@@ -478,6 +612,17 @@ std::string Describe() {
          "\n\nWhat happened:\n" + g_what + "\n\nJust before:\n" + (g_before[0] ? g_before : "(not said)") + "\n";
 }
 
+// A server address on this PC (127.0.0.1 / localhost / [::1], any port): the only kind a test may send to.
+bool LocalServer(const char* url) {
+  if (!url) return false;
+  std::string s = url;
+  if (const size_t k = s.find("://"); k != std::string::npos) s = s.substr(k + 3);
+  for (const char* h : {"127.0.0.1", "localhost", "[::1]"})
+    if (!s.compare(0, std::strlen(h), h) && (s.size() == std::strlen(h) || s[std::strlen(h)] == ':' || s[std::strlen(h)] == '/'))
+      return true;
+  return false;
+}
+
 // The online server the game uses (<game>\svr2011.toml online_server), else the default one.
 std::wstring ReportServer() {
   if (const char* e = std::getenv("SVR2011_REPORT_SERVER")) return Wide(e);  // (tests: a private server)
@@ -519,15 +664,19 @@ void SendReport(const std::wstring& zip, bool test) {
       }
       break;
     }
+    char upd[600] = "";
+    if (!g_game.empty()) update_log_last(g_game.c_str(), upd, sizeof upd);  // (the game folder's updates: update_log.h)
     char* json = report_json("modmaker", PORT_VERSION, problem.c_str(), happens.c_str(), what.c_str(), before.c_str(),
-                             contact.c_str(), sig.c_str());
+                             contact.c_str(), sig.c_str(), upd);
     ReportUpload u{};
     u.json = json;
     u.zip = zip.c_str();
     for (size_t i = 0; i < pics.size() && i < REPORT_MAX_IMAGES; ++i) u.images[i] = pics[i].c_str();
     u.n_images = int(std::min<size_t>(pics.size(), REPORT_MAX_IMAGES));
     ReportResult r{};
-    report_send(server.c_str(), &u, &r);
+    // (sent: its receipt kept for the launcher's Reports tab - the game folder's UserData\reports.json)
+    if (report_send(server.c_str(), &u, &r) && r.secret[0] && !g_game.empty())
+      receipt_add(g_game.c_str(), "modmaker", r.id, r.secret, problem.c_str(), what.c_str());
     std::free(json);
     OnUiThread([r, test] {
       g_sent = r;
@@ -611,6 +760,15 @@ void PastePicture() {
   AddPicture(out.wstring());
 }
 
+// The window closed: the report's zip goes (reports are sent, not kept for posting - the Discord gets no zips).
+void DropReport() {
+  if (!g_made.empty()) {
+    std::error_code ec;
+    fs::remove(g_made, ec);
+  }
+  g_made.clear(), g_sent_done = false;
+}
+
 void Window() {
   if (g_open) ImGui::OpenPopup("Report a problem"), g_open = false;
   ImGui::SetNextWindowSize(ImVec2(620 * g_scale, 0), ImGuiCond_Always);  // (the height fits each page)
@@ -672,54 +830,48 @@ void Window() {
     ImGui::Spacing();
     const bool said = g_what[0] != 0;
     ImGui::BeginDisabled(!said);
+    static bool has_url = false;  // (the server's rule too: no web addresses)
     if (ImGui::Button("Send report")) {
-      g_description = Describe();
-      g_sent_done = false;
-      StartReport(g_description, false, true);
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Save zip")) {
-      g_description = Describe();
-      g_sent_done = false;
-      StartReport(g_description, false);
+      has_url = report_text_has_url(g_what) || report_text_has_url(g_before) || report_text_has_url(g_contact);
+      if (!has_url) {
+        g_description = Describe();
+        g_sent_done = false;
+        StartReport(g_description, false, true);
+      }
     }
     ImGui::EndDisabled();
     if (!said && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Say what happened first.");
     ImGui::SameLine();
-    if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+    if (ImGui::Button("Cancel")) has_url = false, ImGui::CloseCurrentPopup();
+    if (has_url) ImGui::TextColored(ImVec4(0.9f, 0.4f, 0.3f, 1), "%s", REPORT_NO_URLS);
   } else if (g_sent_done && g_sent.id[0]) {
     ImGui::TextWrapped("Your report reached us. Report id:  %s", g_sent.id);
     if (g_sent.seen_before > 0)
       ImGui::TextWrapped("This problem was already reported %d time%s - yours adds to it, thank you.", g_sent.seen_before,
                          g_sent.seen_before == 1 ? "" : "s");
-    ImGui::TextWrapped("If you post about it on our Discord (bug-svr11 forum), give this id. A copy is kept here:");
-    ImGui::TextWrapped("%s", Utf8(g_made).c_str());
+    ImGui::TextWrapped("If you post about it on our Discord (bug-svr11 forum), give this id.");
     ImGui::Spacing();
     if (ImGui::Button("Copy the id")) ImGui::SetClipboardText(g_sent.id);
     ImGui::SameLine();
-    if (ImGui::Button("Open the folder")) ShellOpen(fs::path(g_made).parent_path().wstring());
-    ImGui::SameLine();
     if (ImGui::Button("Close")) {
-      g_made.clear(), g_what[0] = g_before[0] = 0, g_pics.clear(), g_sent_done = false;
+      DropReport(), g_what[0] = g_before[0] = 0, g_pics.clear();
       ImGui::CloseCurrentPopup();
     }
   } else {
-    if (g_sent_done)
-      ImGui::TextColored(ImVec4(0.9f, 0.4f, 0.3f, 1), "Not sent: %s", Utf8(std::wstring(g_sent.why)).c_str());
-    ImGui::TextWrapped("The report is ready:");
-    ImGui::TextWrapped("%s", Utf8(g_made).c_str());
+    // (not sent: only sending - the report isn't saved for posting elsewhere)
+    ImGui::PushTextWrapPos(0);  // (the server's reason can be long)
+    ImGui::TextColored(ImVec4(0.9f, 0.4f, 0.3f, 1), "Not sent: %s",
+                       g_sent_done ? Utf8(std::wstring(g_sent.why)).c_str() : "the report wasn't made.");
+    ImGui::PopTextWrapPos();
+    ImGui::TextWrapped("Check that you're online, then try again.");
     ImGui::Spacing();
-    ImGui::TextWrapped("Post it in a new thread in the Discord's bug-svr11 forum: attach the zip and paste the "
-                       "description (Copy the description).");
-    ImGui::Spacing();
-    if (ImGui::Button("Open the folder")) ShellOpen(fs::path(g_made).parent_path().wstring());
-    ImGui::SameLine();
-    if (ImGui::Button("Copy the description")) ImGui::SetClipboardText(g_description.c_str());
-    ImGui::SameLine();
-    if (ImGui::Button("Open Discord")) ShellOpen(L"https://discord.com/invite/QhGSuDKHwk");
+    if (ImGui::Button("Try again")) {
+      g_sent_done = false;
+      SendReport(g_made, false);
+    }
     ImGui::SameLine();
     if (ImGui::Button("Close")) {
-      g_made.clear(), g_what[0] = g_before[0] = 0, g_pics.clear(), g_sent_done = false;
+      DropReport(), g_what[0] = g_before[0] = 0, g_pics.clear();
       ImGui::CloseCurrentPopup();
     }
   }
@@ -748,6 +900,11 @@ void Raw(const std::string& label, const std::string& text) {
 void Tick() {
   // (the file opens on the first frame: the game folder is settled by then; a game folder chosen later keeps it)
   if (!g_file && !g_tried) Open();
+  if (static int frames = 0; ++frames == 30) {  // test aid SVR2011_MM_TEST_CRASH=av|throw: a crash, for the crash file
+    const char* t = std::getenv("SVR2011_MM_TEST_CRASH");
+    if (t && !std::strcmp(t, "av")) Line("test crash: av"), *static_cast<volatile int*>(nullptr) = 1;
+    if (t && !std::strcmp(t, "throw")) Line("test crash: throw"), std::thread([] { throw std::runtime_error("test throw"); }).join();
+  }
   if (g_page != g_last_page) {
     g_last_page = g_page;
     Line(std::string("page: ") + PageName(g_page));
@@ -758,6 +915,12 @@ void Tick() {
       // (a test never goes to the live server by default: SVR2011_REPORT_SERVER names the test server - 26 Oct a
       // launcher test report reached the live one)
       Log("report test: not sent - SVR2011_REPORT_SERVER isn't set (give the test server)");
+      PostMessageW(g_wnd, WM_CLOSE, 0, 0);
+    } else if (g_send_test && !LocalServer(std::getenv("SVR2011_REPORT_SERVER")) &&
+               !(std::getenv("SVR2011_ALLOW_LIVE") && !std::strcmp(std::getenv("SVR2011_ALLOW_LIVE"), "1"))) {
+      // (and only a server on this PC: a test never writes to the live one - SVR2011_ALLOW_LIVE=1 lets it through)
+      Log(std::string("report test: not sent - SVR2011_REPORT_SERVER ") + std::getenv("SVR2011_REPORT_SERVER") +
+          " is not a server on this PC (SVR2011_ALLOW_LIVE=1 lets it through)");
       PostMessageW(g_wnd, WM_CLOSE, 0, 0);
     } else if (g_send_test) {  // (--test-report-send: the answers file - what= before= contact= problem=<n> image=<path>)
       if (FILE* f = _wfsopen(Wide(g_send_file).c_str(), L"rb", _SH_DENYNO)) {

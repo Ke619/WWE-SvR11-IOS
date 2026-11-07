@@ -1,0 +1,115 @@
+; Action__10CMoveStageFv size 0x1c8
+0022ef90:  addiu    $sp, $sp, -0x30
+0022ef94:  lui      $v0, 0x4641
+0022ef98:  sd       $ra, 0x20($sp)
+0022ef9c:  ori      $a1, $v0, 0x4445    ; = 0x46414445 
+0022efa0:  addu.qb  $zero, $sp, $s1
+0022efa4:  lui      $at, 0x52
+0022efa8:  ext      $s0, $sp, 0, 1
+0022efac:  move     $s1, $a0
+0022efb0:  lw       $v1, 0x40($a0)
+0022efb4:  addiu    $v0, $v1, 1
+0022efb8:  sw       $v0, 0x40($a0)
+0022efbc:  jal      0x13c640    ; SearchLink__5CLinkCFUi
+0022efc0:  lw       $a0, 0x7670($at)    ; [0x527670] g_pGameLinkObj
+0022efc4:  beqz     $v0, 0x22efd8
+0022efc8:  move     $s0, $zero
+0022efcc:  b        0x22efd8
+0022efd0:  lw       $s0, 0x10($v0)    ; [0x46410010] 
+0022efd4:  move     $s0, $zero
+0022efd8:  lbu      $v1, 0x48($s1)
+0022efdc:  bnez     $v1, 0x22f0e8
+0022efe0:  nop      
+0022efe4:  lw       $a0, 0x34($s1)
+0022efe8:  lw       $v1, 0x3c($s1)
+0022efec:  lw       $a1, 0xa4($a0)
+0022eff0:  bne      $a1, $v1, 0x22f054
+0022eff4:  nop      
+0022eff8:  lw       $v0, 0xb0($a0)
+0022effc:  lui      $at, 0x52
+0022f000:  move     $a2, $zero
+0022f004:  move     $a3, $zero
+0022f008:  lw       $a0, 0x6b78($at)    ; [0x526b78] g_pKey
+0022f00c:  jal      0x169030    ; ChkData__5CEKeyCFiiii
+0022f010:  sra      $t0, $v0, 1
+0022f014:  andi     $v1, $v0, 0xff
+0022f018:  beqz     $v1, 0x22f054
+0022f01c:  nop      
+0022f020:  beqz     $s0, 0x22f0e8
+0022f024:  nop      
+0022f028:  lw       $a1, 0x38($s0)
+0022f02c:  lw       $a0, 0x34($s0)
+0022f030:  addiu    $v1, $a1, 1    ; = 0x46414446 
+0022f034:  sltu     $at, $v1, $a0
+0022f038:  beqz     $at, 0x22f04c
+0022f03c:  move     $a2, $zero
+0022f040:  beqz     $a1, 0x22f04c
+0022f044:  nop      
+0022f048:  daddiu   $a2, $zero, 1
+0022f04c:  beqz     $a2, 0x22f0e8
+0022f050:  nop      
+0022f054:  lui      $at, 0x52
+0022f058:  lw       $v1, 0x65e8($at)    ; [0x5265e8] g_pStage_cdata
+0022f05c:  beqz     $v1, 0x22f0e8
+0022f060:  nop      
+0022f064:  lui      $at, 0x52
+0022f068:  lw       $v1, 0x4bb0($at)    ; [0x524bb0] s_pInstance__7CRender
+0022f06c:  lui      $at, 1
+0022f070:  addu     $at, $v1, $at
+0022f074:  lw       $v1, 0x558($at)    ; [0x10558] 
+0022f078:  andi     $v1, $v1, 1
+0022f07c:  bnez     $v1, 0x22f0e8
+0022f080:  nop      
+0022f084:  jal      0x2e2420    ; GetTransNum__13CSkBankLoaderFv
+0022f088:  nop      
+0022f08c:  bnez     $v0, 0x22f0e8
+0022f090:  nop      
+0022f094:  lw       $v1, 0x38($s1)
+0022f098:  lui      $at, 0x52
+0022f09c:  addiu    $v0, $zero, 1
+0022f0a0:  move     $a0, $zero
+0022f0a4:  sb       $v1, 0x76c0($at)    ; [0x5276c0] nAnyStage__13GameVariables
+0022f0a8:  lui      $at, 0x52
+0022f0ac:  sb       $zero, 0x76d0($at)    ; [0x5276d0] AnyNowLoad__13GameVariables
+0022f0b0:  lui      $at, 0x52
+0022f0b4:  sw       $v0, 0x77f0($at)    ; [0x5277f0] padstop__13GameVariables
+0022f0b8:  lui      $at, 0x42
+0022f0bc:  jal      0x10bea0    ; FlushCache
+0022f0c0:  sb       $v0, -0x60c0($at)    ; [0x419f40] g_upload_stage_tex
+0022f0c4:  move     $a0, $zero
+0022f0c8:  jal      0x101770    ; .text
+0022f0cc:  move     $a1, $zero
+0022f0d0:  jal      0x22ef20    ; StageSetUp__Fv
+0022f0d4:  nop      
+0022f0d8:  addiu    $v0, $zero, 1
+0022f0dc:  move     $a0, $zero
+0022f0e0:  jal      0x13d450    ; SetDrawFlg__11CObjControlFb
+0022f0e4:  sb       $v0, 0x48($s1)
+0022f0e8:  lbu      $a0, 0x48($s1)
+0022f0ec:  addiu    $v1, $zero, 1
+0022f0f0:  bne      $a0, $v1, 0x22f144
+0022f0f4:  nop      
+0022f0f8:  addiu    $v0, $zero, 0x1e
+0022f0fc:  lui      $at, 0x52
+0022f100:  jal      0x192470    ; IsGimmickLoadEnd__Fv
+0022f104:  sw       $v0, 0x77f0($at)    ; [0x5277f0] padstop__13GameVariables
+0022f108:  beqz     $v0, 0x22f144
+0022f10c:  nop      
+0022f110:  lui      $at, 0x52
+0022f114:  addiu    $a0, $zero, 1
+0022f118:  jal      0x13d450    ; SetDrawFlg__11CObjControlFb
+0022f11c:  sw       $zero, 0x77e8($at)    ; [0x5277e8] PlayTimeStop__13GameVariables
+0022f120:  beqz     $s1, 0x22f13c
+0022f124:  nop      
+0022f128:  lw       $t9, ($s1)
+0022f12c:  move     $a0, $s1
+0022f130:  lw       $t9, 8($t9)
+0022f134:  jalr     $t9
+0022f138:  addiu    $a1, $zero, 1
+0022f13c:  jal      0x1adf30    ; start_background_enviromentMusic__Fv
+0022f140:  nop      
+0022f144:  ld       $ra, 0x20($sp)
+0022f148:  aver_u.h $w0, $w0, $w17
+0022f14c:  xori.b   $w0, $w0, 0xb0
+0022f150:  jr       $ra
+0022f154:  addiu    $sp, $sp, 0x30

@@ -20,6 +20,7 @@
 
 #include <fmt/format.h>
 #include <rex/cvar.h>
+#include <rex/filesystem.h>
 #include <rex/logging.h>
 #include <rex/ppc.h>
 
@@ -28,6 +29,7 @@
 #include "match_record.h"
 #include "move_packs.h"
 #include "p2p.h"
+#include "../modmaker/svrfmt/bytes.h"
 
 REXCVAR_DECLARE(int32_t, frame_rate);
 REXCVAR_DECLARE(int32_t, cpu_reversal_chance);
@@ -46,13 +48,7 @@ constexpr int kPeople = 10, kMotions = 32, kEvents = 64;
 constexpr uint32_t kStanding = 20500;
 bool Lying(uint32_t m) { return m >= 430 && m <= 448; }  // (match_diag.cpp: 473-478, selling, stand up straight in stock too)
 
-uint32_t Rd32(const uint8_t* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; }
-float RdF(const uint8_t* p) {
-  const uint32_t v = Rd32(p);
-  float f;
-  std::memcpy(&f, &v, 4);
-  return f;
-}
+using svrfmt::Rd32, svrfmt::RdF;
 
 struct MotionNote {
   uint32_t clock = 0, motion = 0, slot = 0, move = 0xFFFF;
@@ -280,7 +276,16 @@ void MatchBoxUpdate(PPCContext& ctx, uint8_t* base) {
         }
       }
     }
-    // Weapons, every 10 updates: made, picked up, dropped, gone (broken / removed)
+    // Weapons, every 10 updates: made, picked up, dropped, gone (broken / removed). The holder is the person whose
+    // held object (+1828) is the weapon's id (+1152); the weapon's +44 is only its state (8 taken up, 12 in hand, 2 ...),
+    // which the box once printed as the person (a 1v1 online box: "picked up by person 8 / 12").
+    const auto Holder = [&](uint32_t o) -> uint32_t {
+      const uint32_t id = Rd32(base + o + 1152);
+      if (id == ~0u) return 0xFF;  // (-1: a person's "nothing held")
+      for (uint32_t p = 0; p < 9; ++p)
+        if (const uint32_t c = Rd32(base + kChars + p * 4); c && Rd32(base + c + 1828) == id) return p;
+      return 0xFF;
+    };
     if (clock % 10 == 0)
       for (uint32_t i = 0; i < kObjectSlots; ++i) {
         const uint32_t o = Rd32(base + kObjects + i * 4);
@@ -289,11 +294,11 @@ void MatchBoxUpdate(PPCContext& ctx, uint8_t* base) {
         if (o != g_object[i]) {
           if (g_object[i] && !o) AddEvent(clock, fmt::format("weapon slot {} gone", i));
           if (o && clock > 60) AddEvent(clock, fmt::format("weapon slot {} made (model {})", i, model));
-          g_object[i] = o, g_holder[i] = o ? Rd32(base + o + 44) & 0xFF : 0xFF;
+          g_object[i] = o, g_holder[i] = o ? Holder(o) : 0xFF;
           continue;
         }
         if (!o) continue;
-        const uint32_t h = Rd32(base + o + 44) & 0xFF;
+        const uint32_t h = Holder(o);
         if (h != g_holder[i])
           AddEvent(clock, h == 0xFF ? fmt::format("weapon slot {} (model {}) dropped by person {}", i, model, g_holder[i])
                                     : fmt::format("weapon slot {} (model {}) picked up by person {}", i, model, h));
@@ -396,8 +401,13 @@ void MatchBoxMatchEnded() {
   namespace fs = std::filesystem;
   const std::string log = rex::cvar::Query<std::string>("log_file");
   std::error_code ec;
-  // (the log's folder: log_file's, else the SDK's own sequential logs in <the current folder>\logs)
+  // (the log's folder: log_file's, else the SDK's own sequential logs in <the current folder>\logs - on Android
+  // <the game folder>/logs, the current one being "/")
+#if defined(__ANDROID__)
+  const fs::path dir = log.empty() ? rex::filesystem::GetExecutableFolder() / "logs" : fs::u8path(log).parent_path();
+#else
   const fs::path dir = log.empty() ? fs::current_path(ec) / "logs" : fs::u8path(log).parent_path();
+#endif
   // logs\matchbox_<n>.txt: the newest 3 kept (1 newest)
   for (int k = 3; k > 1; --k) fs::rename(dir / fmt::format("matchbox_{}.txt", k - 1), dir / fmt::format("matchbox_{}.txt", k), ec);
   if (FILE* f = std::fopen((dir / "matchbox_1.txt").string().c_str(), "wb")) {

@@ -6,6 +6,7 @@
 #   .\run_test.ps1 [-Seconds 60] [-Shots 4] [-Name run] [-Extra "--flag=x"] [-Game <folder>]
 #   (-Game: another game folder - a test build next to links to the game data)
 param([int]$Seconds = 60, [int]$Shots = 4, [string]$Name = "run", [string[]]$Extra = @(), [string]$Game = "")
+$env:SVR2011_AUDIO_MUTE = "1"  # (test games stay muted even if their command line is lost)
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Drawing
 Add-Type @"

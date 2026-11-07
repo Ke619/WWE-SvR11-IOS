@@ -9,8 +9,12 @@
 // k * 4.2. Units: 1 = 10 cm, y points down.
 #include "ring_rules.h"
 #include "caw_limits.h"
+#include "fps_overlay.h"
 
+#include <algorithm>
+#include <thread>
 #include <cstdint>
+#include <set>
 #include <cstdlib>
 #include <cstring>
 #include <atomic>
@@ -28,6 +32,7 @@
 #include <rex/system/xmemory.h>
 
 #include "generated/default/svr2011_init.h"
+#include "../modmaker/svrfmt/bytes.h"
 
 namespace {
 
@@ -48,18 +53,7 @@ std::atomic<bool> g_no_ropes{false};  // every rope left out: rope gameplay off
 
 bool NoRopes(const Rules& r) { return !r.ropes[0] && !r.ropes[1] && !r.ropes[2]; }
 
-float RdF(const uint8_t* p) {
-  const uint32_t v = uint32_t(p[0]) << 24 | p[1] << 16 | p[2] << 8 | p[3];
-  float f;
-  std::memcpy(&f, &v, 4);
-  return f;
-}
-void WrF(uint8_t* p, float f) {
-  uint32_t v;
-  std::memcpy(&v, &f, 4);
-  p[0] = uint8_t(v >> 24), p[1] = uint8_t(v >> 16), p[2] = uint8_t(v >> 8), p[3] = uint8_t(v);
-}
-uint32_t Rd32(const uint8_t* p) { return uint32_t(p[0]) << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
+using svrfmt::Rd32, svrfmt::RdF, svrfmt::WrF;
 
 Rules Parse(const std::string& text) {
   Rules r;
@@ -149,10 +143,99 @@ void LogFighter(uint8_t* base, uint32_t f) {
 bool g_heap_log = false;
 int g_heap_watch = -1;  // (SVR2011_TEST_HEAP_LOG=<heap 2-53>: every allocation in that heap too)
 
+// A failed allocation the hooks below had no fallback for: logged once per heap and caller (every one with the
+// test aid) - a player's crash report then names it (27 Oct: an Extreme Rules weapon load wrote to such a 0 at
+// lr 8215A008, now and then). The file cache's heap (16) fails on purpose while it frees old files: only with the aid.
+namespace {
+// Heap 12 (4.5 MB): what a match load allocates - the crowd sign bank twice (2 x 1,476,096 bytes for the game's 437
+// signs, lr 821EA528; superstar mods' and packs' signs make it bigger), the people's tables (sub_82173708) and more.
+// 54 superstar mods' signs (487 in all, a 1,660 KB bank) filled it at every match load (2.1.7 report ce0353): when
+// it's full, a block comes from the fallback memory as the stage's and weapons' heaps do (ring_rules hooks below).
+constexpr uint32_t kMatchLoadHeap = 12;
+// Only its big blocks (the sign bank's copies, 1.4 MB+) take fallback memory: the small ones are the match's own
+// objects, and with all of them in the fallback (SVR2011_TEST_HEAP_FAIL=12@0) the match crashed in its update pass
+// (2.1.8 release test N1) - a heap that's full for small blocks ends with the out-of-game-memory notice as before.
+constexpr uint32_t kMatchLoadFallbackMin = 64 * 1024;
+// Heap 12 is made bigger instead (2.1.8 report ca9157: 39 packs, 117 superstar mods, 52 custom arenas - 2176 bytes
+// failed at lr 82392444, a match's motion object, with 150 MB of guest memory free). The game reserves one physical
+// block, ending at 0x0F000000, of the size in its request (0x0B600000, 182 MB: sub_8258ED50 -> sub_821581A8, which
+// steps down 64 KB while the reservation fails) and splits it top down into 54 heaps by the (heap, KB) table at
+// 0x82DAC2F8 (sub_8269AD08), heap 53 the rest. The block's request and heap 12's KB both grow by the same amount:
+// every other heap keeps its size, heaps 0-11 their addresses too. SVR2011_TEST_HEAP12_MB=<MB> (4.5 / 0: the game's).
+constexpr uint32_t kHeapSizes = 0x82DAC2F8, kGameHeap12Kb = 4608;  // (pairs, not one a heap: heap 12's is looked up)
+constexpr uint32_t kGameBlock = 0x0B600000;
+uint32_t g_heap12_extra = 0;  // (bytes the block and heap 12 grow by; 0 when the table isn't the game's)
+// The game's heaps (table at *0x82EC5F48, 36 bytes each: start, end).
+void LogHeapTable(const uint8_t* base) {
+  const uint32_t table = Rd32(base + 0x82EC5F48);
+  if (!table) return;
+  for (int i = 0; i < 54; ++i) {
+    const uint32_t a = Rd32(base + table + i * 36), b = Rd32(base + table + i * 36 + 4);
+    if (a || b) REXLOG_INFO("[svr2011] heap {}: {:08X}-{:08X} ({:.1f} MB)", i, a, b, (b - a) / 1048576.0);
+  }
+}
+
+// A heap the game can't do without when it's full: heap 12 (4.5 MB) failed three 4-byte allocations
+// in sub_82173708 at a match load and the game wrote to the 0 it got (2.1.7 report c9e6c5: a raw access violation
+// at lr 821738C4, after many arena previews). Such a failure now ends the game here, before the caller uses the 0:
+// the heaps and the failure in the log, the "out of game memory" notice, then a crash report (abort). Other
+// threads that fail meanwhile wait for the end. (Any size: a forced failure of a 1.4 MB block there, lr 821EA528,
+// was written to as well.)
+constexpr uint32_t kExhaustedHeaps[] = {kMatchLoadHeap};
+void HeapExhausted(const uint8_t* base, uint32_t heap, uint32_t size, uint32_t lr) {
+  static std::atomic<bool> ending{false};
+  if (ending.exchange(true))
+    for (;;) std::this_thread::sleep_for(std::chrono::seconds(1));
+  LogHeapTable(base);
+  REXLOG_ERROR("[svr2011] out of game memory: heap {} has no room for {} bytes (lr {:08X}) - the game can't "
+               "go on; ending it (crash report)", heap, size, lr);
+  rex::FlushLogging();
+  svr2011::ShowNotice("Out of game memory: the game ran out of room for its menus and match data. "
+                      "The game will close - use fewer mods / custom arenas in one session.", 10.0f);
+  std::this_thread::sleep_for(std::chrono::seconds(10));
+  std::abort();  // (the crash reporter writes the report, the log carries the line above)
+}
+
+void NoteFailed(const uint8_t* base, uint32_t heap, uint32_t size, uint32_t lr) {
+  static std::mutex m;
+  static std::set<uint64_t> seen;
+  if (heap == 16 && !g_heap_log) return;
+  bool told = true;
+  {
+    std::lock_guard lock(m);
+    if ((!g_heap_log || heap == 16) && !seen.insert(uint64_t(heap) << 32 | lr).second) told = false;  // (the file cache's retries: thousands a second)
+  }
+  if (told) REXLOG_WARN("[svr2011] heap {}: allocation of {} bytes FAILED (lr {:08X})", heap, size, lr);
+  if (std::find(std::begin(kExhaustedHeaps), std::end(kExhaustedHeaps), heap) != std::end(kExhaustedHeaps))
+    HeapExhausted(base, heap, size, lr);
+}
+
+// Test aid SVR2011_TEST_HEAP_FAIL=<heap>@<seconds>: that heap's allocations fail from that many seconds after start.
+bool ForcedFail(uint32_t heap) {
+  static const auto cfg = [] {
+    std::pair<int, int> c{-1, 0};
+    if (const char* v = std::getenv("SVR2011_TEST_HEAP_FAIL"); v && *v) {
+      c.first = std::atoi(v);
+      if (const char* at = std::strchr(v, '@')) c.second = std::atoi(at + 1);
+    }
+    return c;
+  }();
+  static const auto t0 = std::chrono::steady_clock::now();
+  return cfg.first >= 0 && int(heap) == cfg.first && std::chrono::steady_clock::now() - t0 >= std::chrono::seconds(cfg.second);
+}
+}  // namespace
+
 REX_EXTERN(__imp__sub_8269A8D8);
 REX_HOOK_RAW(sub_8269A8D8) {
-  const uint32_t size = ctx.r3.u32;
+  const uint32_t size = ctx.r3.u32, caller = uint32_t(ctx.lr);  // (the caller: ctx.lr after the call can be the allocator's own)
   __imp__sub_8269A8D8(ctx, base);
+  if (static const bool aid = std::getenv("SVR2011_TEST_HEAP_FAIL") != nullptr; aid && ctx.r3.u32) {
+    const auto saved = ctx;
+    sub_8269A478(ctx, base);
+    const uint32_t heap = ctx.r3.u32;
+    ctx = saved;
+    if (ForcedFail(heap)) ctx.r3.u64 = 0;
+  }
   if (ctx.r3.u32 == 0 && size) {  // (the CAW editor's part heap full: caw_limits.h)
     const auto saved = ctx;
     sub_8269A478(ctx, base);
@@ -164,40 +247,57 @@ REX_HOOK_RAW(sub_8269A8D8) {
         return;
       }
     // (the stage's heap full - an arena with more 3D detail than the game's own: caw_limits.h kStageHeap; the
-    // match's weapons' heap - OPTIONS -> WEAPONS picks: kWeaponHeap)
-    if ((heap == svr2011::kStageHeap || heap == svr2011::kWeaponHeap) && svr2011::BigModelMemory())
-      if (const uint32_t p = svr2011::FallbackBlock(size, true)) {
+    // match's weapons' heap - OPTIONS -> WEAPONS picks: kWeaponHeap; heap 12, kMatchLoadHeap - physical: the sign
+    // bank's textures are copied into it; a wrestler's model heap 17-20, its small blocks - physical as its big ones,
+    // sub_8269BA30's hook: a Created Superstar with many parts filled 17 in Road to WrestleMania and the story's copy of
+    // 337 bytes, sub_823C6858, wrote to the 0 it got: report c85461)
+    const bool model_heap = heap >= 17 && heap <= 20;
+    if ((heap == svr2011::kStageHeap || heap == svr2011::kWeaponHeap || model_heap || (heap == kMatchLoadHeap && size >= kMatchLoadFallbackMin)) &&
+        svr2011::BigModelMemory())
+      if (const uint32_t p = svr2011::FallbackBlock(size, !model_heap && heap != kMatchLoadHeap)) {
         ctx.r3.u64 = p;
         static int told = 0;
         if (told++ < 5 || told % 200 == 0)
           REXLOG_INFO("[svr2011] model memory: the {} heap ({}) full - {} bytes from the fallback memory ({} so)",
-                      heap == svr2011::kStageHeap ? "stage's" : "weapons'", heap, size, told);
+                      heap == svr2011::kStageHeap ? "stage's" : model_heap ? "model" : heap == kMatchLoadHeap ? "match load" : "weapons'", heap,
+                      size, told);
         return;
       }
-  }
-  if (!g_heap_log) return;
-  static bool listed = false;
-  const uint32_t table = Rd32(base + 0x82EC5F48);
-  if (!listed && table) {
-    listed = true;
-    for (int i = 0; i < 54; ++i) {
-      const uint32_t a = Rd32(base + table + i * 36), b = Rd32(base + table + i * 36 + 4);
-      if (a || b) REXLOG_INFO("[svr2011] heap {}: {:08X}-{:08X} ({:.1f} MB)", i, a, b, (b - a) / 1048576.0);
-    }
   }
   if (ctx.r3.u32 == 0 && size) {
     const auto saved = ctx;
     sub_8269A478(ctx, base);
     const uint32_t heap = ctx.r3.u32;
     ctx = saved;
-    REXLOG_WARN("[svr2011] heap {}: allocation of {} bytes FAILED (lr {:08X})", heap, size, uint32_t(ctx.lr));
+    NoteFailed(base, heap, size, caller);
+  }
+  if (!g_heap_log) return;
+  if (g_heap_watch >= 0 && ctx.r3.u32) {
+    const auto saved = ctx;
+    sub_8269A478(ctx, base);
+    const uint32_t heap = ctx.r3.u32;
+    ctx = saved;
+    if (int(heap) == g_heap_watch)
+      REXLOG_INFO("[svr2011] heap {}: {} bytes at {:08X} (lr {:08X})", heap, size, ctx.r3.u32, caller);
+  }
+  static bool listed = false;
+  if (!listed && Rd32(base + 0x82EC5F48)) {
+    listed = true;
+    LogHeapTable(base);
   }
 }
 
 REX_EXTERN(__imp__sub_8269BA30);
 REX_HOOK_RAW(sub_8269BA30) {
-  const uint32_t units = ctx.r3.u32;  // 16-byte units
+  const uint32_t units = ctx.r3.u32, caller = uint32_t(ctx.lr);  // 16-byte units; the caller (as sub_8269A8D8's)
   __imp__sub_8269BA30(ctx, base);
+  if (static const bool aid = std::getenv("SVR2011_TEST_HEAP_FAIL") != nullptr; aid && ctx.r3.u32) {
+    const auto saved = ctx;
+    sub_8269A478(ctx, base);
+    const uint32_t heap = ctx.r3.u32;
+    ctx = saved;
+    if (ForcedFail(heap)) ctx.r3.u64 = 0;
+  }
   if (ctx.r3.u32 == 0 && units) {  // (the CAW editor's part heap full: caw_limits.h)
     const auto saved = ctx;
     sub_8269A478(ctx, base);
@@ -208,14 +308,24 @@ REX_HOOK_RAW(sub_8269BA30) {
         ctx.r3.u64 = p;
         return;
       }
-    // (the match's weapons' heap full - OPTIONS -> WEAPONS picks: caw_limits.h kWeaponHeap)
-    if (heap == svr2011::kWeaponHeap && svr2011::BigModelMemory())
-      if (const uint32_t p = svr2011::FallbackBlock(units * 16, true)) {
+    // (the match's weapons' heap full - OPTIONS -> WEAPONS picks: caw_limits.h kWeaponHeap; the stage's heap too:
+    // an arena about 5x the game's own 3D detail (654k vertices) asked it for 322,752 bytes this way, lr 8215140C -
+    // 0, the decoder then wrote to it from the arena load, sub_821878A0; and heap 53 - the game's 25 MB rest, where a
+    // character file is read whole (sub_826A1420, lr 826A14EC): a 547k-vertex superstar's 27 MB ch.pac didn't fit)
+    // (and the wrestlers' model heaps 17-20: the 547k-vertex superstar's model asked one for 28.7 MB this way - GPU
+    // data, so the physical fallback, as model_mem.cpp's model-heap one)
+    const bool model_heap = heap >= 17 && heap <= 20;
+    if ((heap == svr2011::kWeaponHeap || heap == svr2011::kStageHeap || heap == 53 || model_heap ||
+         (heap == kMatchLoadHeap && units * 16 >= kMatchLoadFallbackMin)) &&
+        svr2011::BigModelMemory())
+      if (const uint32_t p = svr2011::FallbackBlock(units * 16, !model_heap && heap != kMatchLoadHeap)) {
         ctx.r3.u64 = p;
         static int told = 0;
         if (told++ < 5 || told % 200 == 0)
-          REXLOG_INFO("[svr2011] model memory: the weapons' heap ({}) full - {} bytes from the fallback memory ({} so)",
-                      heap, units * 16, told);
+          REXLOG_INFO("[svr2011] model memory: the {} heap ({}) full - {} bytes from the fallback memory ({} so)",
+                      heap == svr2011::kStageHeap ? "stage's" : heap == 53 ? "file" : model_heap ? "model"
+                      : heap == kMatchLoadHeap ? "match load" : "weapons'", heap,
+                      units * 16, told);
         return;
       }
   }
@@ -225,16 +335,85 @@ REX_HOOK_RAW(sub_8269BA30) {
     const uint32_t heap = ctx.r3.u32;
     ctx = saved;
     if (units * 16 >= 256 * 1024 || int(heap) == g_heap_watch)
-      REXLOG_INFO("[svr2011] heap {}: {} bytes at {:08X} (lr {:08X})", heap, units * 16, ctx.r3.u32, uint32_t(ctx.lr));
+      REXLOG_INFO("[svr2011] heap {}: {} bytes at {:08X} (lr {:08X})", heap, units * 16, ctx.r3.u32, caller);
   }
-  if (g_heap_log && ctx.r3.u32 == 0 && units) {
+  if (ctx.r3.u32 == 0 && units) {
     const auto saved = ctx;
     sub_8269A478(ctx, base);
     const uint32_t heap = ctx.r3.u32;
     ctx = saved;
-    REXLOG_WARN("[svr2011] heap {}: allocation of {} bytes FAILED (16-byte units, lr {:08X})", heap, units * 16,
-                uint32_t(ctx.lr));
+    NoteFailed(base, heap, units * 16, caller);
   }
+}
+
+// The entrances' state object (*0x82EDE664, 12,872 bytes): its owner makes it (sub_82323748) when the entrances'
+// stage starts and removes it in its destructor (sub_823236D0), when the entrances end and just before the match
+// loads ("match:" comes 0.4 s later). sub_82769338, an entrances' per-frame update (a float of the person's, +32 ->
+// +292), asks it for the state (sub_8274FD98 -> sub_8275DA50 reads +0x14) without checking it's there: an update
+// still in the task list after the removal read 0x14 as the match started - reports ea268d (2.1.9) and a0a0ff
+// (2.1.8), Android. No update without the object: the entrances are over and the float isn't used again.
+// Test aid SVR2011_TEST_MATCH_STATE_LATE: 1 an update runs right after the removal, 2 and without this check.
+constexpr uint32_t kEntranceState = 0x82EDE664;
+int MatchStateLateAid() {
+  static const int aid = [] {
+    const char* v = std::getenv("SVR2011_TEST_MATCH_STATE_LATE");
+    return v ? std::atoi(v) : 0;
+  }();
+  return aid;
+}
+uint32_t g_last_update_arg = 0;
+
+REX_EXTERN(__imp__sub_82323748);
+REX_HOOK_RAW(sub_82323748) {
+  __imp__sub_82323748(ctx, base);
+  REXLOG_INFO("[svr2011] entrance state: object made ({:08X})", Rd32(base + kEntranceState));
+}
+REX_EXTERN(__imp__sub_82769338);
+REX_HOOK_RAW(sub_82769338) {
+  g_last_update_arg = ctx.r3.u32;
+  if (!Rd32(base + kEntranceState) && MatchStateLateAid() != 2) {
+    static std::atomic<int> skipped{0};
+    if (const int n = skipped.fetch_add(1); n == 0 || n == 1000)
+      REXLOG_WARN("[svr2011] entrance state: no object - an entrance update skipped ({} so)", n + 1);
+    return;
+  }
+  __imp__sub_82769338(ctx, base);
+}
+REX_EXTERN(__imp__sub_823236D0);
+REX_HOOK_RAW(sub_823236D0) {
+  const uint32_t was = Rd32(base + kEntranceState);
+  __imp__sub_823236D0(ctx, base);
+  if (!was) return;
+  REXLOG_INFO("[svr2011] entrance state: object removed ({:08X})", was);
+  if (MatchStateLateAid() && g_last_update_arg) {
+    const auto saved = ctx;
+    ctx.r3.u64 = g_last_update_arg;
+    sub_82769338(ctx, base);
+    ctx = saved;
+  }
+}
+
+// The heaps' block (heap 12 bigger, above): sub_821581A8(request, out) - request +20 0x10C00000 (the block ends
+// 0x1FC00000 - it), +24 the block's size; out +0 its start, +4 its size.
+REX_EXTERN(__imp__sub_821581A8);
+REX_HOOK_RAW(sub_821581A8) {
+  const uint32_t request = ctx.r3.u32, out = ctx.r4.u32;
+  const bool grow = g_heap12_extra && Rd32(base + request + 20) == 0x10C00000 && Rd32(base + request + 24) == kGameBlock;
+  if (grow) {
+    const uint32_t size = kGameBlock + g_heap12_extra;
+    base[request + 24] = uint8_t(size >> 24), base[request + 25] = uint8_t(size >> 16),
+    base[request + 26] = uint8_t(size >> 8), base[request + 27] = uint8_t(size);
+  }
+  __imp__sub_821581A8(ctx, base);
+  if (!grow) return;
+  const uint32_t start = Rd32(base + out), size = Rd32(base + out + 4);
+  if (size == kGameBlock + g_heap12_extra)
+    REXLOG_INFO("[svr2011] heap 12: the game's heap block {:08X}-{:08X} ({:.1f} MB, +{:.1f} for heap 12)", start,
+                start + size, size / 1048576.0, g_heap12_extra / 1048576.0);
+  else  // (the reservation stepped down: heap 53, the rest, is that much smaller)
+    REXLOG_WARN("[svr2011] heap 12: the game's heap block {:08X}-{:08X} is {:.1f} MB, not {:.1f} - heap 53 {:.1f} MB "
+                "smaller", start, start + size, size / 1048576.0, (kGameBlock + g_heap12_extra) / 1048576.0,
+                (kGameBlock + g_heap12_extra - size) / 1048576.0);
 }
 
 REX_EXTERN(__imp__sub_8219A508);
@@ -373,6 +552,25 @@ void InstallRingRules(rex::memory::Memory* memory) {
       if (c == ';') c = '\n';
     SetRingRules(s);
   }
+  // Heap 12 to 16 MB (its KB in the size table now, the block's request when the game makes it: sub_821581A8 below)
+  uint32_t kb = 16 * 1024;
+  if (const char* v = std::getenv("SVR2011_TEST_HEAP12_MB"); v && *v)
+    kb = std::max(uint32_t(std::atof(v) * 1024), kGameHeap12Kb);
+  uint8_t* b = memory->virtual_membase();
+  uint32_t heap12_kb = 0;
+  for (uint32_t i = 0; i < 54 && !heap12_kb; ++i)
+    if (Rd32(b + kHeapSizes + i * 8) == kMatchLoadHeap) heap12_kb = kHeapSizes + i * 8 + 4;
+  if (!heap12_kb || Rd32(b + heap12_kb) != kGameHeap12Kb) {
+    REXLOG_WARN("[svr2011] heap 12: the size table isn't the game's ({}) - left at its size",
+                heap12_kb ? Rd32(b + heap12_kb) : 0);
+  } else if (kb > kGameHeap12Kb) {
+    if (auto* heap = memory->LookupHeap(kHeapSizes))
+      heap->Protect(kHeapSizes & ~0xFFFu, 0x2000, rex::memory::kMemoryProtectRead | rex::memory::kMemoryProtectWrite);
+    b[heap12_kb] = uint8_t(kb >> 24), b[heap12_kb + 1] = uint8_t(kb >> 16), b[heap12_kb + 2] = uint8_t(kb >> 8),
+    b[heap12_kb + 3] = uint8_t(kb);
+    g_heap12_extra = (kb - kGameHeap12Kb) * 1024;
+  }
+  REXLOG_INFO("[svr2011] heap 12: {:.1f} MB (game's 4.5)", kb > kGameHeap12Kb && g_heap12_extra ? kb / 1024.0 : 4.5);
 }
 
 void SetRingRules(const std::string& manifest) {

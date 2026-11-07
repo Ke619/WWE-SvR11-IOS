@@ -10,6 +10,7 @@
 # Input goes through the scripted controller (src/script_input.h).
 param([Parameter(Position = 0)][string]$Action, [Parameter(Position = 1, ValueFromRemainingArguments = $true)][string[]]$Rest,
       [string]$Name = "session", [string]$Exe = "svr2011.exe", [string]$LogLevel = "info", [string]$GameDir = "")
+$env:SVR2011_AUDIO_MUTE = "1"  # (test games stay muted even if their command line is lost)
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Drawing
 Add-Type @"

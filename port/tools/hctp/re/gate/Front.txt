@@ -1,0 +1,47 @@
+; Front__FP6CStage size 0xb8
+00230120:  addiu    $sp, $sp, -0x30
+00230124:  sd       $ra, 0x20($sp)
+00230128:  addu.qb  $zero, $sp, $s1
+0023012c:  ext      $s0, $sp, 0, 1
+00230130:  move     $s1, $zero
+00230134:  lui      $v0, 0x52
+00230138:  sll      $v1, $s1, 2
+0023013c:  addiu    $v0, $v0, 0x6bc0    ; = 0x526bc0 g_pWeapon
+00230140:  addu     $s0, $v0, $v1
+00230144:  lw       $a0, ($s0)
+00230148:  beqz     $a0, 0x230168
+0023014c:  nop      
+00230150:  beqz     $a0, 0x230168
+00230154:  nop      
+00230158:  lw       $t9, ($a0)
+0023015c:  lw       $t9, 8($t9)
+00230160:  jalr     $t9
+00230164:  addiu    $a1, $zero, 1
+00230168:  addiu    $s1, $s1, 1
+0023016c:  slti     $v0, $s1, 0x40
+00230170:  bnez     $v0, 0x230134
+00230174:  sw       $zero, ($s0)
+00230178:  lui      $at, 0x52
+0023017c:  lw       $a0, 0x7660($at)    ; [0x527660] g_pStage
+00230180:  beqz     $a0, 0x2301a8
+00230184:  nop      
+00230188:  beqz     $a0, 0x2301a0
+0023018c:  nop      
+00230190:  lw       $t9, ($a0)
+00230194:  lw       $t9, 8($t9)
+00230198:  jalr     $t9
+0023019c:  addiu    $a1, $zero, 1
+002301a0:  lui      $at, 0x52
+002301a4:  sw       $zero, 0x7660($at)    ; [0x527660] g_pStage
+002301a8:  addiu    $a0, $zero, 3
+002301ac:  jal      0x141260    ; ymemLog__FUii
+002301b0:  addiu    $a1, $zero, 2
+002301b4:  jal      0x1ff940    ; ClearStage__7GameMemFv
+002301b8:  nop      
+002301bc:  jal      0x1f5be0    ; GetRule__Fv
+002301c0:  nop      
+002301c4:  ld       $ra, 0x20($sp)
+002301c8:  aver_u.h $w0, $w0, $w17
+002301cc:  xori.b   $w0, $w0, 0xb0
+002301d0:  jr       $ra
+002301d4:  addiu    $sp, $sp, 0x30

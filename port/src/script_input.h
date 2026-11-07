@@ -37,7 +37,8 @@
 //                               select; "route match": into the match
 //                               SVR2011_TEST_MATCH asks for (test_match.cpp).
 //                               SVR2011_ROUTE=<name> runs one at start.
-// Each gives up after a while (a warning in the log) and the script goes on.
+// Each gives up after a while (180 s; test aid SVR2011_TEST_SCRIPT_WAIT=<s>) - a warning in the log - and the
+// script goes on.
 //
 // <buttons> is one or more of A B X Y START BACK LB RB LS RS UP DOWN LEFT RIGHT
 // joined with '+'. Lines starting with '#' are ignored.
@@ -59,6 +60,7 @@ namespace svr2011 {
 // entry named label in that group (-1: none) and the group's row count; the
 // group's names; how many entries have been chosen (and the last one).
 bool ScriptMenuState(uint32_t* group, uint32_t* row);
+void ScriptMenuSetRow(uint32_t row);  // (menu_touch: the cursor, directly)
 int ScriptMenuRow(uint32_t group, const std::string& label, int* rows);
 std::string ScriptMenuTexts(uint32_t group);
 uint32_t ScriptMenuSelects(uint32_t* group, uint32_t* row);
@@ -73,6 +75,9 @@ using namespace rex::input;  // X_INPUT_* types and button bits
 // The "until" steps' log sink - once, at setup, before any game thread
 // (svr2011_app.cpp; adding a sink later races the threads' logging).
 void InstallScriptLogSink();
+
+// Test aids: the scripted pad's left stick held at x, y whatever the script says (on false: the script's again).
+void ScriptStickOverride(bool on, int16_t x, int16_t y);
 
 class ScriptInputDriver final : public rex::input::InputDriver {
  public:

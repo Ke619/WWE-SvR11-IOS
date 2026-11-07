@@ -1,0 +1,231 @@
+; Action__6CGate4Fv size 0x398
+0022f720:  addiu    $sp, $sp, -0x50
+0022f724:  sd       $ra, 0x40($sp)
+0022f728:  dpa.w.ph $ac0, $sp, $s3
+0022f72c:  .word 7fb20020
+0022f730:  addu.qb  $zero, $sp, $s1
+0022f734:  move     $s2, $a0
+0022f738:  ext      $s0, $sp, 0, 1
+0022f73c:  jal      0x1f5be0    ; GetRule__Fv
+0022f740:  sw       $zero, 0x94($a0)
+0022f744:  lbu      $v1, 0xd($v0)
+0022f748:  beqz     $v1, 0x22fa9c
+0022f74c:  nop      
+0022f750:  lw       $v0, 0x50($s2)
+0022f754:  addiu    $v0, $v0, 1
+0022f758:  jal      0x1f5be0    ; GetRule__Fv
+0022f75c:  sw       $v0, 0x50($s2)
+0022f760:  lbu      $a0, 0x17($v0)
+0022f764:  addiu    $v1, $zero, 2
+0022f768:  bne      $a0, $v1, 0x22f874
+0022f76c:  nop      
+0022f770:  lui      $a0, 0x52
+0022f774:  addiu    $a1, $zero, 1
+0022f778:  b        0x22f7ac
+0022f77c:  addiu    $a0, $a0, 0x6ba0    ; = 0x526ba0 g_pChar
+0022f780:  sll      $v1, $a1, 2
+0022f784:  addu     $v1, $a0, $v1
+0022f788:  lw       $v1, ($v1)
+0022f78c:  beqz     $v1, 0x22fa9c
+0022f790:  nop      
+0022f794:  lbu      $v1, 0x174($v1)
+0022f798:  bnez     $v1, 0x22f7a8
+0022f79c:  nop      
+0022f7a0:  b        0x22faa0
+0022f7a4:  ld       $ra, 0x40($sp)
+0022f7a8:  addiu    $a1, $a1, 1
+0022f7ac:  slti     $v1, $a1, 5
+0022f7b0:  bnez     $v1, 0x22f784
+0022f7b4:  sll      $v1, $a1, 2
+0022f7b8:  jal      0x1f5bc0    ; GetNowStage__Fv
+0022f7bc:  nop      
+0022f7c0:  addiu    $v1, $zero, 0x23
+0022f7c4:  bne      $v0, $v1, 0x22f7dc
+0022f7c8:  nop      
+0022f7cc:  lw       $a0, 0x44($s2)
+0022f7d0:  addiu    $v1, $zero, 0x1f
+0022f7d4:  beq      $a0, $v1, 0x22f8a0
+0022f7d8:  addiu    $a0, $zero, 1
+0022f7dc:  jal      0x1f5bc0    ; GetNowStage__Fv
+0022f7e0:  nop      
+0022f7e4:  addiu    $v1, $zero, 0x21
+0022f7e8:  bne      $v0, $v1, 0x22f800
+0022f7ec:  nop      
+0022f7f0:  lw       $a0, 0x44($s2)
+0022f7f4:  addiu    $v1, $zero, 0x22
+0022f7f8:  beq      $a0, $v1, 0x22f89c
+0022f7fc:  nop      
+0022f800:  jal      0x1f5bc0    ; GetNowStage__Fv
+0022f804:  nop      
+0022f808:  addiu    $v1, $zero, 0x22
+0022f80c:  bne      $v0, $v1, 0x22f824
+0022f810:  nop      
+0022f814:  lw       $a0, 0x44($s2)
+0022f818:  addiu    $v1, $zero, 0x1f
+0022f81c:  beq      $a0, $v1, 0x22f89c
+0022f820:  nop      
+0022f824:  jal      0x1f5bc0    ; GetNowStage__Fv
+0022f828:  nop      
+0022f82c:  addiu    $v1, $zero, 0x1f
+0022f830:  bne      $v0, $v1, 0x22f848
+0022f834:  nop      
+0022f838:  lw       $a0, 0x44($s2)
+0022f83c:  addiu    $v1, $zero, 0x1e
+0022f840:  beq      $a0, $v1, 0x22f89c
+0022f844:  nop      
+0022f848:  jal      0x1f5bc0    ; GetNowStage__Fv
+0022f84c:  nop      
+0022f850:  addiu    $v1, $zero, 0x1e
+0022f854:  bne      $v0, $v1, 0x22fa9c
+0022f858:  nop      
+0022f85c:  lw       $a0, 0x44($s2)
+0022f860:  addiu    $v1, $zero, 0x20
+0022f864:  beq      $a0, $v1, 0x22f89c
+0022f868:  nop      
+0022f86c:  b        0x22fa9c
+0022f870:  nop      
+0022f874:  lw       $a0, 0x40($s2)
+0022f878:  addiu    $v1, $zero, 0xd1
+0022f87c:  lw       $a0, 0x30($a0)    ; [0x526bd0] g_pWeapon+0x10
+0022f880:  bne      $a0, $v1, 0x22f89c
+0022f884:  nop      
+0022f888:  jal      0x305d20    ; IsHideOpen__8HideCtrlF10HideItemID
+0022f88c:  addiu    $a0, $zero, 0xb
+0022f890:  andi     $v1, $v0, 0xff
+0022f894:  beqz     $v1, 0x22fa9c
+0022f898:  nop      
+0022f89c:  addiu    $a0, $zero, 1
+0022f8a0:  sw       $a0, 0x94($s2)
+0022f8a4:  lw       $v1, 0x50($s2)
+0022f8a8:  sltiu    $at, $v1, 0x12c
+0022f8ac:  beqz     $at, 0x22f8b8
+0022f8b0:  move     $a1, $zero
+0022f8b4:  move     $a1, $a0
+0022f8b8:  addiu    $v1, $zero, 1
+0022f8bc:  beq      $a1, $v1, 0x22fa9c
+0022f8c0:  sh       $a1, 0x90($s2)
+0022f8c4:  b        0x22fa90
+0022f8c8:  move     $s1, $zero
+0022f8cc:  lui      $v1, 0x52
+0022f8d0:  sll      $a0, $s1, 2
+0022f8d4:  addiu    $v1, $v1, 0x6ba0    ; = 0x526ba0 g_pChar
+0022f8d8:  lui      $at, 0x52
+0022f8dc:  addu     $a0, $v1, $a0
+0022f8e0:  lb       $v1, 0x76d0($at)    ; [0x5276d0] AnyNowLoad__13GameVariables
+0022f8e4:  bnez     $v1, 0x22fa8c
+0022f8e8:  lw       $s0, ($a0)
+0022f8ec:  beqz     $s0, 0x22fa8c
+0022f8f0:  nop      
+0022f8f4:  lbu      $v1, 0x188($s0)
+0022f8f8:  andi     $v1, $v1, 1
+0022f8fc:  beqz     $v1, 0x22fa8c
+0022f900:  nop      
+0022f904:  lbu      $a0, 0x172($s0)
+0022f908:  addiu    $v1, $zero, 1
+0022f90c:  bne      $a0, $v1, 0x22fa8c
+0022f910:  nop      
+0022f914:  lw       $a0, 0x40($s2)
+0022f918:  lwc1     $f2, 0xe4($s0)
+0022f91c:  mtc1     $zero, $f0
+0022f920:  lwc1     $f1, 0xe4($a0)    ; [0x526c84] g_pWeapon+0xc4
+0022f924:  sub.s    $f1, $f2, $f1
+0022f928:  c.olt.s  $f1, $f0
+0022f92c:  bc1t     0x22f93c
+0022f930:  nop      
+0022f934:  b        0x22f944
+0022f938:  lui      $v1, 0x4120
+0022f93c:  neg.s    $f1, $f1
+0022f940:  lui      $v1, 0x4120
+0022f944:  mtc1     $v1, $f0
+0022f948:  nop      
+0022f94c:  c.olt.s  $f1, $f0
+0022f950:  bc1f     0x22fa8c
+0022f954:  nop      
+0022f958:  lwc1     $f2, 0xe0($s0)
+0022f95c:  lwc1     $f1, 0xe0($a0)    ; [0x526c80] g_pWeapon+0xc0
+0022f960:  mtc1     $zero, $f0
+0022f964:  nop      
+0022f968:  sub.s    $f1, $f2, $f1
+0022f96c:  c.olt.s  $f1, $f0
+0022f970:  bc1t     0x22f980
+0022f974:  nop      
+0022f978:  b        0x22f988
+0022f97c:  lui      $v1, 0x4120
+0022f980:  neg.s    $f1, $f1
+0022f984:  lui      $v1, 0x4120
+0022f988:  mtc1     $v1, $f0
+0022f98c:  nop      
+0022f990:  c.olt.s  $f1, $f0
+0022f994:  bc1f     0x22fa8c
+0022f998:  nop      
+0022f99c:  lwc1     $f1, 0xe8($a0)    ; [0x526c88] g_pWeapon+0xc8
+0022f9a0:  lwc1     $f2, 0xe8($s0)
+0022f9a4:  mtc1     $zero, $f0
+0022f9a8:  nop      
+0022f9ac:  sub.s    $f1, $f2, $f1
+0022f9b0:  c.olt.s  $f1, $f0
+0022f9b4:  bc1t     0x22f9c4
+0022f9b8:  nop      
+0022f9bc:  b        0x22f9cc
+0022f9c0:  lui      $v1, 0x4120
+0022f9c4:  neg.s    $f1, $f1
+0022f9c8:  lui      $v1, 0x4120
+0022f9cc:  mtc1     $v1, $f0
+0022f9d0:  nop      
+0022f9d4:  c.olt.s  $f1, $f0
+0022f9d8:  bc1f     0x22fa8c
+0022f9dc:  nop      
+0022f9e0:  move     $a0, $s0
+0022f9e4:  jal      0x1ba160    ; GetComActive__5CCharCFv
+0022f9e8:  move     $s3, $zero
+0022f9ec:  beqz     $v0, 0x22fa00
+0022f9f0:  nop      
+0022f9f4:  lw       $v0, 0x1d4($s0)
+0022f9f8:  b        0x22fa04
+0022f9fc:  ori      $a0, $v0, 8
+0022fa00:  lw       $a0, 0x1d4($s0)
+0022fa04:  jal      0x1e0cd0    ; Game_GetOnPadNR__Fi
+0022fa08:  nop      
+0022fa0c:  andi     $v1, $v0, 0xffff
+0022fa10:  andi     $v1, $v1, 0x80
+0022fa14:  beqz     $v1, 0x22fa20
+0022fa18:  nop      
+0022fa1c:  addiu    $s3, $zero, 1
+0022fa20:  beqz     $s3, 0x22fa8c
+0022fa24:  nop      
+0022fa28:  jal      0x1d1600    ; WalkFight__4CMotFPC9C3DObject
+0022fa2c:  move     $a0, $s0
+0022fa30:  beqz     $v0, 0x22fa8c
+0022fa34:  nop      
+0022fa38:  jal      0x1ba160    ; GetComActive__5CCharCFv
+0022fa3c:  move     $a0, $s0
+0022fa40:  beqz     $v0, 0x22fa58
+0022fa44:  addiu    $a0, $zero, 0x50
+0022fa48:  lw       $v1, 0x1d0($s0)
+0022fa4c:  bnez     $v1, 0x22fa8c
+0022fa50:  nop      
+0022fa54:  addiu    $a0, $zero, 0x50
+0022fa58:  jal      0x1001e0    ; __nw__FUi
+0022fa5c:  nop      
+0022fa60:  move     $a0, $v0
+0022fa64:  beqz     $a0, 0x22fa9c
+0022fa68:  nop      
+0022fa6c:  lw       $a2, 0x44($s2)
+0022fa70:  lw       $a3, 0x40($s2)
+0022fa74:  lw       $t0, 0x4c($s2)
+0022fa78:  lw       $t1, 0x48($s2)
+0022fa7c:  jal      0x22eb40    ; __ct__10CMoveStageFP5CChariP7CWeaponii
+0022fa80:  move     $a1, $s0
+0022fa84:  b        0x22fa9c
+0022fa88:  nop      
+0022fa8c:  addiu    $s1, $s1, 1
+0022fa90:  slti     $v1, $s1, 8
+0022fa94:  bnez     $v1, 0x22f8cc
+0022fa98:  nop      
+0022fa9c:  ld       $ra, 0x40($sp)
+0022faa0:  .word 7bb30030
+0022faa4:  ld.b     $w0, -0x4e($zero)
+0022faa8:  aver_u.h $w0, $w0, $w17
+0022faac:  xori.b   $w0, $w0, 0xb0
+0022fab0:  jr       $ra
+0022fab4:  addiu    $sp, $sp, 0x50

@@ -22,10 +22,16 @@
 // the wait before a clip; no scene is made yet in either) the step is done -
 // the game's own "no highlights" path - and the recorder's state is logged.
 
+#include "media_mods.h"
+
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <functional>
+#include <mutex>
 #include <string>
+#include <thread>
 
 #include <rex/cvar.h>
 #include <rex/hook.h>
@@ -36,14 +42,13 @@
 
 #include "generated/default/svr2011_init.h"
 #include "thread_cpu.h"
+#include "../modmaker/svrfmt/bytes.h"
+#include "util.h"
 
 REXCVAR_DEFINE_BOOL(replays, true, "Gameplay", "Instant replays (after finishers and at the end of a match)");
 
 namespace {
-uint32_t Rd32(const uint8_t* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; }
-void Wr32(uint8_t* p, uint32_t v) {
-  p[0] = uint8_t(v >> 24), p[1] = uint8_t(v >> 16), p[2] = uint8_t(v >> 8), p[3] = uint8_t(v);
-}
+using svrfmt::Rd32, svrfmt::Wr32;
 }  // namespace
 
 REX_EXTERN(__imp__sub_8230C2D0);
@@ -75,10 +80,7 @@ uint32_t g_step = 0, g_state = 0;  // the highlight step and its state last fram
 int64_t g_since = 0;               // when it got there
 uint32_t g_recorder_state = 0;     // the recorder's state at the last refused clip
 uint32_t g_recorder = 0;           // and the recorder
-int64_t NowMs() {
-  return std::chrono::duration_cast<std::chrono::milliseconds>(
-             std::chrono::steady_clock::now().time_since_epoch()).count();
-}
+using svr2011::NowMs;
 }  // namespace
 
 // The recorder hands out a clip: sub_8219F9F0(recorder, clip), 0 = not now.
@@ -136,6 +138,8 @@ REX_HOOK_RAW(sub_82322DA0) {
   static Clock::time_point since;
   static bool told = false;
   const uint32_t state = Rd32(base + task + 16);
+  // (once per end, from the result on - the menus' music can end it while this task still steps: docs/VICTORY_SCENES.md 5)
+  if (state >= 1 && (task != last_task || last_state == 0 || state < last_state)) svr2011::WinMusicOn();
   if (task != last_task || state != last_state) {
     REXLOG_INFO("[svr2011] match end: step {} (task {:08X}, +20 {})", state, task, Rd32(base + task + 20));
     if (task != last_task) svr2011::MatchBoxMatchEnded();  // (a new end task - its first step 0, or 1 after a win: the box)
@@ -197,4 +201,113 @@ REX_HOOK_RAW(sub_82167768) {
   static const bool stall = std::getenv("SVR2011_TEST_REPLAY_WORKER_STALL") != nullptr;
   __imp__sub_82167768(ctx, base);
   if (stall) ctx.r3.u64 = 0;
+}
+
+// A replayed object's history (vtable 0x82006090: two block-heap arrays by handle at +132 / +140, made by
+// sub_8225DA88 / filled while the match records): sub_8225DC88 looks a time up in it with no check. A handle whose
+// block is gone (+0 null) was a crash in the match-end highlights - "the game closed after I win", every time (2.1.6
+// report, Triple Threat, guest read 0x162 in clip 4 of 5). Now that object isn't stepped (-1: not found, as its
+// caller sub_8225DD58 expects) and it's logged with its handles, for the reports.
+// Test aid: SVR2011_TEST_REPLAY_GONE=<n> - the n-th look-up of the run is treated as gone (the guard's path).
+// For that log line: the last give-backs of replayed objects' histories (sub_82261D28: both handles freed at a clip
+// change) and the last block-heap compactions (sub_821DC110), with the caller, the thread and the match clock - kept
+// in a small ring (no log of their own) and printed when the guard above finds a history gone, so a report shows what
+// emptied it.
+namespace {
+struct HistoryEvent {
+  const char* what = nullptr;  // "given back" / "compaction"
+  uint32_t obj = 0, h1 = 0, h2 = 0, caller = 0, thread = 0, clock = 0;
+};
+constexpr int kHistoryEvents = 16;
+std::mutex g_history_mutex;
+HistoryEvent g_history[kHistoryEvents];
+int g_history_next = 0;
+void NoteHistoryEvent(uint8_t* base, const char* what, uint32_t obj, uint32_t h1, uint32_t h2, uint32_t caller) {
+  const uint32_t thread = uint32_t(std::hash<std::thread::id>{}(std::this_thread::get_id()) & 0xFFFF);
+  std::lock_guard lock(g_history_mutex);
+  g_history[g_history_next] = {what, obj, h1, h2, caller, thread, Rd32(base + 0x82E3CD0C)};
+  g_history_next = (g_history_next + 1) % kHistoryEvents;
+}
+std::string HistoryEvents() {
+  std::lock_guard lock(g_history_mutex);
+  std::string s;
+  for (int k = 0; k < kHistoryEvents; ++k) {
+    const HistoryEvent& e = g_history[(g_history_next + k) % kHistoryEvents];
+    if (!e.what) continue;
+    s += fmt::format(" | {} obj {:08X} handles {:08X} {:08X} by {:08X} thread {:04X} clock {}", e.what, e.obj, e.h1, e.h2,
+                     e.caller, e.thread, e.clock);
+  }
+  return s.empty() ? std::string(" (none)") : s;
+}
+}  // namespace
+
+REX_EXTERN(__imp__sub_82261D28);
+REX_HOOK_RAW(sub_82261D28) {
+  const uint32_t obj = ctx.r3.u32;
+  if (obj) NoteHistoryEvent(base, "given back", obj, Rd32(base + obj + 132), Rd32(base + obj + 140), uint32_t(ctx.lr));
+  __imp__sub_82261D28(ctx, base);
+}
+
+REX_EXTERN(__imp__sub_821DC110);
+REX_HOOK_RAW(sub_821DC110) {
+  NoteHistoryEvent(base, "compaction", 0, 0, 0, uint32_t(ctx.lr));
+  __imp__sub_821DC110(ctx, base);
+}
+
+// A replay track's step (sub_82252898, for each of the 140 in sub_821A0A48, from the recorder's queued callback on its
+// own thread) reads its block at +64 unchecked when +72 is set - but a clip change frees that block (sub_822523A8:
+// +64 0, +72 left as it was), which can happen just before the callback runs: a read of guest 0 at a clip change
+// (report 684e56, Android, match-end highlights). Nothing to step then.
+// Test aids: SVR2011_TEST_TRACK_GONE=<n> - the n-th step of a track with a block finds it gone, once;
+// SVR2011_TEST_TRACK_GUARD_OFF=1 - no check (with the other: the crash).
+REX_EXTERN(__imp__sub_82252898);
+REX_HOOK_RAW(sub_82252898) {
+  const uint32_t track = ctx.r3.u32;
+  auto at = [&](uint32_t a) { return Rd32(base + a + REX_PHYS_HOST_OFFSET(a)); };
+  static const int test_gone = [] { const char* v = std::getenv("SVR2011_TEST_TRACK_GONE"); return v ? std::atoi(v) : 0; }();
+  static const bool guard_off = std::getenv("SVR2011_TEST_TRACK_GUARD_OFF") != nullptr;
+  static std::atomic<int> steps{0};
+  const bool used = track && at(track + 36) && at(track + 72);
+  uint32_t kept = 0;
+  if (test_gone > 0 && used && at(track + 64) && steps.fetch_add(1) + 1 == test_gone) {
+    kept = at(track + 64);
+    Wr32(base + track + 64 + REX_PHYS_HOST_OFFSET(track + 64), 0);
+    REXLOG_WARN("[svr2011] replay: test - track {:08X} loses its block (SVR2011_TEST_TRACK_GONE)", track);
+  }
+  if (used && !guard_off) {
+    const uint32_t block = at(track + 64);
+    if (!block || !at(block)) {
+      static std::atomic<int> skipped{0};
+      const int n = skipped.fetch_add(1) + 1;
+      if (n <= 3 || n % 500 == 0) REXLOG_WARN("[svr2011] replay: a track's block is gone (track {:08X}) - not stepped ({} times)", track, n);
+      if (kept) Wr32(base + track + 64 + REX_PHYS_HOST_OFFSET(track + 64), kept);
+      return;
+    }
+  }
+  __imp__sub_82252898(ctx, base);
+  if (kept) Wr32(base + track + 64 + REX_PHYS_HOST_OFFSET(track + 64), kept);
+}
+
+REX_EXTERN(__imp__sub_8225DC88);
+REX_HOOK_RAW(sub_8225DC88) {
+  const uint32_t obj = ctx.r3.u32;
+  // (guest 0xE0000000 and up - the block heap's physical pages - sit 4 KB further on the host on Windows only, as the
+  // game's own loads)
+  auto at = [&](uint32_t a) { return Rd32(base + a + REX_PHYS_HOST_OFFSET(a)); };
+  const uint32_t h1 = obj ? at(obj + 132) : 0, h2 = obj ? at(obj + 140) : 0;
+  static const int test_gone = [] { const char* v = std::getenv("SVR2011_TEST_REPLAY_GONE"); return v ? std::atoi(v) : 0; }();
+  static int lookups = 0;
+  const bool test = test_gone > 0 && ++lookups == test_gone;
+  if (test || !h1 || !h2 || !at(h1) || !at(h2)) {
+    static int skipped = 0;
+    if (++skipped <= 5 || skipped % 500 == 0) {
+      REXLOG_WARN("[svr2011] replay: an object's history is gone (object {:08X}, handles {:08X} {:08X} -> {:08X} {:08X}) - "
+                  "not stepped ({} times){}", obj, h1, h2, h1 ? at(h1) : 0, h2 ? at(h2) : 0, skipped,
+                  test ? " - test (SVR2011_TEST_REPLAY_GONE)" : "");
+      if (skipped <= 2) REXLOG_WARN("[svr2011] replay: the last histories given back / compactions, oldest first:{}", HistoryEvents());
+    }
+    ctx.r3.u64 = 0xFFFFFFFFFFFFFFFFull;
+    return;
+  }
+  __imp__sub_8225DC88(ctx, base);
 }

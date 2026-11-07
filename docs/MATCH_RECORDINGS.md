@@ -52,6 +52,7 @@ with `inputs.bin` at 192 bytes.
   ],
   "frame_rate": 60,
   "online": false,
+  "entrances": true,
   "renderer": "any",
   "cpu_tab": {"reversal_chance": -1, "reversal_rates": -1, "damage_level": -1, "pin_level": -1, "momentum_level": -1},
   "weapons": {"picks": "mod:light_tube:3,4:1"},
@@ -67,12 +68,15 @@ with `inputs.bin` at 192 bytes.
   - `ended`: the match's end task started;
   - `crash`: the crash report was written while the match ran.
 - `people` lists every character in the match, the referee (`person` 6) and the announcers included.
-- `cpu` is true when the CPU plays the wrestler. That means the pick slot's controller is the CPU and no local
-  player's pad plays them.
+- `cpu` is true when the CPU plays the wrestler, that is, when no local player's pad plays them (the character's
+  +1152 is not a connected pad; the select screen's CPU picks have 6). The pick slot's controller byte (-8) is not
+  used: the select screen's own CPU picks leave it 0.
 - `attire` is the picked attire, 1-4.
 - `port` is the controller (0-3) of the local player who plays the wrestler, or `null` for the CPU.
 - `cpu`, `attire` and `port` are `null` for the referee and the announcers.
 - `frames` is the number of frames from the bell to the last write (the end, or the crash).
+- `entrances` is the live rules' ENTRANCES (+38) at the bell. A replay sets them the same (the pre-bell part
+  differs with and without them).
 - `mod` is `null` for stock content. For a mod it is `{type, id, version, files}`, where `files` is the hash used
   in mods.txt.
 - Rule and arena names are the game's own strings, in the game's language.
@@ -122,6 +126,9 @@ All values are little-endian.
 
 A record is written only when a pad's state changes. Every user gets one record at the bell. Extra world updates
 at 30 fps or on slow frames reuse the cached state, so they add nothing.
+
+The file is flushed once a second of the match clock, with trail.txt. A game that hangs and is killed keeps its
+pads up to that second (before 27 Oct it was empty until the end).
 
 ## bell.bin
 
@@ -187,7 +194,15 @@ The tool reads match.json and starts a hidden test game that goes through the sc
 - the same wrestlers (CAWs by save slot), attires, controllers, rule and arena (`SVR2011_TEST_MATCH`,
   `SVR2011_TEST_RULE`);
 - the same rand() seed (`SVR2011_TEST_RAND_SEED`);
-- entrances off.
+- the entrances as match.json's `entrances` has them (`-Entrances auto`, the default). Recordings from before
+  27 Oct have no `entrances`: off. `-Entrances 0|1|keep` overrides it (`keep`: the game's setting).
+
+Before it starts the game, the tool checks that the recording's mods (a superstar's or the arena's `mod`) have a
+manifest with that id in the game folder's Mods. A missing mod is a clean error. Without this check the mod's
+superstar id was no roster wrestler and the match load hung. Another version only gets a note.
+
+Each try gets its own log (`runs\replay_<name>.tryN.log`). A stopped game can hold its log for seconds, and one
+shared log gave the next try the last game's lines. The test-game guard runs before every try.
 
 `SVR2011_REPLAY=<folder>` then takes over at the bell:
 - Every frame gets the recording's pads (users 0-7, as recorded; a user with no record yet keeps its own).
@@ -195,9 +210,15 @@ The tool reads match.json and starts a hidden test game that goes through the sc
 - After the recording's `frames` the pads are the players' again.
 
 The replay records itself like any match. Its folder gets `replay.txt`, and the tool adds the frame shots:
-- `replay.txt` heads with the second where the replay parts from the recording's `trail.txt` (a wrestler 2.0 or
-  more from the recorded place). Below that, second by second, the farthest anyone is (`*`: a wrestler's motion
-  differs).
+- `replay.txt` heads with three lines:
+  - the second where the replay parts from the recording's `trail.txt` (a wrestler 2.0 or more from the recorded
+    place);
+  - the first second anyone parts by 0.05 or more, the referee and announcers included (the referee parted
+    seconds before the wrestlers in a 27 Oct replay);
+  - how the two ended: the replay's match ended at frame N (and the recording's at M), or it was still on when
+    the recording's frames ran out.
+
+  Below that, second by second, the farthest anyone is (`*`: a wrestler's motion differs).
 - The frame shots are `shot_NN.png` (`-Shots`, one every `-ShotEvery` seconds of the match).
 
 **Approximate.** The player's side is replayed: the pads, the setup and the rand() seed. From format 1 with
@@ -206,13 +227,17 @@ then 0.003 apart at update 28. The next differences are values that are the same
 clock 3 (one float step) and the block +2800-2952 at clock 5. They come from global state outside the characters,
 which still has to be found.
 
-- **The pre-bell intro:** in an entrances-off match it is a sneak attack or a standing start. It comes out either
+- **The pre-bell intro:** it is a sneak attack or a standing start, with or without entrances. It comes out either
   way, run to run, because the people load at disk pace. When the bell finds other motions than the recording's,
-  the tool stops the game and starts again (`-Tries`, 4).
-- **The CPU's first moves:** they part within a few seconds. The game's random table steps on a timer that started
-  before the bell (`seeds.table_steps`), and its loading pace isn't replayed.
-- **Matches with entrances:** a recording made with entrances replays without them, so it starts from the in-ring
-  places.
+  the tool stops the game and starts again (`-Tries`, 4). The last try is replayed all the same, approximate from
+  the start (before 27 Oct no replay came out). On a busy disk one intro can come out every time (27 Oct: 6 tries
+  in a row).
+- **The CPU's first moves:** they part within a second or two. The game's random table steps on a timer that
+  started before the bell, and bell.bin writes back the indexes but not the timer's phase. On 27 Oct index 1
+  stepped at 92/122/152 frames in the recording and 87/117/147 in its replay.
+- **Measured 27 Oct** (full CPU matches of 4 and 3.5 minutes, pinfalls): the replays part at second 1 and end
+  differently in time (the same winner and finish, at 43 s instead of 241 s, and 98 s instead of 201 s). A
+  player-vs-CPU replay: the wrestlers were exact for 5 s; the referee parted first (0.1 at second 2).
 
 Test aids for replays and replay research:
 
@@ -222,7 +247,7 @@ Test aids for replays and replay research:
 | `SVR2011_TEST_RAND_LOG` | Logs who calls rand(), every 10 s. |
 | `SVR2011_TEST_RAND_SEED=<n>` | Uses this rand() seed for every match. |
 | `SVR2011_TEST_ENTRANCES=0\|1` | Turns the match's entrances off or on (live rules +38). |
-| `SVR2011_TEST_MATCH=... ports=0,-1` | Each person's controller: a player's 0-3, or -1 for the CPU. |
+| `SVR2011_TEST_MATCH=... ports=0,-1` | Each person's controller: a player's 0-3, or -1 for the CPU. A CPU (and `cpu=all`) also gets pad bits 6 (slot -4), as the select screen's CPU picks have. Before 27 Oct person 0 stayed on pad 0: an idle player in "CPU vs CPU" tests. |
 | `SVR2011_TEST_MATCH=... exact=1` | Only the listed people: empties a later slot that the route's presses picked. |
 | `SVR2011_TEST_PRE_BELL_SLOW_MS=<ms>` | Makes each frame from a match's load to its bell this much longer. |
 | `SVR2011_TEST_REPLAY_DUMP=<file>` | For the first 40 clock values of a recorded match, writes persons 0, 1 and the referee's first 8 KB in hex, one line each (diff two runs). |

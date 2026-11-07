@@ -19,4 +19,10 @@ inline bool NoMods() {
   return on;
 }
 
+// Backstage mods (Mods\Backstage: the HCTP worlds, the SvR08 parking lot, bg78 room mods) are switched off - the
+// user's call for 2.1.6 ("off, stock kept"): a Backstage Brawl always loads the game's own backstage. Their files
+// stay installed (undone by returning false here); nothing of theirs is read, listed, mounted or offered online.
+// Road to WrestleMania's walks, scenes and story matches are the game's own and unchanged.
+inline bool BackstageModsOff() { return true; }
+
 }  // namespace svr2011

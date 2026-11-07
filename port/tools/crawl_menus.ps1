@@ -6,6 +6,7 @@
 # per worker (seeded from runs\test_userdata\Saves); waits while the player plays.
 #   crawl_menus.ps1 [-Worker 0 -Workers 2] [-Only 3,7] [-MatchSeconds 40]
 param([int]$Worker = 0, [int]$Workers = 1, [int[]]$Only = @(), [int]$MatchSeconds = 40)
+$env:SVR2011_AUDIO_MUTE = "1"  # (test games stay muted even if their command line is lost)
 $ErrorActionPreference = "Continue"
 Add-Type -AssemblyName System.Drawing
 Add-Type @"

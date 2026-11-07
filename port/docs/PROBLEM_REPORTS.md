@@ -11,6 +11,7 @@ the "Report a problem" zip (launcher `report.c`, `SvR2011 Launcher.exe --report
 | `report.txt` | the player's words, then the launcher version, Windows version, date |
 | `logs/` | the newest game's log parts (repeated fault lines condensed) and the two games before |
 | `crashes/` | the three newest crash reports (host stack, guest registers) |
+| `logs/updater.log` | the updater's runs (each step of an update / repair and how it ended) and the launcher's update and file-check messages (`update_log.h`; its last result also goes in report.json as `updater`) |
 | `svr2011.toml` | the settings, account token and password removed |
 | `saves_check.txt` | each `NNCreateSuperStar.cas`: size, save slot, the attires with a picture, its three checksums and SaveData.dat's copy for its slot, "agree" or "DON'T AGREE"; SaveData.dat's own checksum. Never the saves |
 | `mods_text.txt` | each superstar mod's `manifest.txt`, `moves.txt` and `threads.txt` (64 KB each, 512 KB in all). Never models or pictures |
@@ -40,6 +41,23 @@ IP addresses are blanked in the logs (x.x.x.x).
   `Saves\.backup`), and `model preview: N models (...), M meshes, V vertices, T
   textures; textures the meshes name but the model lacks (drawn black): ...` for
   every model the 3D preview loads.
+
+## Report a problem inside the game (2.1.9)
+
+MY WWE -> OPTIONS -> REPORT A PROBLEM, and in a match the pause menu's REPORT A PROBLEM (a row above QUIT MATCH;
+not in online matches). `src/report_page.cpp`: the launcher's questions and rule ("what happened" needed), a
+screenshot of the game from before the menu (or "add pictures later in the launcher": the receipt gets
+`"pictures_later":1`), the match being played (from the menus: the last one) with its mods, the main save. Sent
+by the launcher's own code (`launcher/report_flow.c` - the zip, the match and mod parts, report.json, the
+pictures; the launcher uses it too), app `game`; on Android the app's `GameReport.java` -> `ReportForm.send`.
+The receipt goes into `<game>\UserData\reports.json` (the launcher's Reports tab: "In the game").
+
+Pause menu: the screen `sub_824271E8` makes (vtable 0x820183E0) gets a copy of QUIT MATCH's entry with the label
+0x0FA0B202 before it, its row count and the cursor's (+36 -> +28) one more; `sub_824068A8(screens, row)` opens
+row - 1 for the rows after ours, and A on ours never reaches the game (`ReportPagePad`, XamInputGetState).
+
+Test aids: `SVR2011_TEST_REPORT_TYPE=<file>` types its lines into the text being edited; test runs
+(`SVR2011_INPUT_FILE`) send only to a server on this PC (`SVR2011_ALLOW_LIVE=1` lifts it).
 
 ## Test aids
 

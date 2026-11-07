@@ -22,7 +22,7 @@ MATCH_TYPES = [
      "FATAL-4-WAY: five superstars, one more each minute, interim champions, the title holder at the bell wins."),
     ("royal_rumble_15_25", "15- and 25-Man Royal Rumble", "ROYAL RUMBLE: 15-MAN and 25-MAN beside 10, 20 and 30."),
     ("lumberjack", "Lumberjack", "6-MAN: LUMBERJACK, with lumberjacks who attack whoever lands on the floor."),
-    ("free_roaming_backstage", "Free-Roaming Backstage", "BACKSTAGE: the whole backstage area to fight through."),
+    # (free_roaming_backstage: removed from the game for 2.1.6 - src/match_types.cpp MatchTypeSwitches)
     ("backstage_more_people", "Backstage for 3, 4 and 6", "BACKSTAGE brawls in TRIPLE THREAT, FATAL-4-WAY and 6-MAN."),
     ("weapons_everywhere", "Weapons Everywhere", "EXTREME RULES: weapons already lying in and around the ring."),
     ("slobber_knocker", "Slobber Knocker", "One wrestler against an endless line of opponents."),

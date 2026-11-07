@@ -270,12 +270,16 @@ index 1cb3faa..7f9ef91 100644
  
  /// Create a default InputSystem with SDL + NOP drivers.
 diff --git a/include/rex/input/mnk/mnk_input_driver.h b/include/rex/input/mnk/mnk_input_driver.h
-index c8751b7..bb0dcb5 100644
+index c8751b7..6f045bb 100644
 --- a/include/rex/input/mnk/mnk_input_driver.h
 +++ b/include/rex/input/mnk/mnk_input_driver.h
-@@ -97,7 +97,9 @@ class MnkInputDriver final : public InputDriver,
+@@ -96,8 +96,13 @@ class MnkInputDriver final : public InputDriver,
+   // Guest thread to UI thread. The queued flag coalesces the posts.
    std::atomic<bool> mouse_capture_requested_{false};
    std::atomic<bool> mouse_capture_update_queued_{false};
++  // [svr2011] what the UI thread last settled on (0 released, 1 captured, -1 nothing yet): the guest thread posts only
++  // when the request differs (the pad read runs every frame - each post pushed an SDL event)
++  std::atomic<int> mouse_capture_applied_{-1};
  
 -  std::atomic<bool> has_focus_{true};
 +  // (the window's real focus: taken from it on attach, then its focus events -
@@ -5832,7 +5836,7 @@ index 7360ed9..dd6a163 100644
      case PaintResult::kPresented:
        surface_paint_connection_was_optimal_at_successful_paint_ = true;
 diff --git a/src/ui/rex_app.cpp b/src/ui/rex_app.cpp
-index b94fe9e..d30b98c 100644
+index b94fe9e..bedc1e7 100644
 --- a/src/ui/rex_app.cpp
 +++ b/src/ui/rex_app.cpp
 @@ -46,6 +46,11 @@
@@ -5856,6 +5860,19 @@ index b94fe9e..d30b98c 100644
      if (!config_.graphics) {
        // Fatal by design: no silent headless fallback.
        auto msg =
+@@ -602,8 +607,11 @@ void ReXApp::OnDestroy() {
+     window_->RemoveInputListener(this);
+     window_->RemoveListener(this);
+   }
+-  window_.reset();
++  // The runtime first: its input drivers (MnkInputDriver) detach from the window as they go - with the window
++  // gone first, ~MnkInputDriver's RemoveInputListener touched a deleted window (the game's own early exit,
++  // "Execution complete" -> QuitFromUIThread: SvR 2011 2.1.8 report 6fd821's shutdown crash).
+   runtime_.reset();
++  window_.reset();
+ }
+ 
+ void ReXApp::SetGuestFrameStats(ui::DebugOverlayDialog::FrameStatsProvider provider) {
 diff --git a/src/ui/surface_android.cpp b/src/ui/surface_android.cpp
 new file mode 100644
 index 0000000..b1ba2a6
@@ -6698,7 +6715,7 @@ index 2251429..9145077 100644
 +
  }  // namespace rex::ui
 diff --git a/src/ui/windowed_app_context_sdl.cpp b/src/ui/windowed_app_context_sdl.cpp
-index dc0b4c2..85004d0 100644
+index dc0b4c2..1d0aa10 100644
 --- a/src/ui/windowed_app_context_sdl.cpp
 +++ b/src/ui/windowed_app_context_sdl.cpp
 @@ -97,6 +97,28 @@ int SDLWindowedAppContext::RunMainMessageLoop() {
@@ -6758,6 +6775,27 @@ index dc0b4c2..85004d0 100644
      case SDL_EVENT_DROP_FILE: {
        if (WindowSDL* window = GetWindow(event.drop.windowID)) {
          window->HandleDropEvent(event);
+@@ -182,6 +225,7 @@ void SDLWindowedAppContext::ProcessEvent(SDL_Event& event) {
+ 
+ bool SDLCALL SDLWindowedAppContext::WatchEvent(void* userdata, SDL_Event* event) {
+   auto* context = static_cast<SDLWindowedAppContext*>(userdata);
++#if REX_PLATFORM_MAC
+   if (event->type == SDL_EVENT_QUIT && SDL_IsMainThread() && context->IsInUIThread()) {
+     // Cocoa stops making Metal drawables available as part of its termination
+     // request. Handle the request synchronously while SDL is queueing it,
+@@ -189,6 +233,12 @@ bool SDLCALL SDLWindowedAppContext::WatchEvent(void* userdata, SDL_Event* event)
+     ++context->synchronously_handled_quit_events_;
+     context->ProcessQuitRequest();
+   }
++#else
++  // [svr2011] Elsewhere the quit goes through the message loop (ProcessEvent): handled here, inside SDL's event-watcher
++  // lock, it stops the guest threads while one of them can be pushing an event (waiting for that lock) - Alt+F4 hung.
++  (void)context;
++  (void)event;
++#endif
+   return true;
+ }
+ 
 diff --git a/src/ui/windowed_app_main_sdl.cpp b/src/ui/windowed_app_main_sdl.cpp
 index 77bb1dc..acc33de 100644
 --- a/src/ui/windowed_app_main_sdl.cpp
@@ -6786,7 +6824,7 @@ index 77bb1dc..acc33de 100644
    rex::cvar::ApplyEnvironment();
    rex::InitLoggingEarly();
 diff --git a/src/input/mnk/mnk_input_driver.cpp b/src/input/mnk/mnk_input_driver.cpp
-index 3f9422d..a1c95a0 100644
+index 3f9422d..d7119a9 100644
 --- a/src/input/mnk/mnk_input_driver.cpp
 +++ b/src/input/mnk/mnk_input_driver.cpp
 @@ -21,6 +21,7 @@
@@ -6893,8 +6931,46 @@ index 3f9422d..a1c95a0 100644
    uint16_t buttons = 0;
    if (IsBindPressed(key_down_, REXCVAR_GET(keybind_a)))
      buttons |= X_INPUT_GAMEPAD_A;
-@@ -423,7 +469,9 @@ void MnkInputDriver::ApplyMouseCaptureFromUIThread() {
+@@ -398,17 +444,31 @@ void MnkInputDriver::EnqueueKeystroke(uint16_t vk_pad, bool down) {
+ 
+ void MnkInputDriver::QueueMouseCaptureUpdate(bool should_capture) {
+   mouse_capture_requested_.store(should_capture, std::memory_order_relaxed);
++  // [svr2011] nothing to change, nothing posted
++  if (mouse_capture_applied_.load(std::memory_order_relaxed) == int(should_capture)) {
++    return;
++  }
+   bool already_queued = false;
+   if (!mouse_capture_update_queued_.compare_exchange_strong(already_queued, true)) {
+     return;
+   }
+-  std::lock_guard lock(state_mutex_);
+-  if (!attached_window_) {
++  rex::ui::WindowedAppContext* context = nullptr;
++  {
++    std::lock_guard lock(state_mutex_);
++    if (attached_window_) {
++      context = &attached_window_->app_context();
++    }
++  }
++  if (!context) {
+     mouse_capture_update_queued_.store(false, std::memory_order_relaxed);
+     return;
+   }
+   // Deferred, not CallInUIThread: running inline would re-enter state_mutex_.
+-  attached_window_->app_context().CallInUIThreadDeferred([this] {
++  // [svr2011] Posted with state_mutex_ released: the post pushes an SDL event, which runs SDL's event watchers under
++  // its lock - the UI thread can be in one waiting for state_mutex_ (a quit handled there detaches this driver), and
++  // with the lock held here neither went on: the pad read stuck (the world update with it) and Alt+F4 hung (2.1.9,
++  // mnk_mode).
++  context->CallInUIThreadDeferred([this] {
+     mouse_capture_update_queued_.store(false, std::memory_order_relaxed);
+     ApplyMouseCaptureFromUIThread();
+   });
+@@ -421,13 +481,17 @@ void MnkInputDriver::ApplyMouseCaptureFromUIThread() {
+   }
+   bool should_capture = mouse_capture_requested_.load(std::memory_order_relaxed);
    if (should_capture == mouse_captured_) {
++    mouse_capture_applied_.store(int(mouse_captured_), std::memory_order_relaxed);
      return;
    }
 -  if (!should_capture) {
@@ -6904,7 +6980,20 @@ index 3f9422d..a1c95a0 100644
      ReleaseMouseCaptureFromUIThread(window);
      return;
    }
-@@ -459,7 +507,7 @@ void MnkInputDriver::RecenterCursorFromUIThread(int32_t x, int32_t y) {
+   mouse_captured_ = true;
++  mouse_capture_applied_.store(1, std::memory_order_relaxed);
+   precapture_cursor_visibility_ = window->GetCursorVisibility();
+   window->SetCursorVisibility(rex::ui::Window::CursorVisibility::kHidden);
+   window->CaptureMouse();
+@@ -442,6 +506,7 @@ void MnkInputDriver::ApplyMouseCaptureFromUIThread() {
+ }
+ 
+ void MnkInputDriver::ReleaseMouseCaptureFromUIThread(rex::ui::Window* window) {
++  mouse_capture_applied_.store(0, std::memory_order_relaxed);
+   if (!mouse_captured_) {
+     return;
+   }
+@@ -459,7 +524,7 @@ void MnkInputDriver::RecenterCursorFromUIThread(int32_t x, int32_t y) {
    }
    int32_t width = int32_t(window->GetActualPhysicalWidth());
    int32_t height = int32_t(window->GetActualPhysicalHeight());
@@ -6939,9 +7028,18 @@ index 0d8f8af..d90945b 100644
      ${REXGLUE_ROOT}  # For thirdparty/dxbc/DXBCChecksum.h include
  )
 diff --git a/src/system/CMakeLists.txt b/src/system/CMakeLists.txt
-index fc46d86..2531c00 100644
+index fc46d86..8738429 100644
 --- a/src/system/CMakeLists.txt
 +++ b/src/system/CMakeLists.txt
+@@ -106,7 +106,7 @@ if(REXGLUE_ENABLE_PERF_COUNTERS)
+ endif()
+ 
+ if(WIN32)
+-    target_link_libraries(rexruntime PRIVATE ws2_32)
++    target_link_libraries(rexruntime PRIVATE ws2_32 bcrypt)  # (bcrypt: xboxkrnl_crypt.cpp; it used to come along with FFmpeg)
+     target_link_libraries(rexruntime PUBLIC dxgi dxguid)
+     target_compile_definitions(rexruntime PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
+ endif()
 @@ -123,3 +123,7 @@ if(REXGLUE_USE_VULKAN)
      )
      target_compile_definitions(rexruntime PUBLIC REX_HAS_VULKAN=1)
@@ -9432,3 +9530,282 @@ index 76cc877..1932a1f 100644
      return false;
    }
  
+diff --git a/src/kernel/xboxkrnl/xboxkrnl_io.cpp b/src/kernel/xboxkrnl/xboxkrnl_io.cpp
+--- a/src/kernel/xboxkrnl/xboxkrnl_io.cpp
++++ b/src/kernel/xboxkrnl/xboxkrnl_io.cpp
+@@ -221,11 +221,20 @@
+         io_status_block->information = bytes_read;
+       }
+ 
++      // [svr2011] An asynchronous file's read always completes through its APC
++      // and event - a failed one too, its status in the IO status block - and
++      // returns X_STATUS_PENDING. A failed read returned X_STATUS_PENDING (or
++      // END_OF_FILE) with no APC: a caller sleeping alertably for the completion
++      // (SvR 2011's loader: ReadFileEx + SleepEx(INFINITE, TRUE)) waited for
++      // ever. A synchronous file's read returns its status as before. (As
++      // NtReadFileScatter and NtWriteFile below already do.)
++      const bool async_file = !file->is_synchronous();
++
+       // Queue the APC callback. It must be delivered via the APC mechanism even
+       // though were are completing immediately.
+       // Low bit probably means do not queue to IO ports.
+       if ((uint32_t)apc_routine_ptr & ~1) {
+-        if (apc_context && result == X_STATUS_SUCCESS) {
++        if (apc_context && (result == X_STATUS_SUCCESS || async_file)) {
+           auto thread = XThread::GetCurrentThread();
+           uint32_t apc_routine = static_cast<uint32_t>(apc_routine_ptr) & ~1u;
+           uint32_t apc_ctx = apc_context.guest_address();
+@@ -241,7 +250,7 @@
+         }
+       }
+ 
+-      if (!file->is_synchronous() && result != X_STATUS_END_OF_FILE) {
++      if (async_file) {
+         result = X_STATUS_PENDING;
+       }
+ 
+diff --git a/src/system/xfile.cpp b/src/system/xfile.cpp
+index 4179e8b..8c6b6e1 100644
+--- a/src/system/xfile.cpp
++++ b/src/system/xfile.cpp
+@@ -19,14 +19,47 @@
+ #include <rex/system/xfile.h>
+ #include <rex/thread/mutex.h>
+ 
++#include <atomic>
++#include <chrono>
++#include <cstdio>
++#include <cstdlib>
++#include <mutex>
+ #include <span>
+ 
+ namespace rex::system {
+ 
++namespace {
++// Test aid SVR2011_TEST_IO_TRACE=<file>: every guest file open and read, a line each -
++// "<ms> <thread> open <path>" / "<ms> <thread> read <path> <offset> <bytes> <us>" (the load-time measurements).
++std::FILE* IoTrace() {
++  static std::FILE* f = [] {
++    const char* p = std::getenv("SVR2011_TEST_IO_TRACE");
++    return p && *p ? std::fopen(p, "w") : nullptr;
++  }();
++  return f;
++}
++
++void IoTraceLine(const char* kind, const std::string& path, uint64_t offset, uint64_t bytes, int64_t us) {
++  static std::mutex mutex;
++  static const auto t0 = std::chrono::steady_clock::now();
++  static std::atomic<int> threads{0};
++  thread_local const int thread = ++threads;
++  const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
++  std::lock_guard lock(mutex);
++  if (us < 0)
++    std::fprintf(IoTrace(), "%.1f %d %s %s\n", ms, thread, kind, path.c_str());
++  else
++    std::fprintf(IoTrace(), "%.1f %d %s %s %llu %llu %lld\n", ms, thread, kind, path.c_str(),
++                 (unsigned long long)offset, (unsigned long long)bytes, (long long)us);
++  std::fflush(IoTrace());
++}
++}  // namespace
++
+ XFile::XFile(KernelState* kernel_state, rex::filesystem::File* file, bool synchronous)
+     : XObject(kernel_state, kObjectType), file_(file), is_synchronous_(synchronous) {
+   async_event_ = rex::thread::Event::CreateAutoResetEvent(false);
+   assert_not_null(async_event_);
++  if (IoTrace()) IoTraceLine("open", path(), 0, 0, -1);
+ }
+ 
+ XFile::XFile() : XObject(kObjectType) {
+@@ -105,6 +138,15 @@ X_STATUS XFile::QueryDirectory(X_FILE_DIRECTORY_INFORMATION* out_info, size_t le
+ X_STATUS XFile::Read(uint32_t buffer_guest_address, uint32_t buffer_length, uint64_t byte_offset,
+                      uint32_t* out_bytes_read, uint32_t apc_context, bool notify_completion) {
+   std::lock_guard<std::mutex> lock(file_lock_);
++  if (IoTrace()) {
++    const uint64_t at = byte_offset == uint64_t(-1) ? position_ : byte_offset;
++    const auto t = std::chrono::steady_clock::now();
++    const X_STATUS r = ReadInternal(buffer_guest_address, buffer_length, byte_offset, out_bytes_read,
++                                    apc_context, notify_completion);
++    IoTraceLine("read", path(), at, buffer_length,
++                std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t).count());
++    return r;
++  }
+   return ReadInternal(buffer_guest_address, buffer_length, byte_offset, out_bytes_read, apc_context,
+                       notify_completion);
+ }
+diff --git a/cmake/rexglue_install.cmake b/cmake/rexglue_install.cmake
+index d9a64eb..ea3e70c 100644
+--- a/cmake/rexglue_install.cmake
++++ b/cmake/rexglue_install.cmake
+@@ -19,6 +19,9 @@ set(REXGLUE_INSTALL_TARGETS
+     aes128 mspack o1heap disasm xxhash
+     libavcodec libavutil
+ )
++if(WIN32)
++    list(APPEND REXGLUE_INSTALL_TARGETS rexffmpeg)
++endif()
+ 
+ if(REXGLUE_USE_VULKAN)
+     list(APPEND REXGLUE_INSTALL_TARGETS
+diff --git a/src/audio/CMakeLists.txt b/src/audio/CMakeLists.txt
+index d55f16a..d34e4a1 100644
+--- a/src/audio/CMakeLists.txt
++++ b/src/audio/CMakeLists.txt
+@@ -37,5 +37,9 @@ target_include_directories(rexaudio PUBLIC
+ 
+ target_link_libraries(rexaudio
+     PUBLIC rexcore SDL3::SDL3
+-    PRIVATE libavcodec libavutil
+ )
++if(WIN32)
++    target_link_libraries(rexaudio PRIVATE rexffmpeg)  # [svr2011] rexffmpeg.dll (LGPL)
++else()
++    target_link_libraries(rexaudio PRIVATE libavcodec libavutil)
++endif()
+diff --git a/src/audio/xma_context.cpp b/src/audio/xma_context.cpp
+index 11b83be..1f831a8 100644
+--- a/src/audio/xma_context.cpp
++++ b/src/audio/xma_context.cpp
+@@ -10,6 +10,8 @@
+ */
+ 
+ #include <algorithm>
++#include <atomic>
++#include <cstdlib>
+ #include <cstring>
+ 
+ #include <rex/audio/xma/context.h>
+@@ -82,6 +84,7 @@ int XmaContext::Setup(uint32_t id, memory::Memory* memory, uint32_t guest_ptr) {
+   av_context_->channels = 0;
+   av_context_->sample_rate = 0;
+ 
++  if (id == 0 && std::getenv("SVR2011_TEST_XMA_LOG")) REXAPU_INFO("xma setup: {}", av_codec_->name);
+   av_frame_ = av_frame_alloc();
+   if (!av_frame_) {
+     REXAPU_ERROR("XmaContext {}: Couldn't allocate frame", id);
+@@ -99,6 +102,12 @@ bool XmaContext::Work() {
+ 
+   std::lock_guard<std::mutex> lock(lock_);
+   set_is_enabled(false);
++  {
++    // [svr2011] Test aid (with the one in Decode): the game's work reaching the decoder at all.
++    static const bool xma_log = std::getenv("SVR2011_TEST_XMA_LOG") != nullptr;
++    static std::atomic<uint64_t> works{0};
++    if (xma_log && works.fetch_add(1) % 20000 == 0) REXAPU_INFO("xma work: {} calls", works.load());
++  }
+ 
+   auto context_ptr = memory()->TranslateVirtual(guest_ptr());
+   XMA_CONTEXT_DATA data(context_ptr);
+@@ -667,6 +676,28 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
+   }
+   PreparePacket(packet_info.current_frame_size_, padding_start);
+   const bool decoded = DecodePacket(av_context_, av_packet_, av_frame_);
++  {
++    // [svr2011] Test aid: muted tests can't hear the decoder - frames decoded, failed and with sound in them.
++    static const bool xma_log = std::getenv("SVR2011_TEST_XMA_LOG") != nullptr;
++    if (xma_log) {
++      static std::atomic<uint64_t> ok{0}, failed{0}, loud{0};
++      (decoded ? ok : failed).fetch_add(1);
++      if (decoded) {
++        // (planar float samples)
++        const float* s = reinterpret_cast<const float*>(av_frame_->data[0]);
++        for (int i = 0; s && i < av_frame_->nb_samples; ++i) {
++          if (s[i] > 0.001f || s[i] < -0.001f) {
++            loud.fetch_add(1);
++            break;
++          }
++        }
++      }
++      const uint64_t done = ok.load() + failed.load();
++      if (done % 2000 == 1) {
++        REXAPU_INFO("xma decode: {} frames, {} failed, {} with sound", ok.load(), failed.load(), loud.load());
++      }
++    }
++  }
+   if (decoded) {
+     ConvertFrame(reinterpret_cast<const uint8_t**>(&av_frame_->data), bool(data->is_stereo),
+                  decoded_frame_.data());
+diff --git a/thirdparty/CMakeLists.txt b/thirdparty/CMakeLists.txt
+index f102b56..9f26378 100644
+--- a/thirdparty/CMakeLists.txt
++++ b/thirdparty/CMakeLists.txt
+@@ -127,9 +127,20 @@ target_compile_options(aes128 PRIVATE -w)
+ # libmspack - LZX decompression (only lzxd.c needed for XEX decompression)
+ # Uses cabextract version which has all needed headers in one place
+ set(MSPACK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/libmspack/cabextract/mspack")
++if(WIN32)
++    # [svr2011] LGPL: in a DLL of its own that a player can replace (rexmspack.dll). Its C runtime is built in
++    # (the launcher's hybrid CRT), so it adds no VC++ runtime need to the Mod Maker's tools.
++    add_library(mspack SHARED
++        ${MSPACK_DIR}/lzxd.c
++        ${CMAKE_CURRENT_SOURCE_DIR}/lgpl-dlls/rexmspack.def
++    )
++    set_target_properties(mspack PROPERTIES OUTPUT_NAME rexmspack MSVC_RUNTIME_LIBRARY "MultiThreaded")
++    target_link_options(mspack PRIVATE -Wl,/NODEFAULTLIB:libucrt.lib -Wl,/DEFAULTLIB:ucrt.lib)
++else()
+ add_library(mspack STATIC
+     ${MSPACK_DIR}/lzxd.c
+ )
++endif()
+ target_include_directories(mspack PUBLIC
+     $<BUILD_INTERFACE:${MSPACK_DIR}>
+     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+@@ -702,3 +713,14 @@ set_target_properties(libavutil libavcodec PROPERTIES
+     C_VISIBILITY_PRESET hidden
+     VISIBILITY_INLINES_HIDDEN ON
+     FOLDER "FFmpeg")
++
++if(WIN32)
++    # [svr2011] LGPL: libavcodec + libavutil in a DLL of their own that a player can replace (rexffmpeg.dll). The
++    # runtime links this, not the static libraries; the export list says what it calls.
++    add_library(rexffmpeg SHARED
++        ${CMAKE_CURRENT_SOURCE_DIR}/lgpl-dlls/dll_stub.c
++        ${CMAKE_CURRENT_SOURCE_DIR}/lgpl-dlls/rexffmpeg.def
++    )
++    target_link_libraries(rexffmpeg PRIVATE libavcodec libavutil)
++    target_include_directories(rexffmpeg INTERFACE $<BUILD_INTERFACE:${FFMPEG_DIR}>)
++endif()
+diff --git a/thirdparty/lgpl-dlls/dll_stub.c b/thirdparty/lgpl-dlls/dll_stub.c
+new file mode 100644
+index 0000000..a342fba
+--- /dev/null
++++ b/thirdparty/lgpl-dlls/dll_stub.c
+@@ -0,0 +1,3 @@
++/* A DLL needs one source file of its own: everything else in rexffmpeg.dll comes out of the static libraries, pulled
++ * in by its export list. */
++int rexffmpeg_dll_stub;
+diff --git a/thirdparty/lgpl-dlls/rexffmpeg.def b/thirdparty/lgpl-dlls/rexffmpeg.def
+new file mode 100644
+index 0000000..7ef6626
+--- /dev/null
++++ b/thirdparty/lgpl-dlls/rexffmpeg.def
+@@ -0,0 +1,16 @@
++; FFmpeg's libavcodec and libavutil (LGPL 2.1 or later), a DLL of their own on Windows: what the XMA decoder calls.
++LIBRARY rexffmpeg
++EXPORTS
++    av_buffer_alloc
++    av_frame_alloc
++    av_frame_free
++    av_log_set_callback
++    av_packet_alloc
++    av_strerror
++    avcodec_alloc_context3
++    avcodec_find_decoder
++    avcodec_flush_buffers
++    avcodec_free_context
++    avcodec_open2
++    avcodec_receive_frame
++    avcodec_send_packet
+diff --git a/thirdparty/lgpl-dlls/rexmspack.def b/thirdparty/lgpl-dlls/rexmspack.def
+new file mode 100644
+index 0000000..1b48a20
+--- /dev/null
++++ b/thirdparty/lgpl-dlls/rexmspack.def
+@@ -0,0 +1,8 @@
++; libmspack's LZX decoder (LGPL 2.1), a DLL of its own on Windows: rexruntime, the Mod Maker and svrmod.exe use it.
++LIBRARY rexmspack
++EXPORTS
++    lzxd_init
++    lzxd_set_output_length
++    lzxd_set_reference_data
++    lzxd_decompress
++    lzxd_free

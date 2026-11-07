@@ -277,7 +277,7 @@ def build(stage, p78, out, tone=1.0, report=False, with_props=True, climb_remap=
                 # (additive layers - 'a', drawn plain translucent - at a quarter: street-light pools and
                 # Times Square's traffic-light glows covered the street in solid colour)
                 J = (hctp2jboy.convert(op, tmpl, tone=tone, double_sided=see_through,
-                                       alpha=0.25 if 'a' in fl.split() else 1.0) if op.meshes else None)
+                                       alpha=0.25 if 'a' in fl.split() else 1.0, both_below=30.0) if op.meshes else None)
                 if J:
                     parts.append(J)
                 if al is not None and al.meshes:

@@ -25,11 +25,16 @@ import svrfmt  # noqa: E402
 
 PAGE = 4096
 # Since 2.1.6 a full window takes the game's fallback memory (src/model_mem.cpp, the big-model memory): a wrestler's
-# model may take LIMIT pages (4 MB, about 70,000 vertices). Older games keep the window (OLD_LIMIT) and leave a bigger
-# model out (no crash): such a mod says needs=NEEDS_VERSION in its manifest.
+# model may take LIMIT pages (6.25 MB, about 130,000 vertices). Older games keep the window (OLD_LIMIT) and leave a
+# bigger model out (no crash): such a mod says needs=NEEDS_VERSION in its manifest.
+# Measured 27 Oct (src/caw_limits.h): six 1,489-page superstars in a 327k-vertex arena, 6-man, 60 fps at 1080p (about
+# 40 at 4x supersampling with 2x AA, GPU-bound).
 OLD_LIMIT = 192      # pages per wrestler before 2.1.6 (the window)
-LIMIT = 1024         # pages per wrestler (the game's ModelPageLimit, src/caw_limits.h)
-WARN = 980           # near the limit
+LIMIT = 1600         # pages per wrestler (the game's ModelPageLimit, src/caw_limits.h)
+WARN = 1530          # near the limit
+# One model part (body 0x0, hair 0x2710 ...) over 2,048 pages crashes the match's draw (sub_826E6AD0), whatever the
+# total. LIMIT is below it, so a model within LIMIT is within this too; checked all the same should LIMIT ever grow.
+PART_LIMIT = 1900
 NEEDS_VERSION = '2.1.6'   # (the first version with the big-model memory: one place to change it)
 
 
@@ -44,6 +49,11 @@ def needs(path):
     except Exception:   # noqa: BLE001
         return None
     return NEEDS_VERSION if worst > OLD_LIMIT else None
+
+
+def parts_over(parts):
+    """the parts over PART_LIMIT pages ({child: pages} as attire_pages gives)"""
+    return {k: p for k, p in parts.items() if p > PART_LIMIT}
 
 
 def mesh_pages(s):
@@ -92,8 +102,9 @@ def main(argv):
     res = []
     for f in files:
         for n, t, parts in model_pages(f):
-            state = 'over' if t > LIMIT else 'near' if t > WARN else 'needs ' + NEEDS_VERSION if t > OLD_LIMIT else 'ok'
-            res.append(dict(file=f, entry=n, pages=t, limit=LIMIT, state=state, parts=parts))
+            state = ('part over' if parts_over(parts) else 'over' if t > LIMIT else 'near' if t > WARN
+                     else 'needs ' + NEEDS_VERSION if t > OLD_LIMIT else 'ok')
+            res.append(dict(file=f, entry=n, pages=t, limit=LIMIT, part_limit=PART_LIMIT, state=state, parts=parts))
             if not as_json:
                 print('%s %s: %d of %d pages (%s) %s' % (os.path.basename(f), n, t, LIMIT, state, parts))
     if as_json:

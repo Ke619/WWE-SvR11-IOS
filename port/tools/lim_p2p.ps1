@@ -22,7 +22,7 @@ function Low([string]$slot) {
     try { (Get-Process -Id ((Get-Content (Join-Path $runs "lim_session$slot.json") | ConvertFrom-Json).pid)).PriorityClass = "BelowNormal" } catch {}
 }
 
-$srv = Start-Process $py -ArgumentList "`"$port\server\server.py`" --host 127.0.0.1 --port 8411 --data `"$runs\lim_srv\data`" --log `"$runs\lim_srv\server.log`"" -PassThru -WindowStyle Hidden
+$srv = Start-Process $py -ArgumentList "`"$port\server\server.py`" --test-open-accounts --host 127.0.0.1 --port 8411 --data `"$runs\lim_srv\data`" --log `"$runs\lim_srv\server.log`"" -PassThru -WindowStyle Hidden
 try { $srv.PriorityClass = "BelowNormal" } catch {}
 try {
     Start-Sleep 4

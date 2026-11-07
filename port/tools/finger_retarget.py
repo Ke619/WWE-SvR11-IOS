@@ -40,6 +40,7 @@ sys.path.insert(0, HERE)
 import numpy as np  # noqa: E402
 import ymks  # noqa: E402
 import yanm_decode as Y  # noqa: E402
+from w13_retarget import rotm, euler_zyx  # noqa: E402
 
 FIRST_EVENTS = bytes.fromhex('4005000000008900010000')    # (= hand_tracks.FIRST_EVENTS)
 STEP = 2 * math.pi / 256.0                                 # s8 unit: 256 * 2pi / 65536
@@ -128,23 +129,6 @@ def _track(m, nm):
     """m's track of a node (also when m was decoded before these names were registered: '#hash')"""
     tr = m['tracks'].get(nm)
     return tr if tr is not None else m['tracks'].get('#%08x' % Y.name_hash(nm))
-
-
-def rotm(r):
-    x, y, z = r
-    cx, sx, cy, sy, cz, sz = math.cos(x), math.sin(x), math.cos(y), math.sin(y), math.cos(z), math.sin(z)
-    return np.array([[cy * cz, sx * sy * cz - cx * sz, cx * sy * cz + sx * sz],
-                     [cy * sz, sx * sy * sz + cx * cz, cx * sy * sz - sx * cz],
-                     [-sy, sx * cy, cx * cy]])
-
-
-def euler_zyx(R):
-    """R = Rz Ry Rx -> (x, y, z)"""
-    sy = max(-1.0, min(1.0, -R[2, 0]))
-    y = math.asin(sy)
-    if abs(sy) < 0.99999:
-        return math.atan2(R[2, 1], R[2, 2]), y, math.atan2(R[1, 0], R[0, 0])
-    return 0.0, y, math.atan2(-R[0, 1], R[1, 1])
 
 
 def _s8(a):

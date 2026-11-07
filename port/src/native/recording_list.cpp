@@ -3,6 +3,8 @@
 
 #include "native/recording_list.h"
 
+#include "android_perf.h"
+
 #include <cstdlib>
 #include <cstring>
 #include <type_traits>
@@ -153,6 +155,7 @@ void RecordingList::Finish() {
 }
 
 void RecordingList::Worker() {
+  svr2011::PerfHintThread();  // (android_perf.h: in the phone's hint session with the frame's thread)
   uint64_t pos = 0, epoch = 0;
   while (true) {
     const uint64_t e = epoch_.load(std::memory_order_seq_cst);

@@ -49,6 +49,7 @@
 #include <rex/thread.h>
 
 #include "arena_mods.h"
+#include "cpu_difficulty.h"
 #include "frame_rate.h"
 #include "online_files.h"
 #include "online_net.h"
@@ -69,6 +70,8 @@ REXCVAR_DEFINE_STRING(p2p_peers, "", "Online",
                       "Addresses searched besides the LAN, comma-separated (host or host:port)");
 REXCVAR_DEFINE_BOOL(p2p_relay, true, "Online",
                     "Matches through the online server's relay when players can't connect directly");
+REXCVAR_DEFINE_BOOL(p2p_ipv6, true, "Online",
+                    "Also connect over IPv6 where both players have it: no router in the way, only its firewall (off: IPv4 only)");
 REXCVAR_DEFINE_STRING(p2p_stun, "stun.l.google.com:19302", "Online",
                       "The STUN server that tells this game its public address (off: none)");
 REXCVAR_DEFINE_BOOL(p2p_force_relay, false, "Online", "Tests: every peer through the relay, never directly");
@@ -94,16 +97,23 @@ constexpr uint32_t kContextGameType = 0x0000800A;  // X_CONTEXT_GAME_TYPE (ranke
 constexpr uint32_t kContextGameMode = 0x0000800B;  // X_CONTEXT_GAME_MODE
 // The port's session properties (0x1000F00x, XUSER type 1 ints the host's session carries to joiners):
 // 0x1000F001 PORT RULES (here), 0x1000F002 the WEAPONS page's set (weapons_page.cpp), 0x1000F003 mod weapons
-// (Arena Porting, planned), 0x1000F004 the match network (here).
+// (Arena Porting, planned), 0x1000F004 the match network (here), 0x1000F006 the CPU tab's settings (cpu_difficulty.cpp), 0x1000F005 the netcode (here; the Online Rollback
+// Netcode chat's modes read P2PNetcode).
 constexpr uint32_t kPortRules = 0x1000F001;        // the port's match rules (match_types: mode << 16 | set)
 constexpr uint32_t kNetMode = 0x1000F004;          // the host's match network (NetMode)
+constexpr uint32_t kNetcode = 0x1000F005;          // the host's netcode (0 lockstep, 1 rollback, 2 lockstep_vclock)
+// The game's own "downloadable content" property: the join check (online.cpp, sub_824CDE90) refuses a session
+// whose value isn't 113 - a constant of the game's session settings, the same in every copy of the port.
+constexpr uint32_t kDlcProperty = 0x1000000B, kDlcValue = 113;
 constexpr uint8_t kVersion = 1;
 enum : uint8_t {
   kSearch = 1, kSessions = 2, kQosRequest = 3, kQosReply = 4, kHello = 5, kData = 6,
   kFileRequest = 7, kFilePart = 8,  // (files peers fetch from each other: P2PFetch)
   kModsRefused = 9,                 // (a searcher's mods differ: its set, for the host's notice)
   kMods = 14,                       // (a lobby's superstar mods: online_mods.cpp)
-  kChat = 15                        // (lobby chat, whole: online_chat.cpp)
+  kChat = 15,                       // (lobby chat, whole: online_chat.cpp)
+  kModXfer = 16,                    // (mod files, one peer to another, direct links only: mod_transfer.cpp)
+  kCandidates = 17                  // (this game's addresses, to a player it's connecting to: Probe)
 };
 // Round trips to the peers a match exchanges game packets with (net_sim.h);
 // game packets with the last few repeated (a peer that pings takes them).
@@ -126,6 +136,7 @@ uint8_t* Guest(uint32_t address) { return g_memory->TranslateVirtual<uint8_t*>(a
 // addresses (10.64.0.0/16) and this PC (127.x) in full, a LAN address as
 // its network only (192.168.x.x), an internet address not at all.
 std::string Ip(uint32_t ip) {
+  if ((ip >> 24) == 0xF0) return "IPv6";  // (kV6Net)
   const auto part = [ip](int k) { return std::to_string((ip >> (24 - 8 * k)) & 255); };
   if ((ip & 0xFFFF0000) == kFakeNet || (ip >> 24) == 127) return part(0) + "." + part(1) + "." + part(2) + "." + part(3);
   const bool lan = (ip >> 24) == 10 || (ip >> 20) == 0xAC1 || (ip >> 16) == 0xC0A8 || (ip >> 16) == 0xA9FE;
@@ -181,7 +192,77 @@ sockaddr_in Sin(uint32_t ip, uint16_t port) {
   return to;
 }
 
+// IPv6: a far end's address is known everywhere by a number in 240.0.0.0/8 (reserved in IPv4: never a real address),
+// which this table turns back into the address when a packet goes out - peers, candidates and routes stay as they are.
+constexpr uint32_t kV6Net = 0xF0000000;
+using V6 = std::array<uint8_t, 16>;
+std::mutex g_v6_mutex;
+std::vector<V6> g_v6_table;
+Socket g_socket6 = kBadSocket;
+std::atomic<uint32_t> g_my_v6{0};  // (this game's address, as such a number; 0: none)
+bool g_v6_test = false;            // (test aid: an address of SVR2011_TEST_V6's, any kind)
+bool g_v6_real = false;            // (test aid: through the real socket, also behind the NAT box)
+bool IsV6(uint32_t ip) { return (ip >> 24) == (kV6Net >> 24); }
+uint32_t V6Number(const uint8_t* address) {
+  V6 a;
+  std::memcpy(a.data(), address, 16);
+  std::lock_guard lock(g_v6_mutex);
+  const auto it = std::find(g_v6_table.begin(), g_v6_table.end(), a);
+  if (it != g_v6_table.end()) return kV6Net | uint32_t(it - g_v6_table.begin() + 1);
+  if (g_v6_table.size() >= 4096) return 0;
+  g_v6_table.push_back(a);
+  return kV6Net | uint32_t(g_v6_table.size());
+}
+bool V6Of(uint32_t number, V6* out) {
+  std::lock_guard lock(g_v6_mutex);
+  const uint32_t k = number & 0xFFFFFF;
+  if (!k || k > g_v6_table.size()) return false;
+  *out = g_v6_table[k - 1];
+  return true;
+}
+// One place on the internet: global unicast, not a tunnel's (Teredo, 6to4) nor the documentation's.
+bool GlobalV6(const uint8_t* a) {
+  if ((a[0] & 0xE0) != 0x20) return false;
+  if (a[0] == 0x20 && a[1] == 0x01 && a[2] == 0 && a[3] == 0) return false;
+  if (a[0] == 0x20 && a[1] == 0x02) return false;
+  return !(a[0] == 0x20 && a[1] == 0x01 && a[2] == 0x0D && a[3] == 0xB8);
+}
+constexpr uint32_t kBoxV6 = 0xFFFFFFFE;  // (the NAT box: an IPv6 packet's wrapping starts so)
+
+// Test aid: SVR2011_TEST_NAT_BOX=<ip:port> - this game behind a simulated router (tools/dev/nat_box.py): everything
+// on the P2P socket goes to the box, wrapped with the real far end's address (6 bytes), and comes back the same way.
+uint32_t g_box_ip = 0;
+uint16_t g_box_port = 0;
+
 void SendOn(Socket s, uint32_t ip, uint16_t port, const uint8_t* data, size_t size) {
+  if (s == g_socket && IsV6(ip)) {
+    V6 a;
+    if (!V6Of(ip, &a)) return;
+    if (g_box_ip && !g_v6_real) {
+      std::vector<uint8_t> wrapped(22 + size);
+      Put32(wrapped.data(), kBoxV6), Put16(wrapped.data() + 4, port);
+      std::memcpy(wrapped.data() + 6, a.data(), 16);
+      std::memcpy(wrapped.data() + 22, data, size);
+      sockaddr_in box = Sin(g_box_ip, g_box_port);
+      sendto(s, reinterpret_cast<const char*>(wrapped.data()), int(wrapped.size()), 0, reinterpret_cast<sockaddr*>(&box), sizeof(box));
+      return;
+    }
+    if (g_socket6 == kBadSocket) return;
+    sockaddr_in6 to = {};
+    to.sin6_family = AF_INET6;
+    to.sin6_port = htons(port);
+    std::memcpy(&to.sin6_addr, a.data(), 16);
+    sendto(g_socket6, reinterpret_cast<const char*>(data), int(size), 0, reinterpret_cast<sockaddr*>(&to), sizeof(to));
+    return;
+  }
+  if (g_box_ip && s == g_socket) {
+    std::vector<uint8_t> wrapped(6 + size);
+    Put32(wrapped.data(), ip), Put16(wrapped.data() + 4, port);
+    std::memcpy(wrapped.data() + 6, data, size);
+    sockaddr_in box = Sin(g_box_ip, g_box_port);
+    sendto(s, reinterpret_cast<const char*>(wrapped.data()), int(wrapped.size()), 0, reinterpret_cast<sockaddr*>(&box), sizeof(box));
+    return;
+  }
   sockaddr_in to = Sin(ip, port);
   sendto(s, reinterpret_cast<const char*>(data), int(size), 0, reinterpret_cast<sockaddr*>(&to), sizeof(to));
 }
@@ -238,14 +319,36 @@ struct Me {
   uint64_t xuid = 0;
 } g_me;
 std::atomic<uint16_t> g_mapped_port{0};  // (the router forwards it: port_map.h; STUN's port doesn't replace it)
+std::atomic<uint32_t> g_mapped_ip{0};    // (the outside address that router claims; 0: it didn't say)
+std::atomic<uint32_t> g_stun_ip{0};      // (the outside address STUN saw)
+std::atomic<uint32_t> g_edge_ip{0};      // (the one the relay over UDP sees)
 // The P2P socket's port outside the NAT as two far ends see it: STUN's (Google)
 // and the UDP relay's (the VPS). Different: a symmetric NAT - a new port per
 // destination, so a peer's punch to the port the relay saw misses.
 std::atomic<uint16_t> g_stun_port{0}, g_edge_port{0};
+std::atomic<int64_t> g_stun_ms{0}, g_edge_ms{0};  // (when each came, NowMs: a port seen long ago proves nothing)
+
+// A router's mapping is the way in only if that router is the one on the internet: behind another router or a
+// carrier's NAT it claims a private outside address (or one STUN doesn't see), and the port it gave means nothing
+// out there. When it doesn't say, the port STUN saw tells.
+bool PublicIp(uint32_t ip) {
+  const uint8_t a = uint8_t(ip >> 24), b = uint8_t(ip >> 16);
+  return !(a == 10 || (a == 172 && b >= 16 && b < 32) || (a == 192 && b == 168) || (a == 100 && b >= 64 && b < 128) ||
+           (a == 169 && b == 254));
+}
+bool MappedUsable() {
+  const uint16_t port = g_mapped_port;
+  if (!port) return false;
+  const uint32_t claimed = g_mapped_ip, seen = g_stun_ip;
+  if (claimed) return PublicIp(claimed) && (!seen || seen == claimed);
+  const uint16_t stun = g_stun_port;
+  return !stun || stun == port;
+}
 
 // The match report (p2p_match_report): this match's paths, a second at a time.
 struct MatchReport {
   uint32_t seconds = 0, direct = 0, relay = 0, lan = 0;  // (peer-seconds per path)
+  uint32_t ipv6 = 0;                                     // (of direct's: over IPv6)
   double rtt_sum = 0;
   uint32_t rtt_n = 0;
   uint8_t network = 0;  // (the match network it played on: NetMode)
@@ -294,6 +397,28 @@ std::atomic<uint8_t> g_match_net{kNetAuto};   // (this match session's)
 const char* NetName(uint8_t m) { return m == kNetRelay ? "relay" : m == kNetP2P ? "p2p" : "auto"; }
 bool ForceRelay() { return REXCVAR_GET(p2p_force_relay) || g_match_net == kNetRelay; }
 bool NoRelayData() { return g_match_net == kNetP2P && !REXCVAR_GET(p2p_force_relay); }  // (p2p)
+// The netcode (the server's netcode setting, P2PSetServerNetcode): latched the same way - the host's in kNetcode,
+// joiners follow it, a host without it (an older game) or a value this game doesn't know: lockstep; outside a match
+// session, lockstep.
+constexpr uint8_t kNetcodeMax = 2;
+std::atomic<uint8_t> g_server_netcode{0};  // (the server's answer; lockstep when it can't be reached)
+std::atomic<uint8_t> g_match_netcode{0};   // (this match session's)
+const char* NetcodeName(uint8_t m) { return m == 1 ? "rollback" : m == 2 ? "lockstep_vclock" : "lockstep"; }
+
+// The addresses a player may be reached at, and which of them answered: every one is tried at once (Probe), and the
+// fastest that answers carries the game (Nominate).
+enum CandidateKind : uint8_t { kCandLan = 1, kCandMapped = 2, kCandStun = 3, kCandEdge = 4, kCandHeard = 5, kCandBase = 6, kCandV6 = 7 };
+const char* CandidateName(uint8_t k) {
+  return k == kCandLan ? "LAN" : k == kCandMapped ? "router mapping" : k == kCandStun ? "STUN" : k == kCandEdge ? "relay's view"
+       : k == kCandHeard ? "heard from" : k == kCandV6 ? "IPv6" : "port base";
+}
+struct Candidate {
+  uint32_t ip = 0;
+  uint16_t port = 0;
+  uint8_t kind = 0;
+  Clock::time_point ok{};  // (a ping to it came back from it)
+  float rtt = 0;           // (ms, smoothed)
+};
 
 struct Peer {
   XnAddr xnaddr{};
@@ -309,12 +434,59 @@ struct Peer {
   uint16_t seen_port = 0;
   bool data_v2 = false;                // it pings: it takes kDataV2
   Clock::time_point direct_ok{};       // (v2) a direct ping last came back directly
+  Clock::time_point direct_pong{};     // (v2) the same, without the "fresh start": direct is proven only by this
+  std::vector<Candidate> candidates;   // its addresses: below
+  Clock::time_point probing_from{};    // when both started trying them (none: not connecting to it)
+  Clock::time_point probed{};          // the last round of tries
+  Clock::time_point candidates_sent{}; // this game's list last sent to it
+  uint32_t logged_ip = 0;              // (the direct path last logged)
+  uint16_t logged_port = 0;
   float rtt_direct = 0, rtt_relay = 0;  // (v2) each path's round trip, smoothed (ms; 0 not measured)
   Clock::time_point relay_ok{};        // (v2) a relayed ping last came back
   std::map<std::pair<uint16_t, uint16_t>, uint32_t> delivered;  // (v2: last sequence passed on, by to / from port)
   Clock::time_point game_traffic{};    // game packets last passed either way (a session together)
   Clock::time_point pinged{};          // last pinged (the ping loop skips peers of earlier sessions)
 };
+
+Candidate* FindCandidate(Peer& p, uint32_t ip, uint16_t port) {
+  for (Candidate& c : p.candidates)
+    if (c.ip == ip && c.port == port) return &c;
+  return nullptr;
+}
+void AddCandidate(Peer& p, uint32_t ip, uint16_t port, uint8_t kind) {
+  if (!ip || !port) return;
+  if (Candidate* known = FindCandidate(p, ip, port)) {
+    if (known->kind == kCandHeard) known->kind = kind;  // (now it's known what that address is)
+    return;
+  }
+  if (p.candidates.size() >= 16) {  // (an address it had long ago makes way)
+    const auto dead = std::find_if(p.candidates.begin(), p.candidates.end(), [](const Candidate& c) { return c.ok == Clock::time_point{}; });
+    if (dead == p.candidates.end()) return;
+    p.candidates.erase(dead);
+  }
+  p.candidates.push_back({ip, port, kind});
+}
+// The path that carries the game: the fastest address answering now - the LAN's first on anything like a tie (the same
+// house: not out to the router and back). The one in use stays unless another is clearly faster (10 ms) or it stopped
+// answering. Caller holds g_mutex.
+bool RouteProven(Peer& p, Clock::time_point now) {
+  const Candidate* c = FindCandidate(p, p.route, p.route_port);
+  return c && now - c->ok < std::chrono::seconds(3);
+}
+void Nominate(Peer& p, Clock::time_point now) {
+  const auto cost = [](const Candidate& c) { return c.rtt - (c.kind == kCandLan ? 20.0f : 0.0f); };
+  const Candidate* best = nullptr;
+  for (const Candidate& c : p.candidates)
+    if (now - c.ok < std::chrono::seconds(3) && (!best || cost(c) < cost(*best))) best = &c;
+  if (!best) return;
+  if (!RouteProven(p, now) || cost(*best) + 10 < cost(*FindCandidate(p, p.route, p.route_port)))
+    p.route = best->ip, p.route_port = best->port;
+  if (p.route != p.logged_ip || p.route_port != p.logged_port) {
+    p.logged_ip = p.route, p.logged_port = p.route_port;
+    const Candidate* c = FindCandidate(p, p.route, p.route_port);
+    REXLOG_INFO("p2p: peer {} direct path: {} {}:{} ({:.0f} ms)", Ip(p.fake), CandidateName(c->kind), Ip(p.route), p.route_port, c->rtt);
+  }
+}
 
 std::mutex g_mutex;
 std::map<Mac, Peer> g_peers;
@@ -325,6 +497,12 @@ Mac MacOf(const uint8_t* xnaddr) {
   Mac m;
   std::memcpy(m.data(), xnaddr + 10, 6);
   return m;
+}
+// (a peer as the other modules know it: its MAC in a number)
+uint64_t PeerId(const Mac& m) {
+  uint64_t v = 0;
+  for (uint8_t b : m) v = v << 8 | b;
+  return v;
 }
 
 // The way to a peer not heard from yet: this PC, its LAN address (same network) or its public one.
@@ -356,6 +534,8 @@ Peer& Learn(const uint8_t* xnaddr, Via via = {}) {
     p.fake = fake;
     g_fake[fake] = mac;
     p.route = RouteTo(xnaddr), p.route_port = p.base;
+    // (outside its router: the port it reported, not its base - most routers change it)
+    if (const uint16_t port = Be16(xnaddr + 24); port && p.route == Be32(xnaddr + 4)) p.route_port = port;
     // A player not on this PC: its game packets go through the tunnel (this
     // game's P2P port, the one its router lets through or the relay reaches)
     // from the start, and through the relay until something comes directly.
@@ -377,7 +557,9 @@ Peer& Learn(const uint8_t* xnaddr, Via via = {}) {
     if (via.relayed) p.seen_ip = via.ip, p.seen_port = via.port;
     if (!via.relayed && via.ip) {
       const uint32_t from = via.ip == 0x7F000001 ? Be32(xnaddr) : via.ip;
-      p.route = from, p.route_port = via.port, p.direct = now;
+      AddCandidate(p, from, via.port, kCandHeard);
+      if (!RouteProven(p, now)) p.route = from, p.route_port = via.port;  // (else: Nominate; a NAT may move it: then this)
+      p.direct = now;
       if (from != Be32(xnaddr) && from != g_me.lan && !p.tunnel) {
         p.tunnel = true;  // (through a NAT: its game ports are not reachable, only this one)
         REXLOG_INFO("p2p: peer {} is outside this network ({}:{})", Ip(p.fake), Ip(from), via.port);
@@ -677,6 +859,7 @@ std::map<uint64_t, Session> g_found;          // the last search's sessions
 // its private slots open to this game (as the console's invites let in).
 uint64_t g_invited = 0;
 std::atomic<P2PModHandler> g_mod_handler{nullptr};
+std::atomic<P2PModXferHandler> g_mod_xfer_handler{nullptr};
 std::atomic<P2PChatHandler> g_chat_handler{nullptr};
 Clock::time_point g_invited_at{};
 
@@ -708,6 +891,34 @@ void WriteSession(Writer& w, const Session& s) {
   }
 }
 
+// A match session (flags 0x20) always carries kDlcProperty = 113: a host's game without it (its settings or
+// properties lost it - 2.1.8 report 38981a advertised 0) made every joiner's game refuse it with "you must have the
+// same downloadable content" (the port's real differences - version, mods - have their own checks). For the host's
+// session and for each found one (older hosts). Logged when changed.
+// Test aids: SVR2011_TEST_DLC_PROPERTY=<n> - this game hosts with that value instead (an older host);
+// SVR2011_TEST_DLC_KEEP=1 - this game leaves found sessions' value as it is (the game before the fix).
+void CarryDlcProperty(Session& s, const char* who, bool host) {
+  if (!(s.flags & 0x20)) return;
+  if (!host && std::getenv("SVR2011_TEST_DLC_KEEP")) return;
+  if (const char* t = std::getenv("SVR2011_TEST_DLC_PROPERTY"); host && t && *t) {
+    s.properties.erase(std::remove_if(s.properties.begin(), s.properties.end(),
+                                      [](const Property& q) { return q.id == kDlcProperty; }),
+                       s.properties.end());
+    const uint32_t v = uint32_t(std::strtoul(t, nullptr, 10));
+    s.properties.push_back(Property{kDlcProperty, 1, {uint8_t(v >> 24), uint8_t(v >> 16), uint8_t(v >> 8), uint8_t(v)}});
+    REXLOG_INFO("p2p: test - session {:016X} hosted with DLC property {}", s.id, v);
+    return;
+  }
+  auto p = std::find_if(s.properties.begin(), s.properties.end(), [](const Property& q) { return q.id == kDlcProperty; });
+  const bool had = p != s.properties.end();
+  const uint32_t value = had && p->value.size() >= 4 ? Be32(p->value.data()) : 0;
+  if (had && p->value.size() == 4 && value == kDlcValue) return;
+  REXLOG_INFO("p2p: session {:016X}'s DLC property was {} - {} carries {}", s.id,
+              had ? fmt::format("{}", value) : std::string("missing"), who, kDlcValue);
+  if (had) s.properties.erase(p);
+  s.properties.push_back(Property{kDlcProperty, 1, {0, 0, 0, uint8_t(kDlcValue)}});
+}
+
 bool ReadSession(Reader& r, Session& s) {
   s.id = r.u64();
   r.bytes(s.host.data(), 36);
@@ -728,6 +939,7 @@ bool ReadSession(Reader& r, Session& s) {
     r.at += len;
     s.properties.push_back(std::move(p));
   }
+  if (r.ok) CarryDlcProperty(s, "this game", false);
   return r.ok && s.id && s.public_slots + s.private_slots <= 32;
 }
 
@@ -739,6 +951,10 @@ bool ReadSession(Reader& r, Session& s) {
 // online.cpp's strings). The host only logs it.
 constexpr uint32_t kModsTag = 0x4D4F4453;  // "MODS"
 constexpr size_t kModsMax = 6000;           // (the set's text, at most)
+// After the version, the DLC packages with game files (online_files.h DlcSet - with mods off online too: the
+// DLC is the game's own): "DLCS", the set's text. A reply without it (a game from before) isn't refused for it.
+constexpr uint32_t kDlcTag = 0x444C4353;  // "DLCS"
+constexpr size_t kDlcMax = 1000;
 
 void WriteMods(Writer& w) {
   const std::string& set = svr2011::GameplayModSet();
@@ -748,6 +964,10 @@ void WriteMods(Writer& w) {
   const std::string& v = svr2011::PortVersion();  // (then the version)
   w.u8(uint8_t(std::min<size_t>(v.size(), 32)));
   w.bytes(reinterpret_cast<const uint8_t*>(v.data()), std::min<size_t>(v.size(), 32));
+  const std::string& dlc = svr2011::DlcSet();
+  const size_t dn = std::min(dlc.size(), kDlcMax);
+  w.u32(kDlcTag), w.u16(uint16_t(dn));
+  w.bytes(reinterpret_cast<const uint8_t*>(dlc.data()), dn);
 }
 
 // Why this game can't play the other side's (its version, then its mods;
@@ -765,6 +985,15 @@ std::string Mismatch(Reader& r) {
     if (r.need(vn)) version.assign(reinterpret_cast<const char*>(r.p + r.at), vn), r.at += vn;
   }
   if (std::string why = svr2011::VersionDifference(version); !why.empty()) return why;
+  if (r.at + 6 <= r.n && Be32(r.p + r.at) == kDlcTag) {
+    r.u32();
+    const uint16_t dn = r.u16();
+    if (r.need(dn)) {
+      const std::string dlc(reinterpret_cast<const char*>(r.p + r.at), dn);
+      r.at += dn;
+      if (std::string why = svr2011::DlcDifference(svr2011::DlcSet(), dlc); !why.empty()) return why;
+    }
+  }
   // (superstar and arena mods are checked in the lobby - per pick, per
   // session: online_mods.h - the others here)
   return svr2011::ModSetDifference(svr2011::GameplayModSet(), set, false);
@@ -803,25 +1032,169 @@ uint32_t NewNonce() {
   return ++next;
 }
 
-// A relayed peer: try its own address too now and then (both NATs letting
-// the other in: direct from then on).
+// A far-off peer with no direct round trip yet: its addresses, every second (from PingLoop, and whenever it's heard
+// through the relay), until one answers - both routers letting the other in: direct from then on. Not only while
+// relayed: on match network p2p nothing comes through the relay after the join, and a first try that was lost was
+// the last.
 void Punch(const Mac& mac) {
   std::vector<std::pair<uint32_t, uint16_t>> to;
   {
     std::lock_guard lock(g_mutex);
     auto it = g_peers.find(mac);
-    if (it == g_peers.end() || (!it->second.relayed && !NoRelayData()) || ForceRelay()) return;  // (p2p: every peer)
+    if (it == g_peers.end() || !it->second.tunnel || ForceRelay()) return;
     Peer& p = it->second;
+    if (p.probing_from != Clock::time_point{}) return;  // (Probe's)
     const auto now = Clock::now();
-    if (now - p.punched < std::chrono::seconds(2)) return;
+    if (now - (p.data_v2 ? p.direct_pong : p.direct) < std::chrono::seconds(3)) return;  // (direct works)
+    if (now - p.punched < std::chrono::seconds(1)) return;
     p.punched = now;
-    if (p.seen_ip && p.seen_port) to.emplace_back(p.seen_ip, p.seen_port);
-    const uint32_t online = Be32(p.xnaddr.data() + 4);
-    if (const uint16_t port = Be16(p.xnaddr.data() + 24); online && port && port != p.seen_port) to.emplace_back(online, port);
-    if (online) to.emplace_back(online, p.base);
+    const auto add = [&to](uint32_t ip, uint16_t port) {
+      if (ip && port && std::find(to.begin(), to.end(), std::make_pair(ip, port)) == to.end()) to.emplace_back(ip, port);
+    };
+    const uint32_t online = Be32(p.xnaddr.data() + 4), lan = Be32(p.xnaddr.data());
+    add(p.seen_ip, p.seen_port);
+    add(online, Be16(p.xnaddr.data() + 24));
+    add(online, p.base);
+    // (the same public address: the same network, or strangers behind one carrier's NAT - its LAN address or, if the
+    // router turns packets back in, its public one; both tried)
+    if (online == g_me.online) add(lan, p.base);
   }
   const auto hello = Header(kHello, NewNonce() | 1);
   for (const auto& [ip, port] : to) SendTo(ip, port, hello);
+}
+
+// -- connecting to a player: every address at once, from both sides ---------------------
+//
+// A player this game is connecting to (joining its session, or it joining this one's, or one the game plays with) gets
+// this game's addresses through the relay (kCandidates: LAN, the router's mapping, what STUN and the relay over UDP
+// saw), and sends its own back. The list reaching a game is the "start": both then ping every address - fast at first,
+// so the two sides' first packets, each opening its own router for the other's, overlap whatever the relay's delay -
+// until one answers; the fastest answering carries the game (Nominate). Pings keep the chosen path's mappings open.
+// Only for players in a session with this game: a list from anyone else is ignored, so no stranger on the relay can
+// have this game send packets at an address it picks.
+// IPv6 is one more address on the list: no NAT, but most routers' firewalls only let in what answers something sent
+// out - the same both-sides-at-once start gets through them. It goes only to the players in the session (a temporary
+// address where the system has one: it picks that for a new connection).
+void BeginProbing(Peer& p, Clock::time_point now) {
+  if (p.probing_from == Clock::time_point{}) p.probing_from = now, p.probed = {};
+}
+
+std::vector<Candidate> MyCandidates() {
+  std::vector<Candidate> out;
+  const auto add = [&out](uint32_t ip, uint16_t port, uint8_t kind) {
+    if (ip && port && std::none_of(out.begin(), out.end(), [&](const Candidate& c) { return c.ip == ip && c.port == port; }))
+      out.push_back({ip, port, kind});
+  };
+  add(g_me.lan, g_me.base, kCandLan);
+  if (MappedUsable()) add(g_me.online, g_mapped_port, kCandMapped);
+  const int64_t now = NowMs();
+  if (now - g_stun_ms < 90000) add(g_stun_ip, g_stun_port, kCandStun);
+  if (now - g_edge_ms < 30000) add(g_edge_ip, g_edge_port, kCandEdge);
+  add(g_my_v6, g_me.base, kCandV6);
+  return out;
+}
+
+void SendCandidates(const Path& path) {
+  const std::vector<Candidate> mine = MyCandidates();
+  Writer w;
+  w.b = Header(kCandidates, NewNonce());
+  w.u8(uint8_t(mine.size()));
+  for (const Candidate& c : mine) {  // (kind, family, address, port)
+    w.u8(c.kind), w.u8(IsV6(c.ip) ? 6 : 4);
+    if (V6 a; IsV6(c.ip) && V6Of(c.ip, &a)) w.bytes(a.data(), 16);
+    else w.u32(c.ip);
+    w.u16(c.port);
+  }
+  ToRelay(path.mac, w.b.data(), w.b.size());
+  if (!path.relayed) SendOn(g_socket, path.ip, path.port, w.b.data(), w.b.size());  // (no relay: a LAN, p2p_peers)
+}
+
+// A list that came (through Learn's lock already released).
+void OnCandidates(const Mac& mac, Reader& r) {
+  Path back;
+  bool answer = false;
+  {
+    std::lock_guard lock(g_mutex);
+    const auto it = g_peers.find(mac);
+    if (it == g_peers.end() || ForceRelay()) return;
+    Peer& p = it->second;
+    const bool in_session = std::any_of(g_sessions.begin(), g_sessions.end(), [](const auto& l) { return (l.second.session.flags & 0x20) != 0; });
+    if (!in_session && p.probing_from == Clock::time_point{}) return;  // (a stranger's)
+    const uint8_t n = r.u8();
+    for (uint8_t k = 0; k < n && k < 12 && r.ok; ++k) {
+      const uint8_t kind = r.u8(), family = r.u8();
+      if (family == 6) {
+        V6 a;
+        r.bytes(a.data(), 16);
+        const uint16_t port = r.u16();
+        // (only where this game has IPv6 itself)
+        if (r.ok && g_my_v6 && (g_v6_test || GlobalV6(a.data()))) AddCandidate(p, V6Number(a.data()), port, kind);
+        continue;
+      }
+      if (family != 4) break;  // (a kind this version doesn't know: the rest unread)
+      const uint32_t ip = r.u32();
+      const uint16_t port = r.u16();
+      const uint8_t top = uint8_t(ip >> 24);
+      // (nothing that isn't one place: broadcast, multicast, loopback - a test's NAT box has its "public" addresses there)
+      if (!r.ok || top >= 224 || top == 0 || (top == 127 && !g_box_ip)) continue;
+      AddCandidate(p, ip, port, kind);
+    }
+    const auto now = Clock::now();
+    BeginProbing(p, now);
+    if (now - p.candidates_sent >= std::chrono::seconds(2)) {
+      p.candidates_sent = now;
+      answer = true;
+      back = PathOf(mac, p);
+    }
+  }
+  if (answer) SendCandidates(back);
+}
+
+// A ping: this game's time, then its player's name (for the peers' lobby ping list; older games stop reading before it).
+std::vector<uint8_t> PingPacket() {
+  Writer w;
+  w.b = Header(kPing, NewNonce());
+  w.u64(NowUs());
+  const std::string name = rex::cvar::Query<std::string>("online_name").substr(0, 32);
+  w.u8(uint8_t(name.size())), w.bytes(reinterpret_cast<const uint8_t*>(name.data()), name.size());
+  return w.b;
+}
+
+void ProbeLoop() {
+  rex::thread::set_current_thread_name("p2p probe");
+  using namespace std::chrono_literals;
+  for (;;) {
+    std::this_thread::sleep_for(50ms);
+    const auto now = Clock::now();
+    std::vector<std::pair<uint32_t, uint16_t>> to;
+    {
+      std::lock_guard lock(g_mutex);
+      for (auto& [mac, p] : g_peers) {
+        if (p.probing_from == Clock::time_point{} || !p.tunnel || ForceRelay()) continue;
+        if (now - std::max(p.probing_from, p.game_traffic) > 30s) {  // (not playing with it any more)
+          p.probing_from = {};
+          continue;
+        }
+        const auto age = now - p.probing_from;
+        // (direct works; the first seconds go on: a faster address may answer too)
+        if (now - p.direct_pong < 3s && age >= 3s) continue;
+        if (now - p.probed < (age < 5s ? 100ms : age < 10s ? 250ms : 1000ms)) continue;
+        p.probed = now;
+        const uint32_t online = Be32(p.xnaddr.data() + 4), lan = Be32(p.xnaddr.data());
+        AddCandidate(p, p.seen_ip, p.seen_port, kCandEdge);
+        AddCandidate(p, online, Be16(p.xnaddr.data() + 24), kCandStun);
+        AddCandidate(p, online, p.base, kCandBase);
+        AddCandidate(p, lan, p.base, kCandLan);
+        for (const Candidate& c : p.candidates) to.emplace_back(c.ip, c.port);
+      }
+    }
+    if (to.empty()) continue;
+    for (const auto& [ip, port] : to) {
+      Path path;
+      path.ip = ip, path.port = port;
+      NetSimSend([path, b = PingPacket()] { Send(path, b); });
+    }
+  }
 }
 
 // A peer's game packet: to this game's port `to`, from its port `from`.
@@ -889,12 +1262,39 @@ void OnDataV2(const uint8_t* data, size_t size, Via via) {
     fake = p.fake;
     p.game_traffic = Clock::now();
     uint32_t& last = p.delivered[{to, from}];
-    // (a peer that started over - a new match, a restarted game - begins at 1 again)
-    if (seq + 64 < last) last = 0;
+    // (a peer that started over - a new match, a restarted game - begins at 1 again: far behind, or a stream's
+    // very first packets behind a short old one - RESTART AND REJOIN's new copy, whose join packets were dropped
+    // as already seen while the old copy's stream had fewer than 64)
+    const uint32_t was = last;
+    // (a stream's very start again: the peer's game restarted - its old proxy goes, so this game's game sees a new
+    // address: through the old one its new join was taken for the old connection and never answered)
+    const bool restarted = seq <= kRepeat + 1 && seq < last;
+    if (seq + 64 < last || restarted) last = 0;
     for (auto e = got.rbegin(); e != got.rend(); ++e) {
       if (e->first > last) deliver.push_back(e->second), last = e->first;
     }
+    if (restarted)
+      if (auto old = g_proxies.find({mac, from}); old != g_proxies.end()) {
+        Proxy* dead = old->second;
+        g_proxy_ports.erase(dead->local);
+        g_proxies.erase(old);
+        dead->dead = true;
+#if defined(_WIN32)
+        CloseSocket(dead->s);  // (its recvfrom returns: its thread deletes it)
+#else
+        shutdown(dead->s, SHUT_RDWR);
+#endif
+        REXLOG_INFO("p2p: a peer's game started over (port {}): a new proxy for it", from);
+      }
     Proxy* proxy = ProxyFor(mac, from);
+    // Test aid: SVR2011_TEST_P2P_DATA_LOG=<n> - the first n game packets in of which nothing got through: their
+    // stream, sequence, the last one passed on before
+    static int data_log = [] { const char* v = std::getenv("SVR2011_TEST_P2P_DATA_LOG"); return v ? std::atoi(v) : 0; }();
+    if (data_log > 0 && (deliver.empty() || !proxy)) {
+      --data_log;
+      REXLOG_INFO("p2p: data in {}->{} seq {} ({} in it), last was {}, {} passed on{}", from, to, seq, got.size(), was,
+                  deliver.size(), proxy ? "" : " - no proxy");
+    }
     if (!proxy) return;
     proxy->used_ms = NowMs();
     s = proxy->s;
@@ -909,10 +1309,13 @@ void OnDataV2(const uint8_t* data, size_t size, Via via) {
 // The router's kind, from the ports the two far ends saw (g_stun_port /
 // g_edge_port) - and the step between them for a symmetric one.
 std::pair<const char*, int> NatKind() {
-  if (g_mapped_port) return {"mapped", 0};  // (UPnP / NAT-PMP opened the port: port_map.h)
+  if (MappedUsable()) return {"mapped", 0};  // (UPnP / NAT-PMP opened the port: port_map.h)
   if (g_me.online && g_me.online == g_me.lan) return {"open", 0};
   const uint16_t stun = g_stun_port, edge = g_edge_port;
-  if (!stun || !edge) return {"unknown", 0};
+  // (both seen lately, the mapping kept open between them: an old STUN answer from before the router dropped the
+  // mapping differs on any router that picks a new port, and read as "symmetric")
+  const int64_t now = NowMs();
+  if (!stun || !edge || now - g_stun_ms > 90000 || now - g_edge_ms > 30000) return {"unknown", 0};
   if (stun == edge) return {"cone", 0};
   return {"symmetric", int(edge) - int(stun)};
 }
@@ -930,10 +1333,14 @@ void SendMatchReport(const MatchReport& r) {
   std::string version;
   for (const char c : PortVersion())
     if (std::isalnum(static_cast<unsigned char>(c)) || c == '.' || c == '-') version.push_back(c);
-  const std::string body = fmt::format(R"({{"version":"{}","path":"{}","nat":"{}","step":{},"rtt":{},"network":"{}"}})",
-                                       version.substr(0, 24), path, nat, step, rtt, NetName(r.network));
-  REXLOG_INFO("p2p: match report {} ({} s; peer-seconds direct {}, relay {}, LAN {})", body, r.seconds, r.direct,
-              r.relay, r.lan);
+  // (IPv6: a field of its own beside path "direct": a server before 2.2.0 ignores it and counts a direct match, where
+  // a path value it doesn't know would be refused)
+  const bool ipv6 = !std::strcmp(path, "direct") && r.ipv6 * 2 > r.direct;
+  const std::string body = fmt::format(R"({{"version":"{}","path":"{}",{}"nat":"{}","step":{},"rtt":{},"network":"{}"}})",
+                                       version.substr(0, 24), path, ipv6 ? "\"ipv6\":true," : "", nat, step, rtt,
+                                       NetName(r.network));
+  REXLOG_INFO("p2p: match report {} ({} s; peer-seconds direct {} (IPv6 {}), relay {}, LAN {})", body, r.seconds, r.direct,
+              r.ipv6, r.relay, r.lan);
   std::thread([body] {
     net::ServerRequest("POST", "/api/netreport", body, {{"Content-Type", "application/json"}});
   }).detach();
@@ -946,18 +1353,19 @@ constexpr auto kPingAfterGame = std::chrono::seconds(15);  // (pings this long a
 // The relay warning (online_overlay.cpp: P2PRelayPath): this match session's way to the far-off players,
 // decided in its lobby - 8 s of game traffic with them, never during the match. Relayed because direct
 // failed (no direct round trip), or by the server / the test switch; not when the relay was only faster.
-// Once relayed it stays so for the session (the warning: once). Caller holds g_mutex.
+// Relayed only after 5 s without a direct round trip, direct again as soon as one comes back (the warning: once a
+// session). Caller holds g_mutex.
 std::atomic<uint8_t> g_relay_path{0};  // (P2PRelayPathInfo::kind)
 std::atomic<uint64_t> g_relay_session{0};
 
 void RelayCheck(const std::set<Mac>& gamers, bool in_match) {
   static uint64_t session = 0;
-  static Clock::time_point since{};
+  static Clock::time_point since{}, failing{};
   uint64_t sid = 0;
   for (const auto& [obj, local] : g_sessions)
     if (local.session.flags & 0x20) sid = local.session.id;
-  if (sid != session) session = sid, since = {}, g_relay_path = 0, g_relay_session = sid;
-  if (!sid || in_match || g_relay_path >= 2) return;
+  if (sid != session) session = sid, since = {}, failing = {}, g_relay_path = 0, g_relay_session = sid;
+  if (!sid || in_match) return;
   const auto now = Clock::now();
   int remote = 0;
   bool failed = false;
@@ -967,15 +1375,18 @@ void RelayCheck(const std::set<Mac>& gamers, bool in_match) {
     const Peer& p = it->second;
     if (!p.tunnel || now - p.game_traffic > std::chrono::seconds(5)) continue;
     ++remote;
-    if (p.relayed && (!p.data_v2 || now - p.direct_ok >= std::chrono::seconds(3))) failed = true;
+    if (p.relayed && (!p.data_v2 || now - p.direct_pong >= std::chrono::seconds(3))) failed = true;
   }
   if (!remote) {
     since = {};
     return;
   }
   if (since == Clock::time_point{}) since = now;
+  if (!failed) failing = {};
+  else if (failing == Clock::time_point{}) failing = now;
   if (now - since < std::chrono::seconds(8)) return;
-  const uint8_t path = ForceRelay() ? 3 : failed ? 2 : 1;
+  const uint8_t path = ForceRelay() ? 3 : failed && now - failing >= std::chrono::seconds(5) ? 2 : failed ? g_relay_path.load() : 1;
+  if (!path) return;
   if (g_relay_path.exchange(path) != path)
     REXLOG_INFO("p2p: session {:016X} plays {} ({} far-off player{}, this router: {})", sid,
                 path == 3 ? "through the relay (set so)" : path == 2 ? "through the relay (direct failed)" : "direct",
@@ -987,7 +1398,8 @@ void PingLoop() {
   for (int tick = 1;; ++tick) {
     std::this_thread::sleep_for(std::chrono::seconds(1));
     if (tick % 10 == 0) FreeIdleProxies();
-    std::vector<Path> to;
+    std::vector<Path> to, send_list;
+    std::vector<Mac> punch;
     const bool in_match = NetStatsNow().active;
     {
       std::lock_guard lock(g_mutex);
@@ -1002,6 +1414,7 @@ void PingLoop() {
           if (it == g_peers.end()) continue;
           const Peer& p = it->second;
           ++(!p.tunnel ? g_report.lan : p.relayed ? g_report.relay : g_report.direct);
+          if (p.tunnel && !p.relayed && IsV6(p.route)) ++g_report.ipv6;
           if (const float rtt = p.relayed ? p.rtt_relay : p.rtt_direct; rtt > 0) g_report.rtt_sum += rtt, ++g_report.rtt_n;
         }
       }
@@ -1018,25 +1431,27 @@ void PingLoop() {
         p.pinged = now;
         Path direct = PathOf(mac, p);
         direct.relayed = false;
-        // A pinging peer's path, checked every second: the relay when no direct
-        // ping came back in the last 3 s, or when it is clearly faster (15 ms;
-        // a far-off pair's internet route can be worse than the relay's);
-        // direct again once direct is within 5 ms of it.
+        // A pinging peer's path, checked every second: direct whenever a direct ping came back in the last 3 s, the
+        // relay only when none did. (Never for being faster: it adds its own detour, and a direct path that works is
+        // what the players want. Not the "fresh start" either: a new lobby's first seconds went direct with nothing
+        // proven, into the void for a pair whose direct fails.)
         if (p.data_v2 && !ForceRelay()) {
-          const bool ok = now - p.direct_ok < std::chrono::seconds(3);
-          const bool relay_ok = g_relay_up && p.tunnel && now - p.relay_ok < std::chrono::seconds(3);
-          bool relay = !ok && g_relay_up && p.tunnel && !NoRelayData();
-          const char* why = relay ? "no direct round trip for 3 s" : "a direct round trip";
-          if (ok && relay_ok && p.rtt_direct > 0 && p.rtt_relay > 0 && !NoRelayData()) {
-            if (!p.relayed && p.rtt_relay + 15 < p.rtt_direct) relay = true, why = "faster";
-            else if (p.relayed && p.rtt_direct > p.rtt_relay + 5) relay = true;
-            else if (p.relayed) why = "as fast";
-          }
+          const bool ok = now - p.direct_pong < std::chrono::seconds(3);
+          const bool relay = !ok && g_relay_up && p.tunnel && !NoRelayData();
+          const char* why = relay ? "no direct round trip for 3 s" : ok ? "a direct round trip" : "no relay";
           if (relay != p.relayed) {
             p.relayed = relay;
             REXLOG_INFO("p2p: peer {} {} ({}; round trips direct {:.0f} ms, relay {:.0f} ms)", Ip(p.fake),
                         relay ? "through the relay" : "direct", why, p.rtt_direct, p.rtt_relay);
           }
+        }
+        if (p.tunnel) punch.push_back(mac);
+        // (a player the game plays with: connecting to it, its list again while nothing direct answers)
+        if (p.tunnel && !ForceRelay() && now - p.direct_pong >= std::chrono::seconds(3) &&
+            now - p.candidates_sent >= std::chrono::seconds(5)) {
+          BeginProbing(p, now);
+          p.candidates_sent = now;
+          send_list.push_back(direct);
         }
         // (pings both ways for a tunnel peer: the direct one tells whether direct works)
         if (!ForceRelay()) to.push_back(direct);
@@ -1047,14 +1462,10 @@ void PingLoop() {
         }
       }
     }
+    for (const Mac& mac : punch) Punch(mac);
+    for (const Path& path : send_list) SendCandidates(path);
     for (const Path& path : to) {
-      Writer w;
-      w.b = Header(kPing, NewNonce());
-      w.u64(NowUs());
-      // (then this player's name, for the peers' lobby ping list; older games stop reading before it)
-      const std::string name = rex::cvar::Query<std::string>("online_name").substr(0, 32);
-      w.u8(uint8_t(name.size())), w.bytes(reinterpret_cast<const uint8_t*>(name.data()), name.size());
-      NetSimSend([path, b = std::move(w.b)] { Send(path, b); });
+      NetSimSend([path, b = PingPacket()] { Send(path, b); });
     }
     // The session's host gone in a match (its game closed or cut off): the game
     // ends the session for everyone after its drop timeout, saying only "a
@@ -1252,6 +1663,9 @@ void OnPacket(const uint8_t* data, size_t size, Via via) {
     case kHello:
       if (nonce & 1) Send(back, Header(kHello, nonce + 1));  // (the first of a pair: answered)
       break;
+    case kCandidates:
+      OnCandidates(mac, r);
+      break;
     case kPing: {  // -> its time back (the way game packets go, with a test's delay)
       {
         std::lock_guard lock(g_mutex);  // (it pings: it's this version, kDataV2 from now on)
@@ -1281,25 +1695,47 @@ void OnPacket(const uint8_t* data, size_t size, Via via) {
       if (!r.ok) break;
       uint32_t fake = 0;
       bool current = true;  // (the round trip of the path game packets take now)
+      const char* how = via.relayed ? "relay" : "direct";
       {
         std::lock_guard lock(g_mutex);
         if (auto it = g_peers.find(mac); it != g_peers.end()) {
           Peer& p = it->second;
           fake = p.fake;
-          // (each path's round trip, smoothed: the path choice compares them)
+          // (each path's round trip, smoothed)
           const float ms = float(double(NowUs() - sent_us) / 1000.0);
-          float& path_rtt = via.relayed ? p.rtt_relay : p.rtt_direct;
-          path_rtt = path_rtt > 0 ? path_rtt * 0.7f + ms * 0.3f : ms;
-          (via.relayed ? p.relay_ok : p.direct_ok) = Clock::now();
-          current = via.relayed == p.relayed;
+          const auto smooth = [ms](float& rtt) { rtt = rtt > 0 ? rtt * 0.7f + ms * 0.3f : ms; };
+          const auto now = Clock::now();
+          if (via.relayed) {
+            smooth(p.rtt_relay);
+            p.relay_ok = now;
+            current = p.relayed;
+            how = "relay";
+          } else {
+            // (the address that answered: the fastest of those answering carries the game)
+            const uint32_t from = via.ip == 0x7F000001 ? Be32(p.xnaddr.data()) : via.ip;
+            p.direct_ok = p.direct_pong = now;
+            AddCandidate(p, from, via.port, kCandHeard);
+            bool on_lan = !p.tunnel;
+            if (Candidate* c = FindCandidate(p, from, via.port)) smooth(c->rtt), c->ok = now, on_lan |= c->kind == kCandLan;
+            how = IsV6(from) ? "IPv6" : on_lan ? "LAN" : "direct";
+            if (p.tunnel) Nominate(p, now);
+            const bool on_route = from == p.route && via.port == p.route_port;
+            if (on_route) smooth(p.rtt_direct);
+            current = !p.relayed && on_route;
+          }
         }
       }
-      if (current) NetRtt(fake, double(NowUs() - sent_us) / 1000.0, via.relayed);
+      if (current) NetRtt(fake, double(NowUs() - sent_us) / 1000.0, via.relayed, how);
       break;
     }
     case kMods: {  // (online_mods.cpp: the rest is its own)
       P2PModHandler handler = g_mod_handler.load();
       if (handler && r.ok && r.at <= r.n) handler(r.p + r.at, r.n - r.at);
+      break;
+    }
+    case kModXfer: {  // (mod_transfer.cpp: the rest is its own; never through the relay)
+      P2PModXferHandler handler = g_mod_xfer_handler.load();
+      if (handler && !via.relayed && r.ok && r.at <= r.n) handler(PeerId(mac), r.p + r.at, r.n - r.at);
       break;
     }
     case kChat: {  // (online_chat.cpp: the rest is its own)
@@ -1338,7 +1774,9 @@ bool OnStun(const uint8_t* data, size_t size) {
       uint32_t ip = Be32(data + at + 8);
       if (type == 0x0020) port ^= uint16_t(kStunCookie >> 16), ip ^= kStunCookie;
       g_stun_port = port;  // (before a router mapping replaces it: the NAT's own choice)
-      if (const uint16_t mapped = g_mapped_port.load()) port = mapped;  // (forwarded by the router: that one)
+      g_stun_ip = ip;
+      g_stun_ms = NowMs();
+      if (MappedUsable()) port = g_mapped_port;  // (forwarded by the router: that one)
       if (g_me.online != ip || g_me.online_port != port) {
         REXLOG_INFO("p2p: public address {}:{} (STUN)", Ip(ip), port);
       }
@@ -1368,20 +1806,31 @@ void Receive() {
   for (;;) {
     sockaddr_in from = {};
     socklen_t len = sizeof(from);
-    const int n = int(recvfrom(g_socket, reinterpret_cast<char*>(buf.data()), int(buf.size()), 0,
+    int n = int(recvfrom(g_socket, reinterpret_cast<char*>(buf.data()), int(buf.size()), 0,
                                reinterpret_cast<sockaddr*>(&from), &len));
     if (n <= 0) {
       if (!Reset()) std::this_thread::sleep_for(std::chrono::milliseconds(50));
       continue;
     }
-    const uint32_t ip = ntohl(from.sin_addr.s_addr);
-    const uint16_t port = ntohs(from.sin_port);
+    uint32_t ip = ntohl(from.sin_addr.s_addr);
+    uint16_t port = ntohs(from.sin_port);
+    if (g_box_ip) {  // (test aid: only what the simulated router lets in, from its real sender)
+      if (ip != g_box_ip || port != g_box_port || n < 6) continue;
+      const int wrap = n >= 22 && Be32(buf.data()) == kBoxV6 ? 22 : 6;
+      if (wrap == 22) ip = V6Number(buf.data() + 6);
+      else ip = Be32(buf.data());
+      port = Be16(buf.data() + 4);
+      n -= wrap;
+      std::memmove(buf.data(), buf.data() + wrap, size_t(n));
+    }
     // (the relay over UDP: its frames without the length)
     if (n >= 6 && Be32(buf.data()) == kRelayMagic && ip == g_udp_relay_ip && port == g_udp_relay_port) {
       if (buf[5] == kWelcome && g_udp_welcome_ms.exchange(NowMs()) == 0) {
         REXLOG_INFO("p2p: relay over UDP up");
       }
-      if (buf[5] == kWelcome && n >= 12) g_edge_port = Be16(buf.data() + 10);  // (this socket's port as the VPS sees it)
+      if (buf[5] == kWelcome && n >= 12) {  // (this socket's address as the VPS sees it)
+        g_edge_ip = Be32(buf.data() + 6), g_edge_port = Be16(buf.data() + 10), g_edge_ms = NowMs();
+      }
       OnRelay(buf.data(), size_t(n));
       continue;
     }
@@ -1396,6 +1845,56 @@ void Receive() {
       OnPacket(buf.data(), size_t(n), {ip, port, false});
     }
   }
+}
+
+// The IPv6 socket's: as the other's, with their sender's address as its number.
+void Receive6() {
+  rex::thread::set_current_thread_name("p2p receive 6");
+  std::vector<uint8_t> buf(65536);
+  for (;;) {
+    sockaddr_in6 from = {};
+    socklen_t len = sizeof(from);
+    const int n = int(recvfrom(g_socket6, reinterpret_cast<char*>(buf.data()), int(buf.size()), 0,
+                               reinterpret_cast<sockaddr*>(&from), &len));
+    if (n <= 0) {
+      if (!Reset()) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      continue;
+    }
+    static const bool no_direct = [] {
+      const char* v = std::getenv("SVR2011_TEST_NET_NO_DIRECT");
+      return v && v[0] == '1';
+    }();
+    if (no_direct) continue;
+    if (const uint32_t ip = V6Number(reinterpret_cast<const uint8_t*>(&from.sin6_addr)))
+      OnPacket(buf.data(), size_t(n), {ip, ntohs(from.sin6_port), false});
+  }
+}
+
+// This game's IPv6 address: the one the system would send from (asked by a connect on a UDP socket: nothing is sent);
+// a temporary one where it has them. None behind a tunnel or with no IPv6 on the internet. Test aid
+// SVR2011_TEST_V6=<address>: that one.
+void FindMyV6() {
+  if (!REXCVAR_GET(p2p_ipv6)) return;
+  uint32_t mine = 0;
+  if (const char* t = std::getenv("SVR2011_TEST_V6"); t && *t) {
+    in6_addr a{};
+    if (inet_pton(AF_INET6, t, &a) == 1) mine = V6Number(reinterpret_cast<const uint8_t*>(&a));
+  } else if (g_socket6 != kBadSocket) {
+    Socket s = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
+    if (s != kBadSocket) {
+      sockaddr_in6 to = {};
+      to.sin6_family = AF_INET6;
+      to.sin6_port = htons(53);
+      inet_pton(AF_INET6, "2001:4860:4860::8888", &to.sin6_addr);
+      sockaddr_in6 me = {};
+      socklen_t len = sizeof(me);
+      if (connect(s, reinterpret_cast<sockaddr*>(&to), sizeof(to)) == 0 &&
+          getsockname(s, reinterpret_cast<sockaddr*>(&me), &len) == 0 && GlobalV6(reinterpret_cast<const uint8_t*>(&me.sin6_addr)))
+        mine = V6Number(reinterpret_cast<const uint8_t*>(&me.sin6_addr));
+      CloseSocket(s);
+    }
+  }
+  if (g_my_v6.exchange(mine) != mine) REXLOG_INFO("p2p: IPv6 {}", mine ? "on" : "off (no address on the internet)");
 }
 
 // The relay's frames as they come (the pipe's thread).
@@ -1450,8 +1949,11 @@ void ReportLive(bool signed_in) {
       for (const auto& [mac, p] : g_peers) {
         if (now - p.game_traffic > std::chrono::seconds(15)) continue;  // (this session's players)
         const auto n = names.find(p.fake);
+        // (its relay id too: a peer with no name here yet - an older game's, or one whose first ping hasn't
+        // come - is named on the dashboard from the relay's account for it)
         players += ", {\"name\": " + JsonQuote(n != names.end() && !n->second.empty() ? n->second : "?") +
-                   ", \"path\": \"" + (p.relayed ? "relay" : p.tunnel ? "direct" : "lan") + "\"}";
+                   ", \"path\": \"" + (p.relayed ? "relay" : p.tunnel ? "direct" : "lan") + "\", \"id\": \"" +
+                   fmt::format("{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]) + "\"}";
       }
       uint32_t rule = OnlineCreateSessionRule(), arena = ~0u, played = ~0u;
       LastMatch(&played, &arena);
@@ -1500,7 +2002,12 @@ void Keepalive() {
   char id[13];
   std::snprintf(id, sizeof(id), "%02x%02x%02x%02x%02x%02x", g_me.mac[0], g_me.mac[1], g_me.mac[2], g_me.mac[3],
                 g_me.mac[4], g_me.mac[5]);
-  Clock::time_point tried{}, registered{}, stunned{}, ticketed{}, udp_registered{};
+  Clock::time_point tried{}, registered{}, stunned{}, stun_sent{}, stun_resolved{}, ticketed{}, udp_registered{};
+  std::pair<uint32_t, uint16_t> stun_to{0, 0};
+  int stun_tries = 0;
+  int64_t stun_sent_ms = 0;
+  bool was_wanted = false;
+  Clock::time_point v6_checked{};
   std::vector<uint8_t> ticket;  // (the relay over UDP)
   for (;;) {
     const auto now = Clock::now();
@@ -1528,16 +2035,29 @@ void Keepalive() {
       tried = {};
       REXLOG_INFO("p2p: relay closed (not online)");
     }
-    if (!stun.empty() && stun != "off" && (stunned == Clock::time_point{} || now - stunned >= 300s)) {
-      stunned = now;  // (every 5 minutes: a NAT may move it)
-      const auto [ip, port] = Resolve(stun, 3478);
-      if (ip) {
-        uint8_t req[20] = {0, 1, 0, 0};
-        Put32(req + 4, kStunCookie);
-        for (int i = 8; i < 20; ++i) req[i] = uint8_t(NewNonce());
-        SendOn(g_socket, ip, port, req, sizeof(req));
+    // STUN: on entering online and every 25 s while online (a router drops a quiet socket's mapping within a minute
+    // or two and may pick another port: the port peers are given must be this one), every 5 minutes otherwise; one
+    // that isn't answered again after 3 s, twice.
+    if (!stun.empty() && stun != "off") {
+      const bool cycle = stunned == Clock::time_point{} || now - stunned >= (wanted ? 25s : 300s) || (wanted && !was_wanted);
+      const bool again = !cycle && stun_tries < 3 && g_stun_ms.load() < stun_sent_ms && now - stun_sent >= 3s;
+      if (cycle) stunned = now, stun_tries = 0;
+      if (cycle || again) {
+        ++stun_tries;
+        stun_sent = now;
+        stun_sent_ms = NowMs();
+        if (!stun_to.first || now - stun_resolved >= 300s) stun_to = Resolve(stun, 3478), stun_resolved = now;
+        if (stun_to.first) {
+          uint8_t req[20] = {0, 1, 0, 0};
+          Put32(req + 4, kStunCookie);
+          for (int i = 8; i < 20; ++i) req[i] = uint8_t(NewNonce());
+          SendOn(g_socket, stun_to.first, stun_to.second, req, sizeof(req));
+        }
       }
     }
+    // (its address: a temporary one changes now and then)
+    if (wanted && (!was_wanted || now - v6_checked >= 60s)) v6_checked = now, FindMyV6();
+    was_wanted = wanted;
     if (wanted && (registered == Clock::time_point{} || now - registered >= 15s)) {
       registered = now;
       ToPipe(kRegister, g_me.mac.data(), nullptr, 0);
@@ -1664,9 +2184,17 @@ std::vector<Session> Search() {
 // Tells a host this game is coming (so its packets are recognised).
 void Hello(const uint8_t* host_xnaddr) {
   Path path;
+  bool list = false;
   {
     std::lock_guard lock(g_mutex);
-    path = PathOf(MacOf(host_xnaddr), Learn(host_xnaddr));
+    Peer& p = Learn(host_xnaddr);
+    path = PathOf(MacOf(host_xnaddr), p);
+    if (p.tunnel && !ForceRelay()) {
+      const auto now = Clock::now();
+      BeginProbing(p, now);
+      p.candidates_sent = now;
+      list = true;
+    }
   }
   const uint32_t nonce = NewNonce() | 1;
   const auto hello = Header(kHello, nonce);
@@ -1677,6 +2205,7 @@ void Hello(const uint8_t* host_xnaddr) {
   for (int i = 0; i < 3; ++i) Send(direct, hello);
   if (g_relay_up && !ForceRelay()) ToRelay(path.mac, hello.data(), hello.size());
   else if (path.relayed) Send(path, hello);
+  if (list) SendCandidates(path);
 }
 
 // Tells a host its sessions were left out (the mods differ): this game's set.
@@ -1786,6 +2315,19 @@ uint16_t GuestPort(uint16_t port) {
   return g_bound.count(guest) ? guest : port;
 }
 
+// The QoS data a match session's host listens with is the game's session attribute block (154 bytes: a 10-byte
+// head, then word 0 and attribute k at word k + 1 - the session list's details and the join check read it), so
+// the DLC value (attribute 5, kDlcProperty's) is in it too, at byte 34: 113 there as well, like CarryDlcProperty.
+// (SVR2011_TEST_DLC_PROPERTY: an older host's value here too.)
+constexpr size_t kQosBlockSize = 154, kQosDlcAt = 10 + 6 * 4;
+void CarryDlcQos(std::vector<uint8_t>& data, uint64_t id) {
+  if (data.size() != kQosBlockSize || std::getenv("SVR2011_TEST_DLC_KEEP")) return;
+  const uint32_t value = Be32(data.data() + kQosDlcAt);
+  if (value == kDlcValue) return;
+  REXLOG_INFO("p2p: session {:016X}'s QoS DLC value was {} - this game carries {}", id, value, kDlcValue);
+  Put32(data.data() + kQosDlcAt, kDlcValue);
+}
+
 uint32_t QosListen(const uint8_t* xnkid, const uint8_t* data, uint32_t size, uint32_t flags) {
   const uint64_t id = Be64(xnkid);
   std::lock_guard lock(g_mutex);
@@ -1793,6 +2335,8 @@ uint32_t QosListen(const uint8_t* xnkid, const uint8_t* data, uint32_t size, uin
     g_qos.erase(id);
   } else if ((flags & 0x04) && data) {  // SET_DATA
     g_qos[id].assign(data, data + std::min<uint32_t>(size, 1024));
+    if (const char* t = std::getenv("SVR2011_TEST_DLC_PROPERTY"); t && *t && size == kQosBlockSize)
+      Put32(g_qos[id].data() + kQosDlcAt, uint32_t(std::strtoul(t, nullptr, 10)));  // (CarryDlcProperty's test aid)
   } else {
     g_qos.try_emplace(id);
   }
@@ -1822,6 +2366,7 @@ std::vector<rex::kernel::xam::OnlineHooks::QosResult> QosLookup(
     out.rtt_ms = uint16_t(std::max<int64_t>(
         1, std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t0).count()));
     if (len && r.need(len)) out.data.assign(r.p + r.at, r.p + r.at + len);
+    CarryDlcQos(out.data, Be64(targets[i].xnkid.data()));
   }
   return results;
 }
@@ -1918,6 +2463,8 @@ std::optional<uint32_t> Xgi(uint32_t message, uint32_t buffer, uint32_t length) 
   switch (message) {
     case 0xB0006: {  // XUserSetContext: kept for the sessions this game hosts
       std::lock_guard lock(g_mutex);
+      if (auto c = g_contexts.find(u32(16)); c == g_contexts.end() || c->second != u32(20))
+        REXLOG_INFO("p2p: context {:08X} = {}", u32(16), u32(20));
       g_contexts[u32(16)] = u32(20);
       return std::nullopt;
     }
@@ -1926,6 +2473,11 @@ std::optional<uint32_t> Xgi(uint32_t message, uint32_t buffer, uint32_t length) 
       const uint32_t size = std::min<uint32_t>(u32(20), 4096), ptr = u32(24);
       if (size && ptr) p.value.assign(Guest(ptr), Guest(ptr) + size);
       std::lock_guard lock(g_mutex);
+      if (auto o = g_properties.find(p.id); o == g_properties.end() || o->second.value != p.value) {
+        std::string hex;
+        for (size_t i = 0; i < std::min<size_t>(p.value.size(), 16); ++i) hex += fmt::format("{:02X}", p.value[i]);
+        REXLOG_INFO("p2p: property {:08X} = {}{}", p.id, hex, p.value.size() > 16 ? "..." : "");
+      }
       g_properties[p.id] = std::move(p);
       return std::nullopt;
     }
@@ -1936,6 +2488,7 @@ std::optional<uint32_t> Xgi(uint32_t message, uint32_t buffer, uint32_t length) 
       Session& s = local.session;
       s.flags = flags, s.public_slots = u32(8), s.private_slots = u32(12);
       if (local.host) {
+        (void)LocalCpuTuning();  // (its first read publishes the CPU tab's settings: before the properties are copied)
         s.id = NewSessionId();
         s.nonce = NewSessionId();
         s.host = MyXnAddr();
@@ -1964,7 +2517,15 @@ std::optional<uint32_t> Xgi(uint32_t message, uint32_t buffer, uint32_t length) 
           s.properties.push_back(Property{kNetMode, 1, {0, 0, 0, mode}});
           g_match_net = mode;
           REXLOG_INFO("p2p: match network {} (host; the server's {})", NetName(mode), NetName(g_server_net));
+          const uint8_t netcode = g_server_netcode;
+          s.properties.erase(std::remove_if(s.properties.begin(), s.properties.end(),
+                                            [](const Property& p) { return p.id == kNetcode; }),
+                             s.properties.end());
+          s.properties.push_back(Property{kNetcode, 1, {0, 0, 0, netcode}});
+          g_match_netcode = netcode;
+          REXLOG_INFO("p2p: netcode {} (host; the server's)", NetcodeName(netcode));
         }
+        CarryDlcProperty(s, "the host", true);
         // X_PROPERTY_GAMER_HOSTNAME (LIVE filled it in: the host's name, UTF-16)
         Property name{0x40008109, 4, {}};
         for (char c : rex::cvar::Query<std::string>("online_name")) name.value.push_back(0), name.value.push_back(uint8_t(c));
@@ -1974,16 +2535,18 @@ std::optional<uint32_t> Xgi(uint32_t message, uint32_t buffer, uint32_t length) 
         s.id = Be64(Guest(info));
         {
           std::lock_guard found_lock(g_mutex);
-          uint8_t mode = kNetAuto;  // (a host without it - an older game: auto)
+          uint8_t mode = kNetAuto, netcode = 0;  // (a host without them - an older game: auto, lockstep)
           if (auto f = g_found.find(s.id); f != g_found.end())
             for (const auto& p : f->second.properties) {
               if (p.id == kPortRules && p.value.size() >= 4)
                 REXLOG_INFO("p2p: port rules {:08X} (joiner)", Be32(p.value.data()));
               if (p.id == kNetMode && p.value.size() >= 4 && p.value[3] <= kNetP2P) mode = p.value[3];
+              if (p.id == kNetcode && p.value.size() >= 4 && p.value[3] <= kNetcodeMax) netcode = p.value[3];
             }
           if (flags & 0x20) {
             g_match_net = mode;
-            REXLOG_INFO("p2p: match network {} (joiner; the host's)", NetName(mode));
+            g_match_netcode = netcode;
+            REXLOG_INFO("p2p: match network {}, netcode {} (joiner; the host's)", NetName(mode), NetcodeName(netcode));
           }
         }
         std::memcpy(s.host.data(), Guest(info) + 8, 36);
@@ -2007,7 +2570,7 @@ std::optional<uint32_t> Xgi(uint32_t message, uint32_t buffer, uint32_t length) 
         REXLOG_INFO("p2p: session {:016X} deleted", it->second.session.id);
         g_sessions.erase(it);
         if (std::none_of(g_sessions.begin(), g_sessions.end(), [](const auto& l) { return (l.second.session.flags & 0x20) != 0; }))
-          g_match_net = kNetAuto;
+          g_match_net = kNetAuto, g_match_netcode = 0;
         UpdateLockstep();
         return kOk;
       }
@@ -2081,6 +2644,7 @@ std::optional<uint32_t> Xgi(uint32_t message, uint32_t buffer, uint32_t length) 
           if (auto it = s.contexts.find(id); it != s.contexts.end() && it->second != value) return false;
         return true;
       };
+      NoteOnlineActivity(OnlineActivity::kSearch);  // (the presence poll's place: matchmaking)
       auto sessions = Search();
       const size_t before = sessions.size();
       sessions.erase(std::remove_if(sessions.begin(), sessions.end(), [&](const Session& s) { return !same_kind(s); }),
@@ -2167,6 +2731,14 @@ bool P2PSessionInfo(uint8_t* out, uint32_t* slots) {
   return true;
 }
 
+int P2PSessionRole() {
+  std::lock_guard lock(g_mutex);
+  int role = 0;
+  for (const auto& [obj, local] : g_sessions)
+    if (local.session.flags & 0x20) role = local.host ? 1 : role ? role : 2;  // (a match's: the host's wins)
+  return role;
+}
+
 void P2PSetHostProperty(uint32_t id, uint32_t value) {
   Property p{id, uint8_t(id >> 28), {uint8_t(value >> 24), uint8_t(value >> 16), uint8_t(value >> 8), uint8_t(value)}};
   std::lock_guard lock(g_mutex);
@@ -2204,6 +2776,13 @@ void P2PSetServerNetwork(const std::string& mode) {
   if (g_server_net.exchange(m) != m) REXLOG_INFO("p2p: the server's match network is {} (new sessions)", NetName(m));
 }
 
+void P2PSetServerNetcode(const std::string& mode) {
+  const uint8_t m = mode == "rollback" ? 1 : mode == "lockstep_vclock" ? 2 : 0;  // (unknown: lockstep)
+  if (g_server_netcode.exchange(m) != m) REXLOG_INFO("p2p: the server's netcode is {} (new sessions)", NetcodeName(m));
+}
+
+int P2PNetcode() { return g_match_netcode.load(); }
+
 P2PLobby P2PMatchLobby() {
   P2PLobby out;
   std::lock_guard lock(g_mutex);
@@ -2234,6 +2813,67 @@ void P2PSendChat(const std::vector<uint8_t>& payload) {
   w.b = Header(kChat, NewNonce());
   w.bytes(payload.data(), payload.size());
   for (const auto& p : peers) Send(p, w.b);
+}
+
+// -- mod files (mod_transfer.cpp): to one peer, over a direct link only -----------------
+
+void SetP2PModXferHandler(P2PModXferHandler handler) { g_mod_xfer_handler = handler; }
+
+// Direct: a peer on this network, or one outside it whose direct path works now (a direct ping came back in the
+// last 10 s, or it was heard from directly) and that isn't sent through the relay. Never in the forced-relay
+// test mode.
+bool DirectLocked(const Peer& p) {
+  if (ForceRelay() || p.relayed) return false;
+  if (!p.tunnel) return true;
+  const auto now = Clock::now();
+  return now - p.direct_ok < std::chrono::seconds(10) || now - p.direct < std::chrono::seconds(10);
+}
+
+bool P2PPeerDirect(uint64_t peer) {
+  std::lock_guard lock(g_mutex);
+  for (const auto& [mac, p] : g_peers)
+    if (PeerId(mac) == peer) return DirectLocked(p);
+  return false;
+}
+
+bool P2PSendModXfer(uint64_t peer, const std::vector<uint8_t>& payload) {
+  if (g_socket == kBadSocket || payload.size() > 1400) return false;
+  Path path{};
+  {
+    std::lock_guard lock(g_mutex);
+    bool found = false;
+    for (const auto& [mac, p] : g_peers)
+      if (PeerId(mac) == peer) {
+        if (!DirectLocked(p)) return false;
+        path = PathOf(mac, p), found = true;
+      }
+    if (!found) return false;
+  }
+  Writer w;
+  w.b = Header(kModXfer, NewNonce());
+  w.bytes(payload.data(), payload.size());
+  Send(path, w.b);
+  return true;
+}
+
+uint64_t P2PSessionHost(uint64_t* session) {
+  std::lock_guard lock(g_mutex);
+  for (const auto& [object, local] : g_sessions) {
+    if (local.host || local.session.public_slots + local.session.private_slots < 2) continue;
+    if (session) *session = local.session.id;
+    return PeerId(MacOf(local.session.host.data()));
+  }
+  return 0;
+}
+
+bool P2PHosting(uint64_t* session) {
+  std::lock_guard lock(g_mutex);
+  for (const auto& [object, local] : g_sessions)
+    if (local.host && local.session.public_slots + local.session.private_slots >= 2) {
+      if (session) *session = local.session.id;
+      return true;
+    }
+  return false;
 }
 
 void P2PSendMods(const std::vector<uint8_t>& payload) {
@@ -2456,16 +3096,44 @@ void InstallP2P(rex::memory::Memory* memory) {
   for (unsigned char c : id) h = (h ^ c) * 1099511628211ull;
   g_me.mac = {0x02, uint8_t(h >> 32), uint8_t(h >> 24), uint8_t(h >> 16), uint8_t(h >> 8), uint8_t(h)};
   g_me.xuid = std::strtoull(rex::cvar::Query<std::string>("online_xuid").c_str(), nullptr, 16);
+  if (const char* box = std::getenv("SVR2011_TEST_NAT_BOX"); box && *box) {
+    const auto at = Resolve(box, 0);
+    g_box_ip = at.first, g_box_port = at.second;
+    REXLOG_INFO("p2p: test: behind the NAT box at {}:{}", Ip(g_box_ip), g_box_port);
+  }
+  // The IPv6 socket, on the same port (nothing behind the test's NAT box, unless it asks for the real one).
+  g_v6_real = std::getenv("SVR2011_TEST_V6_REAL") != nullptr;
+  g_v6_test = std::getenv("SVR2011_TEST_V6") != nullptr;
+  if (REXCVAR_GET(p2p_ipv6) && (!g_box_ip || g_v6_real)) {
+    Socket s6 = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
+    if (s6 != kBadSocket) {
+      int only = 1;
+      setsockopt(s6, IPPROTO_IPV6, IPV6_V6ONLY, reinterpret_cast<const char*>(&only), sizeof(only));
+      sockaddr_in6 at = {};
+      at.sin6_family = AF_INET6;
+      at.sin6_port = htons(g_me.base);
+      if (bind(s6, reinterpret_cast<sockaddr*>(&at), sizeof(at)) == 0) g_socket6 = s6;
+      else CloseSocket(s6);
+    }
+  }
   std::thread(Receive).detach();
+  if (g_socket6 != kBadSocket) std::thread(Receive6).detach();
   std::thread(Keepalive).detach();
   std::thread(PingLoop).detach();
+  std::thread(ProbeLoop).detach();
   // The router asked to forward the P2P port (port_map.h; not for a test's
-  // second game on this PC, which names its own address)
-  if (REXCVAR_GET(p2p_address).empty() && g_me.lan >> 24 != 127)
+  // second game on this PC, which names its own address - unless it names a test router too)
+  if ((REXCVAR_GET(p2p_address).empty() && g_me.lan >> 24 != 127) || std::getenv("SVR2011_TEST_NATPMP"))
     StartPortMapping(g_me.base, g_me.lan, [](uint32_t ip, uint16_t port) {
+      g_mapped_ip = ip;
       g_mapped_port = port;
-      if (ip) g_me.online = ip;
-      g_me.online_port = port;
+      if (MappedUsable()) {
+        if (ip) g_me.online = ip;
+        g_me.online_port = port;
+      } else {
+        REXLOG_INFO("p2p: router port mapping not used - that router is behind another one (it says its outside "
+                    "address is {}; players reach this game through the one in front)", Ip(ip));
+      }
     });
   rex::kernel::xam::OnlineHooks hooks;
   hooks.title_xnaddr = TitleXnAddr;

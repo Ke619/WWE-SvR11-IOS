@@ -15,6 +15,7 @@
 #include <windows.h>
 
 #include "frame_stats.h"
+#include "util.h"
 
 namespace svr2011::d3d_trace {
 
@@ -62,16 +63,7 @@ std::filesystem::path g_dir;
 std::mutex g_xsc_mutex;
 std::unordered_set<uint64_t> g_xsc_seen;
 
-std::string Env(const char* name) {
-  char* value = nullptr;
-  size_t len = 0;
-  std::string s;
-  if (_dupenv_s(&value, &len, name) == 0 && value) {
-    s = value;
-    free(value);
-  }
-  return s;
-}
+using svr2011::Env;
 
 uint32_t LoadBE32(const uint8_t* p) {
   return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3];

@@ -30,6 +30,7 @@
 #include <wchar.h>
 
 #include "backgrounds.h"
+#include "move_warning.h"
 #include "movie_maker.h"
 #include "music_level.h"
 #include "unzip.h"
@@ -173,12 +174,21 @@ static unsigned long long folder_bytes(const WCHAR *dir)
 }
 
 static int exists(const WCHAR *p) { return GetFileAttributesW(p) != INVALID_FILE_ATTRIBUTES; }
+
+/* a mod the game doesn't load whatever its switch: backstage mods (src/no_mods.h BackstageModsOff) and the removed
+   FREE-ROAMING BACKSTAGE match type (src/match_types.cpp MatchTypeSwitches) */
+static int removed_mod(const Mod *m)
+{
+    const WCHAR *leaf = wcsrchr(m->folder, L'\\');
+    return !_wcsicmp(m->type, L"backstage") || wcsstr(m->folder, L"\\Mods\\Backstage\\") ||
+           (leaf && !_wcsicmp(leaf + 1, L"free_roaming_backstage"));
+}
 static int maker_present(void);
 
 static void scan(void)
 {
     static const WCHAR *const types[] = { L"Arenas", L"Superstars", L"Signs", L"Media", L"Backstage", L"Moves", L"MatchTypes",
-                                         L"Backgrounds", L"Attires" };
+                                         L"Backgrounds", L"Attires", L"Titles" };
     int t;
     s_nmods = 0;
     if (!s_game[0]) return;
@@ -206,7 +216,9 @@ static void scan(void)
             }
             if (!m->name[0]) wcsncpy_s(m->name, 128, m->id, _TRUNCATE);
             swprintf_s(off, MAX_PATH, L"%s\\disabled", m->folder);
-            m->enabled = !exists(off);
+            /* backstage mods are switched off in the game (src/no_mods.h BackstageModsOff), and the FREE-ROAMING
+               BACKSTAGE match type is removed (src/match_types.cpp MatchTypeSwitches): shown off */
+            m->enabled = !exists(off) && !removed_mod(m);
             m->bytes = folder_bytes(m->folder);
             s_nmods++;
         } while (FindNextFileW(h, &fd));
@@ -375,19 +387,14 @@ static const WCHAR *roster_name(int id, WCHAR *buf, size_t n)
     return buf;
 }
 
-/* Attires 1-4 (bits 0-3) the superstar's own pac has; *gear: it also has other model kinds for attire 1 (the
-   entrance gear superstars - Undertaker, CM Punk, Cena, Shawn Michaels, Morrison: kind 4). A new attire for
-   them doesn't load in the game yet (src/superstar_mods.cpp ExtraKinds): only their own can be replaced. */
-static unsigned own_attires(const WCHAR *game, int id, int *gear)
+/* One model pac's attires 1-4 for superstar id (bits 0-3) and whether it has other model kinds for attire 1. */
+static unsigned pac_attires(const WCHAR *path, int id, int *gear)
 {
-    WCHAR path[MAX_PATH];
     unsigned char d[0x4000];
     unsigned mask = 0;
     char want[8];
     size_t p;
     FILE *f = NULL;
-    swprintf_s(path, MAX_PATH, L"%s\\pac\\ch\\ch%03d.pac", game, id);
-    *gear = 0;
     if (_wfopen_s(&f, path, L"rb") || !f) return 0;
     p = fread(d, 1, sizeof d, f);
     fclose(f);
@@ -407,6 +414,51 @@ static unsigned own_attires(const WCHAR *game, int id, int *gear)
             }
     }
     return mask;
+}
+
+/* Attires 1-4 (bits 0-3) the superstar's own pacs have - the game's pac\ch\chNNN.pac and the installed DLC's
+   pac\ch\ch<id>_dlcNN.pac (UserData\0000000000000000\5451085D\00000002\<package>: a DLC superstar's own, ids
+   51-58, and DLC attires of disc superstars); *gear: one has other model kinds for attire 1 (the entrance gear
+   superstars - Undertaker, CM Punk, Cena, Shawn Michaels, Morrison: kind 4). A new attire for them doesn't load in
+   the game yet (src/superstar_mods.cpp ExtraKinds): only their own can be replaced. */
+static unsigned own_attires(const WCHAR *game, int id, int *gear)
+{
+    WCHAR path[MAX_PATH], pat[MAX_PATH];
+    WIN32_FIND_DATAW pk, fd;
+    HANDLE hp, hf;
+    unsigned mask = 0;
+    *gear = 0;
+    if (id >= 100) {
+        swprintf_s(path, MAX_PATH, L"%s\\pac\\ch\\ch%03d.pac", game, id);
+        mask |= pac_attires(path, id, gear);
+    }
+    swprintf_s(pat, MAX_PATH, L"%s\\UserData\\0000000000000000\\5451085D\\00000002\\*", game);
+    hp = FindFirstFileW(pat, &pk);
+    if (hp == INVALID_HANDLE_VALUE) return mask;
+    do {
+        if (!(pk.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || pk.cFileName[0] == L'.') continue;
+        swprintf_s(pat, MAX_PATH, L"%s\\UserData\\0000000000000000\\5451085D\\00000002\\%s\\pac\\ch\\ch%d_dlc*.pac", game,
+                   pk.cFileName, id);
+        hf = FindFirstFileW(pat, &fd);
+        if (hf == INVALID_HANDLE_VALUE) continue;
+        do {
+            int g = 0;
+            swprintf_s(path, MAX_PATH, L"%s\\UserData\\0000000000000000\\5451085D\\00000002\\%s\\pac\\ch\\%s", game,
+                       pk.cFileName, fd.cFileName);
+            mask |= pac_attires(path, id, &g);
+            if (g) *gear = 1;
+        } while (FindNextFileW(hf, &fd));
+        FindClose(hf);
+    } while (FindNextFileW(hp, &pk));
+    FindClose(hp);
+    return mask;
+}
+
+/* A DLC superstar the player has installed (ids below 100: only DLC model pacs). */
+static int dlc_superstar(const WCHAR *game, int id)
+{
+    int gear = 0;
+    return id > 0 && id < 100 && own_attires(game, id, &gear) != 0;
 }
 
 typedef struct {
@@ -488,7 +540,8 @@ int mods_attire_guard(const WCHAR *game, const WCHAR *fresh, WCHAR *report, size
             else if (!strcmp(line, "model") && *eq) strncpy_s(model, MAX_PATH, eq, _TRUNCATE);
         }
         fclose(f);
-        if (!attire_mod || a->id < 100 || a->id > 321 || a->attire < 0 || a->attire > 4) continue;
+        if (!attire_mod || ((a->id < 100 || a->id > 321) && !dlc_superstar(game, a->id)) || a->attire < 0 || a->attire > 4)
+            continue;
         /* no model: only an entrance for one of the superstar's own attires (Simple entrance porting) - it holds no
            attire, so it isn't moved (the game: the first folder A-Z keeps an attire's entrance) */
         MultiByteToWideChar(CP_UTF8, 0, model, -1, wmodel, MAX_PATH);
@@ -802,7 +855,7 @@ static const WCHAR *kind_folder(const WCHAR *type)
     static const struct { const WCHAR *type, *folder; } k[] = {
         {L"superstar", L"Superstars"}, {L"arena", L"Arenas"}, {L"backstage", L"Backstage"}, {L"signs", L"Signs"},
         {L"media", L"Media"}, {L"matchtype", L"MatchTypes"}, {L"background", L"Backgrounds"}, {L"attire", L"Attires"},
-        {L"moves", L"Moves"},
+        {L"moves", L"Moves"}, {L"title", L"Titles"},
     };
     int i;
     for (i = 0; i < (int)(sizeof k / sizeof *k); ++i)
@@ -1515,10 +1568,12 @@ static void shrink_mod(const WCHAR *dir, Shrink *s)
 }
 
 /* Custom Movies\<name>.bik (the movie maker's older ones, downloads): <name>.mp4; the game lists it under the
-   same name, so entrances keep it (src/user_movies.cpp) */
+   same name, so entrances keep it (src/user_movies.cpp). Not one with an HD stub (Custom Movies\.hd\<name>.bik):
+   that name is an .mp4's - a mod's own movie - and the .bik the game's copy of its fallback or of the stub (all
+   frames empty): made into "<name>.mp4" here it took the mod's tron over, black for a stub (2.1.8 reports) */
 static void shrink_user_movies(const WCHAR *game, Shrink *s)
 {
-    WCHAR pat[MAX_PATH], bik[MAX_PATH], mp4[MAX_PATH];
+    WCHAR pat[MAX_PATH], bik[MAX_PATH], mp4[MAX_PATH], stub[MAX_PATH];
     WIN32_FIND_DATAW fd;
     HANDLE h;
     swprintf_s(pat, MAX_PATH, L"%s\\Custom Movies\\*.bik", game);
@@ -1530,7 +1585,8 @@ static void shrink_user_movies(const WCHAR *game, Shrink *s)
         swprintf_s(bik, MAX_PATH, L"%s\\Custom Movies\\%s", game, fd.cFileName);
         wcscpy_s(mp4, MAX_PATH, bik);
         wcscpy_s(mp4 + wcslen(mp4) - 4, 5, L".mp4");
-        if (!ascii || exists(mp4)) continue;   /* (an .mp4's .bik: its stub or fallback) */
+        swprintf_s(stub, MAX_PATH, L"%s\\Custom Movies\\.hd\\%s", game, fd.cFileName);
+        if (!ascii || exists(mp4) || exists(stub)) continue;   /* (an .mp4's .bik: its stub or fallback) */
         s->what = fd.cFileName;
         shrink_movie(bik, s);
     } while (FindNextFileW(h, &fd));
@@ -1870,9 +1926,10 @@ static int install_file(const WCHAR *zip)
         const int match_type = !_wcsicmp(m.type, L"matchtype");
         const int background = !_wcsicmp(m.type, L"background");
         const int attire = !_wcsicmp(m.type, L"attire");
+        const int title = !_wcsicmp(m.type, L"title");  /* a championship's name / belt / pictures (Mods/Titles) */
         WCHAR need1[MAX_PATH], need2[MAX_PATH];
-        if (signs || media || match_type) {
-            wcsncpy_s(kind, 32, signs ? L"Signs" : media ? L"Media" : L"MatchTypes", _TRUNCATE);
+        if (signs || media || match_type || title) {
+            wcsncpy_s(kind, 32, signs ? L"Signs" : media ? L"Media" : title ? L"Titles" : L"MatchTypes", _TRUNCATE);
             goto place;
         }
         if (background) {  /* main menu pictures: picture.dds or a pack's *.dds (1024 x 512 DXT5) */
@@ -1927,6 +1984,23 @@ static int install_file(const WCHAR *zip)
         wcsncpy_s(kind, 32, backstage ? L"Backstage" : arena ? L"Arenas" : L"Superstars", _TRUNCATE);
     }
 place:
+    /* (a mod with custom moves: asked first - move_warning.h; not the port's own bundled mods, and with no window to
+       ask in - a test, a command line - only logged) */
+    if (!s_bundle_install && move_warning_dir_has_moves(tmp)) {
+        const HWND top = s_wnd ? GetAncestor(s_wnd, GA_ROOT) : NULL;
+        const int headless = !top || !IsWindowVisible(top);
+        if (headless) {  /* (printed by --mods-add; the log line is move_warning's) */
+            swprintf_s(t, 512, L"Warning: \"%s\" has custom moves (ported or made by hand) - experimental and most likely "
+                               L"broken.", m.name[0] ? m.name : m.id);
+            status(t);
+        }
+        if (!move_warning_ask(top, s_game, m.name[0] ? m.name : m.id, headless)) {
+            swprintf_s(t, 512, L"\"%s\" was not installed (it has custom moves).", m.name[0] ? m.name : m.id);
+            status(t);
+            remove_tree(tmp, 0);
+            return 0;
+        }
+    }
     safe_id(m.id);
     swprintf_s(parent, MAX_PATH, L"%s\\Mods\\%s", s_game, kind);
     SHCreateDirectoryExW(NULL, parent, NULL);
@@ -1976,7 +2050,7 @@ place:
     }
     scan();
     fill();
-    swprintf_s(t, 512, !wcscmp(kind, L"Backstage") ? L"Installed \"%s\". It is played in that room's backstage brawls."
+    swprintf_s(t, 512, !wcscmp(kind, L"Backstage") ? L"Installed \"%s\". Backstage mods are switched off for now: Backstage Brawl plays the game's own backstage, so it isn't loaded."
                        : !wcscmp(kind, L"Media") ? L"Installed \"%s\". It takes effect the next time the game starts."
                        : !wcscmp(kind, L"Moves") ? L"Installed \"%s\". The game merges its moves into its files when it next starts (a few seconds)."
                        : !wcscmp(kind, L"MatchTypes") ? L"Installed \"%s\". The match type is in the game's menus the "
@@ -1984,6 +2058,8 @@ place:
                        : !wcscmp(kind, L"Backgrounds") ? L"Installed \"%s\". The main menu shows it after its own "
                                                          L"12 pictures."
                        : !wcscmp(kind, L"Signs") ? L"Installed \"%s\". The crowd holds these signs up in every match."
+                       : !wcscmp(kind, L"Titles") ? L"Installed \"%s\". The game shows the title's new name, belt and "
+                                                    L"picture the next time it starts."
                        : !wcscmp(kind, L"Attires") ? L"Installed \"%s\". The superstar has it on CHANGE ATTIRE the next "
                                                      L"time the game starts."
                        : wcscmp(kind, L"Arenas") ? L"Installed \"%s\". It is under the M tile of the character "
@@ -2093,6 +2169,12 @@ static void set_enabled(int i, int on)
 {
     WCHAR off[MAX_PATH];
     if (i < 0 || i >= s_nmods || s_mods[i].enabled == on) return;
+    if (on && removed_mod(&s_mods[i])) {  /* (switched off in the game: src/no_mods.h, src/match_types.cpp) */
+        status(!_wcsicmp(s_mods[i].type, L"backstage")
+                   ? L"Backstage mods are switched off for now: Backstage Brawl plays the game's own backstage."
+                   : L"FREE-ROAMING BACKSTAGE is removed from the game for now.");
+        return;
+    }
     swprintf_s(off, MAX_PATH, L"%s\\disabled", s_mods[i].folder);
     if (on) DeleteFileW(off);
     else {
@@ -2296,6 +2378,8 @@ int mods_notify(const NMHDR *nm)
         {
             const int i = (int)lv->lParam, was = s_mods[i].enabled;
             set_enabled(i, ListView_GetCheckState(s_list, lv->iItem));
+            if (ListView_GetCheckState(s_list, lv->iItem) != s_mods[i].enabled)  /* (refused: a backstage mod) */
+                ListView_SetCheckState(s_list, lv->iItem, s_mods[i].enabled);
             if (was != s_mods[i].enabled && !_wcsicmp(s_mods[i].type, L"superstar")) {
                 const int out = s_stars_out;
                 superstar_limit();

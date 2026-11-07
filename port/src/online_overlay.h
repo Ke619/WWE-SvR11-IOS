@@ -74,4 +74,14 @@ uint16_t OnlineRawPad();
 void OnlineNoteString(uint32_t id);
 void OnlineNoteHelpBar(uint32_t id);
 
+// Where the player is, for the presence poll (&place=: the dashboard's live view) - a short token:
+// match_online / match_offline, lobby_host / lobby_join, cc / cc_download / cc_upload, leaderboards,
+// matchmaking, online_menu; offline: menus, match_setup, universe, rtwm, shop, my_wwe, options and the
+// creation suites (create_superstar, paint_tool, threads, create_story, create_finisher, create_entrance,
+// highlight_reel, create_moveset). In an online match `kind` gets ranked / player (empty: not known).
+// The modules that see the web / session activity note it (any thread).
+enum class OnlineActivity { kSearch, kCcBrowse, kCcDownload, kCcUpload, kLeaderboards, kCount };
+void NoteOnlineActivity(OnlineActivity what);
+std::string PresencePlace(std::string* kind = nullptr);
+
 }  // namespace svr2011

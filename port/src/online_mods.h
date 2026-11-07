@@ -59,5 +59,10 @@ bool OnlinePackMoveAllowed(uint16_t id);
 // The host's mod weapons for this lobby's Extreme Rules matches, those every player has (weapon_mods.h; the host
 // decides from its WEAPONS page, the others echo it before START): {this game's weapon id, count}.
 std::vector<std::pair<int, int>> OnlineModWeapons();
+// (a client) What the lobby's tables say this game lacks of the host's superstar mods and the session's arena:
+// their labels (mod_transfer.h's offer when the link goes through the relay and nothing can come).
+std::vector<std::string> OnlineModsLackedFromHost();
+// (a client) The session's host's name, as its mod table says ("" none yet).
+std::string OnlineModsHostName();
 
 }  // namespace svr2011

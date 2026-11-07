@@ -35,7 +35,7 @@ switch ($Verb) {
         if (Get-Command py -ErrorAction SilentlyContinue) { $py = (& py -3 -c "import sys; print(sys.executable)" 2>$null) }
         if (-not $py) { $py = (Get-Command python -All -ErrorAction SilentlyContinue | Where-Object { $_.Source -notlike "*WindowsApps*" } | Select-Object -First 1).Source }
         if (-not $py) { "test server: no Python found"; return }
-        $sargs = @("`"$server`"", "--host", "127.0.0.1", "--port", "$listenPort",
+        $sargs = @("`"$server`"", "--host", "127.0.0.1", "--port", "$listenPort", "--test-open-accounts",
                   "--data", "`"$(Join-Path $data 'data')`"", "--log", "`"$(Join-Path $data 'server.log')`"")
         $p = Start-Process -FilePath $py -ArgumentList $sargs -WindowStyle Hidden -PassThru
         for ($i = 0; $i -lt 50 -and -not (Listening); $i++) { Start-Sleep -Milliseconds 200 }

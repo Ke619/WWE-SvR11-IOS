@@ -37,7 +37,7 @@ unit=/etc/systemd/system/svr2011.service
 ngx_dir=/etc/nginx/svr2011
 ngx_file=$ngx_dir/svr-location.conf
 files="server.py admin_auth.py gamespy.py leaderboards.py match_names.py media.py relay.py relay_link.py thumbs.py lb_reset.py
-       discovery.py reports.py dashboard.html leaderboards.json requirements.txt"
+       signup.py namefilter.py discovery.py reports.py dashboard.html leaderboards.json requirements.txt"
 pw_tool=/usr/local/sbin/svr2011-admin-password
 
 # run CMD...: does it (or prints it with --dry-run)
@@ -280,6 +280,34 @@ location = /svr/api/reports {
     proxy_read_timeout 1800s;
     proxy_send_timeout 1800s;
     client_max_body_size 400m;
+}
+
+# a player's answer to a report's question (POST /svr/api/reports/reply): text and up to three 8 MB pictures
+location = /svr/api/reports/reply {
+    proxy_pass http://127.0.0.1:8101;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Portal-Role "";
+    proxy_set_header X-Portal-Public "";
+    proxy_set_header X-Portal-User "";
+    proxy_request_buffering off;
+    client_max_body_size 30m;
+}
+
+# a sender's edit of a report (POST /svr/api/reports/edit): text and up to five 8 MB pictures
+location = /svr/api/reports/edit {
+    proxy_pass http://127.0.0.1:8101;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Portal-Role "";
+    proxy_set_header X-Portal-Public "";
+    proxy_set_header X-Portal-User "";
+    proxy_request_buffering off;
+    client_max_body_size 45m;
 }
 
 # entrance songs and movies are larger (--max-music-mb 512, --max-movie-mb 1024)

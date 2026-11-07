@@ -61,5 +61,4 @@ def pac(d):
     return ents
 
 
-def unbpe(b):
-    return svrfmt.bpe_decode(b) if b[:4] == b'BPE ' else b
+unbpe = svrfmt.unbpe

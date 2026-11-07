@@ -36,6 +36,7 @@
 #include "json.h"
 #include "session_log.h"
 extern "C" {
+#include "../launcher/move_warning.h"
 #include "../launcher/movie_maker.h"
 }
 #include "imgui_impl_dx11.h"
@@ -96,13 +97,37 @@ bool CreateDevice(HWND w) {
   sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
   const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_0};
   D3D_FEATURE_LEVEL got;
-  if (FAILED(D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, levels, 2,
+  // (test aid SVR2011_MM_D3D_DEBUG=1: the D3D11 debug layer, its messages logged - DrainD3DMessages)
+  const UINT flags = _wgetenv(L"SVR2011_MM_D3D_DEBUG") ? D3D11_CREATE_DEVICE_DEBUG : 0;
+  if (FAILED(D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags, levels, 2,
                                            D3D11_SDK_VERSION, &sd, &g_swap, &g_dev, &got, &g_ctx)) &&
       FAILED(D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, levels, 2, D3D11_SDK_VERSION,
                                            &sd, &g_swap, &g_dev, &got, &g_ctx)))
     return false;
   CreateTarget();
   return true;
+}
+
+// The debug layer's messages (SVR2011_MM_D3D_DEBUG), each kind logged once, 200 at most.
+void DrainD3DMessages() {
+  static ID3D11InfoQueue* q = nullptr;
+  static bool tried = false;
+  static std::set<int> seen;
+  if (!tried && _wgetenv(L"SVR2011_MM_D3D_DEBUG")) {
+    tried = true;
+    if (g_dev) g_dev->QueryInterface(__uuidof(ID3D11InfoQueue), reinterpret_cast<void**>(&q));
+    Log(q ? "d3d11: debug layer on" : "d3d11: no debug layer (Graphics Tools not installed?)");
+  }
+  if (!q) return;
+  for (UINT64 i = 0, n = q->GetNumStoredMessages(); i < n && seen.size() < 200; ++i) {
+    SIZE_T len = 0;
+    q->GetMessage(i, nullptr, &len);
+    std::vector<char> b(len);
+    auto* m = reinterpret_cast<D3D11_MESSAGE*>(b.data());
+    if (FAILED(q->GetMessage(i, m, &len)) || !seen.insert(int(m->ID)).second) continue;
+    Log("d3d11 debug " + std::to_string(int(m->Severity)) + ": " + std::string(m->pDescription, m->DescriptionByteLength ? m->DescriptionByteLength - 1 : 0));
+  }
+  q->ClearStoredMessages();
 }
 
 // ---------------------------------------------------------------- log / work
@@ -118,8 +143,32 @@ std::map<PageId, int> g_touches;  // edits a page reported with Touch()
 
 }  // namespace
 
+namespace {
+// (ReleaseAfterFrame's queue, released after each Present; never destroyed - a picture let go of while the program
+// exits, after the last frame, is left to the process's end)
+std::mutex& ReleaseMutex() { static auto* m = new std::mutex; return *m; }
+std::vector<IUnknown*>& ReleaseQueue() { static auto* q = new std::vector<IUnknown*>; return *q; }
+
+void FlushReleases() {
+  std::vector<IUnknown*> now;
+  {
+    std::lock_guard lock(ReleaseMutex());
+    now.swap(ReleaseQueue());
+  }
+  for (IUnknown* v : now) v->Release();
+}
+}  // namespace
+
+void ReleaseAfterFrame(IUnknown* v) {
+  if (!v) return;
+  std::lock_guard lock(ReleaseMutex());
+  ReleaseQueue().push_back(v);
+}
+
 ID3D11ShaderResourceView* MakeTexture(const Image& img) {
   if (img.rgba.empty() || !g_dev) return nullptr;
+  // (the driver reads w x h pixels from the picture: never more than it has)
+  if (img.w <= 0 || img.h <= 0 || img.rgba.size() < size_t(img.w) * size_t(img.h) * 4) return nullptr;
   D3D11_TEXTURE2D_DESC td = {};
   td.Width = UINT(img.w);
   td.Height = UINT(img.h);
@@ -232,14 +281,68 @@ const COMDLG_FILTERSPEC kModFilter[1] = {{L"SvR2011 mod (*.svrmod)", L"*.svrmod"
 const COMDLG_FILTERSPEC kProjectFilter[1] = {{L"Mod Maker project (*.svrproj)", L"*.svrproj"}};
 const COMDLG_FILTERSPEC kOpenFilter[1] = {{L"Projects and mods (*.svrproj, *.svrmod)", L"*.svrproj;*.svrmod"}};
 
+namespace {
+std::wstring g_test_pick;  // --test-pick
+
+// A hidden test can't answer a dialog (it would hang): skipped, or --test-pick's answer.
+std::wstring BehindPick(const char* what, const wchar_t* title, const std::wstring& start) {
+  Log("(test: a " + std::string(what) + " dialog was skipped: " + Utf8(title) + (start.empty() ? "" : " - it opens in " + Utf8(start)) +
+      (g_test_pick.empty() ? "" : " - answered " + Utf8(g_test_pick)) + ")");
+  return std::exchange(g_test_pick, std::wstring());
+}
+
+// The dialog opens at `start`: a folder (a folder picker: in its parent, the folder picked) or a file's folder.
+void StartAt(IFileDialog* dlg, const std::wstring& start, bool folder_picker) {
+  std::error_code ec;
+  if (start.empty() || !fs::exists(start, ec)) return;
+  fs::path in = fs::path(start);
+  const bool dir = fs::is_directory(in, ec);
+  if (!dir || folder_picker) in = in.parent_path();
+  IShellItem* item = nullptr;
+  if (!in.empty() && SUCCEEDED(SHCreateItemFromParsingName(in.c_str(), nullptr, IID_PPV_ARGS(&item)))) {
+    dlg->SetFolder(item);
+    item->Release();
+  }
+  if (dir && folder_picker) dlg->SetFileName(fs::path(start).filename().c_str());
+}
+}  // namespace
+
+void TestPick(const std::wstring& path) { g_test_pick = path; }
+
+std::wstring OtherGameStart(const std::string& game) {
+  std::error_code ec;
+  const auto at = [&](const std::string& key) -> std::wstring {
+    for (const auto& [k, p] : g_settings.other_game)
+      if (k == key && fs::exists(p, ec)) return p;
+    return {};
+  };
+  if (!game.empty())
+    if (std::wstring p = at(game); !p.empty()) return p;
+  if (std::wstring p = at(""); !p.empty()) return p;
+  if (!game.empty())
+    if (std::wstring p = disc_list::PathFor(game); !p.empty()) return p;
+  return {};
+}
+
+void OtherGamePicked(const std::wstring& path, const std::string& game) {
+  if (path.empty()) return;
+  auto& v = g_settings.other_game;
+  const auto keep = [&](const std::string& key) {
+    v.erase(std::remove_if(v.begin(), v.end(), [&](const auto& e) { return e.first == key; }), v.end());
+    v.push_back({key, path});
+  };
+  keep("");
+  std::error_code ec;
+  const disc_list::Game* g = game.empty() && fs::is_directory(path, ec) ? disc_list::GameById(disc_list::Identify(path)) : nullptr;
+  if (!game.empty() || g) keep(game.empty() ? g->key : game);
+  SaveSettings();
+}
+
 std::wstring PickFile(bool save, const wchar_t* title, const COMDLG_FILTERSPEC* spec, UINT nspec,
-                      const wchar_t* def_ext, const wchar_t* def_name) {
+                      const wchar_t* def_ext, const wchar_t* def_name, const std::wstring& start) {
   IFileDialog* dlg = nullptr;
   std::wstring out;
-  if (g_behind) {  // (a hidden test can't answer a dialog: it would hang)
-    Log("(test: a file dialog was skipped: " + Utf8(title) + ")");
-    return out;
-  }
+  if (g_behind) return BehindPick("file", title, start);
   if (FAILED(CoCreateInstance(save ? CLSID_FileSaveDialog : CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
                               IID_PPV_ARGS(&dlg))))
     return out;
@@ -247,6 +350,7 @@ std::wstring PickFile(bool save, const wchar_t* title, const COMDLG_FILTERSPEC* 
   if (nspec) dlg->SetFileTypes(nspec, spec);
   if (def_ext) dlg->SetDefaultExtension(def_ext);
   if (def_name) dlg->SetFileName(def_name);
+  StartAt(dlg, start, false);
   IShellItem* item = nullptr;
   PWSTR path = nullptr;
   if (SUCCEEDED(dlg->Show(g_wnd)) && SUCCEEDED(dlg->GetResult(&item)) &&
@@ -287,18 +391,16 @@ std::vector<std::wstring> PickFiles(const wchar_t* title, const COMDLG_FILTERSPE
   return out;
 }
 
-std::wstring PickFolder(const wchar_t* title) {
+std::wstring PickFolder(const wchar_t* title, const std::wstring& start) {
   IFileOpenDialog* dlg = nullptr;
   std::wstring out;
-  if (g_behind) {  // (a hidden test can't answer a dialog: it would hang)
-    Log("(test: a folder dialog was skipped: " + Utf8(title) + ")");
-    return out;
-  }
+  if (g_behind) return BehindPick("folder", title, start);
   if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) return out;
   DWORD opt = 0;
   dlg->GetOptions(&opt);
   dlg->SetOptions(opt | FOS_PICKFOLDERS);
   dlg->SetTitle(title);
+  StartAt(dlg, start, true);
   IShellItem* item = nullptr;
   PWSTR path = nullptr;
   if (SUCCEEDED(dlg->Show(g_wnd)) && SUCCEEDED(dlg->GetResult(&item)) &&
@@ -487,6 +589,25 @@ void ReleaseOwnFiles() {
 }  // namespace
 
 bool InstallModFiles(const fs::path& dir, const std::vector<ZipEntry>& files, std::string* why) {
+  {  // (a mod with custom moves - a move pack, or a superstar mod's moves\ pack: asked first, as the launcher does;
+     // a hidden test can't answer: only logged - launcher/move_warning.h)
+    bool moves = false;
+    std::string name;
+    for (const auto& f : files) {
+      moves |= f.name == "pack.txt" || f.name == "moves/pack.txt";
+      if (f.name == "manifest.txt") name = Value(std::string(f.data.begin(), f.data.end()), "name");
+    }
+    if (name.empty()) name = PathStr(dir.filename());
+    if (moves) {
+      const fs::path game = dir.parent_path().parent_path().parent_path();  // (<game>\Mods\<type>\<folder>)
+      Log("install: " + name + " has custom moves (experimental, most likely broken)");
+      if (!move_warning_ask(g_wnd, game.c_str(), Wide(name).c_str(), g_behind)) {
+        if (why) *why = "it has custom moves (you chose not to install it).";
+        Log("install: " + name + " not installed (custom moves: No)");
+        return false;
+      }
+    }
+  }
   std::error_code ec;
   const fs::path stage = dir.parent_path() / (L"." + dir.filename().wstring() + L".new");
   const fs::path old = dir.parent_path() / (L"." + dir.filename().wstring() + L".old");
@@ -533,7 +654,7 @@ bool InstallModFiles(const fs::path& dir, const std::vector<ZipEntry>& files, st
     for (const auto& f : files)
       if (f.name == "manifest.txt") {
         const std::string t(f.data.begin(), f.data.end());
-        for (const char* k : {"type", "name", "base", "song", "music", "movie", "theme_gain", "call_gain", "entrance", "victory", "cae", "moves", "pack"})
+        for (const char* k : {"type", "name", "base", "song", "victory_song", "victory_gain", "music", "movie", "theme_gain", "call_gain", "entrance", "victory", "cae", "moves", "pack"})
           if (const std::string v = Value(t, k); !v.empty()) keys += std::string(" ") + k + "=" + v;
       }
     Log("install: " + PathStr(dir.parent_path().filename()) + "/" + PathStr(dir.filename()) + " (" + std::to_string(files.size()) +
@@ -775,29 +896,36 @@ std::map<int, Picture> g_renders;
 // Names and ratings from chEtc.pac CHAR/DAT (260-byte records after a 4-byte
 // header: ratings at +0, the full name at +34); the playable ones are those
 // with a render in DLC_HD.pac.
+// chEtc.pac's CHAR/DAT records -> names (and ratings / scales when keep).
+void ReadCharNames(const fs::path& chetc, std::map<int, std::string>& names, bool keep) {
+  Bytes d;
+  Epac e;
+  if (!ReadFile(PathStr(chetc), d) || !EpacRead(d, e)) return;
+  for (const auto& g : e.groups)
+    for (const auto& en : g.entries)
+      if (g.type == "CHAR" && en.name.rfind("DAT", 0) == 0) {
+        std::vector<PachEntry> pe;
+        if (!PachRead(en.data, pe)) continue;
+        for (const auto& x : pe) {
+          const Bytes r = Unpack(x.data);
+          if (r.size() < 4 + 66) continue;
+          const char* nm = reinterpret_cast<const char*>(&r[4 + 34]);
+          names[int(x.id)] = std::string(nm, strnlen(nm, 32));
+          if (!keep) continue;
+          std::array<int, 7> v{};
+          for (int j = 0; j < 7; ++j) v[j] = r[4 + j];
+          g_ratings[int(x.id)] = v;
+          g_scales[int(x.id)] = r[4 + 28] | (r[4 + 29] << 8);
+        }
+      }
+}
+
 void LoadStars() {
   g_stars_loaded = true;
   if (g_game.empty()) return;
-  Bytes d;
   Epac e;
   std::map<int, std::string> names;
-  if (ReadFile(PathStr(fs::path(g_game) / L"pac" / L"ch" / L"chEtc.pac"), d) && EpacRead(d, e))
-    for (const auto& g : e.groups)
-      for (const auto& en : g.entries)
-        if (g.type == "CHAR" && en.name.rfind("DAT", 0) == 0) {
-          std::vector<PachEntry> pe;
-          if (!PachRead(en.data, pe)) continue;
-          for (const auto& x : pe) {
-            const Bytes r = Unpack(x.data);
-            if (r.size() < 4 + 66) continue;
-            const char* nm = reinterpret_cast<const char*>(&r[4 + 34]);
-            names[int(x.id)] = std::string(nm, strnlen(nm, 32));
-            std::array<int, 7> v{};
-            for (int j = 0; j < 7; ++j) v[j] = r[4 + j];
-            g_ratings[int(x.id)] = v;
-            g_scales[int(x.id)] = r[4 + 28] | (r[4 + 29] << 8);
-          }
-        }
+  ReadCharNames(fs::path(g_game) / L"pac" / L"ch" / L"chEtc.pac", names, true);
   Bytes h;
   if (!ReadFile(PathStr(fs::path(g_game) / L"pac" / L"DLC_HD.pac"), h) || !EpacRead(h, e)) return;
   for (const auto& g : e.groups)
@@ -819,6 +947,56 @@ const std::vector<StarInfo>& Stars() {
 
 const StarInfo* StarById(int id) {
   for (const auto& s : Stars())
+    if (s.id == id) return &s;
+  return nullptr;
+}
+
+namespace {
+// The packages the game unpacked (UserData\0000000000000000\5451085D\00000002\<package>: dlc.cpp) and their model
+// pacs pac\ch\ch<id>_dlcNN.pac: id -> files.
+std::map<int, std::vector<fs::path>> g_dlc_pacs;
+std::vector<StarInfo> g_dlc_stars;
+bool g_dlc_loaded = false;
+void LoadDlc() {
+  g_dlc_loaded = true;
+  if (g_game.empty()) return;
+  std::error_code ec;
+  const fs::path root = fs::path(g_game) / L"UserData" / L"0000000000000000" / L"5451085D" / L"00000002";
+  std::map<int, std::string> names;
+  for (const auto& pkg : fs::directory_iterator(root, ec)) {
+    ReadCharNames(pkg.path() / L"pac" / L"ch" / L"chEtc.pac", names, false);
+    for (const auto& f : fs::directory_iterator(pkg.path() / L"pac" / L"ch", ec)) {
+      unsigned id = 0, nn = 0;
+      char tail[8] = {};
+      if (std::sscanf(PathStr(f.path().filename()).c_str(), "ch%u_dlc%u.%3s", &id, &nn, tail) == 3 &&
+          std::string(tail) == "pac" && id && id < 1000)
+        g_dlc_pacs[int(id)].push_back(f.path());
+    }
+  }
+  for (auto& [id, files] : g_dlc_pacs) {
+    std::sort(files.begin(), files.end());
+    if (id >= 100) continue;  // (a disc superstar's DLC attires: DlcModelPacs only)
+    const auto it = names.find(id);
+    g_dlc_stars.push_back({id, (it != names.end() && !it->second.empty() ? it->second : "Superstar " + std::to_string(id)) + " (DLC)"});
+  }
+  std::sort(g_dlc_stars.begin(), g_dlc_stars.end(), [](const StarInfo& a, const StarInfo& b) { return a.name < b.name; });
+}
+}  // namespace
+
+const std::vector<StarInfo>& DlcStars() {
+  if (!g_dlc_loaded) LoadDlc();
+  return g_dlc_stars;
+}
+
+std::vector<fs::path> DlcModelPacs(int id) {
+  if (!g_dlc_loaded) LoadDlc();
+  const auto it = g_dlc_pacs.find(id);
+  return it == g_dlc_pacs.end() ? std::vector<fs::path>{} : it->second;
+}
+
+const StarInfo* StarOrDlcById(int id) {
+  if (const StarInfo* s = StarById(id)) return s;
+  for (const auto& s : DlcStars())
     if (s.id == id) return &s;
   return nullptr;
 }
@@ -1593,6 +1771,11 @@ void BudgetProblems(const std::wstring& pac, const std::string& who, bool first_
   if (worst && worst->pages > kModelPagesOld && worst->pages <= kModelPagesWarn)
     out.push_back(Warning(who + "'s model takes " + std::to_string(worst->pages) + " memory pages: version " + kNeedsVersion +
                        " or newer plays it (older games had " + std::to_string(kModelPagesOld) + " and leave it out).", ""));
+  // (27 Oct: six 1,489-page superstars in one 6-man - 60 fps at 1080p, about 40 at 4x supersampling with 2x AA)
+  if (worst && worst->pages > kModelPagesHeavy)
+    out.push_back(Warning(who + "'s model is very detailed (" + std::to_string(worst->pages) + " memory pages). Fine on its "
+                          "own; six models this detailed in one match play at 60 fps at 1080p, about 40 fps at the "
+                          "highest render scale with anti-aliasing.").Note());
   if (!worst || worst->pages <= kModelPagesWarn) return;
   const int pct = worst->pages * 100 / kModelPages;
   // a lighter copy: the model without its blood, used in its place
@@ -1980,11 +2163,21 @@ void LoadSettings() {
   for (const auto& d : Values(t, "my_disc")) {  // <game key>|<disc id>|<path>
     const size_t a = d.find('|'), b = a == std::string::npos ? a : d.find('|', a + 1);
     if (b == std::string::npos) continue;
-    g_settings.my_discs.push_back({d.substr(0, a), d.substr(a + 1, b - a - 1), Wide(d.substr(b + 1))});
+    g_settings.my_discs.push_back({d.substr(0, a), d.substr(a + 1, b - a - 1), Wide(d.substr(b + 1)), L""});
+  }
+  for (const auto& d : Values(t, "my_disc_dlc")) {  // <game key>|<folder>
+    const size_t a = d.find('|');
+    if (a == std::string::npos) continue;
+    for (auto& disc : g_settings.my_discs)
+      if (disc.key == d.substr(0, a)) disc.dlc = Wide(d.substr(a + 1));
   }
   g_settings.discs_seeded = Value(t, "discs_seeded") == "1";
   g_settings.keep_bik = Value(t, "keep_bik") == "1";
   g_settings.moves_warning_off = Value(t, "moves_warning_off") == "1";
+  for (const auto& d : Values(t, "other_game")) {  // <game key or "">|<path>
+    const size_t a = d.find('|');
+    if (a != std::string::npos) g_settings.other_game.push_back({d.substr(0, a), Wide(d.substr(a + 1))});
+  }
 }
 
 }  // namespace
@@ -1998,10 +2191,14 @@ void SaveSettings() {
        "\nfont=" + std::to_string(g_settings.font) + "\n";
   for (const auto& f : g_settings.disc_folders) t += "disc_folder=" + Utf8(f) + "\n";
   if (!g_settings.bink2_tool.empty()) t += "bink2_tool=" + Utf8(g_settings.bink2_tool) + "\n";
-  for (const auto& d : g_settings.my_discs) t += "my_disc=" + d.key + "|" + d.id + "|" + Utf8(d.path) + "\n";
+  for (const auto& d : g_settings.my_discs) {
+    t += "my_disc=" + d.key + "|" + d.id + "|" + Utf8(d.path) + "\n";
+    if (!d.dlc.empty()) t += "my_disc_dlc=" + d.key + "|" + Utf8(d.dlc) + "\n";
+  }
   if (g_settings.discs_seeded) t += "discs_seeded=1\n";
   if (g_settings.keep_bik) t += "keep_bik=1\n";
   if (g_settings.moves_warning_off) t += "moves_warning_off=1\n";
+  for (const auto& [k, p] : g_settings.other_game) t += "other_game=" + k + "|" + Utf8(p) + "\n";
   WriteFile(PathStr(SettingsDir() / L"settings.txt"), Bytes(t.begin(), t.end()));
 }
 
@@ -2038,8 +2235,7 @@ std::string DiscGameName(const std::string& id) {
 }
 
 std::vector<std::wstring> DiscFolders() {
-  if (!g_settings.disc_folders.empty()) return g_settings.disc_folders;
-  return {L"D:\\Roms\\Xbox 360\\WWE", L"D:\\Roms\\Playstation 2\\WWE Games"};
+  return g_settings.disc_folders;
 }
 
 // Discs() is My game discs (disc_list.h): each set game whose image / folder is there, in its order.
@@ -2122,14 +2318,15 @@ void SourceCards(const char* file) {
   if (file[0]) {
     if (simple::Card("src_file", "One file", file, lone, w, h)) {
       static const COMDLG_FILTERSPEC kPac[1] = {{L"A game file (*.pac)", L"*.pac"}};
-      const std::wstring f = PickFile(false, L"One file from another game", kPac, 1);
-      if (!f.empty()) port_page::SetSource(f);
+      const std::wstring f = PickFile(false, L"One file from another game", kPac, 1, nullptr, nullptr, OtherGameStart());
+      if (!f.empty()) OtherGamePicked(f), port_page::SetSource(f);
     }
     ImGui::SameLine(0, 8 * g_scale);
   }
   if (simple::Card("src_folder", "A folder of game files", "the game's files you copied off a disc", folder, w, h)) {
-    const std::wstring f = PickFolder(L"A folder with the game's files (the one holding its pac folder)");
-    if (!f.empty()) port_page::SetSource(f);
+    const std::wstring f = PickFolder(L"A folder with the game's files (the one holding its pac folder)", OtherGameStart());
+    if (const std::string why = disc_list::NotGameFiles(f); !why.empty()) Status(why), Log("port: " + Utf8(f) + " - " + why);
+    else if (!f.empty()) OtherGamePicked(f), port_page::SetSource(f);
   }
   ImGui::Spacing();
   ImGui::TextDisabled("Or one of your game discs:");
@@ -2161,6 +2358,7 @@ const PageDesc kPages[] = {
     {PageId::kMoves, "Move pack", "", &moves_page::hooks, nullptr},
     {PageId::kSigns, "Crowd signs", "", &signs_page::hooks, nullptr},
     {PageId::kBackgrounds, "Menu backgrounds", "", &backgrounds_page::hooks, nullptr},
+    {PageId::kTitle, "Championship titles", "", &title_page::hooks, nullptr},
     {PageId::kMedia, "Media", "", &media_page::hooks, nullptr},
     {PageId::kMatch, "Match types", "", &match_page::hooks, nullptr},
     {PageId::kPort, "Port from a disc", "", nullptr, port_page::Draw},
@@ -2173,6 +2371,7 @@ const PageDesc kPages[] = {
     {PageId::kAssets, "Game assets", "Look", nullptr, assets_page::Draw},
     {PageId::kAnims, "Animations", "", nullptr, anims_page::Draw},
     {PageId::kInstalled, "Installed mods", "", nullptr, installed_page::Draw},
+    {PageId::kForFun, "For Fun", "", nullptr, forfun_page::Draw},
     {PageId::kIcons, "Icons & renders", "", nullptr, icons_page::Draw},
     {PageId::kHelp, "Manual", "Help", nullptr, help_page::Draw},
     {PageId::kStarPort, "Superstar from another game", "", nullptr,
@@ -2225,7 +2424,7 @@ const Group kGroups[] = {
                                {"Move pack", PageId::kMoves}, {"From another game", PageId::kMovesPort}}},
     {"Media", "", {{"Crowd signs", PageId::kSigns}, {"Menu backgrounds", PageId::kBackgrounds},
                    {"Titantron videos", PageId::kMedia, 0}, {"Menus & renders", PageId::kMedia, 1}, {"Audio", PageId::kMedia, 2},
-                   {"Belts & weapons", PageId::kBelts}}},
+                   {"Belts & weapons", PageId::kBelts}, {"Titles", PageId::kTitle}}},
     {"Match types", "", {{"Match types", PageId::kMatch}}},
     {"My game discs", "Porting", {{"My game discs", PageId::kDiscs}}},
     {"CAW pictures", "Saves", {{"CAW pictures", PageId::kCaw}}},
@@ -2233,6 +2432,7 @@ const Group kGroups[] = {
     {"Animations", "", {{"Animations", PageId::kAnims}}},
     {"Installed mods", "", {{"Installed mods", PageId::kInstalled}}},
     {"Icons & renders", "", {{"Icons & renders", PageId::kIcons}}},
+    {"For Fun", "", {{"For Fun", PageId::kForFun}}},
     {"Manual", "Help", {{"Manual", PageId::kHelp}}},
 };
 constexpr int kGroupCount = int(sizeof kGroups / sizeof kGroups[0]);
@@ -2370,7 +2570,8 @@ bool PageByName(const std::wstring& name, PageId& page) {
       {L"port-moves", PageId::kPortMoves, -1}, {L"moves-entrances", PageId::kPortMoves, -1},
       {L"port-taunts", PageId::kPortTaunts, -1}, {L"taunts", PageId::kPortTaunts, -1},
       {L"superstar-port", PageId::kStarPort, -1}, {L"arena-port", PageId::kArenaPort, -1},
-      {L"moves-port", PageId::kMovesPort, -1}, {L"belts", PageId::kBelts, -1}, {L"threads", PageId::kThreads, -1}};
+      {L"moves-port", PageId::kMovesPort, -1}, {L"belts", PageId::kBelts, -1}, {L"threads", PageId::kThreads, -1},
+      {L"titles", PageId::kTitle, -1}, {L"forfun", PageId::kForFun, -1}};
   for (const auto& n : kNames)
     if (name == n.name) {
       page = n.page;
@@ -3035,6 +3236,7 @@ LRESULT CALLBACK WndProc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
 using namespace mm;
 
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
+  session::InstallCrashHandler();  // (a crash leaves a file and a log line: session_log.h)
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   LoadSettings();
@@ -3097,6 +3299,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   std::string star_moveset, star_import_moveset;
   int star_entrance = 0;
   int star_victory = 0;
+  std::wstring title_spec, title_save;
+  std::wstring forfun_arena, forfun_star;
+  std::wstring star_victory_song, media_victory;
   std::wstring star_model, star_song, star_movie, star_picture, star_voice, star_save, sign_save, media_save, media_video;
   std::string star_name;
   std::vector<std::wstring> sign_files, media_pictures, background_files;
@@ -3111,6 +3316,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--vs-test") && more) arena_page::SetVsTest(Utf8(argv[++i]));
     else if (!wcscmp(argv[i], L"--project") && more) project = argv[++i];
     else if (!wcscmp(argv[i], L"--behind")) behind = true, g_behind = true;
+    else if (!wcscmp(argv[i], L"--test-pick") && more) TestPick(argv[++i]);
     else if (!wcscmp(argv[i], L"--test-report") && more) session::TestReport(Utf8(argv[++i]));
     else if (!wcscmp(argv[i], L"--test-report-send") && more) session::TestReportSend(Utf8(argv[++i]));  // <answers file>  // <what happened>: Report a problem, no window, then quit
     else if (!wcscmp(argv[i], L"--watch-strip") && more) anims_page::TestStrip(argv[++i]);
@@ -3193,6 +3399,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--port-fullpreview")) port_page::TestFullPreview();  // with --port-test on an entrance: its result in the Full preview
     else if (!wcscmp(argv[i], L"--port-test") && more) port_page::TestStart(Utf8(argv[++i])), g_page = PageId::kPort;
     else if (!wcscmp(argv[i], L"--port-clear")) port_page::TestClear(), g_page = PageId::kPort;
+    else if (!wcscmp(argv[i], L"--port-trim")) port_page::TestTrim(), g_page = PageId::kPort;
+    else if (!wcscmp(argv[i], L"--port-as-attire") && more) port_page::TestAsAttire(Utf8(argv[++i]));  // with --port-test on a superstar
     else if (!wcscmp(argv[i], L"--icons") && more) icons_page::TestTab(_wtoi(argv[++i])), g_page = PageId::kIcons;
     else if (!wcscmp(argv[i], L"--fbx-map") && more) {  // <fbx>,<out file>: its skeleton, the rig found and the mapping
       const std::wstring v = argv[++i];
@@ -3453,7 +3661,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     }
     else if (!wcscmp(argv[i], L"--simple-arena") && more) arena_page::TestSimple(_wtoi(argv[++i])), g_page = PageId::kArena;  // Simple arena at <step>
     else if (!wcscmp(argv[i], L"--simple-arena-start") && more) arena_page::TestSimpleStart(Utf8(argv[++i])), g_page = PageId::kArena;  // tile:<n> | empty:<n> | disc:<key>[:<bgNN>[:<host>]]
-    else if (!wcscmp(argv[i], L"--discs-find") && more) disc_list::TestFind(argv[++i]), g_page = PageId::kDiscs;  // <folder>[,<report>]: Find my discs
+    else if (!wcscmp(argv[i], L"--discs-allstars") && more) {  // <from>,<to>
+      const std::wstring v = argv[++i];
+      const size_t comma = v.find(L',');
+      disc_list::TestAllStars(v.substr(0, comma), comma == std::wstring::npos ? L"" : v.substr(comma + 1));
+      g_page = PageId::kDiscs;
+    } else if (!wcscmp(argv[i], L"--discs-find") && more) disc_list::TestFind(argv[++i]), g_page = PageId::kDiscs;  // <folder>[,<report>]: Find my discs
     else if (!wcscmp(argv[i], L"--simple-port") && more) {  // <entrance|moves|taunts|import>,<game key>[,<item>[,<step>[,add]]]
       const std::string spec = Utf8(argv[++i]);
       simple_port::TestStart(spec);
@@ -3473,7 +3686,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--star-cae") && more) star_page::TestCae(Utf8(argv[++i]));  // a created entrance (Mods\.cae id)
     else if (!wcscmp(argv[i], L"--star-import-moveset") && more) star_import_moveset = Utf8(argv[++i]);  // star:<id> | mod:<folder>
     else if (!wcscmp(argv[i], L"--star-entrance") && more) star_entrance = _wtoi(argv[++i]);
+    else if (!wcscmp(argv[i], L"--star-victory-song") && more) star_victory_song = argv[++i];  // (victory_song=, -3 dB)
+    else if (!wcscmp(argv[i], L"--media-victory") && more) media_victory = argv[++i];  // <id>,<song>
     else if (!wcscmp(argv[i], L"--star-victory") && more) star_victory = _wtoi(argv[++i]);  // (victory=, the section open)
+    else if (!wcscmp(argv[i], L"--star-victory-port") && more) star_page::TestVictoryPort(Utf8(argv[++i]));  // (<game>,<n>: converted)
     else if (!wcscmp(argv[i], L"--run-fix") && more) g_test_fix = Utf8(argv[++i]);
     else if (!wcscmp(argv[i], L"--install-star")) g_test_install_frames = 0;  // "<text>[|<n>]" (see g_test_fix)
     else if (!wcscmp(argv[i], L"--show-problems")) g_show_problems = true;
@@ -3486,6 +3702,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--star-gear") && more) star_page::TestGear(Utf8(argv[++i]));  // <attire>:<off|from<k>>[,...]
     else if (!wcscmp(argv[i], L"--hits")) char_preview::SetHits(true);
     else if (!wcscmp(argv[i], L"--attire-keep-entrance")) attire_page::TestKeepEntrance();  // (--attire from a superstar mod: its entrance too)
+    else if (!wcscmp(argv[i], L"--attire-from") && more) {  // <n>[,<name>]: --attire takes the source's attire n (and names it)
+      const std::string v = Utf8(argv[++i]);
+      const size_t c = v.find(',');
+      attire_page::TestFrom(std::atoi(v.c_str()), c == std::string::npos ? "" : v.substr(c + 1));
+    }
     else if (!wcscmp(argv[i], L"--attire") && more) {  // <star id>,<slot 0=new>,<model pac | superstar mod folder / .svrmod / .svrproj>[,<save .svrmod>]
       const std::wstring a = argv[++i];
       const size_t c1 = a.find(L','), c2 = a.find(L',', c1 + 1), c3 = a.find(L',', c2 + 1);
@@ -3538,6 +3759,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     else if (!wcscmp(argv[i], L"--star-name") && more) star_name = Utf8(argv[++i]);
     else if (!wcscmp(argv[i], L"--sign") && more) sign_files.push_back(argv[++i]);
     else if (!wcscmp(argv[i], L"--test-sign-save") && more) sign_save = argv[++i];
+    else if (!wcscmp(argv[i], L"--forfun-arena") && more) forfun_arena = argv[++i];
+    else if (!wcscmp(argv[i], L"--forfun-star") && more) forfun_star = argv[++i];
+    else if (!wcscmp(argv[i], L"--title-test") && more) title_spec = argv[++i];
+    else if (!wcscmp(argv[i], L"--test-title-save") && more) title_save = argv[++i];
     else if (!wcscmp(argv[i], L"--background") && more) background_files.push_back(argv[++i]);
     else if (!wcscmp(argv[i], L"--test-background-save") && more) background_save = argv[++i];
     else if (!wcscmp(argv[i], L"--media-arena") && more) media_arena = _wtoi(argv[++i]);
@@ -3628,8 +3853,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   if (!star_import_moveset.empty()) star_page::TestImportMoveset(star_import_moveset);
   if (star_entrance) star_page::TestEntrance(star_entrance);
   if (star_victory) star_page::TestVictory(star_victory);
+  if (!star_victory_song.empty()) star_page::TestVictorySong(star_victory_song, -3.0f);
   signs_page::TestStart(sign_files, sign_save);
   backgrounds_page::TestStart(background_files, background_save);
+  forfun_page::TestStart(forfun_arena, forfun_star);
+  title_page::TestStart(title_spec, title_save);
+  if (const size_t c = media_victory.find(L','); c != std::wstring::npos) media_page::TestVictory(_wtoi(media_victory.c_str()), media_victory.substr(c + 1));
   media_page::TestStart(media_arena, media_video, media_pictures, media_save);
   arena_page::SetTestSave(test_save, test_lib);
   if (!test_obj_add.empty() || !test_obj_export.empty() || test_obj_remove >= 0)
@@ -3828,8 +4057,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
       shot.clear();
       PostMessageW(g_wnd, WM_CLOSE, 0, 0);
     }
-    g_swap->Present(1, 0);
+    DrainD3DMessages();
+    session::PresentResult(g_swap->Present(1, 0));
+    FlushReleases();  // (the textures let go of while this frame was built: drawn now - app.h ReleaseAfterFrame)
   }
+  FlushReleases();
   if (g_worker.joinable()) g_worker.join();
   editor::Shutdown();
   char_preview::Shutdown();

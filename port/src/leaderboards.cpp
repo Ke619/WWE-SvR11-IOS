@@ -21,6 +21,7 @@
 #include "generated/default/svr2011_init.h"
 #include "json_lite.h"
 #include "online_net.h"
+#include "online_overlay.h"
 
 namespace svr2011 {
 
@@ -325,6 +326,7 @@ std::vector<View> FetchPage(const Enumerator& e) {
   for (const auto& s : e.specs) {
     View v{s.view, 0, {}};
     std::optional<Json> j;
+    NoteOnlineActivity(OnlineActivity::kLeaderboards);  // (the presence poll's place)
     if (SignedIn()) {
       const std::string pivot = e.mode == 0 ? "\"" + Hex16(e.pivot) + "\"" : std::to_string(e.pivot ? e.pivot : 1);
       j = Post("page", "{\"view\": " + std::to_string(s.view) + ", \"mode\": \"" + (e.mode == 0 ? "xuid" : "rank") +

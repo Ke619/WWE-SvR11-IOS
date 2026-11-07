@@ -26,6 +26,7 @@
 #include "updater.h"
 #include "unzip.h"
 #include "release_check.h"
+#include "update_log.h"
 
 #define GAME_EXE     L"svr2011.exe"
 #define LAUNCHER_EXE L"SvR2011 Launcher.exe"
@@ -40,29 +41,6 @@ static DWORD s_parent;   /* (console modes: the launcher that started us and wai
 
 /* ── small helpers ─────────────────────────────────────────────────────── */
 
-static int file_exists(const WCHAR *p)
-{
-    DWORD a = GetFileAttributesW(p);
-    return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
-}
-
-static int dir_exists(const WCHAR *p)
-{
-    DWORD a = GetFileAttributesW(p);
-    return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
-}
-
-static int join(WCHAR *out, const WCHAR *a, const WCHAR *b)
-{
-    size_t la = wcslen(a);
-    if (la + 1 + wcslen(b) >= MAX_PATH) {
-        out[0] = 0;
-        return 0;
-    }
-    swprintf_s(out, MAX_PATH, (la && a[la - 1] == L'\\') ? L"%s%s" : L"%s\\%s", a, b);
-    return 1;
-}
-
 static int mkdirs(const WCHAR *path)
 {
     WCHAR tmp[MAX_PATH], *p;
@@ -75,19 +53,6 @@ static int mkdirs(const WCHAR *path)
             *p = c;
         }
     return CreateDirectoryW(tmp, NULL) || GetLastError() == ERROR_ALREADY_EXISTS;
-}
-
-static int same_dir(const WCHAR *a, const WCHAR *b)
-{
-    WCHAR fa[MAX_PATH], fb[MAX_PATH];
-    size_t n;
-    if (!GetFullPathNameW(a, MAX_PATH, fa, NULL) || !GetFullPathNameW(b, MAX_PATH, fb, NULL))
-        return 0;
-    n = wcslen(fa);
-    if (n > 3 && fa[n - 1] == L'\\') fa[n - 1] = 0;
-    n = wcslen(fb);
-    if (n > 3 && fb[n - 1] == L'\\') fb[n - 1] = 0;
-    return !_wcsicmp(fa, fb);
 }
 
 /* Deletes a folder and everything in it. */
@@ -112,46 +77,6 @@ static void remove_tree(const WCHAR *dir)
     } while (FindNextFileW(h, &fd));
     FindClose(h);
     RemoveDirectoryW(dir);
-}
-
-static int copy_tree(const WCHAR *from, const WCHAR *to)
-{
-    WCHAR pat[MAX_PATH], src[MAX_PATH], dst[MAX_PATH];
-    WIN32_FIND_DATAW fd;
-    HANDLE h;
-    int ok = 1;
-    CreateDirectoryW(to, NULL);
-    if (!join(pat, from, L"*") || (h = FindFirstFileW(pat, &fd)) == INVALID_HANDLE_VALUE)
-        return 0;
-    do {
-        if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..") || !join(src, from, fd.cFileName) ||
-            !join(dst, to, fd.cFileName))
-            continue;
-        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
-            ok = copy_tree(src, dst) && ok;
-        else if (!CopyFileW(src, dst, FALSE))
-            ok = 0;
-    } while (FindNextFileW(h, &fd));
-    FindClose(h);
-    return ok;
-}
-
-/* The release's folders (Bundled Mods, native_shaders, pad_icons, Android ...) into `to`. */
-static int copy_folders(const WCHAR *from, const WCHAR *to)
-{
-    WCHAR pat[MAX_PATH], src[MAX_PATH], dst[MAX_PATH];
-    WIN32_FIND_DATAW fd;
-    HANDLE h;
-    int ok = 1;
-    if (!join(pat, from, L"*") || (h = FindFirstFileW(pat, &fd)) == INVALID_HANDLE_VALUE)
-        return 0;
-    do {
-        if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && wcscmp(fd.cFileName, L".") &&
-            wcscmp(fd.cFileName, L"..") && join(src, from, fd.cFileName) && join(dst, to, fd.cFileName))
-            ok = copy_tree(src, dst) && ok;
-    } while (FindNextFileW(h, &fd));
-    FindClose(h);
-    return ok;
 }
 
 static void error_text(DWORD e, WCHAR *out, size_t n)
@@ -205,6 +130,7 @@ static void say(const WCHAR *fmt, ...)
     va_start(ap, fmt);
     vswprintf_s(buf, 700, fmt, ap);
     va_end(ap);
+    update_log(s_game, "updater", L"%s", buf);   /* (each step, for Report a problem) */
     if (s_console)
         cprint(L"%s\n", buf);
     else if (s_text)
@@ -735,6 +661,8 @@ static DWORD WINAPI apply_thread(LPVOID arg)
     int ok;
     (void)arg;
     err[0] = 0;
+    update_log(s_game, "updater", L"start: %s of %s (version %s, to %s)", s_repair ? L"repair" : L"update", s_game,
+               PORT_VERSION, s_want[0] ? s_want : L"the newest");
     if (s_repair) {
         ok = repair_install(s_want[0] ? s_want : NULL, &s_repaired, err, 700);
     } else {
@@ -743,6 +671,13 @@ static DWORD WINAPI apply_thread(LPVOID arg)
         if (ok)
             ok = install_release(&info, err, 700);
     }
+    if (ok && s_repair)
+        update_log(s_game, "updater", L"result: repaired (%d file(s))", s_repaired);
+    else if (ok)
+        update_log(s_game, "updater", L"result: updated to %s", info.version);
+    else
+        update_log(s_game, "updater", L"result: %s failed - %s", s_repair ? L"the repair" : L"the update",
+                   err[0] ? err : L"(no reason given)");
     PostMessageW(s_wnd, WM_APP + 1, (WPARAM)ok, (LPARAM)err);
     return 0;
 }
@@ -870,7 +805,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
         int n = 0;
         console_setup();
         wcscpy_s(s_game, MAX_PATH, argv[2]);
-        if (!repair_install(argc >= 4 ? argv[3] : NULL, &n, err, 700)) { cprint(L"repair failed: %s\n", err); return 1; }
+        update_log(s_game, "updater", L"start: repair of %s (tests)", s_game);
+        if (!repair_install(argc >= 4 ? argv[3] : NULL, &n, err, 700)) {
+            update_log(s_game, "updater", L"result: the repair failed - %s", err[0] ? err : L"(no reason given)");
+            cprint(L"repair failed: %s\n", err);
+            return 1;
+        }
+        update_log(s_game, "updater", L"result: repaired (%d file(s))", n);
         cprint(L"repaired %d file(s) in %s\n", n, s_game);
         return 0;
     }
@@ -882,6 +823,27 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
         for (i = 4; i + 1 < argc; i++)
             if (!wcscmp(argv[i], L"--version")) wcscpy_s(s_want, 32, argv[++i]);
         return run_window(inst);
+    }
+    if (!wcscmp(argv[1], L"--check")) {   /* [<version>]: the newest release (or that one) - nothing downloaded */
+        WCHAR err[700] = L"";
+        UpdateInfo info;
+        console_setup();
+        if (!(argc >= 3 ? update_check_version(argv[2], &info, err, 700) : update_check(&info, err, 700))) {
+            cprint(L"check failed: %s\n", err);
+            return 1;
+        }
+        cprint(L"release %s, %llu bytes: %s\n", info.version, (unsigned long long)info.size, info.url);
+        return 0;
+    }
+    if (!wcscmp(argv[1], L"--fetch") && argc >= 4) {   /* <url> <file>: a download as an update's (tests) */
+        WCHAR err[700] = L"";
+        console_setup();
+        if (!update_download_cb(argv[2], argv[3], NULL, NULL, NULL, err, 700)) {
+            cprint(L"download failed: %s\n", err);
+            return 1;
+        }
+        cprint(L"downloaded %s\n", argv[3]);
+        return 0;
     }
     if (!wcscmp(argv[1], L"--update")) {   /* [<game folder>] [--from <version>] */
         WCHAR err[700] = L"";
@@ -904,7 +866,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
         console_setup();
         if (argc >= 4)
             wcscpy_s(s_game, MAX_PATH, argv[3]);
-        if (!install_zip(argv[2], err, 700)) { cprint(L"update failed: %s\n", err); return 1; }
+        update_log(s_game, "updater", L"start: update of %s from %s (tests)", s_game, argv[2]);
+        if (!install_zip(argv[2], err, 700)) {
+            update_log(s_game, "updater", L"result: the update failed - %s", err[0] ? err : L"(no reason given)");
+            cprint(L"update failed: %s\n", err);
+            return 1;
+        }
+        update_log(s_game, "updater", L"result: updated from %s", argv[2]);
         cprint(L"updated %s from %s\n", s_game, argv[2]);
         return 0;
     }

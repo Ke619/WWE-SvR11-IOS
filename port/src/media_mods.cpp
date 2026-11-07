@@ -14,6 +14,9 @@
 //   icon.<id>=<file.dds>     ... the 64 x 64 face icon
 //   arena.<nn>=<bgNN.pac>    arena nn with its own screen pictures (the
 //                            Mod Maker retextures the screens' flip-book)
+//   victory_theme.<id>=<song> his music when he wins, in place of his theme
+//                            (docs/VICTORY_SCENES.md 5)
+//   victory_theme_gain.<id>=<dB>  that track's level, -20..+6
 //   sound.<event>=<file>     a game sound, by its event name without "Play_"
 //                            (Menu_Music, MUS_0161_0_0, SVR10_Chant_Sena_001,
 //                            elbow_mid_0231_0_0 ...; SVR2011_TEST_NAMECALL=1
@@ -44,10 +47,12 @@
 //    it, and the game's "is the object still sounding" (sub_82BB69E8) says
 //    yes while it plays (else music players think it ended at once). Volume:
 //    the game's music / SFX / voice settings (*(0x82EC4C18)+36: floats).
+#include "big_roster.h"
 #include "media_mods.h"
 #include "no_mods.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -95,6 +100,25 @@ struct Voice {
 };
 std::mutex g_voice_mutex;
 std::vector<Voice> g_voices;
+
+// Victory tracks (docs/VICTORY_SCENES.md 5). The game starts the win's music as it does an entrance's, by the theme
+// and not by the person: who it is for comes from the match's people (their entrance blocks, as the match copied them).
+struct VictoryTrack {
+  fs::path file;
+  float gain_db = 0.0f;
+};
+struct MatchPerson {
+  uint32_t music = 0;       // the entrance block's +0x10 (254: USER PLAYLIST)
+  std::u16string playlist;  // ... its name, +0xCC
+};
+std::mutex g_win_mutex;
+std::map<uint32_t, VictoryTrack> g_victory_tracks;  // character id ->
+std::map<uint32_t, MatchPerson> g_match_people;     // character id -> as last set up
+std::atomic<bool> g_win_music{false};
+std::atomic<bool> g_host_voices{false};  // (a victory track has played on a host voice: its stops and "sounding" count)
+int g_win_voice = -1;                    // the win's host voice
+fs::path g_win_voice_file;
+uint8_t* g_base = nullptr;
 
 fs::path Game() { return rex::filesystem::GetExecutableFolder(); }
 
@@ -279,6 +303,13 @@ void InstallMediaMods(rex::memory::Memory* memory) {
             if (gk == "theme_gain." + std::to_string(id)) gain = float(std::atof(gv.c_str()));
           SetSongGain(to, gain);
         }
+      } else if (KeyId(k, "victory_theme.", id)) {
+        if (fs::exists(p.folder / v, ec)) {
+          float gain = 0.0f;
+          for (const auto& [gk, gv] : p.lines)
+            if (gk == "victory_theme_gain." + std::to_string(id)) gain = float(std::atof(gv.c_str()));
+          SetVictoryTrack(id, p.folder / v, gain);
+        }
       } else if (k.rfind("sound.", 0) == 0 || k == "menu_music") {
         if (fs::exists(p.folder / v, ec)) g_sounds[k == "menu_music" ? "Menu_Music" : k.substr(6)] = p.folder / v;
       } else if (KeyId(k, "arena.", id) && id < 100) {
@@ -309,13 +340,20 @@ REX_EXTERN(__imp__sub_828B5BC0);
 REX_HOOK_RAW(sub_828B5BC0) {
   const uint32_t record = ctx.r3.u32, desc = ctx.r4.u32;
   __imp__sub_828B5BC0(ctx, base);
+  g_base = base;
+  svr2011::WinMusicOff();
+  struct NotePerson {  // (on the way out: what the code below left in the copy)
+    uint8_t* base;
+    uint32_t record, desc;
+    ~NotePerson() { svr2011::detail::NoteMatchPerson(base, record, desc); }
+  } note{base, record, desc};
   if (std::getenv("SVR2011_TEST_PRO_LOG") && record && desc) {  // (test aid: what the match copied)
     const uint8_t* e = base + record + 260 + 0x1C0;
     const uint32_t id = uint32_t(base[desc] << 24 | base[desc + 1] << 16 | base[desc + 2] << 8 | base[desc + 3]);
     // (the same id's profile in the CHAR/PRO table, and the record in CHAR/DAT)
-    const uint32_t si = id < 512 ? uint32_t(base[0x82DB3610 + id * 2] << 8 | base[0x82DB3610 + id * 2 + 1]) : 999;
-    const uint8_t* tp = si < 512 ? base + 0x82E7C920 + si * 1056 : nullptr;
-    const uint8_t* tr = si < 512 ? base + 0x82E407C0 + si * 260 : nullptr;
+    const uint32_t si = id < 512 ? svr2011::RosterIndex(base, id) : 999;
+    const uint8_t* tp = si < 512 ? base + svr2011::RosterEntry(0x82E7C920, 1056, si) : nullptr;
+    const uint8_t* tr = si < 512 ? base + svr2011::RosterEntry(0x82E407C0, 260, si) : nullptr;
     REXLOG_INFO("[svr2011] match profile: id {} music {} movie {} entrance {} | table {} {} {} | copy==table {} "
                 "record==table {} | record {:08X} desc {:08X}",
                 id, uint32_t(e[0x10] << 8 | e[0x11]), uint32_t(e[0x12] << 8 | e[0x13]), uint32_t(e[0x14] << 8 | e[0x15]),
@@ -399,11 +437,120 @@ bool ObjectSounding(uint32_t object) {
 
 }  // namespace
 
+namespace {
+constexpr uint32_t kSlotTable = 0x82E3DDFC, kSlotsAt = 132, kSlotSize = 52, kSlotKey = 16;
+constexpr uint32_t kFighters = 0x82E3CC50, kLost = 447, kBeatenBy = 448;
+
+uint32_t Be32(const uint8_t* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; }
+
+// The win's music is for the person in the match whose theme it is. Two people can share one (a mod with a stock
+// theme, a mirror match): a person who beat someone goes first, and if it's him, his own track or none.
+template <typename Theme>
+bool WinnerTrack(const uint8_t* base, const Theme& is_his, VictoryTrack* out) {
+  const uint32_t table = Be32(base + kSlotTable);
+  if (!table) return false;
+  bool won[16] = {};
+  for (uint32_t i = 0; i < 8; ++i)
+    if (const uint32_t c = Be32(base + kFighters + i * 4); c && base[c + kLost] && base[c + kBeatenBy] < 16) won[base[c + kBeatenBy]] = true;
+  std::lock_guard lock(g_win_mutex);
+  for (const bool winners : {true, false}) {
+    for (uint32_t person = 0; person < 16; ++person) {
+      if (won[person] != winners) continue;
+      const uint32_t id = Be32(base + table + kSlotsAt + person * kSlotSize + kSlotKey) / 100;
+      const auto p = g_match_people.find(id);
+      if (!id || p == g_match_people.end() || !is_his(p->second)) continue;
+      const auto t = g_victory_tracks.find(id);
+      if (t == g_victory_tracks.end()) {
+        REXLOG_INFO("[svr2011] victory track: the music is superstar {}'s, who has none", id);
+        return false;
+      }
+      *out = t->second;
+      REXLOG_INFO("[svr2011] victory track: superstar {} ({})", id, winners ? "the winner" : "by his theme");
+      return true;
+    }
+  }
+  REXLOG_INFO("[svr2011] victory track: the music is nobody's in the match");
+  return false;
+}
+}  // namespace
+
+void svr2011::detail::NoteMatchPerson(const uint8_t* base, uint32_t record, uint32_t desc) {
+  if (!record || !desc) return;
+  const uint8_t* e = base + record + 260 + 0x1C0;
+  MatchPerson p;
+  p.music = uint32_t(e[0x10]) << 8 | e[0x11];
+  for (uint32_t i = 0; i < 40; ++i) {
+    const char16_t c = char16_t(uint32_t(e[0xCC + 2 * i]) << 8 | e[0xCC + 2 * i + 1]);
+    if (!c) break;
+    p.playlist.push_back(c);
+  }
+  if (std::getenv("SVR2011_TEST_VICTORY_LOG"))
+    REXLOG_INFO("[svr2011] victory track: person {} music {} playlist chars {}", Be32(base + desc), p.music, p.playlist.size());
+  std::lock_guard lock(g_win_mutex);
+  g_match_people[Be32(base + desc)] = std::move(p);
+}
+
+void svr2011::SetVictoryTrack(uint32_t id, const fs::path& file, float gain_db) {
+  if (std::getenv("SVR2011_TEST_NO_VICTORY")) return;  // (test aid: this game plays without them - two test games share one Mods folder)
+  std::lock_guard lock(g_win_mutex);
+  g_victory_tracks[id] = {file, std::clamp(gain_db, -20.0f, 6.0f)};
+  REXLOG_INFO("[svr2011] victory track: superstar {}: {}", id, file.filename().string());
+}
+
+void svr2011::WinMusicOn() {
+  if (g_win_music.exchange(true)) return;
+  REXLOG_INFO("[svr2011] victory track: the match's result is in: the win's music from now on");
+  if (g_base && std::getenv("SVR2011_TEST_VICTORY_LOG"))  // (the live match settings: the rule, its title)
+    REXLOG_INFO("[svr2011] victory track: rule {:02X}, title byte {}", g_base[0x82E3DE00], g_base[0x82E3DE00 + 37]);
+}
+
+void svr2011::WinMusicOff() {
+  if (g_win_music.exchange(false)) REXLOG_INFO("[svr2011] victory track: the win's music is over");
+  std::lock_guard lock(g_win_mutex);
+  g_win_voice = -1;
+  g_win_voice_file.clear();
+}
+
+bool svr2011::WinMusicNow() { return g_win_music; }
+
+bool svr2011::VictoryTrackOfPlaylist(const std::u16string& playlist, fs::path* file, float* gain_db) {
+  if (!g_win_music || !g_base) return false;
+  VictoryTrack track;
+  if (!WinnerTrack(g_base, [&playlist](const MatchPerson& p) { return p.music == 254 && p.playlist == playlist; }, &track)) return false;
+  *file = track.file;
+  *gain_db = track.gain_db;
+  return true;
+}
+
 // Post an event by name: sub_82BEC030(name, object, flags, callback, cookie)
 // -> a playing id (0: failed).
 // (called from superstar_mods.cpp's hook: true = handled, *id the result)
 bool svr2011::MediaEvent(uint8_t* base, const char* e, uint32_t object, uint32_t* id) {
-  if (g_sounds.empty()) return false;
+  g_base = base;
+  if (!std::strcmp(e, "Play_Menu_Music")) WinMusicOff();
+  if (g_win_music && !std::strncmp(e, "Play_MUS_", 9)) {
+    const uint32_t music = uint32_t(std::atoi(e + 9));
+    VictoryTrack track;
+    if (WinnerTrack(base, [music](const MatchPerson& p) { return p.music == music; }, &track)) {
+      std::lock_guard lock(g_win_mutex);
+      if (g_win_voice >= 0 && g_win_voice_file == track.file && svr2011::HostSoundActive(g_win_voice)) {
+        *id = 0x7F000000u + uint32_t(g_win_voice + 1);  // (started already: goes on)
+        return true;
+      }
+      ForVoices(object, 0, 0);
+      const int h = svr2011::HostSoundStart(track.file, true, Volume(base, 0), track.gain_db);
+      if (h >= 0) {
+        std::lock_guard vlock(g_voice_mutex);
+        g_voices.push_back({h, object, 0, false});
+        g_host_voices = true;
+      }
+      g_win_voice = h, g_win_voice_file = track.file;
+      REXLOG_INFO("[svr2011] victory track: {} -> {} ({:+.1f} dB)", e, track.file.filename().string(), track.gain_db);
+      *id = 0x7F000000u + uint32_t(h + 1);
+      return true;
+    }
+  }
+  if (g_sounds.empty() && !g_host_voices) return false;
   {
     if (!std::strncmp(e, "Play_", 5)) {
       if (const auto it = g_sounds.find(e + 5); it != g_sounds.end()) {
@@ -439,7 +586,7 @@ bool svr2011::MediaEvent(uint8_t* base, const char* e, uint32_t object, uint32_t
 // A game object released (sub_82BB6898(sys, object)): its sounds stop.
 REX_EXTERN(__imp__sub_82BB6898);
 REX_HOOK_RAW(sub_82BB6898) {
-  if (!g_sounds.empty()) ForVoices(ctx.r4.u32, -1, 0);
+  if (!g_sounds.empty() || g_host_voices) ForVoices(ctx.r4.u32, -1, 0);
   __imp__sub_82BB6898(ctx, base);
 }
 
@@ -447,7 +594,7 @@ REX_HOOK_RAW(sub_82BB6898) {
 // of ours plays on it.
 REX_EXTERN(__imp__sub_82BB69E8);
 REX_HOOK_RAW(sub_82BB69E8) {
-  if (!g_sounds.empty() && ObjectSounding(ctx.r4.u32)) {
+  if ((!g_sounds.empty() || g_host_voices) && ObjectSounding(ctx.r4.u32)) {
     ctx.r3.u64 = 1;
     return;
   }

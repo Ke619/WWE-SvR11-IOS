@@ -20,14 +20,12 @@
 
 #include "generated/default/svr2011_init.h"
 #include "players.h"
+#include "../modmaker/svrfmt/bytes.h"
 
 REXCVAR_DEFINE_BOOL(more_pads, true, "Input", "Pads 5-8 too (the game reads 4; it has 8 pad objects)");
 
 namespace {
-uint32_t Rd32(const uint8_t* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; }
-void Wr32(uint8_t* p, uint32_t v) {
-  p[0] = uint8_t(v >> 24), p[1] = uint8_t(v >> 16), p[2] = uint8_t(v >> 8), p[3] = uint8_t(v);
-}
+using svrfmt::Rd32, svrfmt::Wr32;
 uint32_t g_user_offset = 0;
 }  // namespace
 

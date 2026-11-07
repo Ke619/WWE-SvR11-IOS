@@ -2,6 +2,13 @@
 
 A backstage mod is a rebuilt backstage brawl room.
 
+**Switched off (29 Oct 2026, the user's call for 2.1.6: "off, stock kept").** `BackstageModsOff()` in `src/no_mods.h`
+returns true: `LoadBackstage` reads no Mods\Backstage folder (it logs each as "backstage mod '<name>' skipped"),
+no backstage gimmick pac is mounted (`BackstageGimmickPacs`), none is offered or checked online, and Backstage
+Brawl always plays the game's own backstage. The files stay installed. The launcher's Mods tab and the Mod Maker's
+Installed page show them off (they can't be switched on); Android's Mods page labels them OFF. Undo: return false
+there and drop those UI guards. Road to WrestleMania's walks, scenes and story matches are untouched.
+
 - **Game:** `LoadBackstage` in `src/arena_mods.cpp`.
 - **Making them:** the Mod Maker's Arenas page → Backstage areas → Open area
   in Arena Editor.

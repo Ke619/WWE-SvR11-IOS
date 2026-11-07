@@ -35,6 +35,7 @@
 #include <rex/system/xmemory.h>
 
 #include "generated/default/svr2011_init.h"
+#include "../modmaker/svrfmt/bytes.h"
 
 REXCVAR_DEFINE_BOOL(caw_logos_anywhere, true, "Gameplay",
                     "Created Superstars: logos show anywhere on clothing and skin (off: the game's own logo mask "
@@ -76,16 +77,7 @@ thread_local int t_preview_index = -1;
 
 uint8_t* Ptr(uint8_t* base, uint32_t addr) { return base + addr; }
 uint8_t Rd8(uint8_t* base, uint32_t addr) { return base[addr]; }
-uint16_t Rd16(uint8_t* base, uint32_t addr) { return uint16_t(base[addr] << 8 | base[addr + 1]); }
-uint32_t Rd32(uint8_t* base, uint32_t addr) {
-  uint32_t v;
-  std::memcpy(&v, base + addr, 4);
-  return __builtin_bswap32(v);
-}
-void Wr32(uint8_t* base, uint32_t addr, uint32_t v) {
-  v = __builtin_bswap32(v);
-  std::memcpy(base + addr, &v, 4);
-}
+using svrfmt::Rd32, svrfmt::Rd16, svrfmt::Wr32;
 
 uint32_t Fnv32(const uint8_t* p, size_t n) {
   uint32_t h = 2166136261u;

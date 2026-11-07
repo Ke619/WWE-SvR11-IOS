@@ -5,10 +5,12 @@
 #include <atomic>
 #include <cstring>
 #include <map>
+#include <cwctype>
 #include <mutex>
 #include <thread>
 
 #include "app.h"
+#include "tool_run.h"
 #include "svrfmt/disc.h"
 
 namespace mm {
@@ -185,11 +187,18 @@ std::string g_note;  // a message under the list (a picked file wasn't that game
 void PickFor(const Game& g, bool folder) {
   static const COMDLG_FILTERSPEC kIso[1] = {{L"Disc images (*.iso)", L"*.iso"}};
   const std::wstring title = Wide(std::string(folder ? "The extracted folder of " : "The disc image of ") + FullName(g));
-  const std::wstring p = folder ? PickFolder(title.c_str()) : PickFile(false, title.c_str(), kIso, 1);
+  const std::wstring start = OtherGameStart(g.key);
+  const std::wstring p = folder ? PickFolder(title.c_str(), start) : PickFile(false, title.c_str(), kIso, 1, nullptr, nullptr, start);
   if (p.empty()) return;
+  if (const std::string why = NotGameFiles(p); !why.empty()) {  // (not set: the game keeps what it had)
+    g_note = FullName(g) + ": " + why;
+    Log("discs: not set for " + FullName(g) + ": " + Utf8(p) + " - " + why);
+    return;
+  }
   bool xbox = g.xbox;
   const std::string id = Identify(p, &xbox);
   const Game* is = GameById(id);
+  OtherGamePicked(p, is ? is->key : g.key);
   if (is && is != &g) {
     Set(is->key, p, id);
     g_note = "That disc is " + FullName(*is) + ", not " + FullName(g) + ": it is set for " + is->name + ".";
@@ -202,6 +211,47 @@ void PickFor(const Game& g, bool folder) {
     g_note.clear();
     Status(FullName(g) + ": " + Utf8(p));
   }
+}
+
+
+static std::wstring g_test_stars_from, g_test_stars_to;
+
+// An archive right in the folder or a level down: the porters read packages, not what they were downloaded in.
+static bool HoldsArchives(const std::wstring& folder, int depth = 0) {
+  std::error_code ec;
+  for (fs::directory_iterator it(fs::path(folder), fs::directory_options::skip_permission_denied, ec), end; !ec && it != end; it.increment(ec)) {
+    std::error_code e2;
+    if (it->is_directory(e2)) {
+      if (depth < 1 && HoldsArchives(it->path().wstring(), depth + 1)) return true;
+    } else {
+      std::wstring x = it->path().extension().wstring();
+      for (auto& c : x) c = wchar_t(towlower(c));
+      if (x == L".rar" || x == L".7z" || x == L".zip") return true;
+    }
+  }
+  return false;
+}
+
+// Any DLC under the folder, as tools/dlc_src.py looks (its MAX_DEPTH): a console package file, or a folder holding pac\\ch.
+static bool HoldsDlc(const std::wstring& folder, int depth = 0) {
+  std::error_code ec;
+  const fs::path dir(folder);
+  if (fs::is_directory(dir / L"pac" / L"ch", ec)) return true;
+  if (depth > 5) return false;
+  for (fs::directory_iterator it(dir, fs::directory_options::skip_permission_denied, ec), end; !ec && it != end; it.increment(ec)) {
+    std::error_code e2;
+    if (it->is_directory(e2)) {
+      if (HoldsDlc(it->path().wstring(), depth + 1)) return true;
+    } else if (it->is_regular_file(e2) && it->file_size(e2) >= 0x1000) {
+      char magic[4] = {};
+      if (FILE* f = _wfopen(it->path().c_str(), L"rb")) {
+        std::fread(magic, 1, 4, f);
+        std::fclose(f);
+      }
+      if (!std::memcmp(magic, "LIVE", 4) || !std::memcmp(magic, "PIRS", 4) || !std::memcmp(magic, "CON ", 4)) return true;
+    }
+  }
+  return false;
 }
 
 void GameRow(const Game& g) {
@@ -227,6 +277,29 @@ void GameRow(const Game& g) {
         ImGui::TextColored(kWarn, "%s", note.c_str());
         ImGui::PopTextWrapPos();
       }
+  }
+  if (g.xbox && !path.empty()) {  // (its DLC: the superstars it adds join the From another game list)
+    const std::wstring dlc = DlcFor(g.key);
+    if (dlc.empty()) ImGui::TextDisabled("DLC: none set");
+    else ImGui::TextDisabled("DLC: %s", Utf8(dlc).c_str());
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("A folder holding this game's DLC packages (as the console keeps them, or unpacked).\n"
+                        "The superstars they add are listed in From another game > Superstar, marked (DLC).");
+    ImGui::SameLine();
+    if (ImGui::SmallButton(dlc.empty() ? "Add DLC folder..." : "Change DLC...")) {
+      const std::wstring p = PickFolder(L"The folder with this game's DLC packages", dlc);
+      if (!p.empty()) {
+        SetDlc(g.key, p);
+        Status(FullName(g) + " DLC: " + Utf8(p) +
+               (HoldsDlc(p) ? ""
+                : HoldsArchives(p) ? " - this folder has .rar / .7z / .zip files: unpack them first, then pick the folder they unpacked to."
+                                   : " - no DLC packages found there (console package files, or unpacked ones holding pac\\ch)."));
+      }
+    }
+    if (!dlc.empty()) {
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Remove DLC")) SetDlc(g.key, L"");
+    }
   }
   ImGui::TableNextColumn();  // what the converters bring from it (their `games` lists, asked once)
   {
@@ -300,6 +373,19 @@ std::string IdFor(const std::string& key) {
   if (d && !d->id.empty()) return d->id;
   const Game* g = GameByKey(key);
   return g && !g->ids.empty() ? g->ids[0] : "";
+}
+
+std::wstring DlcFor(const std::string& key) {
+  const Settings::MyDisc* d = Find(key);
+  std::error_code ec;
+  return d && !d->dlc.empty() && fs::exists(d->dlc, ec) ? d->dlc : std::wstring();
+}
+
+void SetDlc(const std::string& key, const std::wstring& folder) {
+  if (Settings::MyDisc* d = Find(key)) {
+    d->dlc = folder;
+    SaveSettings();
+  }
 }
 
 void Set(const std::string& key, const std::wstring& path, const std::string& disc_id) {
@@ -408,6 +494,38 @@ std::string FolderNote(const std::string& key) {
   return note;
 }
 
+std::string NotGameFiles(const std::wstring& folder) {
+  std::error_code ec;
+  const fs::path dir(folder);
+  if (folder.empty() || !fs::is_directory(dir, ec) || !FolderId(folder, nullptr).empty()) return {};
+  for (const auto& n : NeedTable())  // (a partial copy of a game: FolderNote says what it can do)
+    for (const char* f : n.moves)
+      if (fs::exists(dir / fs::u8path(f), ec)) return {};
+  for (const char* f : {"pac/ch/chEtc.pac", "pac/misc.pac", "pac/m.pac", "pac/createmode.pac"})
+    if (fs::exists(dir / fs::u8path(f), ec)) return {};
+  // The console's own packages (Content\0000000000000000\<title id>\00000002\<40 hex>): STFS files, "LIVE" / "PIRS" / "CON "
+  int packages = 0;
+  for (fs::directory_iterator it(dir, fs::directory_options::skip_permission_denied, ec), end; !ec && it != end && packages < 1;
+       it.increment(ec)) {
+    std::error_code e2;
+    if (!it->is_regular_file(e2) || it->file_size(e2) < 0x1000) continue;
+    char magic[4] = {};
+    if (FILE* f = _wfopen(it->path().c_str(), L"rb")) {
+      std::fread(magic, 1, 4, f);
+      std::fclose(f);
+    }
+    packages += !std::memcmp(magic, "LIVE", 4) || !std::memcmp(magic, "PIRS", 4) || !std::memcmp(magic, "CON ", 4);
+  }
+  const std::string name = Utf8(dir.filename().wstring());
+  if (packages)
+    return "\"" + name + "\" holds Xbox 360 packages (DLC or a game update as the console keeps them), not a game's files. "
+           "Set the game's disc here (an .iso, or the whole extracted disc with default.xex), then pick this folder with "
+           "its row's Add DLC folder: the DLC's superstars join the From another game list.";
+  return "\"" + name + "\" has none of a game's own files (no default.xex, pac\\misc.pac, pac\\ch\\chEtc.pac ...): is it DLC? "
+         "Set the game's disc here (an .iso, or the whole extracted disc with default.xex), then pick the DLC with its "
+         "row's Add DLC folder: the DLC's superstars join the From another game list.";
+}
+
 bool Scanning() { return g_scanning; }
 
 void FindIn(const std::wstring& folder) { FindInFolders({folder}); }
@@ -480,10 +598,25 @@ void TestFind(const std::wstring& spec) {
   g_test_pending = true;
 }
 
+static void GetAllStarsMovies(const std::wstring& from, const std::wstring& to) {
+  RunToolJson(L"dlc_src.py", {L"movies", from, L"54510866", to}, [from, to](int code, const std::string& out) {
+    const size_t found = out.find("\"ok\": true");
+    if (code == 0 && found != std::string::npos) Status("WWE All Stars' jumbotrons saved in " + Utf8(to) + ": use one as a superstar's entrance movie.");
+    else if (HoldsArchives(from)) Status("That folder has .rar / .7z / .zip files: unpack them first, then pick the folder they unpacked to.");
+    else Status("No WWE All Stars DLC movies found in " + Utf8(from) + ".");
+  });
+}
+
+void TestAllStars(const std::wstring& from, const std::wstring& to) { g_test_stars_from = from, g_test_stars_to = to; }
+
 void Draw() {
   if (g_test_pending) {
     g_test_pending = false;
     FindIn(g_test_folder);
+  }
+  if (!g_test_stars_from.empty() && !Busy()) {  // (--discs-allstars <from>,<to>: the button's job)
+    GetAllStarsMovies(g_test_stars_from, g_test_stars_to);
+    g_test_stars_from.clear();
   }
   const float top = ImGui::GetCursorPosY();
   Heading("My game discs", "Your other WWE games, set once: every From another game tab and Moves & entrances read them. Disc "
@@ -496,13 +629,14 @@ void Draw() {
     ImGui::BeginDisabled(g_scanning);
     PushAccent();
     if (ImGui::Button(label, ImVec2(bw, 0))) {
-      const std::wstring f = PickFolder(L"A folder with your disc images or game folders (searched with everything under it)");
-      if (!f.empty()) FindIn(f);
+      const std::wstring f = PickFolder(L"A folder with your disc images or game folders (searched with everything under it)",
+                                        OtherGameStart());
+      if (!f.empty()) OtherGamePicked(f), FindIn(f);
     }
     PopAccent();
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-      ImGui::SetTooltip("Pick a folder (e.g. D:\\Roms): it and everything under it is searched for .iso files and extracted "
+      ImGui::SetTooltip("Pick a folder: it and everything under it is searched for .iso files and extracted "
                         "game folders, and each disc is recognised by its id. Games you already set stay as they are.");
     ImGui::SetCursorPos(after);
   }
@@ -538,6 +672,15 @@ void Draw() {
   Table(true);
   ImGui::Spacing();
   Table(false);
+  ImGui::Spacing();
+  // (WWE All Stars isn't a source game, but its DLC's jumbotrons are Bink movies a mod can use: its packages are enough)
+  if (ImGui::SmallButton("WWE All Stars DLC: get the jumbotrons...") && !Busy()) {
+    const std::wstring from = PickFolder(L"The folder with WWE All Stars' DLC packages", L"");
+    if (!from.empty()) {
+      const std::wstring to = PickFolder(L"Where to save the jumbotrons (.bik)", L"");
+      if (!to.empty()) GetAllStarsMovies(from, to);
+    }
+  }
   ImGui::Spacing();
   ImGui::PushTextWrapPos(0);
   ImGui::TextDisabled("Only your own discs are read: nothing of any game comes with the Mod Maker. WWE '12 and later "

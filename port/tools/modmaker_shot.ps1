@@ -8,6 +8,8 @@ $port = Split-Path $PSScriptRoot -Parent
 if (-not $Exe) { $Exe = Join-Path $port "out\build\SourceArenas\SvR2011 Mod Maker.exe" }
 if (-not $Game) { $Game = Join-Path $port "runs\opt_arena_game" }
 if (-not $Out) { $Out = Join-Path $port "runs\modmaker.png" }
+. (Join-Path $PSScriptRoot "test_guard.ps1")
+if (Test-SvrPrivatePath (Join-Path $Game "svr2011.toml")) { Use-SvrTestLauncher $Game | Out-Null }  # (a test's own folder: never the live server)
 $al = @("--game", "`"$Game`"", "--behind", "--shot", "`"$Out`"", "--shot-after", "$Wait")
 if ($Extra) { $al += $Extra }
 $p = Start-Process $Exe -ArgumentList $al -PassThru -WindowStyle Hidden

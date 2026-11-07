@@ -41,6 +41,8 @@
 #include "generated/default/svr2011_init.h"
 #include "match_hud.h"
 #include "match_types.h"
+#include "../modmaker/svrfmt/bytes.h"
+#include "util.h"
 
 namespace {
 
@@ -49,17 +51,10 @@ constexpr uint32_t kState = 446, kLost = 447, kBeatenBy = 448, kTeam = 1800, kRo
 constexpr uint32_t kOpponents = 1;  // (their team; player 1's is 0)
 constexpr uint32_t kBusy = 476;  // (0 once a beaten character has left - the Royal Rumble's test before it unloads one)
 
-uint32_t Rd32(const uint8_t* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; }
+using svrfmt::Rd32, svrfmt::Wr32;
 uint32_t Rd16(const uint8_t* p) { return uint32_t(p[0]) << 8 | p[1]; }
-void Wr32(uint8_t* p, uint32_t v) {
-  p[0] = uint8_t(v >> 24), p[1] = uint8_t(v >> 16), p[2] = uint8_t(v >> 8), p[3] = uint8_t(v);
-}
 
-int64_t NowMs() {
-  return std::chrono::duration_cast<std::chrono::milliseconds>(
-             std::chrono::steady_clock::now().time_since_epoch())
-      .count();
-}
+using svr2011::NowMs;
 
 std::atomic<int> g_beaten{0};    // opponents beaten this match
 std::atomic<int64_t> g_seen{0};  // ms: the match's last update (the count is shown)
@@ -285,9 +280,43 @@ REX_HOOK_RAW(sub_82245618) {
 // (fatal-4-way, Fold) the pair's +20 was NULL once one had been eliminated:
 // a read of guest 0xA0C over and over, then a hang. A pair missing a
 // character takes the zeroing path.
+// Called from the update below (sub_8280CFD0) after its own pick of the people the CPU looks at - +8, +12, +16 and +20,
+// each read through right after (their +444, +446 ...). In a ROYAL RUMBLE the pick could find nobody once the
+// opponent was thrown out (all three NULL: an access violation at the +444 read - 2 of 3 heavy 15-man rumbles on
+// PC, 3 Nov, main too): the empty ones become the character himself and stay so - more of the CPU's code reads +20
+// after the update in the same frame (sub_82811D58 -> sub_827F6C20, a read of guest 0x538 when it was put back to
+// NULL) - until the next update's guard below finds someone in the ring for +20.
+namespace {
+thread_local uint32_t t_update_pair = 0;  // (inside sub_8280CFD0 for this pair)
+thread_local bool t_stand_in = false;    // (+8 / +12 / +16 / +20 given the character this update: logged)
+constexpr uint32_t kLooksAt[] = {8, 12, 16, 20};  // (+16 too: an empty one read at its +304 - guest 0x130 - in a stalled rumble, 3 Nov)
+}  // namespace
+// The Royal Rumble's manager, sub_8224C1B8(object): a state machine on +92 (0-16; 13, sub_8224BF08, unloads the
+// eliminated one's slot at +112). Research aid (with SVR2011_TEST_PEOPLE_LOG): each change of its state.
+REX_EXTERN(__imp__sub_8224C1B8);
+REX_HOOK_RAW(sub_8224C1B8) {
+  static const bool log = std::getenv("SVR2011_TEST_PEOPLE_LOG") != nullptr;
+  const uint32_t obj = ctx.r3.u32;
+  const uint32_t before = log && obj ? Rd32(base + obj + 92) : 0;
+  __imp__sub_8224C1B8(ctx, base);
+  if (log && obj && Rd32(base + obj + 92) != before)
+    REXLOG_INFO("rumble manager {:08X}: state {} -> {} (+80 {:08X} +84 {:08X} +116 {} +112 {:08X}), frame {}", obj, before,
+                Rd32(base + obj + 92), Rd32(base + obj + 80), Rd32(base + obj + 84), Rd32(base + obj + 116),
+                Rd32(base + obj + 112), Rd32(base + 0x82E3CD0C));
+}
+
 REX_EXTERN(__imp__sub_828061E8);
 REX_HOOK_RAW(sub_828061E8) {
   const uint32_t pair = ctx.r3.u32;
+  // Test aid SVR2011_TEST_PAIR_NULL=<s>: once, that many seconds into a match, the update's pick comes out empty
+  // (+8, +12, +16, +20 NULL) as in the rumble - with SVR2011_TEST_PAIR_OLD=1 the old way, which crashes
+  static const int null_at = [] { const char* v = std::getenv("SVR2011_TEST_PAIR_NULL"); return v ? std::atoi(v) : -1; }();
+  if (static bool done = false; null_at >= 0 && !done && pair && pair == t_update_pair && Rd32(base + pair + 20) &&
+                                int32_t(Rd32(base + 0x82E3CD0C)) > null_at * 60) {
+    done = true;
+    for (const uint32_t off : kLooksAt) Wr32(base + pair + off, 0);
+    REXLOG_INFO("match types: test - the update's pick of {:08X} emptied", Rd32(base + pair));
+  }
   if (pair && (!Rd32(base + pair) || !Rd32(base + pair + 20))) {
     Wr32(base + pair + 656, 0);
     Wr32(base + pair + 660, 0);
@@ -295,6 +324,11 @@ REX_HOOK_RAW(sub_828061E8) {
     if (++count <= 10 || count % 1000 == 0)
       REXLOG_INFO("match types: a character pair missing one ({:08X} / {:08X}) - skipped ({} times)",
                   Rd32(base + pair), Rd32(base + pair + 20), count);
+    // (every one of kLooksAt, +20 too: with +16 added to the list the loop still stopped at three, so +20 was left
+    // NULL and the update read through it - guest 0x1BC, 2.1.9 report 93af87, an RTWM run-in after the pin)
+    if (const uint32_t self = Rd32(base + pair); self && pair == t_update_pair && !std::getenv("SVR2011_TEST_PAIR_OLD"))
+      for (const uint32_t off : kLooksAt)
+        if (!Rd32(base + pair + off)) Wr32(base + pair + off, self), t_stand_in = true;
     return;
   }
   __imp__sub_828061E8(ctx, base);
@@ -312,6 +346,15 @@ std::map<uint32_t, uint32_t> g_targets;  // character -> its AI pair's +20, last
 REX_EXTERN(__imp__sub_8280CFD0);
 REX_HOOK_RAW(sub_8280CFD0) {
   const uint32_t pair = ctx.r3.u32;
+  // Test aid SVR2011_TEST_PEOPLE_LOG=<s>: in any match, every <s> seconds the six people's state, team and entry
+  // (SVR2011_TEST_SK_LOG's line - a ROYAL RUMBLE's entrants coming in, or not)
+  if (static const int every = [] { const char* v = std::getenv("SVR2011_TEST_PEOPLE_LOG"); return v ? std::atoi(v) : 0; }();
+      every > 0) {
+    static std::atomic<int32_t> last{-1};
+    const int32_t f = int32_t(Rd32(base + 0x82E3CD0C)), slot = f / (every * 60);
+    if (f > 0 && last.exchange(slot) != slot)
+      REXLOG_INFO("people at frame {}:{} | live +0 {:02X}", f, Characters(base), base[kLive]);
+  }
   // (not at a match's start - there +20 is empty until the game sets it - and
   // only for a competitor: not the referee or the commentators, teams 30+)
   const uint32_t self = pair ? Rd32(base + pair) : 0;
@@ -326,7 +369,16 @@ REX_HOOK_RAW(sub_8280CFD0) {
     std::memcpy(&fx, &x, 4), std::memcpy(&fz, &z, 4);
     return std::fabs(fx) < 58.0f && std::fabs(fz) < 58.0f;  // (the ramp starts at about z 60)
   };
+  // Test aid SVR2011_TEST_NO_OTHER=<from s>,<to s>: in that part of a match nobody passes valid_other below (a rumble
+  // where nobody else is in the ring and up)
+  static const std::pair<int, int> no_other = [] {
+    int a = -1, b = -1;
+    if (const char* v = std::getenv("SVR2011_TEST_NO_OTHER")) std::sscanf(v, "%d,%d", &a, &b);
+    return std::make_pair(a, b);
+  }();
+  const int32_t now_frame = int32_t(Rd32(base + 0x82E3CD0C));
   const auto valid_other = [&] {
+    if (no_other.first >= 0 && now_frame >= no_other.first * 60 && now_frame < no_other.second * 60) return 0u;
     for (uint32_t i = 0; i < 6; ++i) {
       const uint32_t c = Rd32(base + kChars + i * 4);
       if (c && c != self && base[c + kState] == 0 && !base[c + kLost] && Rd32(base + c + kTeam) < 30 &&
@@ -363,17 +415,54 @@ REX_HOOK_RAW(sub_8280CFD0) {
     if (pair && Rd32(base + pair + 20)) pairs.insert(pair);
     had = pair && pairs.count(pair) && !old_way;
   }
-  if (self && !Rd32(base + pair + 20) && Rd32(base + self + kTeam) < 30 &&
+  // (+20 the character himself: the stand-in above - someone else as soon as there's one)
+  if (const uint32_t on = Rd32(base + pair + 20); self && (!on || on == self) && Rd32(base + self + kTeam) < 30 &&
       (had || int32_t(Rd32(base + 0x82E3CD0C)) > 300)) {
-    const uint32_t other = valid_other();
+    uint32_t other = valid_other();
+    // (nobody in the ring and up - a ROYAL RUMBLE: skipping every update left a CPU standing for the last 12 minutes,
+    // 3 Nov: the nearest one in the match (state 0: not waiting to come in, 1, nor thrown out, 4) on another team,
+    // wherever he is - on the floor, on the ramp; nobody at all - the
+    // character himself, the update runs and the game's own pick inside it may find someone. SVR2011_TEST_IDLE_OLD=1:
+    // skipped as before)
+    static const bool idle_old = std::getenv("SVR2011_TEST_IDLE_OLD") != nullptr;
+    const char* how = "now";
+    if (!other && !idle_old) {
+      const auto RdF = [](const uint8_t* p) {
+        uint32_t u;
+        std::memcpy(&u, p, 4);
+        u = __builtin_bswap32(u);
+        float f;
+        std::memcpy(&f, &u, 4);
+        return f;
+      };
+      float best = 1e30f;
+      for (uint32_t i = 0; i < 6; ++i) {
+        const uint32_t c = Rd32(base + kChars + i * 4);
+        if (!c || c == self || base[c + kState] != 0 || base[c + kLost] || Rd32(base + c + kTeam) >= 30 ||
+            Rd32(base + c + kTeam) == Rd32(base + self + kTeam))
+          continue;
+        const float dx = RdF(base + c + 288) - RdF(base + self + 288), dz = RdF(base + c + 296) - RdF(base + self + 296);
+        if (dx * dx + dz * dz < best) best = dx * dx + dz * dz, other = c, how = "the nearest";
+      }
+      if (!other) other = self, how = "himself";
+    }
     static int count = 0;
     if (++count <= 10 || count % 1000 == 0)
       REXLOG_INFO("match types: a character's opponent was gone ({:08X}) - {} ({} times)", self,
-                  other ? fmt::format("now {:08X}", other) : std::string("skipped"), count);
+                  other ? fmt::format("{} {:08X}", how, other) : std::string("skipped"), count);
     if (!other) return;
     Wr32(base + pair + 20, other);
   }
+  t_update_pair = pair, t_stand_in = false;
   __imp__sub_8280CFD0(ctx, base);
+  t_update_pair = 0;
+  if (t_stand_in) {
+    static int count = 0;
+    if (++count <= 10 || count % 1000 == 0)
+      REXLOG_INFO("match types: a CPU's update found nobody to look at ({:08X}) - itself until there's someone ({} times)",
+                  self, count);
+    t_stand_in = false;
+  }
   if (self) {  // (research aid: the stuck-wrestler log's AI target - match_types.h AiTargetOf)
     std::lock_guard lock(g_targets_mutex);
     g_targets[self] = Rd32(base + pair + 20);

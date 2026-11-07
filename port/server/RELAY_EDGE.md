@@ -26,6 +26,30 @@ address (sho-ti.me, which is the VPS) on the port the server tells it.
 - **Between a UDP player and an https (fallback) player:** packets cross the
   link, which is no worse than today.
 
+## Guards (29 Oct)
+
+- **Whose game it is:** a ticket now holds the account id (signed with it), so
+  the edge's list tells the server whose every game is, even after either one
+  restarts. The dashboard's Matches -> Relay now shows each game's account,
+  address, link, packets a second and version, never a bare "?". The edge
+  still takes the first tickets (no account) until they run out, an hour at
+  most; their rows say "not known: an older ticket".
+- **Bans reach the relay:** the dashboard's Ban (or Delete) ends the account's
+  https relay streams, drops its UDP games, and tells the edge. The edge drops
+  them and refuses every ticket made before the ban, and the server tells it
+  again after an edge restart. A banned account can't get a new ticket.
+- **The match network p2p is kept by the relay itself:** the server's
+  keepalive carries the setting. On p2p, the edge and the server pass one game
+  only 12 packets to any one other game at once, then 2 a second. That is
+  enough for hellos, session answers and QoS, but not for a match (60 a second
+  and more), whatever the game was told. Searches are not limited.
+- **Either side can be updated first:** an older edge ignores the new
+  keepalive and the kick. An older server reads only the ids from the new
+  edge's list, and its tickets still pass.
+- **Windows:** a UDP socket there stops reading after a "port unreachable" (a
+  game or the other end gone) on asyncio's default loop. The endpoints open
+  again by themselves. Linux, the VPS, never needs it.
+
 ## Setting it up (the user does this, or OKs each step)
 
 1. **A secret.** On the PC, in the service folder:
@@ -68,3 +92,11 @@ on test ports (37650-37661) with a throwaway data folder, then checks:
 - that forged and expired tickets are refused, and that link packets
   without the secret are ignored
 - that the server without an edge still works
+
+`python test_relay_guard.py [--ports 8545]` checks the guards the same way:
+
+- tickets with the account, the older ones, the link's new parts
+- the dashboard's rows
+- p2p holding match data back while hellos and searches pass
+- a ban, an edge restart after a ban, unban and sign in again
+- a server restart (the edge's games still by name)

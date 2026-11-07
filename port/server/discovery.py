@@ -34,7 +34,8 @@ def init(store):
         # (owner edits: updated = the last file update, edited = the last info / picture edit,
         # pics = a counter of picture changes for the clients' image URLs)
         have = {r[1] for r in store.db.execute("PRAGMA table_info(mods)")}
-        for col, kind in (("updated", "REAL"), ("edited", "REAL"), ("pics", "INTEGER DEFAULT 0")):
+        # (needs: the manifest's needs=, the oldest game version that plays the file - docs/SVRMOD_FORMAT.md)
+        for col, kind in (("updated", "REAL"), ("edited", "REAL"), ("pics", "INTEGER DEFAULT 0"), ("needs", "TEXT")):
             if col not in have:
                 store.db.execute("ALTER TABLE mods ADD COLUMN %s %s" % (col, kind))
         store.db.commit()
@@ -99,9 +100,9 @@ def add(store, owner, author, fields, data, file_name, images):
         shas = [store._put_blob(img, compress=False) for img in images]
         cur = store.db.execute(
             "INSERT INTO mods (owner, author, name, types, tags, version, description, size, sha, images, file_name,"
-            " created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " created, needs) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (owner, author, fields["name"], fields["types"], fields["tags"], fields["version"],
-             fields["description"], len(data), sha, json.dumps(shas), file_name, time.time()))
+             fields["description"], len(data), sha, json.dumps(shas), file_name, time.time(), fields.get("needs", "")))
         store.db.commit()
         return cur.lastrowid
 
@@ -110,7 +111,7 @@ def _row(r, full=False):
     d = {"id": r[0], "owner": r[1], "author": r[2], "name": r[3],
          "types": [k for k, v in TYPES.items() if r[4] & v], "tags": [t for t in (r[5] or "").split(",") if t],
          "version": r[6], "size": r[8], "hidden": bool(r[12]), "created": r[13], "downloads": r[14],
-         "updated": r[15], "edited": r[16], "pics": r[17] or 0}
+         "updated": r[15], "edited": r[16], "pics": r[17] or 0, "needs": r[18] or ""}
     if full:
         d["description"] = r[7]
         d["file_name"] = r[11]
@@ -118,7 +119,7 @@ def _row(r, full=False):
 
 
 COLS = ("id, owner, author, name, types, tags, version, description, size, sha, images, file_name, hidden, created,"
-        " downloads, updated, edited, pics")
+        " downloads, updated, edited, pics, needs")
 
 
 def search(store, q="", types=0, tag="", sort="new", page=0, with_hidden=False):
@@ -212,7 +213,8 @@ def replace_file(store, mod_id, data, file_name, fields):
         if not r:
             return None
         sha = store._put_blob(data, compress=False)
-        sets, args = ["sha = ?", "size = ?", "file_name = ?", "updated = ?"], [sha, len(data), file_name, time.time()]
+        sets, args = (["sha = ?", "size = ?", "file_name = ?", "updated = ?", "needs = ?"],
+                      [sha, len(data), file_name, time.time(), fields.get("needs", "")])
         for k in ("name", "version", "tags", "description", "types"):
             if k in fields:
                 sets.append("%s = ?" % k)

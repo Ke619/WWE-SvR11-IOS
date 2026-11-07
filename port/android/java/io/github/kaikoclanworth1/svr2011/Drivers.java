@@ -259,8 +259,9 @@ final class Drivers {
 
     void buildMali(LinearLayout column) {
         // (alpha mode turned on by an older launcher: its settings brought up to date)
+        // Only what the GPU needs: the look (setMali) is set once, so a player can change it afterwards.
         if (settings_.getBool(kMaliKey, false)) {
-            setMali(true);
+            setMaliNeeds(true);
             settings_.save();
         }
         LinearLayout card = a_.card(column, "Mali GPU (alpha)");
@@ -291,10 +292,14 @@ final class Drivers {
                                      "vulkan_force_expand_rectangle_lists_in_vs",
                                      "vulkan_force_convert_quad_lists_to_triangle_lists"};
 
-    void setMali(boolean on) {
+    void setMaliNeeds(boolean on) {
         settings_.setBool(kMaliKey, on);
         for (String k : kMaliOff) settings_.setBool(k, !on);
         for (String k : kMaliOn) settings_.setBool(k, on);
+    }
+
+    void setMali(boolean on) {
+        setMaliNeeds(on);
         // Mali GPUs are in slow phones and tablets: the scene at half resolution
         // and small textures (memory), no real-time shadows; the crowd is left
         // out in Mali mode too (arena_crowd auto). Off: full resolution and
@@ -303,6 +308,11 @@ final class Drivers {
         settings_.setInt("native_scene_height", 0);  // (an in-game 900P / 1080P would win over it)
         if (on) settings_.setString("native_texture_quality", "low");
         settings_.setBool("native_shadows", !on);  // (no real-time shadows: fewer draws)
+        // 30 frames a second unless the player chose: on the Galaxy A51 (Mali-G72) the 60 setting
+        // gave 33 fps at 45-50/60 game speed with 30-65 ms swings, the 30 setting a steady 29.4 at
+        // 57/60 (the game's logic thread is the limit at half resolution, not the GPU). The
+        // launcher's Frame rate choice (Display) keeps whatever the player picks.
+        if (on && settings_.getString("frame_rate", "").isEmpty()) settings_.setInt("frame_rate", 30);
     }
 
     // Before the game starts on a Mali GPU: the warning (each time, until the

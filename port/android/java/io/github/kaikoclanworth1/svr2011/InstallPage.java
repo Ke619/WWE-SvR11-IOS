@@ -75,7 +75,8 @@ final class InstallPage {
     }
 
     void refresh() {
-        state_.setText(InstallActivity.installed()
+        String incomplete = InstallActivity.incompleteText();
+        state_.setText(incomplete != null ? incomplete : InstallActivity.installed()
             ? "Installed in games/" + InstallActivity.kFolderName + " (" + FileOps.human(free()) + " free)."
             : "Not installed yet.");
     }
@@ -190,10 +191,29 @@ final class InstallPage {
                     byte[] info = read(base + xex.sector * kSector + off, 24);
                     int id = DlcPage.be32(info, 12);
                     if (id != DlcPage.kTitleId) return String.format("this is another game (its title ID is %08X)", id);
-                    return null;
+                    return supportedRelease(xex);
                 }
             }
             return "default.xex has no title ID";
+        }
+
+        // The release the port was made from (launcher/game_files_crc.inc: default.xex's size and CRC-32, the US /
+        // Europe disc): the port is that xex recompiled, so another release's - the Japanese disc (2.1.8 report
+        // 6fd821) - can't run.
+        static final long kXexSize = 15020032L;
+        static final long kXexCrc = 0xD2719517L;
+
+        String supportedRelease(Entry xex) throws IOException {
+            final String other = "this is another release of the game (for example the Japanese disc): the port only "
+                + "runs the US / Europe Xbox 360 release (title 5451085D)";
+            if (xex.size != kXexSize) return other;
+            java.util.zip.CRC32 crc = new java.util.zip.CRC32();
+            for (long at = 0; at < xex.size; ) {
+                int n = (int) Math.min(4L << 20, xex.size - at);
+                crc.update(read(base + xex.sector * kSector + at, n));
+                at += n;
+            }
+            return crc.getValue() == kXexCrc ? null : other;
         }
     }
 
@@ -364,6 +384,10 @@ final class InstallPage {
                         out.mkdirs();
                         continue;
                     }
+                    if (InstallActivity.keptIfThere(entry.getName()) && out.exists()) {
+                        done += Math.max(0, entry.getSize());
+                        continue;
+                    }
                     out.getParentFile().mkdirs();
                     try (InputStream in = zip.getInputStream(entry); OutputStream os = new FileOutputStream(out)) {
                         int n;
@@ -376,7 +400,7 @@ final class InstallPage {
                 }
             }
             Shaders.install(a_);
-            return "Installed from the package. Press Play.";
+            return "Installed from the package. Your saves and mods were kept. Press Play.";
         } catch (Exception e) {
             return "Installing failed: " + e.getMessage();
         } finally {

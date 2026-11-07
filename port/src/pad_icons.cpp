@@ -22,13 +22,16 @@
 
 #include "pad_icons.h"
 #include "mystery_opponent.h"
+#include "menu_touch.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <fstream>
 #include <map>
 #include <memory>
@@ -37,6 +40,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -49,28 +53,19 @@
 #include <rex/logging.h>
 #include <rex/ppc.h>
 #include <rex/system/xmemory.h>
+#include <rex/ui/keybinds.h>
+#include <rex/ui/window.h>
 
 #include "generated/default/svr2011_init.h"
+#include "keyboard_typing.h"
 #include "pad_types.h"
+#include "../modmaker/svrfmt/bytes.h"
+#include "pad_map.h"
 
 namespace svr2011 {
 namespace {
 
-uint32_t Rd32(const uint8_t* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; }
-uint16_t Rd16(const uint8_t* p) { return uint16_t(p[0] << 8 | p[1]); }
-void Wr32(uint8_t* p, uint32_t v) { p[0] = uint8_t(v >> 24), p[1] = uint8_t(v >> 16), p[2] = uint8_t(v >> 8), p[3] = uint8_t(v); }
-void Wr16(uint8_t* p, uint16_t v) { p[0] = uint8_t(v >> 8), p[1] = uint8_t(v); }
-float RdF(const uint8_t* p) {
-  const uint32_t u = Rd32(p);
-  float f;
-  std::memcpy(&f, &u, 4);
-  return f;
-}
-void WrF(uint8_t* p, float f) {
-  uint32_t u;
-  std::memcpy(&u, &f, 4);
-  Wr32(p, u);
-}
+using svrfmt::Rd32, svrfmt::Rd16, svrfmt::RdF, svrfmt::Wr32, svrfmt::Wr16, svrfmt::WrF;
 
 constexpr uint32_t kGlyph = 24;
 constexpr uint32_t kFirstCode = 0xE000;
@@ -81,6 +76,9 @@ rex::memory::Memory* g_memory = nullptr;
 uint8_t* g_base = nullptr;
 bool g_enabled = false;
 thread_local int t_owner = -1;
+// (character select's bottom bar being drawn: each controller picture's draws so far - record, count)
+thread_local bool t_in_bar = false;
+thread_local std::vector<std::pair<uint32_t, int>> t_bar_draws;
 
 // The kind of pictures for the text / picture being drawn: its player's
 // controller (the match HUD, the character select panels), or - shared by
@@ -95,10 +93,18 @@ Kind CurrentKind(bool) {
   if (t_owner >= 0) return of(PlayerPadType(uint32_t(t_owner)));
   return of(PlayerPadType(uint32_t(g_last_input.load())));
 }
+// The controller layout (pad_map.h) the prompt being drawn shows: its player's or, shared, the last to press
+// something's. Only in play: the menus get the real buttons, so they show them.
+uint64_t CurrentLayout() {
+  if (!PadMapActive()) return kPadMapStandard;
+  return PadMapLayout(uint32_t(t_owner >= 0 ? t_owner : g_last_input.load()));
+}
 
 // ---------------------------------------------------------------------------
-// Keyboard: the key each button is bound to (the SDK's keybind_* settings,
-// the first of each), shown as its keycap.
+// Keyboard: the key each button is bound to (the SDK's keybind_* settings),
+// shown as its keycap. A button bound to more than one key ("E,O") shows the
+// one the player pressed last for it, the first until then (report 73e6ba:
+// the right hand's O reverses, the prompt said E).
 
 struct ButtonBind {
   uint32_t code;
@@ -125,17 +131,37 @@ const ButtonBind kBinds[] = {
     {0xE037, "keybind_dpad_up"},
 };
 
-std::string FirstKey(const char* setting) {
+// A setting's keys, trimmed ("Q,I" -> Q, I).
+std::vector<std::string> BoundKeys(const char* setting) {
   std::string v;
   try {
     v = rex::cvar::Query<std::string>(setting);
   } catch (...) {
     return {};
   }
-  v = v.substr(0, v.find(','));
-  while (!v.empty() && v.back() == ' ') v.pop_back();
-  while (!v.empty() && v.front() == ' ') v.erase(0, 1);
-  return v;
+  std::vector<std::string> keys;
+  std::stringstream ss(v);
+  for (std::string k; std::getline(ss, k, ',');) {
+    while (!k.empty() && k.back() == ' ') k.pop_back();
+    while (!k.empty() && k.front() == ' ') k.erase(0, 1);
+    if (!k.empty()) keys.push_back(k);
+  }
+  return keys;
+}
+
+// setting -> the one of its keys the player pressed last (the window's key presses, PadIconsKeyDown)
+std::mutex g_pressed_mutex;
+std::map<std::string, std::string> g_pressed;
+
+std::string ShownKey(const char* setting) {
+  const std::vector<std::string> keys = BoundKeys(setting);
+  if (keys.empty()) return {};
+  if (keys.size() > 1) {
+    std::lock_guard lock(g_pressed_mutex);
+    if (auto it = g_pressed.find(setting); it != g_pressed.end())
+      if (std::find(keys.begin(), keys.end(), it->second) != keys.end()) return it->second;
+  }
+  return keys[0];
 }
 
 // code -> key name (the keycap's), and a version bumped when they change
@@ -150,7 +176,7 @@ void CheckBinds() {
   if (now - g_keys_checked < std::chrono::seconds(1)) return;
   g_keys_checked = now;
   auto stick = [](const char* up, const char* left, const char* down, const char* right, const char* special) {
-    const std::string u = FirstKey(up), l = FirstKey(left), d = FirstKey(down), r = FirstKey(right);
+    const std::string u = ShownKey(up), l = ShownKey(left), d = ShownKey(down), r = ShownKey(right);
     if (u == "W" && l == "A" && d == "S" && r == "D") return std::string("WASD");
     if (u == "Up" && l == "Left" && d == "Down" && r == "Right") return std::string("ARROWS");
     return u.empty() ? std::string(special) : u;
@@ -162,7 +188,7 @@ void CheckBinds() {
                                          "keybind_lstick_right", "WASD")
                  : s == "rstick" ? stick("keybind_rstick_up", "keybind_rstick_left", "keybind_rstick_down",
                                          "keybind_rstick_right", "ARROWS")
-                                 : FirstKey(b.setting);
+                                 : ShownKey(b.setting);
   }
   std::lock_guard lock(g_keys_mutex);
   if (keys != g_keys) {
@@ -170,6 +196,74 @@ void CheckBinds() {
     ++g_keys_version;
   }
 }
+
+std::atomic<const char*> g_mouse_click{nullptr};
+
+// A key went down: for each button bound to several keys, the one this is (its Shift+/Ctrl+/Alt+ held; a bare
+// "Shift" is a key of its own), remembered. The prompts follow at the next CheckBinds.
+void PadIconsKeyDown(rex::ui::VirtualKey vk, bool shift, bool ctrl, bool alt) {
+  static const std::vector<const char*> settings = [] {
+    std::vector<const char*> v;
+    auto add = [&](const char* s) {
+      if (std::strncmp(s, "keybind_", 8) == 0 &&
+          std::find_if(v.begin(), v.end(), [&](const char* t) { return std::strcmp(s, t) == 0; }) == v.end())
+        v.push_back(s);
+    };
+    for (const ButtonBind& b : kBinds) add(b.setting);
+    for (const char* s : {"keybind_lstick_up", "keybind_lstick_down", "keybind_lstick_left", "keybind_lstick_right",
+                          "keybind_rstick_up", "keybind_rstick_down", "keybind_rstick_left", "keybind_rstick_right"})
+      add(s);
+    return v;
+  }();
+  for (const char* setting : settings) {
+    const std::vector<std::string> keys = BoundKeys(setting);
+    if (keys.size() < 2) continue;
+    const std::string* best = nullptr;
+    int best_mods = -1;
+    for (const std::string& k : keys) {
+      std::string_view name(k);
+      bool want_shift = false, want_ctrl = false, want_alt = false;
+      for (size_t plus; (plus = name.find('+')) != std::string_view::npos && plus > 0;) {
+        const std::string_view head = name.substr(0, plus);
+        if (head == "Shift") want_shift = true;
+        else if (head == "Ctrl" || head == "Control") want_ctrl = true;
+        else if (head == "Alt") want_alt = true;
+        else break;
+        name.remove_prefix(plus + 1);
+      }
+      if (rex::ui::ParseVirtualKey(name == "Ctrl" ? std::string_view("Control") : name) != vk) continue;
+      if ((want_shift && !shift) || (want_ctrl && !ctrl) || (want_alt && !alt)) continue;
+      const int mods = int(want_shift) + int(want_ctrl) + int(want_alt);
+      if (mods > best_mods) best = &k, best_mods = mods;
+    }
+    if (!best) continue;
+    std::lock_guard lock(g_pressed_mutex);
+    std::string& was = g_pressed[setting];
+    if (was != *best) {
+      REXLOG_INFO("[svr2011] pad icons: {} pressed as {} - its prompts show that key", setting, *best);
+      was = *best;
+    }
+  }
+}
+
+// The window's key presses, after the game's own keyboard (typing a name: not a button) and the free camera.
+class KeysListener final : public rex::ui::WindowInputListener {
+ public:
+  void OnKeyDown(rex::ui::KeyEvent& e) override {
+    if (e.prev_state() || GameKeyboardOpen()) return;  // (held down: already seen)
+    PadIconsKeyDown(e.virtual_key(), e.is_shift_pressed(), e.is_ctrl_pressed(), e.is_alt_pressed());
+  }
+  void OnMouseDown(rex::ui::MouseEvent& e) override {
+    using B = rex::ui::MouseEvent::Button;
+    const rex::ui::VirtualKey vk = e.button() == B::kLeft     ? rex::ui::VirtualKey::kLButton
+                                   : e.button() == B::kRight  ? rex::ui::VirtualKey::kRButton
+                                   : e.button() == B::kMiddle ? rex::ui::VirtualKey::kMButton
+                                                              : rex::ui::VirtualKey::kNone;
+    if (vk == rex::ui::VirtualKey::kNone) return;
+    if (!GameKeyboardOpen()) PadIconsKeyDown(vk, false, false, false);
+    PadIconsMouseClick(vk == rex::ui::VirtualKey::kLButton ? "LMB" : vk == rex::ui::VirtualKey::kRButton ? "RMB" : "MMB");
+  }
+};
 
 // ---------------------------------------------------------------------------
 // Fonts.
@@ -184,6 +278,7 @@ struct Atlas {
   std::string file;
   std::map<uint32_t, Rect> xbox_id;  // (identifies the page in a font: code -> its Xbox rect)
   std::map<uint32_t, Rect> ps, pair;
+  std::map<uint32_t, Rect> xbox;     // (every Xbox icon's place in the taller picture, from the fonts: Make)
   std::map<std::string, Rect> keys;  // keycaps by key name
   std::once_flag loaded;
   std::vector<uint8_t> rgba;
@@ -197,9 +292,16 @@ struct FontState {
   uint32_t page = 0, glyphs = 0, count = 0;
   const Atlas* atlas = nullptr;
   Kind applied = kXbox;
+  uint64_t applied_layout = kPadMapStandard;
   uint32_t keys_version = ~0u;
   std::array<std::vector<uint8_t>, kKinds> sets;
-  float FirstV1(Kind k) const { return RdF(sets[k].data() + 12); }
+  std::map<std::pair<Kind, uint64_t>, std::vector<uint8_t>> laid_out;  // (a kind's glyphs for a controller layout)
+  const std::vector<uint8_t>& Set(Kind k, uint64_t layout) const {
+    if (layout != kPadMapStandard)
+      if (auto it = laid_out.find({k, layout}); it != laid_out.end()) return it->second;
+    return sets[k];
+  }
+  float FirstV1() const { return RdF(Set(applied, applied_layout).data() + 12); }
 };
 std::mutex g_fonts_mutex;
 std::unordered_map<uint32_t, FontState> g_fonts;
@@ -260,6 +362,8 @@ void Make(FontState& st) {
     uint8_t* g = x.data() + i * kGlyph;
     WrF(g + 4, RdF(g + 4) * scale);
     WrF(g + 12, RdF(g + 12) * scale);
+    const_cast<Atlas&>(a).xbox[Rd32(g + 20)] =
+        Rect{uint16_t(std::lround(RdF(g) * a.width)), uint16_t(std::lround(RdF(g + 4) * a.total)), Rd16(g + 16), Rd16(g + 18)};
   }
   for (const Kind k : {kPlayStation, kPair}) {
     auto& set = st.sets[k];
@@ -286,6 +390,25 @@ void MakeKeys(FontState& st) {
   st.keys_version = g_keys_version;
 }
 
+// A kind's glyphs for a controller layout: each button's glyph shows the button that plays it.
+void MakeLaidOut(FontState& st, Kind kind, uint64_t layout) {
+  auto& set = st.laid_out[{kind, layout}];
+  const auto& from = st.sets[kind];
+  set = from;
+  for (uint32_t i = 0; i < st.count; ++i) {
+    uint8_t* g = set.data() + i * kGlyph;
+    const uint32_t code = Rd32(g + 20);
+    const int input = PadInputOfCode(code);
+    if (input < 0 || PadMapPhysical(layout, input) == input) continue;
+    const uint32_t shown = PadCodeOfInput(PadMapPhysical(layout, input), code);
+    for (uint32_t j = 0; j < st.count; ++j)
+      if (Rd32(from.data() + j * kGlyph + 20) == shown) {
+        std::memcpy(g, from.data() + j * kGlyph, 20);  // (the place and size; the code stays)
+        break;
+      }
+  }
+}
+
 // Before a page search for an icon code: the font's icon page known, and
 // holding the version the current text needs.
 void Prepare(uint32_t font) {
@@ -302,10 +425,11 @@ void Prepare(uint32_t font) {
   const uint32_t glyphs = Rd32(g_base + page + 16), count = Rd32(g_base + page + 8);
   const Kind want = CurrentKind(true);
   if (want == kKeyboard) CheckBinds();
+  const uint64_t layout = want == kKeyboard ? kPadMapStandard : CurrentLayout();
   std::lock_guard lock(g_fonts_mutex);
   FontState& st = g_fonts[font];
   const bool known = st.page == page && st.glyphs == glyphs && st.count == count &&
-                     (!st.atlas || st.applied == kKinds || RdF(g_base + glyphs + 12) == st.FirstV1(st.applied));
+                     (!st.atlas || st.applied == kKinds || RdF(g_base + glyphs + 12) == st.FirstV1());
   if (!known) {
     st = FontState{page, glyphs, count};
     st.atlas = Identify(Rd32(g_base + page), Rd32(g_base + page + 4), glyphs, count);
@@ -318,9 +442,12 @@ void Prepare(uint32_t font) {
     MakeKeys(st);
     if (st.applied == kKeyboard) st.applied = kKinds;
   }
-  if (st.applied == want) return;
-  std::memcpy(g_base + glyphs, st.sets[want].data(), st.sets[want].size());
+  if (st.applied == want && st.applied_layout == layout) return;
+  if (layout != kPadMapStandard && !st.laid_out.count({want, layout})) MakeLaidOut(st, want, layout);
+  const auto& set = st.Set(want, layout);
+  std::memcpy(g_base + glyphs, set.data(), set.size());
   st.applied = want;
+  st.applied_layout = layout;
 }
 
 // ---------------------------------------------------------------------------
@@ -338,6 +465,7 @@ struct Sprite {
   std::array<std::vector<uint8_t>, kKinds> data;  // (by kind; empty: none. kXbox: the 360 picture, for KeyBoxes)
   std::vector<KeyBox> boxes;
   uint32_t keys_version = ~0u;  // (the bindings the keyboard version was made with)
+  std::map<std::pair<Kind, uint64_t>, std::vector<uint8_t>> laid_out;  // (a kind's version for a controller layout)
 };
 std::unordered_map<uint64_t, Sprite> g_sprites;  // by the 360 picture's FNV-1a 64
 std::set<std::pair<uint32_t, uint32_t>> g_sprite_sizes;
@@ -368,9 +496,11 @@ uint64_t Print(uint32_t physical, const Sprite& sp) {
 struct Copy {
   uint32_t object = 0, fetch1 = 0, data = 0;
   uint32_t keys_version = ~0u;  // (a keyboard version: the bindings it shows)
+  const Sprite* sprite = nullptr;  // (the picture it is a version of)
 };
 std::mutex g_copies_mutex;
 std::map<std::pair<uint32_t, Kind>, Copy> g_copies;
+std::map<std::tuple<uint32_t, Kind, uint64_t>, Copy> g_laid_out_copies;
 
 bool Load() {
   const auto dir = rex::filesystem::GetExecutableFolder() / "pad_icons";
@@ -481,6 +611,32 @@ uint32_t MakeCopy(uint32_t object, const Sprite& sp, const std::vector<uint8_t>&
 }
 
 }  // namespace
+
+void InstallPadIconsKeys(rex::ui::Window* window) {
+  if (!window) return;
+  // (test aid: SVR2011_TEST_PAD_KEYS=O,Shift+Up - those keys pressed, as the window would send them)
+  if (const char* v = std::getenv("SVR2011_TEST_PAD_KEYS")) {
+    std::stringstream ss(v);
+    for (std::string k; std::getline(ss, k, ',');) {
+      std::string_view name(k);
+      bool shift = false, ctrl = false, alt = false;
+      for (size_t plus; (plus = name.find('+')) != std::string_view::npos && plus > 0;) {
+        const std::string_view head = name.substr(0, plus);
+        if (head == "Shift") shift = true;
+        else if (head == "Ctrl") ctrl = true;
+        else if (head == "Alt") alt = true;
+        else break;
+        name.remove_prefix(plus + 1);
+      }
+      PadIconsKeyDown(rex::ui::ParseVirtualKey(name), shift, ctrl, alt);
+    }
+  }
+  static KeysListener listener;
+  window->app_context().CallInUIThread([window] { window->AddInputListener(&listener, 995); });
+}
+
+const char* TakePadIconsMouseClick() { return g_mouse_click.exchange(nullptr); }
+void PadIconsMouseClick(const char* name) { g_mouse_click = name; }
 
 void InstallPadIcons(rex::memory::Memory* memory) {
   g_memory = memory;
@@ -716,6 +872,28 @@ Atlas* KeycapAtlas() {
   return best && !best->rgba.empty() ? best : nullptr;
 }
 
+// Draws source (RGBA, source_w wide) `from` into box of rgba (w x h), the box cleared first, scaled to fit.
+void PaintBox(std::vector<uint8_t>& rgba, int w, int h, const KeyBox& box, const uint8_t* source, int source_w, const Rect& from) {
+  for (int y = std::max(box.y, 0); y < std::min(box.y + box.h, h); ++y)
+    for (int x = std::max(box.x, 0); x < std::min(box.x + box.w, w); ++x) rgba[(size_t(y) * w + x) * 4 + 3] = 0;
+  const float scale = std::min(float(box.w) / from.w, float(box.h) / from.h);
+  const int dw = std::max(1, int(from.w * scale)), dh = std::max(1, int(from.h * scale));
+  const int ox = box.x + (box.w - dw) / 2, oy = box.y + (box.h - dh) / 2;
+  for (int y = 0; y < dh; ++y)
+    for (int x = 0; x < dw; ++x) {
+      const int tx = ox + x, ty = oy + y;
+      if (tx < 0 || ty < 0 || tx >= w || ty >= h) continue;
+      const int sx = from.x + std::min(int((x + 0.5f) / scale), from.w - 1);
+      const int sy = from.y + std::min(int((y + 0.5f) / scale), from.h - 1);
+      const uint8_t* src = &source[(size_t(sy) * source_w + sx) * 4];
+      uint8_t* dst = &rgba[(size_t(ty) * w + tx) * 4];
+      const int a = src[3];
+      for (int c = 0; c < 3; ++c)
+        dst[c] = uint8_t((src[c] * a + dst[c] * dst[3] * (255 - a) / 255) / std::max(1, a + dst[3] * (255 - a) / 255));
+      dst[3] = uint8_t(a + dst[3] * (255 - a) / 255);
+    }
+}
+
 // The keyboard version of a prompt picture for the current bindings (caller holds g_copies_mutex).
 void BuildKeyboardVersion(Sprite& sp) {
   CheckBinds();
@@ -735,24 +913,7 @@ void BuildKeyboardVersion(Sprite& sp) {
     const auto k = keys.find(box.code);
     const auto r = k != keys.end() ? atlas->keys.find(k->second) : atlas->keys.end();
     if (r == atlas->keys.end()) continue;
-    const Rect& cap = r->second;
-    for (int y = std::max(box.y, 0); y < std::min(box.y + box.h, h); ++y)  // (the button out)
-      for (int x = std::max(box.x, 0); x < std::min(box.x + box.w, w); ++x) rgba[(size_t(y) * w + x) * 4 + 3] = 0;
-    const float scale = std::min(float(box.w) / cap.w, float(box.h) / cap.h);
-    const int dw = std::max(1, int(cap.w * scale)), dh = std::max(1, int(cap.h * scale));
-    const int ox = box.x + (box.w - dw) / 2, oy = box.y + (box.h - dh) / 2;
-    for (int y = 0; y < dh; ++y)
-      for (int x = 0; x < dw; ++x) {
-        const int tx = ox + x, ty = oy + y;
-        if (tx < 0 || ty < 0 || tx >= w || ty >= h) continue;
-        const int sx = cap.x + std::min(int((x + 0.5f) / scale), cap.w - 1);
-        const int sy = cap.y + std::min(int((y + 0.5f) / scale), cap.h - 1);
-        const uint8_t* src = &atlas->rgba[(size_t(sy) * atlas->width + sx) * 4];
-        uint8_t* dst = &rgba[(size_t(ty) * w + tx) * 4];
-        const int a = src[3];
-        for (int c = 0; c < 3; ++c) dst[c] = uint8_t((src[c] * a + dst[c] * dst[3] * (255 - a) / 255) / std::max(1, a + dst[3] * (255 - a) / 255));
-        dst[3] = uint8_t(a + dst[3] * (255 - a) / 255);
-      }
+    PaintBox(rgba, w, h, box, atlas->rgba.data(), int(atlas->width), r->second);
   }
   EncodeDxt5(rgba, sp.width, sp.height, sp.data[kKeyboard]);
   sp.keys_version = version;
@@ -771,7 +932,93 @@ void BuildKeyboardVersion(Sprite& sp) {
     REXLOG_INFO("[svr2011] pad icons: keyboard prompt {}x{} - {} button(s) as keys", sp.width, sp.height, sp.boxes.size());
 }
 
-uint32_t VersionOf(uint32_t object, Kind kind) {
+// A kind's version of a match prompt for a controller layout (caller holds g_copies_mutex): each button in it shows
+// the button that plays it - from another prompt that has that button (the same art), else the icon pages. Null: the
+// layout changes nothing here, or the art isn't there.
+const std::vector<uint8_t>* LaidOutVersion(Sprite& sp, Kind kind, uint64_t layout) {
+  if (sp.boxes.empty() || sp.dxt1) return nullptr;
+  bool changes = false;
+  for (const KeyBox& box : sp.boxes) {
+    const int input = PadInputOfCode(box.code);
+    changes |= input >= 0 && PadMapPhysical(layout, input) != input;
+  }
+  if (!changes) return nullptr;
+  if (auto it = sp.laid_out.find({kind, layout}); it != sp.laid_out.end()) return it->second.empty() ? nullptr : &it->second;
+  auto& made = sp.laid_out[{kind, layout}];
+  const std::vector<uint8_t>& base_data = sp.data[kind].empty() ? sp.data[kXbox] : sp.data[kind];
+  const size_t want = size_t((sp.width + 3) / 4) * ((sp.height + 3) / 4) * 16;
+  if (base_data.size() < want) return nullptr;
+  const int w = int(sp.width), h = int(sp.height);
+  std::vector<uint8_t> rgba;
+  DecodeDxt5(base_data.data(), sp.width, sp.height, rgba);
+  // (a PlayStation button can be wider than its box, which is the Xbox one's: what's outside it and clear on the Xbox
+  // picture goes, or slivers of the old button stay beside the new one)
+  if (&base_data != &sp.data[kXbox] && sp.data[kXbox].size() >= want) {
+    std::vector<uint8_t> xbox;
+    DecodeDxt5(sp.data[kXbox].data(), sp.width, sp.height, xbox);
+    for (int y = 0; y < h; ++y)
+      for (int x = 0; x < w; ++x) {
+        const bool in_box = std::any_of(sp.boxes.begin(), sp.boxes.end(), [&](const KeyBox& b) {
+          return x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h;
+        });
+        if (!in_box && xbox[(size_t(y) * w + x) * 4 + 3] < 16) rgba[(size_t(y) * w + x) * 4 + 3] = 0;
+      }
+  }
+  int painted = 0;
+  for (const KeyBox& box : sp.boxes) {
+    const int input = PadInputOfCode(box.code);
+    if (input < 0 || PadMapPhysical(layout, input) == input) continue;
+    const uint32_t shown = PadInput(PadMapPhysical(layout, input)).code;
+    // (the biggest box with that button in another prompt)
+    const Sprite* source = nullptr;
+    KeyBox from{};
+    for (const auto& [hash, other] : g_sprites) {
+      if (other.dxt1 || (other.data[kind].empty() && other.data[kXbox].empty())) continue;
+      if (kind == kPlayStation && other.data[kPlayStation].empty()) continue;
+      for (const KeyBox& b : other.boxes)
+        if (b.code == shown && b.w * b.h > from.w * from.h) source = &other, from = b;
+    }
+    if (source) {
+      std::vector<uint8_t> picture;
+      DecodeDxt5((source->data[kind].empty() ? source->data[kXbox] : source->data[kind]).data(), source->width, source->height, picture);
+      PaintBox(rgba, w, h, box, picture.data(), int(source->width), Rect{uint16_t(from.x), uint16_t(from.y), uint16_t(from.w), uint16_t(from.h)});
+      ++painted;
+      continue;
+    }
+    if (Atlas* atlas = KeycapAtlas()) {
+      Rect r{};
+      bool found = false;
+      if (kind == kPlayStation) {
+        if (auto it = atlas->ps.find(shown); it != atlas->ps.end()) r = it->second, found = true;
+      } else {
+        std::lock_guard fonts(g_fonts_mutex);
+        if (auto it = atlas->xbox.find(shown); it != atlas->xbox.end()) r = it->second, found = true;
+      }
+      if (found) {
+        PaintBox(rgba, w, h, box, atlas->rgba.data(), int(atlas->width), r);
+        ++painted;
+      }
+    }
+  }
+  if (!painted) return nullptr;
+  EncodeDxt5(rgba, sp.width, sp.height, made);
+  // (test aid: SVR2011_PAD_ICONS_DUMP=<folder> - each one as made, a TGA)
+  if (const char* dir = std::getenv("SVR2011_PAD_ICONS_DUMP")) {
+    static int n = 0;
+    std::ofstream f(fmt::format("{}/layout_prompt_{:02d}_{}_{}x{}.tga", dir, n++, kind == kPlayStation ? "ps" : "xbox", w, h), std::ios::binary);
+    const uint8_t head[18] = {0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, uint8_t(w), uint8_t(w >> 8), uint8_t(h), uint8_t(h >> 8), 32, 0x28};
+    f.write(reinterpret_cast<const char*>(head), 18);
+    std::vector<uint8_t> bgra(rgba);
+    for (size_t i = 0; i < bgra.size(); i += 4) std::swap(bgra[i], bgra[i + 2]);
+    f.write(reinterpret_cast<const char*>(bgra.data()), std::streamsize(bgra.size()));
+  }
+  static int logged = 0;
+  if (logged++ < 40)
+    REXLOG_INFO("[svr2011] pad icons: prompt {}x{} made for a controller layout ({} of {} button(s))", sp.width, sp.height, painted, sp.boxes.size());
+  return &made;
+}
+
+uint32_t VersionOf(uint32_t object, Kind kind, uint64_t layout = kPadMapStandard) {
   if (!Readable(object) || !g_seen_count.load(std::memory_order_relaxed)) return 0;
   const uint8_t* o = g_base + object;
   if ((Rd32(o) & 0xF) != 3) return 0;  // (D3D resource type: texture)
@@ -798,13 +1045,29 @@ uint32_t VersionOf(uint32_t object, Kind kind) {
   }
   if (!sp) return 0;
   std::lock_guard lock(g_copies_mutex);
+  // (a match prompt for a player with a controller layout)
+  if (kind != kKeyboard && layout != kPadMapStandard)
+    if (const std::vector<uint8_t>* data = LaidOutVersion(const_cast<Sprite&>(*sp), kind, layout)) {
+      Copy& c = g_laid_out_copies[{object, kind, layout}];
+      if (c.object && (c.fetch1 != fetch1 || c.sprite != sp)) c = Copy{};
+      if (!c.object) c = Copy{MakeCopy(object, *sp, *data), fetch1, 0, sp->keys_version, sp};
+      return c.object;
+    }
   // (a match prompt for a keyboard player: made for the current key bindings)
   if (kind == kKeyboard && !sp->boxes.empty()) BuildKeyboardVersion(const_cast<Sprite&>(*sp));
   if (sp->data[kind].empty()) return 0;
   Copy& c = g_copies[{object, kind}];
-  if (c.object && c.fetch1 != fetch1) c = Copy{};  // (the object now holds another picture)
+  // (the object now holds another picture: at another address, or another one of the same size at the same
+  // address - the copy made for the first one would draw it in the second one's place)
+  if (c.object && (c.fetch1 != fetch1 || c.sprite != sp)) {
+    static const bool debug = std::getenv("SVR2011_PAD_ICONS_LOG") != nullptr;
+    static int logged = 0;
+    if (debug && c.fetch1 == fetch1 && logged++ < 40)
+      REXLOG_INFO("[svr2011] pad icons: {:08X} holds another {}x{} picture now - its copy made again", object, w, h);
+    c = Copy{};
+  }
   if (c.object && kind == kKeyboard && !sp->boxes.empty() && c.keys_version != sp->keys_version) c = Copy{};
-  if (!c.object) c = Copy{MakeCopy(object, *sp, sp->data[kind]), fetch1, 0, sp->keys_version};
+  if (!c.object) c = Copy{MakeCopy(object, *sp, sp->data[kind]), fetch1, 0, sp->keys_version, sp};
   return c.object;
 }
 
@@ -813,25 +1076,57 @@ uint32_t VersionOf(uint32_t object, Kind kind) {
 std::mutex g_records_mutex;
 
 // A texture record's picture for a player's kind: the version's copy for
-// PlayStation / keyboard (record -> {the game's object, our copy}). The copy
-// is only put in the record while the record is bound for drawing
-// (sub_826E6060, below): a copy left in the record was freed by the game
-// with the record (a match with a keyboard player crashed at load: the
-// game's heap free of an object from the port's system heap).
-struct RecordWant {
+// PlayStation / keyboard. The copy is only put in the record while the
+// record is bound for drawing (sub_826E6060, below): a copy left in the
+// record was freed by the game with the record (a match with a keyboard
+// player crashed at load: the game's heap free of an object from the port's
+// system heap).
+// Per command, in order: the game records its 2D "set texture" commands
+// (sub_826DE6B0) and plays them back later, binding each one's record - and
+// one record can be drawn for several players in a frame (character select's
+// bottom bar: a controller picture per player, players in the same state
+// share it; the COM panel shares one with it). So every command on a texture
+// record queues the version it wants (0: the game's own) and each bind of the
+// record takes the oldest (record -> {the game's object, our copy}, ...).
+struct QueuedWant {
   uint32_t original, copy;
+  bool own;  // (a player's Xbox picture: the game's own, not the last pressed controller's - SetTexture below)
 };
-std::map<uint32_t, RecordWant> g_record_want;
+thread_local bool t_keep_own = false;
+std::unordered_map<uint32_t, std::deque<QueuedWant>> g_record_queue;
+constexpr size_t kMaxQueued = 64;  // (commands recorded and never played back: dropped)
+std::atomic<uint64_t> g_queued{0}, g_bound{0};  // (debug: SVR2011_PAD_ICONS_LOG - the two keep step)
+std::atomic<uint64_t> g_drawn_xbox{0}, g_drawn_version{0}, g_drawn_kb{0};  // (debug: at SetTexture, below)
 
-void SwapRecordObject(uint32_t record, Kind kind) {
+void QueueRecordObject(uint32_t record, Kind kind, bool owned) {
   constexpr uint32_t kTextureRecord = 0x8205CF48;  // (vtable)
   if (!Readable(record) || Rd32(g_base + record) != kTextureRecord || Rd32(g_base + record + 52) != 0) return;
   const uint32_t original = Rd32(g_base + record + 80);
-  uint32_t want = 0;
-  if (kind == kPlayStation || kind == kKeyboard) want = VersionOf(original, kind);
+  const uint64_t layout = kind == kKeyboard ? kPadMapStandard : CurrentLayout();
+  const uint32_t want = kind == kPlayStation || kind == kKeyboard || layout != kPadMapStandard ? VersionOf(original, kind, layout) : 0;
   std::lock_guard lock(g_records_mutex);
-  if (want) g_record_want[record] = RecordWant{original, want};
-  else g_record_want.erase(record);
+  if (g_record_queue.size() > 4096)  // (records long gone: their queues emptied by now)
+    for (auto it = g_record_queue.begin(); it != g_record_queue.end();) it = it->second.empty() ? g_record_queue.erase(it) : std::next(it);
+  auto& q = g_record_queue[record];
+  if (q.size() >= kMaxQueued) {
+    static const bool debug = std::getenv("SVR2011_PAD_ICONS_LOG") != nullptr;
+    static std::set<uint32_t> logged;
+    if (debug && logged.size() < 32 && logged.insert(record).second)
+      REXLOG_INFO("[svr2011] pad icons: record {:08X} (object {:08X}): {} commands never bound - dropped", record, original,
+                  q.size());
+    q.clear();
+  }
+  q.push_back(QueuedWant{original, want, owned && !want});
+  ++g_queued;
+}
+
+// Character select's bottom bar draws its controller pictures in layers - the
+// outline for each player with a controller, then the filled one for each, in
+// player order: a picture's k-th draw in the bar is that player's (-1: none).
+int BarIconOwner(int k) {
+  for (uint32_t player = 0; player < kMaxPlayers; ++player)
+    if (PlayerPadType(player) != PadType::kNone && k-- == 0) return int(player);
+  return -1;
 }
 
 // The player behind a character select slot: its setup record's controller
@@ -927,14 +1222,30 @@ REX_HOOK_RAW(sub_826DE6B0) {
   // (the player's version goes into the record itself, +80: playback binds
   // the record the game keeps, not a copy put in the command - a copy left
   // the picture with no texture of its own, drawn with the font page bound
-  // before it: the "glitched" keyboard picture on character select)
-  // (per record: a copy of the record in the sprite's pair - +0x110, its own -
-  // isn't bound at playback either, the picture showed the font page again;
-  // so the COM panel, which shares player 1's bottom bar record, shows player
-  // 1's version too)
-  if (g_enabled && t_owner >= 0 && ctx.r4.u32) {
+  // before it: the "glitched" keyboard picture on character select; a copy
+  // of the record in the sprite's pair - +0x110, its own - isn't bound at
+  // playback either, the picture showed the font page again)
+  if (g_enabled && ctx.r4.u32) {
     const uint32_t record = Readable(ctx.r4.u32) ? Rd32(base + ctx.r4.u32 + 4) : 0;
-    if (record) SwapRecordObject(record, CurrentKind(false));
+    // (the bottom bar's controller pictures: each its own player's - the
+    // keyboard player's showed as an Xbox pad, the bar's player 1's)
+    std::optional<OwnerScope> bar_owner;
+    if (record && t_in_bar && Readable(record) && VersionOf(Rd32(base + record + 80), kKeyboard)) {
+      auto it = std::find_if(t_bar_draws.begin(), t_bar_draws.end(), [&](const auto& d) { return d.first == record; });
+      if (it == t_bar_draws.end()) it = t_bar_draws.insert(t_bar_draws.end(), {record, 0});
+      const int k = it->second++;
+      const int owner = BarIconOwner(k);
+      if (owner >= 0) bar_owner.emplace(owner);
+      if (debug) {
+        static std::set<uint64_t> logged;
+        const uint64_t key = uint64_t(record) << 16 | uint64_t(k) << 8 | uint8_t(owner + 1) << 4 |
+                             uint8_t(PlayerPadType(uint32_t(std::max(owner, 0))));
+        if (logged.size() < 64 && logged.insert(key).second)
+          REXLOG_INFO("[svr2011] pad icons: bottom bar record {:08X} draw {} is player {}'s (type {})", record, k, owner + 1,
+                      int(PlayerPadType(uint32_t(std::max(owner, 0)))));
+      }
+    }
+    if (record) QueueRecordObject(record, t_owner >= 0 ? CurrentKind(false) : kXbox, t_owner >= 0);
   }
   __imp__sub_826DE6B0(ctx, base);
 }
@@ -1044,17 +1355,40 @@ REX_HOOK_RAW(sub_826E6060) {
   using namespace svr2011;
   const uint32_t record = ctx.r3.u32;
   uint32_t original = 0, copy = 0;
+  bool own = false;
   if (g_enabled) {
     std::lock_guard lock(g_records_mutex);
-    if (auto it = g_record_want.find(record); it != g_record_want.end()) {
-      if (Rd32(base + record + 80) == it->second.original && Rd32(base + record + 52) == 0)
-        original = it->second.original, copy = it->second.copy;
-      else
-        g_record_want.erase(it);  // (the record holds another picture now)
+    if (auto it = g_record_queue.find(record); it != g_record_queue.end() && !it->second.empty()) {
+      auto& q = it->second;
+      const uint32_t now = Rd32(base + record + 80);
+      while (!q.empty() && q.front().original != now) q.pop_front();  // (the record holds another picture now)
+      if (!q.empty()) {
+        if (q.front().copy && Rd32(base + record + 52) == 0) original = q.front().original, copy = q.front().copy;
+        own = q.front().own;
+        static const bool debug_bind = std::getenv("SVR2011_PAD_ICONS_LOG") != nullptr;
+        static std::set<uint64_t> logged;
+        if (debug_bind && (copy || own) && logged.size() < 64 && logged.insert(uint64_t(record) << 32 | copy).second)
+          REXLOG_INFO("[svr2011] pad icons: bind of record {:08X}: {}", record,
+                      copy ? fmt::format("copy {:08X}", copy) : std::string("the game's own (an owner's Xbox picture)"));
+        q.pop_front();
+        ++g_bound;
+      }
+    }
+    static const bool debug = std::getenv("SVR2011_PAD_ICONS_LOG") != nullptr;
+    static auto last = std::chrono::steady_clock::now();
+    if (debug && std::chrono::steady_clock::now() - last > std::chrono::seconds(10)) {
+      last = std::chrono::steady_clock::now();
+      size_t waiting = 0;
+      for (const auto& [r, q] : g_record_queue) waiting += q.size();
+      REXLOG_INFO("[svr2011] pad icons: set-texture commands queued {}, bound {}, waiting {}; drawn: Xbox pictures "
+                  "that have a version {}, PlayStation versions {}, keyboard versions {}", g_queued.load(),
+                  g_bound.load(), waiting, g_drawn_xbox.load(), g_drawn_version.load(), g_drawn_kb.load());
     }
   }
   if (copy) Wr32(base + record + 80, copy);
+  t_keep_own = own;
   __imp__sub_826E6060(ctx, base);
+  t_keep_own = false;
   if (copy) Wr32(base + record + 80, original);
 }
 
@@ -1063,36 +1397,48 @@ REX_EXTERN(__imp__sub_82467C18);
 REX_HOOK_RAW(sub_82467C18) {
   using namespace svr2011;
   MysterySelectFrame(base);  // (mystery_opponent.h)
+  MenuTouchPanel(ctx, base, ctx.r3.u32 - 28);  // (menu_touch.h)
   OwnerScope scope(g_enabled ? SlotPort(Rd32(base + ctx.r3.u32 + 256)) : -1);
   __imp__sub_82467C18(ctx, base);
 }
 
-// - character select's bottom bar ("contro02_1P"): player 1's slot.
+// - character select's bottom bar ("contro02_1P"): player 1's slot; its
+//   controller pictures, one per player with a controller: each that
+//   player's (in the set-texture hook above).
 REX_EXTERN(__imp__sub_8244D158);
 REX_HOOK_RAW(sub_8244D158) {
   using namespace svr2011;
   OwnerScope scope(g_enabled ? SlotPort(0) : -1);
+  t_in_bar = g_enabled;
+  t_bar_draws.clear();
   __imp__sub_8244D158(ctx, base);
+  t_in_bar = false;
 }
 
 // D3DDevice_SetTexture(device, sampler, texture object), on the render
 // thread: pictures shared by everyone follow the players' controllers when
 // they all use the same kind.
+#ifndef SVR2011_D3D_TRACE  // (the census build hooks it to count calls)
 REX_EXTERN(__imp__sub_82917EC8);
 REX_HOOK_RAW(sub_82917EC8) {
   using namespace svr2011;
-  if (g_enabled && ctx.r5.u32) {
+  if (g_enabled && ctx.r5.u32 && !t_keep_own) {  // (a player's own Xbox picture: as it is)
     const Kind kind = CurrentKind(false);
-    if (kind == kPlayStation || kind == kKeyboard)
-      if (const uint32_t version = VersionOf(ctx.r5.u32, kind)) ctx.r5.u64 = version;
+    const uint64_t layout = kind == kKeyboard ? kPadMapStandard : CurrentLayout();
+    if (kind == kPlayStation || kind == kKeyboard || layout != kPadMapStandard)
+      if (const uint32_t version = VersionOf(ctx.r5.u32, kind, layout)) ctx.r5.u64 = version;
   }
   static const bool debug = std::getenv("SVR2011_PAD_ICONS_LOG") != nullptr;
   if (debug && g_enabled && ctx.r5.u32) {
-    bool ours = false;
+    bool ours = false, kb = false;
     {
       std::lock_guard lock(g_copies_mutex);
-      for (const auto& [key, c] : g_copies) ours |= c.object == ctx.r5.u32;
+      for (const auto& [key, c] : g_copies)
+        if (c.object == ctx.r5.u32) ours = true, kb = key.second == kKeyboard;
     }
+    // (an Xbox picture that has a PlayStation version drawn as it is / a version drawn)
+    if (ours) ++(kb ? g_drawn_kb : g_drawn_version);
+    else if (VersionOf(ctx.r5.u32, kPlayStation)) ++g_drawn_xbox;
     static std::set<uint32_t> logged;
     if (ours && logged.insert(ctx.r5.u32).second && logged.size() < 64)
       REXLOG_INFO("[svr2011] pad icons: SetTexture sampler {} gets copy {:08X} fetch {:08X} {:08X} kind {}", ctx.r4.u32,
@@ -1100,5 +1446,6 @@ REX_HOOK_RAW(sub_82917EC8) {
   }
   __imp__sub_82917EC8(ctx, base);
 }
+#endif
 
 

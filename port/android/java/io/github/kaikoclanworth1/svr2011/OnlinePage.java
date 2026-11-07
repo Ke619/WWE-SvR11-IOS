@@ -1,11 +1,18 @@
 // WWE SmackDown vs. Raw 2011 - the launcher's Online page: play online, the
 // server (Default: the port's own, its address not shown; Custom: one the
-// player types) and the account on it - sign in, create one, sign out
-// (<server>/api/login, /api/register, /api/logout; JSON). Signing in writes
-// online_token, online_xuid, online_name and online_enabled for the game.
+// player types) and the account on it - sign in, create one (name, password,
+// invite code), forgot password (the reset code the server owner made for the
+// account, and a new password), sign out (<server>/api/login, /api/register,
+// /api/logout, /api/password/reset; JSON). Signing in writes online_token,
+// online_xuid, online_name and online_enabled for the game. An account the
+// server keeps off online (2.1.6 with its account checks on, server.py
+// signup.py) shows its step: the re-activation code from the server owner
+// (accounts from before 2.1.6; /api/account, /api/reactivate). Codes only - no
+// email.
 // Friends: the account's list on the server (/api/friends) - who's online (in
 // the game's ONLINE menus) or in an online match, and who added the player;
 // refreshed every 20 seconds while the page shows.
+// Connection: the check (NatCheck) when asked for, and the last match's path from the game's log.
 
 package io.github.kaikoclanworth1.svr2011;
 
@@ -32,24 +39,42 @@ import java.nio.charset.StandardCharsets;
 final class OnlinePage {
     static final String kDefaultServer = "https://sho-ti.me/svr";
     static final String kCustomServer = "127.0.0.1:8411";
+    // The account card's modes, signed out.
+    static final int kSignIn = 0, kSignUp = 1, kForgot = 2;
+    int invite_ = -1;  // (sign-up: the server needs an invite code 1, doesn't 0, didn't say -1)
 
     private final LauncherActivity a_;
     private Spinner kind_;
-    private LinearLayout addressBox_, signedOut_, signedIn_;
-    private EditText address_, name_, password_;
+    private LinearLayout addressBox_, signedIn_, nameRow_, passwordRow_, codeRow_;
+    private EditText address_, name_, password_, code_;
     private TextView who_, accountStatus_;
-    private Button signIn_, create_, signOut_;
+    private Button signIn_, create_, signOut_, forgot_;
     private boolean busy_;
+    private int mode_ = kSignIn;
+    // (signed in: the server says the account still needs its re-activation code; checked once a start)
+    private boolean needsCode_, checked_;
+    private String note_ = "";
     private LinearLayout friendsCard_, friendRows_;
     private View friendsHeading_;
     private EditText friendName_;
     private TextView friendsStatus_;
     private boolean friendsBusy_;
     private final android.os.Handler timer_ = new android.os.Handler(android.os.Looper.getMainLooper());
+    private TextView natText_;
+    private Button natCheck_;
 
     OnlinePage(LauncherActivity a) { a_ = a; }
 
     GameSettings settings() { return a_.settings(); }
+
+    // A field's row in its own box (shown or hidden with the card's mode).
+    LinearLayout fieldRow(LinearLayout card, String label, EditText field) {
+        LinearLayout r = new LinearLayout(a_);
+        r.setOrientation(LinearLayout.VERTICAL);
+        a_.row(r, label, null, field);
+        card.addView(r);
+        return r;
+    }
 
     View build() {
         LinearLayout c = a_.column();
@@ -61,6 +86,19 @@ final class OnlinePage {
 
         LinearLayout play = a_.card(c, "Online");
         a_.toggle(play, "Play online", null, "online_enabled", false);
+
+        // Connection: only when the player asks.
+        LinearLayout connection = a_.card(c, "Connection");
+        natText_ = a_.text("Can your phone play other players directly, without the relay?", 14, LauncherActivity.kDim);
+        natText_.setPadding(0, a_.dp(10), 0, a_.dp(10));
+        connection.addView(natText_);
+        natCheck_ = a_.button("Check my connection", LauncherActivity.kCard);
+        natCheck_.setOnClickListener(v -> checkConnection());
+        LinearLayout natRow = new LinearLayout(a_);
+        natRow.setPadding(0, 0, 0, a_.dp(10));
+        natRow.addView(natCheck_, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT));
+        connection.addView(natRow);
 
         // Server: Default / Custom (which one: from the address saved).
         LinearLayout server = a_.card(c, "Server");
@@ -122,23 +160,31 @@ final class OnlinePage {
         who_.setPadding(0, a_.dp(12), 0, a_.dp(12));
         signedIn_.addView(who_);
         account.addView(signedIn_);
-        signedOut_ = new LinearLayout(a_);
-        signedOut_.setOrientation(LinearLayout.VERTICAL);
         name_ = a_.field("Name", 15, InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
-        a_.row(signedOut_, "Name", "3-15 letters, digits, space, _ . - (shown on your uploads)", name_);
-        password_ = a_.field("Password", 64, InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        a_.row(signedOut_, "Password", "At least 6 characters", password_);
-        account.addView(signedOut_);
+        nameRow_ = fieldRow(account, "Name", name_);
+        password_ = a_.field("Password", 100, InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        passwordRow_ = fieldRow(account, "Password", password_);
+        code_ = a_.field("Code", 20, InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
+            | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        codeRow_ = fieldRow(account, "Code", code_);
         accountStatus_ = a_.text("", 13, LauncherActivity.kDim);
-        accountStatus_.setPadding(0, 0, 0, a_.dp(10));
+        accountStatus_.setPadding(0, a_.dp(6), 0, a_.dp(10));
         account.addView(accountStatus_);
 
         signIn_ = a_.button("Sign in", LauncherActivity.kRed);
-        signIn_.setOnClickListener(v -> signIn(false));
+        signIn_.setOnClickListener(v -> primary());
         create_ = a_.button("Create account", LauncherActivity.kCard);
-        create_.setOnClickListener(v -> signIn(true));
+        create_.setOnClickListener(v -> secondary());
         LinearLayout buttons = a_.pair(signIn_, create_);
         c.addView(buttons, a_.fullWidth(10));
+        forgot_ = a_.button("Forgot password?", LauncherActivity.kCard);
+        forgot_.setOnClickListener(v -> {
+            mode_ = kForgot;
+            note_ = "";
+            a_.status("");  // (the bottom line: no older "Server saved." through the account steps)
+            refreshAccount();
+        });
+        c.addView(forgot_, a_.fullWidth(10));
         signOut_ = a_.button("Sign out", LauncherActivity.kCard);
         signOut_.setOnClickListener(v -> signOut());
         c.addView(signOut_, a_.fullWidth(10));
@@ -164,7 +210,7 @@ final class OnlinePage {
         Runnable tick = new Runnable() {
             @Override
             public void run() {
-                if (page.isShown()) fetchFriends(null);
+                if (page.isShown() && !steps()) fetchFriends(null);
                 timer_.postDelayed(this, 20000);
             }
         };
@@ -174,12 +220,25 @@ final class OnlinePage {
         return c;
     }
 
+    void checkConnection() {
+        natCheck_.setEnabled(false);
+        natText_.setText("Checking your connection\u2026");
+        final String stun = settings().getString("p2p_stun", "");
+        final int port = settings().getInt("p2p_port", 36000);
+        final NatCheck[] result = new NatCheck[1];
+        a_.background(() -> result[0] = NatCheck.run(stun, null, null, null), () -> {
+            natCheck_.setEnabled(true);
+            natCheck_.setText("Check again");
+            natText_.setText(result[0] != null ? result[0].text(port) : "The check couldn't run.");
+        });
+    }
+
     // body null: the list; else {"add": name} / {"remove": name}.
     void fetchFriends(String body) {
         final String token = settings().getString("online_token", "");
         if (token.isEmpty() || friendsBusy_) return;
         friendsBusy_ = true;
-        final String url = base(server()) + "/api/friends";
+        final String url = base(server()) + "/api/friends?client=2";
         final Object[] result = new Object[1];
         a_.background(() -> {
             try {
@@ -278,27 +337,66 @@ final class OnlinePage {
         refreshAccount();
     }
 
+    boolean signedIn() { return !settings().getString("online_token", "").isEmpty(); }
+
+    // (signed in, an account the server keeps off online: its step shows)
+    boolean steps() { return signedIn() && needsCode_; }
+
+    static void show(View v, boolean on) { v.setVisibility(on ? View.VISIBLE : View.GONE); }
+
     void refreshAccount() {
-        boolean in = !settings().getString("online_token", "").isEmpty();
+        boolean in = signedIn(), steps = steps();
         String name = settings().getString("online_name", "");
-        signedIn_.setVisibility(in ? View.VISIBLE : View.GONE);
-        signedOut_.setVisibility(in ? View.GONE : View.VISIBLE);
-        who_.setText("Signed in as " + name + (isCustom(server()) ? " on " + server() : "") + ".");
-        if (!in && name_.getText().length() == 0) name_.setText(name);
-        signIn_.setVisibility(in ? View.GONE : View.VISIBLE);
-        create_.setVisibility(in ? View.GONE : View.VISIBLE);
-        ((View) signIn_.getParent()).setVisibility(in ? View.GONE : View.VISIBLE);
-        signOut_.setVisibility(in ? View.VISIBLE : View.GONE);
+        show(signedIn_, in);
+        who_.setText("Signed in as " + name + (isCustom(server()) ? " on " + server() : "") + "."
+            + (steps ? " Online needs the re-activation code the server owner made for your account." : ""));
+        if (!in && name_.getText().length() == 0 && mode_ == kSignIn) name_.setText(name);
+        show(nameRow_, !in);
+        show(passwordRow_, !in);
+        show(codeRow_, (!in && mode_ != kSignIn && !(mode_ == kSignUp && invite_ == 0)) || steps);
+        name_.setHint(mode_ == kSignUp ? "3-15 characters" : "Name");
+        password_.setHint(mode_ == kSignIn ? "Password" : "8 or more characters");
+        code_.setHint(steps ? "Re-activation code" : mode_ == kSignUp ? (invite_ == 1 ? "Invite code" : "Invite code (if the server asks)") : "Reset code");
+        String primary = "Sign in", secondary = "Create account";
+        if (steps) {
+            primary = "Re-activate";
+        } else if (mode_ == kSignUp) {
+            primary = "Create account";
+            secondary = "Back";
+        } else if (mode_ == kForgot) {
+            primary = "Set password";
+            secondary = "Back";
+        }
+        signIn_.setText(primary);
+        create_.setText(secondary);
+        show(signIn_, !in || steps);
+        show(create_, !in);
+        show((View) signIn_.getParent(), !in || steps);
+        show(forgot_, !in && mode_ == kSignIn);
+        show(signOut_, in);
+        String fallback = "";
+        if (!in && mode_ == kSignIn) fallback = "Sign in, or create an account (some servers ask for an invite code).";
+        else if (!in && mode_ == kSignUp) fallback = invite_ == 0 ? "Choose a name and a password."
+            : invite_ == 1 ? "A new account needs an invite code from the server owner."
+            : "The invite code: only if the server owner gave you one.";
+        else if (!in) fallback = "Ask the server owner for a reset code for your account (it works once, for 24 "
+            + "hours), then choose a new password.";
+        accountStatus_.setText(note_.isEmpty() ? fallback : note_);
         // (an account works on the server that made it: sign out to change servers)
         kind_.setEnabled(!in);
         address_.setEnabled(!in);
         boolean enabled = !busy_;
         signIn_.setEnabled(enabled);
         create_.setEnabled(enabled);
+        forgot_.setEnabled(enabled);
         signOut_.setEnabled(enabled);
-        friendsCard_.setVisibility(in ? View.VISIBLE : View.GONE);
-        friendsHeading_.setVisibility(in ? View.VISIBLE : View.GONE);
-        if (in) fetchFriends(null);
+        show(friendsCard_, in && !steps);
+        show(friendsHeading_, in && !steps);
+        if (in && !checked_) {
+            checked_ = true;
+            checkAccount();
+        }
+        if (in && !steps) fetchFriends(null);
         else friendRows_.removeAllViews();
     }
 
@@ -310,46 +408,187 @@ final class OnlinePage {
         return true;
     }
 
-    void signIn(boolean create) {
+    // An account answer's step (api/login, api/account, ...).
+    void readSteps(JSONObject r) { needsCode_ = r.optBoolean("needs_code"); }
+
+    interface Done { void run(JSONObject r); }
+
+    // A request to <server><path> (body null: a GET; token: the account's), then done(answer) on the UI thread -
+    // an answer that didn't come: the status line says so.
+    void call(String path, JSONObject body, boolean token, Done done) {
         if (busy_) return;
-        String name = name_.getText().toString().trim(), password = password_.getText().toString();
-        if (!validName(name)) {
-            accountStatus_.setText("Names are 3-15 letters, digits, spaces or _ . -");
-            return;
-        }
-        if (password.length() < 6) {
-            accountStatus_.setText("Passwords are at least 6 characters.");
-            return;
-        }
         busy_ = true;
-        accountStatus_.setText(create ? "Creating the account…" : "Signing in…");
         refreshAccount();
-        final String base = base(server());
+        final String url = base(server()) + path;
+        final String t = token ? settings().getString("online_token", "") : null;
         final Object[] result = new Object[1];
         a_.background(() -> {
             try {
-                JSONObject body = new JSONObject();
-                body.put("name", name);
-                body.put("password", password);
-                result[0] = post(base + (create ? "/api/register" : "/api/login"), body.toString(), null);
+                result[0] = post(url, body != null ? body.toString() : null, t);
             } catch (Exception e) {
                 result[0] = e;
             }
         }, () -> {
             busy_ = false;
+            if (result[0] instanceof JSONObject) done.run((JSONObject) result[0]);
+            else note_ = error(result[0], false);
+            if (!note_.isEmpty()) a_.status(note_);  // (the bottom line: the step's result, not an older "Server saved.")
+            refreshAccount();
+        });
+    }
+
+    void primary() {
+        a_.status("");  // (a step pressed: no older "Server saved." under it)
+        if (steps()) step();
+        else if (mode_ == kSignIn || mode_ == kSignUp) signIn(mode_ == kSignUp);
+        else forgotReset();
+    }
+
+    void secondary() {
+        mode_ = mode_ == kSignIn ? kSignUp : kSignIn;
+        note_ = "";
+        if (mode_ == kSignUp) askInvite();
+        a_.status("");
+        refreshAccount();
+    }
+
+    // The server's word on invite codes (its status's invite_needed; an older server: -1, the box shown).
+    void askInvite() {
+        invite_ = -1;
+        final String url = base(server()) + "/api/status";
+        final Object[] result = new Object[1];
+        a_.background(() -> {
+            try {
+                result[0] = post(url, null, null);
+            } catch (Exception e) {
+                result[0] = e;
+            }
+        }, () -> {
             JSONObject r = result[0] instanceof JSONObject ? (JSONObject) result[0] : null;
-            if (r != null && r.optBoolean("ok")) {
+            if (r != null && r.has("invite_needed")) invite_ = r.optBoolean("invite_needed") ? 1 : 0;
+            if (invite_ == 0) code_.setText("");  // (hidden: nothing typed earlier goes with the sign-up)
+            refreshAccount();
+        });
+    }
+
+    void signIn(boolean create) {
+        if (busy_) return;
+        final String name = name_.getText().toString().trim(), password = password_.getText().toString();
+        final String invite = code_.getText().toString().trim();
+        if (!validName(name)) {
+            note_ = "Names are 3-15 letters, digits, spaces or _ . -";
+            refreshAccount();
+            return;
+        }
+        if (create && (password.length() < 8 || (invite_ == 1 && invite.isEmpty()))) {
+            note_ = invite_ == 1 ? "Type a password (8 or more characters) and your invite code."
+                                 : "Type a password (8 or more characters).";
+            refreshAccount();
+            return;
+        }
+        if (password.isEmpty()) {
+            note_ = "Type your password.";
+            refreshAccount();
+            return;
+        }
+        note_ = create ? "Creating the account…" : "Signing in…";
+        JSONObject body = new JSONObject();
+        try {
+            body.put("name", name);
+            body.put("password", password);
+            body.put("client", 2);  // (this app walks the account's step; older ones get a text to update)
+            if (create) body.put("invite", invite);
+        } catch (org.json.JSONException e) {
+            return;
+        }
+        call(create ? "/api/register" : "/api/login", body, false, r -> {
+            if (r.optBoolean("ok") && !r.optString("token").isEmpty()) {
                 settings().setString("online_token", r.optString("token"));
                 settings().setString("online_xuid", r.optString("xuid"));
                 settings().setString("online_name", r.optString("name", name));
                 settings().setBool("online_enabled", true);
                 password_.setText("");
-                accountStatus_.setText(settings().save() ? (create ? "Account created. " : "") + "Signed in - "
-                    + "online play is on." : "Could not save the settings.");
+                code_.setText("");
+                readSteps(r);
+                checked_ = true;
+                mode_ = kSignIn;
+                note_ = !settings().save() ? "Could not save the settings."
+                    : steps() ? "" : (create ? "Account made. " : "") + "Signed in - online play is on.";
                 a_.refresh();
             } else {
-                accountStatus_.setText(error(result[0], create));
-                refreshAccount();
+                note_ = error(r, create);
+            }
+        });
+    }
+
+    // The account's step: its re-activation code.
+    void step() {
+        final String code = code_.getText().toString().trim();
+        if (code.isEmpty()) {
+            note_ = "Type the code.";
+            refreshAccount();
+            return;
+        }
+        JSONObject body = new JSONObject();
+        try {
+            body.put("code", code);
+        } catch (org.json.JSONException e) {
+            return;
+        }
+        call("/api/reactivate", body, true, r -> {
+            if (r.optBoolean("ok")) {
+                readSteps(r);
+                code_.setText("");
+                note_ = steps() ? "" : "Account re-activated: you can play online.";
+                if (!steps()) fetchFriends(null);
+            } else {
+                note_ = error(r, false);
+            }
+        });
+    }
+
+    // The signed-in account's step, from the server: once a start. A token the server ended (the password changed
+    // or was reset) signs out.
+    void checkAccount() {
+        call("/api/account", null, true, r -> {
+            int code = r.optInt("_status", 0);
+            if (code == 200) {
+                readSteps(r);
+            } else if (code == 401) {
+                settings().setString("online_token", "");
+                settings().setString("online_xuid", "");
+                settings().save();
+                needsCode_ = false;
+                note_ = "Signed out: your password was changed or reset. Sign in again.";
+            }
+        });
+    }
+
+    // A forgotten password: the reset code the server owner made for the account, and a new one.
+    void forgotReset() {
+        final String name = name_.getText().toString().trim(), code = code_.getText().toString().trim();
+        final String password = password_.getText().toString();
+        if (name.isEmpty() || code.isEmpty() || password.isEmpty()) {
+            note_ = "Type your account's name, the reset code and a new password.";
+            refreshAccount();
+            return;
+        }
+        JSONObject body = new JSONObject();
+        try {
+            body.put("name", name);
+            body.put("code", code);
+            body.put("password", password);
+        } catch (org.json.JSONException e) {
+            return;
+        }
+        call("/api/password/reset", body, false, r -> {
+            if (r.optBoolean("ok")) {
+                mode_ = kSignIn;
+                password_.setText("");
+                code_.setText("");
+                note_ = r.optString("message", "Your password is set: sign in with it.");
+            } else {
+                note_ = error(r, false);
             }
         });
     }
@@ -370,7 +609,10 @@ final class OnlinePage {
             busy_ = false;
             settings().setString("online_token", "");
             settings().setString("online_xuid", "");
-            accountStatus_.setText(settings().save() ? "Signed out." : "Could not save the settings.");
+            needsCode_ = false;
+            mode_ = kSignIn;
+            note_ = settings().save() ? "Signed out." : "Could not save the settings.";
+            a_.status(note_);
             refreshAccount();
         });
     }

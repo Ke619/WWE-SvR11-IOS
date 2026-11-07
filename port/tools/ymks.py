@@ -205,7 +205,9 @@ def build_stream(st):
         else:
             r = it[1]
             lng = it[2] if len(it) > 2 else len(r) > 0x9f
-            if lng or len(r) == 0:
+            if len(r) == 0:   # (never an empty record, 60 00 00: the game has no size check and reads what follows as
+                out.append(1)  # this key's record - pose bytes as events, reports 7017d6. A one-key skip: the same timing)
+            elif lng:
                 out += bytes([0x60]) + struct.pack('<H', len(r))
             else:
                 assert len(r) <= 0x9f
@@ -802,6 +804,17 @@ def build_motion(keys, nframes, packed=False):
         ev = b''.join(k.get('events', []))
         if k.get('bones') is None and k.get('root') is None:
             pose = b''
+        elif packed and max(abs(v) for v in k['root']) >= 2 << (PK_ROOT_BITS - 1):
+            # (past the packed root's range - +-4096, a dive's drop to 7000: the bones without a root, then the
+            # s16 root on its own, as the stock packed copies do - Diving Double Axe Handle 3538's last keys)
+            pose = encode_packed({'subs': [{'form': 'mask', 'count': k['count'], 'mask': 0x1FFFFF, 'bones': k['bones']},
+                                           {'form': 'root', 'count': k['count'],
+                                            'root': tuple(int(v) for v in k['root'])}], 'trail': b''})
+        elif packed and k['count'] >= 0x80:
+            # (a blend of 128 frames or more - SvR 2008's The 619 holds a pose that long: the full form keeps 7 bits of
+            # count, the mask form 8 - every bone and the root as a mask; past 255, 255)
+            pose = encode_packed({'subs': [{'form': 'mask', 'count': min(k['count'], 0xff), 'mask': 0x1FFFFF,
+                                            'root': k['root'], 'bones': k['bones']}], 'trail': b''})
         elif packed:
             pose = encode_packed({'subs': [{'form': 'full', 'count': k['count'], 'root': k['root'],
                                             'bones': k['bones']}], 'trail': b''})

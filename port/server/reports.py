@@ -4,16 +4,31 @@ Each one is kept where the Community Creations bytes live (here, or the storage 
 there as plain files:
     <data>/reports/<yyyy-mm-dd>/<id>/report.json, report.zip, image0.png ...
     <data>/reports/index.jsonl     (one line per report: the dashboard's list, and the duplicates' counts)
-    <data>/reports/status.json     (id -> done / duplicate, or {status: fixed, note, commit, version, date}: the
-                                    dashboard's marks; `python reports.py mark ...` writes them too - see main())
+    <data>/reports/status.json     (id -> done / duplicate / looking, {status: fixed, note, commit, version, date},
+                                    {status: needs_info / replied, question, date}: the dashboard's marks;
+                                    `python reports.py mark ...` writes them too - see main())
+    <data>/reports/<yyyy-mm-dd>/<id>/replies.jsonl, reply<n>_<k>.png   (the player's answers to a question)
     <data>/reports/<yyyy-mm-dd>/<id>/match.zip   (the game's match folder: logs/matches/<date>_<people>/)
     <data>/reports/mods/<content hash>.svrmod    (the mods used in that match, each kept once for every report)
 The sender's address is never stored (the core keeps it in memory for its rate limit only).
+
+Receipts: each report gets a random secret, returned once to the client that sent it (it keeps id + secret in
+UserData\reports.json); only its SHA-256 is stored. With id + secret a client asks for its reports' public state
+(POST /api/reports/status: state, the fixed note and version, a question) and answers a question
+(POST /api/reports/reply) - never another report, never the private parts (logs, zip, pictures, contact).
 
 Mods: the client asks first which it needs to send (POST /api/reports/mods/check), then sends only those, each as
 a zip of its folder (an .svrmod) named by its CONTENT hash: SHA-256 over the folder's files sorted by their
 lower-cased relative path ('/'), each file as path (UTF-8, lower case), a 0 byte, its size (8 bytes little-endian)
 and its bytes - the same folder gives the same hash however it was zipped. The server checks the hash on arrival.
+
+Suggestions (the launcher's Suggestions tab, Android's My suggestions): a report with kind "suggestion" - its
+problem is the idea's title, its what the idea; no zip. Same receipts, rate limit and storage. Their answers:
+planned ("Sure"), not_planned ("No, not planned"), each with an optional note, or fixed with a version ("Done in
+<version>"). The dashboard's Suggestions panel lists them; its Reports panel doesn't.
+
+SvR Anthology (apps ANTHOLOGY_APPS): its launcher and phone app send here too, with the same routes and receipts. The
+dashboard shows them on their own SvR Anthology page, never among the port's, and `list` needs --anthology for them.
 
 Duplicates: a signature from app + version + problem + the first crash / error line in the zip's logs, made
 general (times, addresses, thread ids and other numbers taken out); the client's own hint stands in when the
@@ -30,19 +45,38 @@ import threading
 import time
 import zipfile
 
-APPS = ("launcher", "modmaker", "game", "android")
+APPS = ("launcher", "modmaker", "game", "android", "anthology", "anthology-android")
+ANTHOLOGY_APPS = ("anthology", "anthology-android")  # (SvR Anthology's launcher and phone app: the dashboard's own page)
 MAX_ZIP = 25 << 20
 MAX_IMAGE = 8 << 20
 MAX_IMAGES = 5
-TEXT_CAP = {"what": 4000, "before": 4000}  # (every other text field: 200)
+TEXT_CAP = {"what": 4000, "before": 4000, "updater": 600}  # (every other text field: 200; updater: the updater's last result line)
 MAX_MATCH = 5 << 20          # the match folder's zip
 MAX_MOD = 300 << 20          # one mod
 MAX_NEW_MOD_BYTES = 300 << 20  # the mods sent with one report
 MAX_MODS = 64                # mods listed in one report
 MOD_QUOTA = 20 << 30         # every report's mods together (the node's --report-mod-quota-gb)
-FIELDS = ("format", "app", "version", "platform", "os", "problem", "happens", "what", "before", "contact")
-STATUSES = ("", "done", "duplicate", "fixed")
+FIELDS = ("format", "app", "version", "platform", "os", "problem", "happens", "what", "before", "contact", "updater",
+          "kind")
+KINDS = ("report", "suggestion")
+STATUSES = ("", "done", "duplicate", "fixed", "looking", "needs_info", "replied", "planned", "not_planned")
+NOTE_STATUSES = ("fixed", "planned", "not_planned")  # (marks whose details are FIX_FIELDS: a note, a version...)
 FIX_FIELDS = {"note": 1000, "commit": 40, "version": 20, "date": 10}
+INFO_FIELDS = {"question": 1000, "date": 10}
+MAX_STATUS_IDS = 100          # receipts asked about in one status call
+MAX_REPLY = 2000              # a player's answer's text
+MAX_REPLY_IMAGES = 3
+MAX_REPLIES = 5               # answers kept for one report
+MAX_EDITS = 10                # a sender's changes kept for one report ("Edit / add pictures")
+MAX_EDIT_TEXT = 4000          # what one change adds to "what happened" or "before"
+CLOSED = ("done", "duplicate")  # reports their senders can't change any more
+# (the player's words for each state - the launcher / Mod Maker / Android lists show these)
+STATES = {"": "received", "looking": "looking", "fixed": "fixed", "needs_info": "needs_info", "replied": "replied",
+          "done": "done", "duplicate": "duplicate", "planned": "planned", "not_planned": "not_planned"}
+
+
+def secret_hash(secret):
+    return hashlib.sha256(str(secret or "").encode("utf-8")).hexdigest()
 
 
 def clean_fix(raw):
@@ -54,10 +88,22 @@ def clean_fix(raw):
     return fix
 
 
+def clean_info(raw):
+    """A needs-info mark's details -> {question, date} (date: today)."""
+    raw = raw if isinstance(raw, dict) else {}
+    info = {k: str(raw.get(k) or "").replace("\r\n", "\n").strip()[:cap] for k, cap in INFO_FIELDS.items()}
+    if not re.fullmatch(r"\d{4}-\d\d-\d\d", info["date"]):
+        info["date"] = time.strftime("%Y-%m-%d")
+    return info
+
+
 def _mark_of(value):
-    """A status.json value -> (status, fix details or None); old marks are plain strings."""
+    """A status.json value -> (status, details or None): fixed {note, commit, version, date}, needs_info / replied
+    {question, date}; old marks are plain strings."""
     if isinstance(value, dict):
-        return str(value.get("status", "")), {k: value.get(k, "") for k in FIX_FIELDS}
+        status = str(value.get("status", ""))
+        fields = INFO_FIELDS if status in ("needs_info", "replied") else FIX_FIELDS
+        return status, {k: value.get(k, "") for k in fields}
     return str(value or ""), None
 
 
@@ -70,6 +116,57 @@ def image_ext(data):
     if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return "webp"
     return None
+
+
+# -- no web addresses in what players write ---------------------------------------------------------------------
+# The rule (launcher/report_urls.h and the app's ReportSend.hasUrl are the same, with the same test list as
+# test_reports.py): a scheme (two letters or more before ://), www.<something>, or a bare domain: a word of letters,
+# digits, dots and dashes that ends in a web address's ending. Endings that are also file types (mp4, zip, mov, py,
+# pac, dat...) or short words a missing space makes (game.It, juego.de) are not on the list, so a file name, a version
+# or a path never counts; nor does an e-mail address (name@gmail.com: a contact). Endings that are only a web address
+# when a path follows (site.app/x, not foo.app) are URL_WITH_PATH.
+URL_ENDINGS = ("com", "net", "org", "gg", "io", "tv", "xyz", "co", "uk", "ru", "eu", "nz", "br", "au", "biz")
+URL_WITH_PATH = ("app", "dev", "site", "online", "link", "live", "club", "shop", "store", "top", "me", "be", "to",
+                 "info", "fun", "cc", "ly", "gl", "gd")
+URL_SITES = ("youtu.be", "t.me", "wa.me", "discord.me", "bit.ly", "goo.gl", "is.gd")
+_URL_SCHEME = re.compile(r"[A-Za-z]{2}://")
+_URL_WORD = re.compile(r"[A-Za-z0-9.\-]+")
+
+
+def has_url(text):
+    """Does a player's text have a web address in it?"""
+    if not text:
+        return False
+    if _URL_SCHEME.search(text):
+        return True
+    for m in _URL_WORD.finditer(text):
+        word = m.group().rstrip(".-")
+        before = text[m.start() - 1] if m.start() else ""
+        after = text[m.start() + len(word)] if m.start() + len(word) < len(text) else ""
+        if before in ("@", "/", "\\", "_") or after in ("@", "_", "\\"):
+            continue  # (an e-mail address; a folder's file)
+        if "." not in word or ".." in word or word[0] == ".":
+            continue
+        low = word.lower()
+        if low.startswith("www."):
+            return True
+        tail = word.rsplit(".", 1)[1]
+        if tail != tail.lower() and tail != tail.upper():
+            continue  # (a missing space before a new sentence: "the game.Net play")
+        tail = tail.lower()
+        if tail in URL_ENDINGS or low in URL_SITES or (after == "/" and tail in URL_WITH_PATH):
+            return True
+    return False
+
+
+def url_refusal(kind="report"):
+    """What a player sees when their text has a web address in it."""
+    return "Please dont add urls to " + ("suggestions" if kind == "suggestion" else "bug reports")
+
+
+def is_anthology(row):
+    """A report from SvR Anthology: same store and receipts, but its own dashboard page and its own `list --anthology`."""
+    return row.get("app") in ANTHOLOGY_APPS
 
 
 def clean_meta(raw):
@@ -86,10 +183,16 @@ def clean_meta(raw):
             continue
         meta[k] = str(v).replace("\r\n", "\n").strip()[:TEXT_CAP.get(k, 200)]
     meta["app"] = meta.get("app", "").lower()
+    meta["kind"] = meta.get("kind", "report").lower() or "report"
+    if meta["kind"] not in KINDS:
+        return None, "kind must be one of: " + ", ".join(KINDS)
     if meta["app"] not in APPS:
         return None, "app must be one of: " + ", ".join(APPS)
+    if any(has_url(meta.get(k, "")) for k in ("problem", "happens", "what", "before", "contact")):
+        return None, url_refusal(meta["kind"])
     if not meta.get("version") or not meta.get("problem"):
-        return None, "A version and a problem are needed."
+        return None, ("A version and a title are needed." if meta["kind"] == "suggestion" else
+                      "A version and a problem are needed.")
     hint = str(raw.get("signature") or "").strip()[:300]
     if hint:
         meta["client_signature"] = hint
@@ -141,11 +244,63 @@ def _stale(stamp, newest):
     return b - a > datetime.timedelta(days=1) or datetime.datetime.now() - a > datetime.timedelta(days=2)
 
 
+# Lines every session logs and that say nothing about a problem: the emulator's start-up heap probing, the
+# game's own look-ups of optional files (DLC, SeasonVO voice banks), the XMA / kernel stubs (30 Oct: five live
+# reports were all signed by an old "BaseHeap::Alloc failed" line).
+_HARMLESS = re.compile(
+    r"BaseHeap::Alloc|PhysicalHeap::Alloc|ResolvePath\(|NtCreateFile\]? FAILED|XMA: Write to unknown register|"
+    r"VFS: '|IoDismountVolume|\bStub\b|\bSTUB\b|SeasonVO|\bdlc\d:\\|catalog_hd\.arc|gamecontrollerdb|"
+    r"Failed to find vkGetDeviceProcAddr", re.I)
+_LEVEL = re.compile(r"\[(critical|error)\]", re.I)
+_LOG_TIME = re.compile(r"^\[(\d{4})-(\d\d)-(\d\d) (\d\d):(\d\d):(\d\d)")
+_GAME_LOG = re.compile(r"(?:^|/)svr2011_(\d+)(?:\.(\d+))?\.log$", re.I)
+
+
+def _useful(line):
+    """A line that can sign a report: not one of the harmless ones, not a converter's JSON output."""
+    t = line.strip()
+    return bool(t) and not _HARMLESS.search(t) and not t.startswith(("[{", "{", "\"", "[\""))
+
+
+def _first_time(text):
+    """A log's first line's time as YYYYMMDDhhmmss (int), 0 if none."""
+    for line in text.splitlines()[:5]:
+        m = _LOG_TIME.match(line)
+        if m:
+            return int("".join(m.groups()))
+    return 0
+
+
+def _session(z, names, app):
+    """The reported session's logs, oldest part first, as [(name, text)]: the game's newest log (its highest
+    number, all its parts - report.c puts the newest game's parts and the last part of two older ones in), or
+    for the Mod Maker its newest modmaker_<time>.log."""
+    def text(i):
+        try:
+            return z.read(i).decode("utf-8", "replace")
+        except Exception:
+            return ""
+    if app == "modmaker":
+        own = sorted((i for i in names if re.search(r"(^|/)modmaker_[^/]*\.log$", i.filename, re.I)),
+                     key=lambda i: (_stamp(i.filename), i.filename))
+        if own:
+            return [(own[-1].filename, text(own[-1]))]
+    games = {}
+    for i in names:
+        m = _GAME_LOG.search(i.filename.replace("\\", "/"))
+        if m:
+            games.setdefault(int(m.group(1)), []).append((int(m.group(2) or 0), i))
+    if not games:
+        return []
+    parts = sorted(games[max(games)], key=lambda kp: -kp[0])  # (the highest part number is the oldest)
+    return [(i.filename, text(i)) for _, i in parts]
+
+
 def first_error_line(zip_bytes, app=""):
-    """The crash / error line a report is about, '' when there's none (or no zip). Report zips carry old crash
-    files too (the crashes folder as it is), so the newest come first (by the time in their names), a crash file
-    a day older than the newest file in the zip (or two days older than now) doesn't count, and the Mod Maker's own logs come before the
-    game's crashes. Crash files: their first error line (else their first line); logs: their first error line."""
+    """The line a report is about, '' when there's none (or no zip). Only the reported session counts - its
+    logs (_session) and the crash reports written while it ran - and the harmless lines never do. In order:
+    a crash report's first error line (else its first line), the session's first [critical] line, its LAST
+    [error] line (the one nearest the problem), then for the Mod Maker its log's last failed / error line."""
     if not zip_bytes:
         return ""
     try:
@@ -153,34 +308,46 @@ def first_error_line(zip_bytes, app=""):
     except (zipfile.BadZipFile, ValueError):
         return ""
     names = [i for i in z.infolist() if not i.is_dir() and i.file_size <= (64 << 20)]
-    newest = max([_stamp(i.filename) for i in names] or [0])
-    by_time = lambda i: (-_stamp(i.filename), i.filename)
-    crash = sorted((i for i in names if re.search(r"(^|/)crash", i.filename, re.I)
-                    and not (_stamp(i.filename) and _stale(_stamp(i.filename), newest))),
-                   key=by_time)
-    logs = sorted((i for i in names if i not in crash and not re.search(r"(^|/)crash", i.filename, re.I)
-                   and re.search(r"\.log$", i.filename, re.I)), key=by_time)  # (not report.txt: the client's summary)
-    groups = [(crash, True), (logs, False)]
-    if app == "modmaker":
-        own = [i for i in logs if "modmaker" in i.filename.lower()]
-        groups = [(own, False), (crash, True), ([i for i in logs if i not in own], False)]
-    for group, crash_file in groups:
-        for info in group:
-            try:
-                lines = [l.strip() for l in z.read(info).decode("utf-8", "replace").splitlines() if l.strip()]
-            except Exception:
-                continue
-            hit = next((l for l in lines if _ERR.search(l)), None)
-            if hit is None and crash_file and lines:
-                hit = lines[0]  # (a crash file without the words: its first line is the crash)
-            if hit:
-                return hit[:500]
-    return ""
+    session = _session(z, names, app)
+    start = min([t for t in (_first_time(txt) for _, txt in session) if t] or [0])
+    # crash reports written during the session (empty ones - the game closed while writing - say nothing)
+    crashes = sorted((i for i in names if re.search(r"(^|/)crash[^/]*\.txt$", i.filename, re.I) and i.file_size
+                      and _stamp(i.filename) and (not start or _stamp(i.filename) >= start - 60)),
+                     key=lambda i: -_stamp(i.filename))
+    for info in crashes:
+        try:
+            lines = [l.strip() for l in z.read(info).decode("utf-8", "replace").splitlines() if l.strip()]
+        except Exception:
+            continue
+        hit = next((l for l in lines if _ERR.search(l) and _useful(l)), None) or (lines[0] if lines else None)
+        if hit:
+            return hit[:500]
+    lines = [l for _, txt in session for l in txt.splitlines()]
+    hit = next((l for l in lines if "[critical]" in l.lower() and _useful(l)), None)
+    if hit is None:
+        hit = next((l for l in reversed(lines) if _LEVEL.search(l) and _useful(l)), None)
+    if hit is None and app == "modmaker":
+        hit = next((l for l in reversed(lines) if re.search(r"\b(failed|error|traceback)\b", l, re.I) and _useful(l)),
+                   None)
+    return (hit or "")[:500]
 
 
-def signature(meta, zip_bytes):
-    """(signature, the line it was made from)"""
-    line = first_error_line(zip_bytes, meta["app"]) or meta.get("client_signature", "")
+def signature(meta, zip_bytes, match_bytes=b""):
+    """(signature, the line it was made from). No line from the session: the client's hint (when it's a useful
+    one), else the problem with the match's rule and arena mod (the match folder), else the problem alone.
+    A suggestion: its title alone (normalised) - the same idea sent again counts as seen before, different ones
+    don't (no logs: app + version would make them all one)."""
+    if meta.get("kind") == "suggestion":
+        line = "suggestion: " + meta["problem"]
+        key = "suggestion|" + normalise(meta["problem"].lower())
+        return hashlib.sha1(key.encode("utf-8")).hexdigest()[:16], line
+    line = first_error_line(zip_bytes, meta["app"])
+    if not line and _useful(meta.get("client_signature", "")):
+        line = meta.get("client_signature", "")
+    if not line:
+        m = match_summary(match_bytes) if match_bytes else None
+        line = "no error line - match rule %s, arena %s" % ((m or {}).get("rule") or "-",
+                                                             (m or {}).get("arena_mod") or (m or {}).get("arena") or "-")
     key = "|".join((meta["app"], meta["version"].lower(), meta["problem"].lower(), normalise(line)))
     return hashlib.sha1(key.encode("utf-8")).hexdigest()[:16], line
 
@@ -304,7 +471,9 @@ class LocalReports:
         os.makedirs(self.dir, exist_ok=True)
         self.index_path = os.path.join(self.dir, "index.jsonl")
         self.status_path = os.path.join(self.dir, "status.json")
+        self.edits_path = os.path.join(self.dir, "edits.json")  # (id -> {n, date, pictures}: the senders' changes)
         self.lock = threading.Lock()
+        self.contacts = {}  # (id -> its contact, the sender's last change included: reports from before the index had it)
         self.mods_dir = os.path.join(self.dir, "mods")
         os.makedirs(self.mods_dir, exist_ok=True)
         self.mod_quota = MOD_QUOTA
@@ -327,11 +496,25 @@ class LocalReports:
         except (FileNotFoundError, ValueError):
             return {}
 
+    def _edits(self):
+        try:
+            with open(self.edits_path, encoding="utf-8") as f:
+                return json.load(f)
+        except (FileNotFoundError, ValueError):
+            return {}
+
+    def _write_edits(self, edits):
+        tmp = self.edits_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(edits, f, indent=1, ensure_ascii=False)
+        os.replace(tmp, self.edits_path)
+
     def add(self, meta, zip_bytes, images, match_bytes=b""):
         """meta: clean_meta's (its "mods": clean_mods', each marked stored here or not); images: [bytes] (checked);
         match_bytes: the match folder's zip -> {id, signature, seen_before}"""
-        sig, line = signature(meta, zip_bytes)
+        sig, line = signature(meta, zip_bytes, match_bytes)
         received = time.time()
+        secret = secrets.token_urlsafe(18)  # (the sender's receipt: only its hash is kept)
         with self.lock:
             rid = time.strftime("%Y%m%d-%H%M%S", time.localtime(received)) + "-" + secrets.token_hex(3)
             folder = os.path.join(self.dir, _day(rid), rid)
@@ -356,35 +539,213 @@ class LocalReports:
             rec = dict(meta, id=rid, received=time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(received)),
                        received_at=round(received), signature=sig, signature_line=line, seen_before=seen,
                        zip_size=len(zip_bytes or b""), images=names, match=summary,
-                       match_size=len(match_bytes or b""))
+                       match_size=len(match_bytes or b""), secret_hash=secret_hash(secret))
             with open(os.path.join(folder, "report.json"), "w", encoding="utf-8") as f:
                 json.dump(rec, f, indent=2, ensure_ascii=False)
             row = {k: rec.get(k) for k in ("id", "received", "received_at", "app", "version", "platform", "problem",
                                            "happens", "signature", "signature_line", "seen_before", "zip_size",
-                                           "images", "account", "match", "match_size")}
+                                           "images", "account", "match", "match_size", "secret_hash", "kind")}
             row["mods"] = [{k: m[k] for k in ("hash", "name", "type", "id", "size", "stored")} for m in mods]
             row["what"] = meta.get("what", "")[:200]
+            row["contact"] = meta.get("contact", "")
+            if meta.get("updater"):
+                row["updater"] = meta["updater"][:300]  # (the updater's last result: the dashboard's What column)
             with open(self.index_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")
             self.counts[sig] = seen + 1
-        return {"id": rid, "signature": sig, "seen_before": seen}
+        return {"id": rid, "signature": sig, "seen_before": seen, "secret": secret}
 
     def list(self, limit=500):
         """The newest reports first (index lines + their dashboard marks + their signature's count)."""
         with self.lock:
-            rows, marks, counts = self._rows(), self._status(), dict(self.counts)
+            rows, marks, counts, edits = self._rows(), self._status(), dict(self.counts), self._edits()
         rows = rows[-limit:][::-1]
         for r in rows:
-            r["status"], fix = _mark_of(marks.get(r["id"]))
-            if fix:
-                r["fix"] = fix
+            r.pop("secret_hash", None)
+            if r["id"] in edits:  # (the sender changed it: how often, the last time - edits.jsonl has them)
+                r["edits"], r["edited"] = edits[r["id"]].get("n", 0), edits[r["id"]].get("date", "")
+            r["status"], detail = _mark_of(marks.get(r["id"]))
+            r["kind"] = r.get("kind") or "report"
+            if detail and r["status"] in NOTE_STATUSES:
+                r["fix"] = detail
+            elif detail:
+                r["info"] = detail
             r["count"] = counts.get(r.get("signature", ""), 1)
+            r["contact"] = self._contact(r)
+            r["who"] = r.get("account") or r["contact"] or "anonymous"  # (the dashboard's and reports.py list's From)
+            r["replies"] = len(self._replies(r["id"])) if r["status"] in ("needs_info", "replied") else 0
         return rows
 
+    def _contact(self, row):
+        """A report's contact as it is now: what it was sent with, or the sender's last change."""
+        rid = row["id"]
+        contact = self.contacts.get(rid)
+        if contact is None:
+            contact = row.get("contact")
+            if contact is None:  # (from before the index had it)
+                try:
+                    with open(os.path.join(self.dir, _day(rid), rid, "report.json"), encoding="utf-8") as f:
+                        contact = json.load(f).get("contact", "")
+                except (OSError, ValueError):
+                    contact = ""
+            if row.get("edits"):
+                for e in self._edit_log(rid):
+                    contact = e.get("contact") or contact
+            self.contacts[rid] = contact
+        return contact
+
+    # (the players' side: receipts)
+    def _replies(self, rid):
+        try:
+            with open(os.path.join(self.dir, _day(rid), rid, "replies.jsonl"), encoding="utf-8") as f:
+                return [json.loads(l) for l in f if l.strip()]
+        except (OSError, ValueError):
+            return []
+
+    def _edit_log(self, rid):
+        try:
+            with open(os.path.join(self.dir, _day(rid), rid, "edits.jsonl"), encoding="utf-8") as f:
+                return [json.loads(l) for l in f if l.strip()]
+        except (OSError, ValueError):
+            return []
+
+    def _public(self, row, mark, edit=None):
+        """A report's public state for its sender: never its logs, zip, pictures, contact or signature. edit: its
+        edits.json entry (how many changes, pictures added) - pictures: how many it has, editable: not closed."""
+        status, detail = _mark_of(mark)
+        edit = edit or {}
+        out = {"id": row["id"], "state": STATES.get(status, "received"), "received": row.get("received", ""),
+               "kind": row.get("kind") or "report",
+               "app": row.get("app", ""), "problem": row.get("problem", ""), "what": (row.get("what") or "")[:160],
+               "edits": edit.get("n", 0), "pictures": len(row.get("images") or []) + edit.get("pictures", 0),
+               "editable": status not in CLOSED}
+        if status in NOTE_STATUSES and detail:
+            out.update(note=detail.get("note", ""), version=detail.get("version", ""), date=detail.get("date", ""))
+        elif status in ("needs_info", "replied") and detail:
+            out.update(question=detail.get("question", ""), date=detail.get("date", ""))
+        if status in ("needs_info", "replied"):
+            out["replies"] = len(self._replies(row["id"]))
+        return out
+
+    def status(self, receipts, account=None):
+        """[{id, secret}] (and, signed in, the account's name) -> the public state of each report whose secret
+        matches ({id, state: unknown} for the rest), then the account's other reports (from_account)."""
+        with self.lock:
+            rows = {r.get("id"): r for r in self._rows()}
+            marks, edits = self._status(), self._edits()
+        out, seen = [], set()
+        for rc in (receipts if isinstance(receipts, list) else [])[:MAX_STATUS_IDS]:
+            if not isinstance(rc, dict):
+                continue
+            rid = str(rc.get("id") or "")
+            row = rows.get(rid) if _valid_id(rid) else None
+            if rid in seen:
+                continue
+            seen.add(rid)
+            if not row or not row.get("secret_hash") or not secrets.compare_digest(
+                    row["secret_hash"], secret_hash(rc.get("secret"))):
+                out.append({"id": rid[:40], "state": "unknown"})
+                continue
+            out.append(self._public(row, marks.get(rid), edits.get(rid)))
+        if account:
+            for rid, row in rows.items():
+                if rid not in seen and row.get("account") == account:
+                    out.append(dict(self._public(row, marks.get(rid), edits.get(rid)), from_account=True))
+        return out
+
+    def reply(self, rid, secret, text, images, account=None):
+        """The sender's answer to a question (needs_info / replied): kept in replies.jsonl (+ its pictures), the
+        mark becomes replied -> (True, "") or (False, why)."""
+        with self.lock:
+            row = next((r for r in self._rows() if r.get("id") == rid), None) if _valid_id(rid) else None
+            ok = bool(row and row.get("secret_hash") and secrets.compare_digest(row["secret_hash"], secret_hash(secret)))
+            if not ok and not (row and account and row.get("account") == account):
+                return False, "No such report."
+            marks = self._status()
+            status, detail = _mark_of(marks.get(rid))
+            if status not in ("needs_info", "replied"):
+                return False, "This report isn't waiting for an answer."
+            folder = os.path.join(self.dir, _day(rid), rid)
+            replies = self._replies(rid)
+            if len(replies) >= MAX_REPLIES:
+                return False, "This report has all the answers it can take - post on our Discord instead."
+            n = len(replies)
+            names = []
+            for k, img in enumerate(images[:MAX_REPLY_IMAGES]):
+                name = "reply%d_%d.%s" % (n, k, image_ext(img))
+                with open(os.path.join(folder, name), "wb") as f:
+                    f.write(img)
+                names.append(name)
+            with open(os.path.join(folder, "replies.jsonl"), "a", encoding="utf-8") as f:
+                f.write(json.dumps({"date": time.strftime("%Y-%m-%d %H:%M:%S"), "text": text[:MAX_REPLY],
+                                    "images": names}, ensure_ascii=False) + "\n")
+            marks[rid] = dict(detail or clean_info({}), status="replied")
+            self._write_status(marks)
+        return True, ""
+
+    def edit(self, rid, secret, what="", before="", contact="", images=(), account=None):
+        """The sender changes a report it sent (the launcher's / app's "Edit / add pictures", until it's done or a
+        duplicate): more of what happened / before, a new contact, pictures (MAX_IMAGES in all, the sent ones
+        counted). Kept as a history in edits.jsonl (+ editN_K pictures); the report stays as it was sent ->
+        (True, {edits, pictures}) or (False, why)."""
+        what, before = (str(x or "").replace("\r\n", "\n").strip()[:MAX_EDIT_TEXT] for x in (what, before))
+        contact = str(contact or "").replace("\n", " ").strip()[:200]
+        images = list(images or [])
+        with self.lock:
+            row = next((r for r in self._rows() if r.get("id") == rid), None) if _valid_id(rid) else None
+            ok = bool(row and row.get("secret_hash") and secrets.compare_digest(row["secret_hash"], secret_hash(secret)))
+            if not ok and not (row and account and row.get("account") == account):
+                return False, "No such report."
+            status, _ = _mark_of(self._status().get(rid))
+            if status in CLOSED:
+                return False, "This report is closed - it can't be changed now."
+            if not (what or before or contact or images):
+                return False, "Nothing to add."
+            edits = self._edits()
+            prev = edits.get(rid, {})
+            n = prev.get("n", 0)
+            if n >= MAX_EDITS:
+                return False, "This report has all the changes it can take - post on our Discord instead."
+            have = len(row.get("images") or []) + prev.get("pictures", 0)
+            if have + len(images) > MAX_IMAGES:
+                return False, ("A report can have %d pictures - this one has %d already." % (MAX_IMAGES, have))
+            folder = os.path.join(self.dir, _day(rid), rid)
+            names = []
+            for k, img in enumerate(images):
+                name = "edit%d_%d.%s" % (n, k, image_ext(img))
+                with open(os.path.join(folder, name), "wb") as f:
+                    f.write(img)
+                names.append(name)
+            date = time.strftime("%Y-%m-%d %H:%M:%S")
+            entry = {"date": date, "images": names}
+            entry.update({k: v for k, v in (("what", what), ("before", before), ("contact", contact)) if v})
+            with open(os.path.join(folder, "edits.jsonl"), "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            self.contacts.pop(rid, None)
+            edits[rid] = {"n": n + 1, "date": date, "pictures": prev.get("pictures", 0) + len(names)}
+            self._write_edits(edits)
+        return True, {"edits": n + 1, "pictures": have + len(names)}
+
+    def show(self, rid):
+        """One report for reports.py show: report.json's fields (no secret hash), its mark, the answers, the edits."""
+        try:
+            with open(os.path.join(self.dir, _day(rid), rid, "report.json"), encoding="utf-8") as f:
+                rec = json.load(f)
+        except (OSError, ValueError):
+            return None
+        rec.pop("secret_hash", None)
+        with self.lock:
+            rec["status"], detail = _mark_of(self._status().get(rid))
+        if detail:
+            rec["fix" if rec["status"] in NOTE_STATUSES else "info"] = detail
+        rec["replies"], rec["edits"] = self._replies(rid), self._edit_log(rid)
+        return rec
+
     def file(self, rid, name):
-        """One of a report's files (report.json, report.zip, imageN.ext) -> bytes or None."""
-        if not _valid_id(rid) or not re.fullmatch(r"(report|match)\.zip|report\.json|image[0-4]\.(png|jpg|webp)",
-                                                  name or ""):
+        """One of a report's files (report.json, report.zip, imageN.ext, the answers, the edits) -> bytes or None."""
+        if not _valid_id(rid) or not re.fullmatch(r"(report|match)\.zip|report\.json|image[0-4]\.(png|jpg|webp)|"
+                                                  r"replies\.jsonl|reply\d_\d\.(png|jpg|webp)|"
+                                                  r"edits\.jsonl|edit\d+_\d\.(png|jpg|webp)", name or ""):
             return None
         try:
             with open(os.path.join(self.dir, _day(rid), rid, name), "rb") as f:
@@ -490,14 +851,18 @@ class LocalReports:
         os.replace(tmp, self.status_path)
 
     def mark(self, rid, status, fix=None):
-        """One report: done / duplicate / fixed (fix: {note, commit, version, date}) / '' (open again)."""
+        """One report: done / duplicate / looking / fixed (fix: {note, commit, version, date}) / needs_info (fix:
+        {question}) / planned / not_planned (a suggestion's answer; fix: {note}) / '' (open again)."""
         return bool(self.mark_many(rid, status, fix))
 
     def mark_many(self, target, status, fix=None):
         """A report id, or a signature (every report with it) -> the ids marked ([] when none)."""
-        if status not in STATUSES:
+        if status not in STATUSES or status == "replied":  # (replied: only a player's answer sets it)
             return []
-        value = dict(clean_fix(fix), status="fixed") if status == "fixed" else status
+        if status == "needs_info" and not clean_info(fix)["question"]:
+            return []
+        value = (dict(clean_fix(fix), status=status) if status in NOTE_STATUSES else
+                 dict(clean_info(fix), status="needs_info") if status == "needs_info" else status)
         with self.lock:
             if _valid_id(target):
                 ids = [target] if os.path.isdir(os.path.join(self.dir, _day(target), target)) else []
@@ -515,6 +880,43 @@ class LocalReports:
                     marks.pop(rid, None)
             self._write_status(marks)
         return ids
+
+    def resign(self, write=False):
+        """Every report signed again with the current rule -> [(id, old signature, new, old line, new line)]. write:
+        report.json and index.jsonl get the new signature / line, seen_before counted again in received order."""
+        out, counts = [], {}
+        rows = sorted(self._rows(), key=lambda r: r.get("id", ""))
+        for row in rows:
+            rid = row.get("id", "")
+            folder = os.path.join(self.dir, _day(rid), rid)
+            try:
+                with open(os.path.join(folder, "report.json"), encoding="utf-8") as f:
+                    rec = json.load(f)
+            except (OSError, ValueError):
+                continue
+            read = lambda n: open(os.path.join(folder, n), "rb").read() if os.path.exists(os.path.join(folder, n)) else b""
+            meta = {"app": rec.get("app", ""), "version": rec.get("version", ""), "problem": rec.get("problem", ""),
+                    "client_signature": rec.get("client_signature", ""), "kind": rec.get("kind", "report")}
+            sig, line = signature(meta, read("report.zip"), read("match.zip"))
+            out.append((rid, rec.get("signature", ""), sig, rec.get("signature_line", ""), line))
+            if write:
+                seen = counts.get(sig, 0)
+                counts[sig] = seen + 1
+                rec.update(signature=sig, signature_line=line, seen_before=seen)
+                with open(os.path.join(folder, "report.json"), "w", encoding="utf-8") as f:
+                    json.dump(rec, f, indent=2, ensure_ascii=False)
+                row.update(signature=sig, signature_line=line, seen_before=seen)
+        if write:
+            with self.lock:
+                tmp = self.index_path + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    for row in rows:
+                        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+                os.replace(tmp, self.index_path)
+                self.counts = {}
+                for row in rows:
+                    self.counts[row.get("signature", "")] = self.counts.get(row.get("signature", ""), 0) + 1
+        return out
 
     def delete(self, rid):
         """A report gone for good: its folder, its index line and its mark."""
@@ -539,6 +941,9 @@ class LocalReports:
             marks = self._status()
             if marks.pop(rid, None) is not None:
                 self._write_status(marks)
+            edits = self._edits()
+            if edits.pop(rid, None) is not None:
+                self._write_edits(edits)
             self.counts = {}
             for r in keep:
                 self.counts[r.get("signature", "")] = self.counts.get(r.get("signature", ""), 0) + 1
@@ -601,6 +1006,24 @@ class RemoteReports:
     def has_mods(self, hashes):
         with self._req("POST", "/reports/mods/check", json.dumps({"hashes": hashes}).encode(), "application/json") as f:
             return json.loads(f.read()).get("have", [])
+
+    def status(self, receipts, account=None):
+        with self._req("POST", "/reports/status", json.dumps({"receipts": receipts, "account": account}).encode(),
+                       "application/json") as f:
+            return json.loads(f.read()).get("reports", [])
+
+    def reply(self, rid, secret, text, images, account=None):
+        body = pack({"id": rid, "secret": secret, "text": text, "account": account}, b"", images)
+        with self._req("POST", "/reports/reply", body, "application/zip") as f:
+            d = json.loads(f.read())
+        return bool(d.get("ok")), d.get("why", "")
+
+    def edit(self, rid, secret, what="", before="", contact="", images=(), account=None):
+        body = pack({"id": rid, "secret": secret, "what": what, "before": before, "contact": contact,
+                     "account": account}, b"", list(images or []))
+        with self._req("POST", "/reports/edit", body, "application/zip") as f:
+            d = json.loads(f.read())
+        return bool(d.get("ok")), (d.get("result") or {}) if d.get("ok") else d.get("why", "")
 
     def mod_usage(self):
         with self._req("GET", "/reports/mods/usage") as f:
@@ -791,7 +1214,45 @@ def node_routes(app, folder, key_ok, mod_quota=MOD_QUOTA):
         done = await asyncio.get_running_loop().run_in_executor(None, reports.delete, request.match_info["id"])
         return web.Response(status=200 if done else 404)
 
+    async def status(request):
+        if not key_ok(request):
+            return web.Response(status=403)
+        try:
+            body = await request.json()
+        except ValueError:
+            return web.Response(status=400)
+        rows = await asyncio.get_running_loop().run_in_executor(None, reports.status, body.get("receipts"),
+                                                                body.get("account"))
+        return web.json_response({"reports": rows})
+
+    async def reply(request):
+        if not key_ok(request):
+            return web.Response(status=403)
+        try:
+            meta, _, images, _ = unpack(await request.read())
+        except Exception:
+            return web.json_response({"ok": False, "why": "bad body"}, status=400)
+        ok, why = await asyncio.get_running_loop().run_in_executor(
+            None, reports.reply, str(meta.get("id", "")), meta.get("secret"), str(meta.get("text", "")), images,
+            meta.get("account"))
+        return web.json_response({"ok": ok, "why": why})
+
+    async def edit(request):
+        if not key_ok(request):
+            return web.Response(status=403)
+        try:
+            meta, _, images, _ = unpack(await request.read())
+        except Exception:
+            return web.json_response({"ok": False, "why": "bad body"}, status=400)
+        ok, result = await asyncio.get_running_loop().run_in_executor(
+            None, lambda: reports.edit(str(meta.get("id", "")), meta.get("secret"), meta.get("what", ""),
+                                       meta.get("before", ""), meta.get("contact", ""), images, meta.get("account")))
+        return web.json_response({"ok": True, "result": result} if ok else {"ok": False, "why": result})
+
     app.router.add_post("/reports/mods/check", mods_check)
+    app.router.add_post("/reports/status", status)
+    app.router.add_post("/reports/reply", reply)
+    app.router.add_post("/reports/edit", edit)
     app.router.add_get("/reports/mods/usage", mods_usage)
     app.router.add_post("/reports/mods/{hash}", mod_put)
     app.router.add_get("/reports/mods/{hash}", mod_get)
@@ -807,11 +1268,19 @@ def main():
     """On the machine that keeps the reports (the storage node's PC, or --role all), server running or not:
         python reports.py --data <data folder> mark <report id | signature> --fixed "how it was fixed"
                           --commit abc1234 --version 2.1.6 [--date 2026-10-25]
-        python reports.py --data <data folder> mark <id | signature> --done | --duplicate | --reopen
+        python reports.py --data <data folder> mark <id | signature> --needs-info "the question for the player"
+        python reports.py --data <data folder> mark <id | signature> --looking | --done | --duplicate | --reopen
         python reports.py --data <data folder> delete <report id>
-        python reports.py --data <data folder> list [--fixed]
+        python reports.py --data <data folder> mark <suggestion id> --planned ["a note"] | --not-planned ["a note"]
+                          | --fixed "a note" --version 2.2.0   (a suggestion: Sure / No, not planned / Done in)
+        python reports.py --data <data folder> list [--fixed] [--kind report | suggestion] [--who NAME] [--anthology]
+                          (SvR Anthology's reports are listed only with --anthology, and then only they are)
+        python reports.py --data <data folder> show <report id>   (its fields, the answers, the sender's edits)
+        python reports.py --data <data folder> resign [--write]   (every report signed again: before / after)
     A signature marks every report with it (the dashboard's groups). The dashboard shows the fixed ones under
-    "Fixed while you were away"."""
+    "Fixed while you were away". The players see the state in their launcher's Reports tab: received, looking,
+    "Fixed - in the next update (<version>)" with the note, "We need more information: <question>" (they can
+    answer it there), done, duplicate."""
     import argparse
     ap = argparse.ArgumentParser(description=main.__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--data", required=True, help="the server's --data folder (the one holding reports/)")
@@ -820,9 +1289,13 @@ def main():
     m.add_argument("target", help="a report id (20261025-101500-abc123) or a signature (16 hex)")
     how = m.add_mutually_exclusive_group(required=True)
     how.add_argument("--fixed", metavar="NOTE", help="fixed: a short plain-English note of how")
+    how.add_argument("--needs-info", metavar="QUESTION", help="ask the player (their Reports tab shows it)")
+    how.add_argument("--looking", action="store_true", help="we're looking at it")
     how.add_argument("--done", action="store_true")
     how.add_argument("--duplicate", action="store_true")
     how.add_argument("--reopen", action="store_true")
+    how.add_argument("--planned", metavar="NOTE", nargs="?", const="", help="a suggestion: Sure (planned)")
+    how.add_argument("--not-planned", metavar="NOTE", nargs="?", const="", help="a suggestion: No, not planned")
     m.add_argument("--commit", default="")
     m.add_argument("--version", default="", help="the version the fix ships in, e.g. 2.1.6")
     m.add_argument("--date", default="", help="YYYY-MM-DD (default: today)")
@@ -830,29 +1303,72 @@ def main():
     d.add_argument("id")
     ls = sub.add_parser("list")
     ls.add_argument("--fixed", action="store_true", help="only the fixed ones")
+    ls.add_argument("--kind", choices=KINDS, help="only reports or only suggestions")
+    ls.add_argument("--who", help="only this person's (the From column: an account name, a contact, anonymous)")
+    ls.add_argument("--anthology", action="store_true", help="SvR Anthology's reports instead of the port's")
+    sh = sub.add_parser("show")
+    sh.add_argument("id")
+    rs = sub.add_parser("resign")
+    rs.add_argument("--write", action="store_true", help="keep the new signatures (else only shown)")
     a = ap.parse_args()
     if not os.path.isdir(os.path.join(a.data, "reports")):
         raise SystemExit("No reports folder in %s" % a.data)
     store = LocalReports(a.data)
     if a.cmd == "mark":
-        status = "fixed" if a.fixed is not None else "done" if a.done else "duplicate" if a.duplicate else ""
-        fix = {"note": a.fixed, "commit": a.commit, "version": a.version, "date": a.date} if status == "fixed" else None
+        status = ("fixed" if a.fixed is not None else "needs_info" if a.needs_info is not None else
+                  "planned" if a.planned is not None else "not_planned" if a.not_planned is not None else
+                  "looking" if a.looking else "done" if a.done else "duplicate" if a.duplicate else "")
+        fix = ({"note": a.fixed, "commit": a.commit, "version": a.version, "date": a.date} if status == "fixed" else
+               {"note": a.planned if status == "planned" else a.not_planned, "date": a.date}
+               if status in ("planned", "not_planned") else
+               {"question": a.needs_info, "date": a.date} if status == "needs_info" else None)
         ids = store.mark_many(a.target, status, fix)
         if not ids:
             raise SystemExit("No report with that id or signature.")
         print("%s: %d report(s): %s" % (status or "reopened", len(ids), ", ".join(ids)))
+    elif a.cmd == "resign":
+        for rid, old, new, old_line, new_line in store.resign(a.write):
+            print("%s  %s -> %s%s\n    was: %s\n    now: %s" % (rid, old, new, "" if old != new else " (same)",
+                                                              old_line[:150], new_line[:150]))
+        print("written" if a.write else "(shown only: --write keeps them)")
+    elif a.cmd == "show":
+        rec = store.show(a.id)
+        if rec is None:
+            raise SystemExit("No report %s." % a.id)
+        for k in ("id", "kind", "received", "app", "version", "platform", "account", "problem", "happens", "what",
+                  "before", "contact", "images", "status", "fix", "info"):
+            if rec.get(k):
+                print("%-9s %s" % (k + ":", rec[k]))
+        for n, r in enumerate(rec["replies"]):
+            print("answer %d (%s): %s%s" % (n + 1, r.get("date"), r.get("text", ""),
+                                            "  [%s]" % ", ".join(r["images"]) if r.get("images") else ""))
+        for n, e in enumerate(rec["edits"]):
+            print("edit %d (%s):" % (n + 1, e.get("date")))
+            for k in ("what", "before", "contact", "images"):
+                if e.get(k):
+                    print("    %-8s %s" % (k + ":", ", ".join(e[k]) if k == "images" else e[k]))
     elif a.cmd == "delete":
         if not store.delete(a.id):
             raise SystemExit("No report %s." % a.id)
         print("deleted", a.id)
     else:
         for r in store.list(5000):
+            if is_anthology(r) != a.anthology:
+                continue
             if a.fixed and r["status"] != "fixed":
                 continue
-            fix = r.get("fix")
-            print("%s  %-9s %s %s  %s%s" % (r["id"], r["status"] or "open", r.get("app"), r.get("version"),
-                                           r.get("problem"), "  -> %s (%s, %s)" % (fix["note"], fix["commit"],
-                                                                                   fix["version"]) if fix else ""))
+            if a.kind and r.get("kind", "report") != a.kind:
+                continue
+            if a.who and r["who"].lower() != a.who.lower():
+                continue
+            fix, info = r.get("fix"), r.get("info")
+            print("%s  %-10s %-20s %s %s  %s%s%s%s" % (r["id"], r["status"] or "open", r["who"], r.get("app"), r.get("version"),
+                                                r.get("problem"), "  -> %s%s" % (fix["note"], " (%s)" % ", ".join(
+                                                    x for x in (fix["commit"], fix["version"]) if x)
+                                                    if fix["commit"] or fix["version"] else "") if fix else "",
+                                                "  ? %s (%d answer(s))" % (info["question"], r["replies"]) if info else "",
+                                                "  + %d edit(s), last %s" % (r["edits"], r["edited"]) if r.get("edits")
+                                                else ""))
 
 
 if __name__ == "__main__":

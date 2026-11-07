@@ -48,7 +48,24 @@ final class ModsPage {
     static File backstageFolder() { return new File(new File(InstallActivity.gameFolder(), "Mods"), "Backstage"); }
     static File matchTypesFolder() { return new File(new File(InstallActivity.gameFolder(), "Mods"), "MatchTypes"); }
     static File attiresFolder() { return new File(new File(InstallActivity.gameFolder(), "Mods"), "Attires"); }
+    static File titlesFolder() { return new File(new File(InstallActivity.gameFolder(), "Mods"), "Titles"); }
     static File backgroundsFolder() { return Backgrounds.folder(); }
+
+    // This app's version: the game's (the app installs the game of its own release).
+    static String gameVersion(android.content.Context ctx) {
+        try {
+            return ctx.getPackageManager().getPackageInfo(ctx.getPackageName(), 0).versionName;
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    // A mod's needs= (docs/SVRMOD_FORMAT.md: the oldest game version that plays it - a big model or arena) is newer
+    // than this game: older games leave a big model out, and crash loading a big arena (the PC's mods_tab.c).
+    static boolean needsNewer(android.content.Context ctx, String needs) {
+        String v = gameVersion(ctx);
+        return needs != null && !needs.trim().isEmpty() && v != null && !v.isEmpty() && Updater.newer(needs.trim(), v);
+    }
 
     View view() {
         LinearLayout c = a_.column();
@@ -100,10 +117,12 @@ final class ModsPage {
         File[] types = matchTypesFolder().listFiles(f -> f.isDirectory() && new File(f, "manifest.txt").isFile());
         File[] pics = backgroundsFolder().listFiles(f -> f.isDirectory() && hasPicture(f));
         File[] attires = attiresFolder().listFiles(f -> f.isDirectory() && new File(f, "attire.pac").isFile());
-        File[] dirs = new File[(arenas == null ? 0 : arenas.length) + (stars == null ? 0 : stars.length)
+        File[] titles = titlesFolder().listFiles(f -> f.isDirectory() && new File(f, "manifest.txt").isFile());
+        File[] dirs = new File[(titles == null ? 0 : titles.length) + (arenas == null ? 0 : arenas.length) + (stars == null ? 0 : stars.length)
             + (signs == null ? 0 : signs.length) + (media == null ? 0 : media.length) + (back == null ? 0 : back.length)
             + (types == null ? 0 : types.length) + (pics == null ? 0 : pics.length) + (attires == null ? 0 : attires.length)];
         int k = 0;
+        if (titles != null) for (File f : titles) dirs[k++] = f;
         if (arenas != null) for (File f : arenas) dirs[k++] = f;
         if (stars != null) for (File f : stars) dirs[k++] = f;
         if (signs != null) for (File f : signs) dirs[k++] = f;
@@ -138,11 +157,13 @@ final class ModsPage {
             boolean matchType = d.getParentFile().getName().equals("MatchTypes");
             boolean pic = d.getParentFile().getName().equals("Backgrounds");
             boolean attire = d.getParentFile().getName().equals("Attires");
+            boolean titlePack = d.getParentFile().getName().equals("Titles");
             String hint = (star && leftOut.contains(d.getName()) ? "NOT IN GAME - over the " + superstarLimit() + " limit. " : "")
-                + (attire ? "Attire " + m.get("attire") + " for " + starName(m.get("superstar")) : pic ? "Menu background" : matchType ? "Match type" : backPack ? "Backstage area" : mediaPack ? "Media" : signPack ? "Crowd signs" : star ? "Superstar" : "Arena")
+                + (titlePack ? "Title" : attire ? "Attire " + m.get("attire") + " for " + starName(m.get("superstar")) : pic ? "Menu background" : matchType ? (d.getName().equals("free_roaming_backstage") ? "Match type - REMOVED: FREE-ROAMING BACKSTAGE isn't in the game for now" : "Match type") : backPack ? "Backstage area - OFF: backstage mods are switched off, Backstage Brawl plays the stock backstage" : mediaPack ? "Media" : signPack ? "Crowd signs" : star ? "Superstar" : "Arena")
                 + (m.containsKey("author") && !m.get("author").isEmpty() ? " by " + m.get("author") : "")
                 + (m.containsKey("version") ? ", v" + m.get("version") : "")
-                + (signPack || mediaPack || matchType || pic ? "" : ", " + FileOps.human(new File(d, star ? "ch.pac" : attire ? "attire.pac" : "arena.pac").length()));
+                + (needsNewer(a_, m.get("needs")) ? " - NEEDS GAME " + m.get("needs") : "")
+                + (titlePack || signPack || mediaPack || matchType || pic ? "" : ", " + FileOps.human(new File(d, star ? "ch.pac" : attire ? "attire.pac" : "arena.pac").length()));
             LinearLayout controls = new LinearLayout(a_);
             Switch on = new Switch(a_);
             // (red when on, as the Settings switches: the default is hard to see)
@@ -347,9 +368,64 @@ final class ModsPage {
     String install(Uri uri) throws IOException {
         try (InputStream raw = a_.getContentResolver().openInputStream(uri)) {
             if (raw == null) throw new IOException("can't read it");
-            Installed r = install(a_, raw, false);
+            Installed r = install(a_, raw, false, this::askMoves);
             return r.name + (r.note.isEmpty() ? "" : ". " + r.note);
         }
+    }
+
+    // The question before a mod with custom moves is installed (launcher/move_warning.c on PC), from the install's
+    // worker thread: a Yes / No box on the UI thread, No focused (a pad's A answers No), "Don't warn me again" kept in
+    // the launcher's preferences. True: install it.
+    interface MoveQuestion {
+        boolean install(String name);
+    }
+
+    static final String kMoveWarning = "This mod has custom moves (ported or made by hand). Custom moves are "
+        + "experimental and most likely broken: they can land wrong, look odd or freeze a match. Install anyway?";
+
+    boolean askMoves(String name) {
+        android.content.SharedPreferences prefs = a_.getPreferences(android.content.Context.MODE_PRIVATE);
+        if (prefs.getBoolean("move_warning_off", false)) return true;
+        java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
+        boolean[] yes = {false};
+        a_.runOnUiThread(() -> {
+            if (a_.isFinishing()) {
+                done.countDown();
+                return;
+            }
+            android.widget.CheckBox quiet = new android.widget.CheckBox(a_);
+            quiet.setText("Don't warn me again");
+            quiet.setTextColor(LauncherActivity.kText);
+            quiet.setButtonTintList(android.content.res.ColorStateList.valueOf(LauncherActivity.kRed));
+            LinearLayout box = new LinearLayout(a_);
+            box.setPadding(a_.dp(20), a_.dp(4), a_.dp(20), 0);
+            box.addView(quiet);
+            android.app.AlertDialog d = new android.app.AlertDialog.Builder(a_, android.app.AlertDialog.THEME_DEVICE_DEFAULT_DARK)
+                .setTitle("\"" + name + "\" has custom moves")
+                .setMessage(kMoveWarning)
+                .setView(box)
+                .setPositiveButton("Yes", (dlg, w) -> {
+                    yes[0] = true;
+                    if (quiet.isChecked()) prefs.edit().putBoolean("move_warning_off", true).apply();
+                })
+                .setNegativeButton("No", null)
+                .setOnDismissListener(dlg -> done.countDown())
+                .show();
+            d.getButton(android.content.DialogInterface.BUTTON_NEGATIVE).requestFocus();
+        });
+        try {
+            while (!done.await(1, java.util.concurrent.TimeUnit.SECONDS))
+                if (a_.isFinishing() || a_.isDestroyed()) return false;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+        return yes[0];
+    }
+
+    // The player said No (the custom-moves question): not a failure.
+    static final class Declined extends IOException {
+        Declined(String why) { super(why); }
     }
 
     // Where a mod went (Mods/<kind>/<id>), whether it was there already, and
@@ -364,6 +440,11 @@ final class ModsPage {
     // Installs the .svrmod read from `raw`. A bundled mod (BundledMods) keeps
     // the player's on / off and never replaces a newer version of it.
     static Installed install(android.content.Context ctx, InputStream raw, boolean bundle) throws IOException {
+        return install(ctx, raw, bundle, null);
+    }
+
+    // ... `ask`: asked before a mod with custom moves is installed (null: only logged).
+    static Installed install(android.content.Context ctx, InputStream raw, boolean bundle, MoveQuestion ask) throws IOException {
         Map<String, File> parts = new HashMap<>();
         File stage = new File(ctx.getCacheDir(), "mod_stage");
         deleteTree(stage);
@@ -396,6 +477,7 @@ final class ModsPage {
         boolean matchType = type.equals("matchtype");
         boolean pic = type.equals("background");
         boolean attire = type.equals("attire");
+        boolean titlePack = type.equals("title");
         if (attire && !parts.containsKey("attire.pac")) {
             deleteTree(stage);
             throw new IOException("that attire mod has no attire.pac");
@@ -404,13 +486,25 @@ final class ModsPage {
             deleteTree(stage);
             throw new IOException("it has no pictures (.dds)");
         }
-        if (!pic && !attire && !signPack && !mediaPack && !matchType && (star ? !parts.containsKey("ch.pac") : !parts.containsKey("arena.pac"))) {
+        if (!titlePack && !pic && !attire && !signPack && !mediaPack && !matchType && (star ? !parts.containsKey("ch.pac") : !parts.containsKey("arena.pac"))) {
             deleteTree(stage);
             throw new IOException(star ? "it has no ch.pac" : "it has no arena (not a SvR2011 mod?)");
         }
+        // (custom moves - a superstar mod's moves/ pack, ported or made by hand: asked first, as on PC; not the port's
+        // bundled mods)
+        if (!bundle && new File(stage, "moves/pack.txt").isFile()) {
+            String nm = m.containsKey("name") ? m.get("name") : m.containsKey("id") ? m.get("id") : "the mod";
+            android.util.Log.w("SvR2011", "mods: \"" + nm + "\" has custom moves (ported or made by hand) - experimental "
+                + "and most likely broken" + (ask == null ? " (not asked)" : ""));
+            if (ask != null && !ask.install(nm)) {
+                deleteTree(stage);
+                android.util.Log.i("SvR2011", "mods: \"" + nm + "\" not installed (custom moves: No)");
+                throw new Declined("it has custom moves (you chose not to install it)");
+            }
+        }
         String id = m.containsKey("id") ? m.get("id").replaceAll("[^A-Za-z0-9_\\-]", "_") : "";
-        if (id.isEmpty()) id = attire ? "attire" : pic ? "background" : matchType ? "matchtype" : backPack ? "backstage" : mediaPack ? "media" : signPack ? "signs" : star ? "superstar" : "arena";
-        File dest = new File(attire ? attiresFolder() : pic ? backgroundsFolder() : matchType ? matchTypesFolder() : backPack ? backstageFolder() : mediaPack ? mediaFolder() : signPack ? signsFolder() : star ? superstarsFolder() : arenasFolder(), id);
+        if (id.isEmpty()) id = titlePack ? "title" : attire ? "attire" : pic ? "background" : matchType ? "matchtype" : backPack ? "backstage" : mediaPack ? "media" : signPack ? "signs" : star ? "superstar" : "arena";
+        File dest = new File(titlePack ? titlesFolder() : attire ? attiresFolder() : pic ? backgroundsFolder() : matchType ? matchTypesFolder() : backPack ? backstageFolder() : mediaPack ? mediaFolder() : signPack ? signsFolder() : star ? superstarsFolder() : arenasFolder(), id);
         Installed r = new Installed();
         r.name = m.containsKey("name") ? m.get("name") : id;
         r.type = type;
@@ -431,7 +525,7 @@ final class ModsPage {
         // if that fails) and only then the old one deleted: a failure leaves the installed copy as it was. (It used
         // to be deleted first: a stopped copy left a folder the mods list showed and the game left out - the PC
         // launcher's 2.1.2 bundled-mod reports, mods_tab.c swap_in.)
-        String need = attire ? "attire.pac" : pic ? "manifest.txt" : signPack || mediaPack || matchType ? "manifest.txt" : star ? "ch.pac" : "arena.pac";
+        String need = attire ? "attire.pac" : pic || titlePack ? "manifest.txt" : signPack || mediaPack || matchType ? "manifest.txt" : star ? "ch.pac" : "arena.pac";
         File kind = dest.getParentFile(), mods = kind.getParentFile();
         File fresh = new File(mods, ".new-" + kind.getName() + "-" + id), old = new File(mods, ".old-" + kind.getName() + "-" + id);
         deleteTree(fresh);
@@ -466,6 +560,9 @@ final class ModsPage {
             }
             r.note = attireGuard(dest);
         }
+        if (needsNewer(ctx, m.get("needs")))
+            r.note = ("It needs game version " + m.get("needs").trim() + " or newer - this one is " + gameVersion(ctx)
+                + ": update the game first. " + r.note).trim();
         return r;
     }
 
@@ -488,14 +585,36 @@ final class ModsPage {
         return "superstar " + id;
     }
 
-    // Attires 1-4 (bits 0-3) the superstar's own pac has, plus bit 8 when it has other model kinds for attire 1:
+    // Attires 1-4 (bits 0-3) the superstar's own pacs have, plus bit 8 when one has other model kinds for attire 1:
     // the entrance gear superstars (Undertaker, CM Punk, Cena, Shawn Michaels, Morrison) - a new attire for them
-    // doesn't load in the game yet (src/superstar_mods.cpp ExtraKinds), so only their own can be replaced.
+    // doesn't load in the game yet (src/superstar_mods.cpp ExtraKinds), so only their own can be replaced. Own pacs:
+    // the game's pac/ch/chNNN.pac and the installed DLC's pac/ch/ch<id>_dlcNN.pac
+    // (UserData/0000000000000000/5451085D/00000002/<package>: a DLC superstar's own, ids 51-58, and DLC attires of
+    // disc superstars) - the game counts both.
     static final int kGear = 0x100;
 
     static int ownAttires(int id) {
-        File pac = new File(new File(new File(InstallActivity.gameFolder(), "pac"), "ch"),
-            String.format(java.util.Locale.ROOT, "ch%03d.pac", id));
+        int mask = 0;
+        if (id >= 100)
+            mask |= pacAttires(new File(new File(new File(InstallActivity.gameFolder(), "pac"), "ch"),
+                String.format(java.util.Locale.ROOT, "ch%03d.pac", id)), id);
+        File[] pkgs = new File(InstallActivity.gameFolder(), "UserData/0000000000000000/5451085D/00000002").listFiles(File::isDirectory);
+        if (pkgs != null)
+            for (File pkg : pkgs) {
+                String prefix = "ch" + id + "_dlc";
+                File[] pacs = new File(pkg, "pac/ch").listFiles(f -> f.isFile() && f.getName().toLowerCase(java.util.Locale.ROOT).startsWith(prefix)
+                    && f.getName().toLowerCase(java.util.Locale.ROOT).endsWith(".pac"));
+                if (pacs != null) for (File f : pacs) mask |= pacAttires(f, id);
+            }
+        return mask;
+    }
+
+    // A DLC superstar the player has installed (ids below 100: only DLC model pacs).
+    static boolean dlcSuperstar(int id) {
+        return id > 0 && id < 100 && (ownAttires(id) & 0xF) != 0;
+    }
+
+    static int pacAttires(File pac, int id) {
         byte[] d = new byte[0x4000];
         try (FileInputStream in = new FileInputStream(pac)) {
             int n = 0, r;
@@ -573,7 +692,7 @@ final class ModsPage {
             } catch (NumberFormatException e) {
                 continue;
             }
-            if (a.id < 100 || a.id > 321 || a.attire < 0 || a.attire > 4) continue;
+            if (((a.id < 100 || a.id > 321) && !dlcSuperstar(a.id)) || a.attire < 0 || a.attire > 4) continue;
             a.born = d.lastModified();
             try (BufferedReader r = new BufferedReader(new InputStreamReader(new FileInputStream(new File(d, ".installed")),
                     StandardCharsets.UTF_8))) {

@@ -18,5 +18,9 @@ void RtwmStreakPeople(uint8_t* base, uint32_t match);
 // in a backstage walk - put there 5 seconds into a scene with the player alone: a walk's objective reached
 // without walking, for hidden tests).
 void RtwmBeforeFrame(uint8_t* base);
+// Around a select panel's update: with a mod under the cursor in the Streak's list, the player's pick (the CAW slot
+// the story gets) reads as the mod while the panel looks - true if swapped; End puts the CAW slot back.
+bool RtwmShowModBegin(uint8_t* base);
+void RtwmShowModEnd(uint8_t* base, bool swapped);
 
 }  // namespace svr2011

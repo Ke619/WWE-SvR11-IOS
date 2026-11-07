@@ -245,11 +245,31 @@ to a superstar mod (Superstar > More > Move pack folder).
 writes the folder. The game merges every enabled pack into copies of its
 files when it starts (a few seconds the first time). Format: docs/MOVE_PACKS.md.
 
+## For Fun
+
+The whole arena or a whole superstar out to FBX and PNG, from your game into a folder of yours. Each list starts on
+what's open on the Arena or Superstar page and can pick any other.
+
+- **Full arena:** every object where the game shows it, with the ring put together and the light rigs in place, the
+  default lights, and every texture as a PNG with normal maps linked. Video screens are plain white: the game fills
+  them with video. It's for other programs; to edit an arena and bring it back, use Export to Blender on the Arena page.
+- **Full superstar:** skeleton, skin weights, one attire, and colour and normal maps. It comes back in: on the
+  Superstar page, pick the FBX as the model and Make it.
+
 ## Media
 
 Crowd signs, menu backgrounds and the game's media, one tab each; Belts &
 weapons brings title belts' and weapons' looks from another game (a texture
-pack).
+pack); Titles replaces a championship.
+
+### Titles tab
+
+One of the game's 13 titles with a new name, new pictures and new belt
+textures. Pick the title, then fill in only what should change: the name (and
+what its holder is called), the championship art beside the holder, the belt
+picture, and any of the belt's textures. Holders and title matches stay as
+they are, and without the mod the game's title comes back. Two mods on one
+title: the first by folder name wins, and the doctor warns.
 
 ### Crowd signs tab
 
@@ -295,9 +315,9 @@ Match type mods (`type=matchtype`, a manifest only). Two kinds:
 - **Custom match type:** one of the game's matches as the base (picked by
   name from the 119 rules), under a new row in a menu list (and submenu),
   with its own people, slots (index, team, kind), arena, option rules with
-  locks, placed weapons and Match Creator rows. The game side that builds
-  these at start is being made by the Limit Breaking work; the page writes
-  the format it will read (docs/MATCH_TYPE_MODS.md) and warns until then.
+  locks, placed weapons and Match Creator rows. The game doesn't play
+  custom match types yet: the page saves them in the format a later update
+  will read, and warns until then.
 - **The game's matches:** every rule record decoded - participants, arena,
   option rules - as reference, with "Use as the base".
 

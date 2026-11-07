@@ -1,4 +1,4 @@
-"""An HCTP room's props + climb spots + converted motions -> GMGB package (78H3) for the row mod.
+"""An HCTP room's props + climb spots + converted motions -> GMGB package (78R<n>, or the world's) for the row mod.
 Room 30 by default; others by HCTP_ROOM / HCTP_DX / HCTP_DZ / HCTP_OUT (the mod folder)."""
 import math
 import os
@@ -14,10 +14,12 @@ import svr08_stage as s8
 import hctp_props, hctp_gimmick, hctp_fake56, hctp2jboy, yobj
 
 ROOM = int(os.environ.get('HCTP_ROOM', '30'))
-UNPACKED = os.environ.get('HCTP_UNPACKED', r"D:\Xbox Games Ports\HCTP Extract\_unpacked")
+if not os.environ.get('HCTP_UNPACKED') or not os.environ.get('SVR11_PAC'):
+    raise SystemExit('set HCTP_UNPACKED (the unpacked HCTP disc) and SVR11_PAC (the SvR 2011 pac folder)')
+UNPACKED = os.environ['HCTP_UNPACKED']
 STAGE = os.path.join(UNPACKED, 'bg', 'stg_00%02d' % ROOM)
 OUT = os.environ.get('HCTP_OUT', 'mod_row')
-PAC11 = os.environ.get('SVR11_PAC', r"D:\Xbox Games Ports\WWE Smackdown Vs Raw 2011\Extract GameFiles\pac")
+PAC11 = os.environ['SVR11_PAC']
 BG78 = os.path.join(PAC11, 'bg', 'bg78.pac')
 GM = os.path.join(PAC11, 'gm.pac')
 BANK = os.environ.get('HCTP_BANK', 'out/mot/bank_h3.bin')
@@ -143,7 +145,10 @@ for pr in plist:
             ix = {71: (0, 8), 81: (3, 4)}.get(pr['kind'])
             if ix and int(prm[ix[0]]) == mid and prm[ix[1]] > 0:
                 idle = OBJ_ACT + int(prm[ix[1]])
-        spec.append(dict(model=models[mid][0], pos=pos, ry=a, note=f"{pr['id']} m{mid}", idle=idle))
+        # (the equipment crate's model turned half round: its lid stood on the side it is whipped in from -
+        # its solid box is symmetric, and its floor zone stays where HCTP has it)
+        ry = a + math.pi if pr['kind'] == 36 else a
+        spec.append(dict(model=models[mid][0], pos=pos, ry=ry, note=f"{pr['id']} m{mid}", idle=idle))
 # climb spots from the room collision with props (HCTP coordinates, original attributes)
 hmd = open(STAGE + r'\00999.hmd', 'rb').read()
 extra = hctp_props.world_collision(STAGE, plist)
@@ -172,7 +177,7 @@ if SPEC_OUT:
         p['model'] = os.path.abspath(p['model'])
     pickle.dump(dict(spec=spec, spots=spots, tex=tex), open(SPEC_OUT, 'wb'))
 else:
-    hctp_gimmick.build(GM, f'{OUT}/gimmick.pac', entry='78H3', props=spec, textures=tex, report=True,
+    hctp_gimmick.build(GM, f'{OUT}/gimmick.pac', entry=os.environ.get('HCTP_ENTRY', '78R%d' % (ROOM - 30)), props=spec, textures=tex, report=True,
                        records=spots, bank=bank, keep_models=False)
 
 

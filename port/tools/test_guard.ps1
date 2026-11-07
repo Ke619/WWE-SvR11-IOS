@@ -131,16 +131,43 @@ function Use-SvrTestServer([string]$GameDir = "", $GameArgs = @(), [string]$Conf
     return $SvrDeadServer
 }
 
+# Call right before a test starts the launcher (or Mod Maker) from <GameDir>. The launcher reads
+# <GameDir>\svr2011.toml's top-level keys only - a key under a [section] header is not seen, and with no
+# top-level online_server it uses the live server (30 Oct: a scripted sign-up made a live account that way) -
+# and it never reads REX_ONLINE_SERVER. So in a test's own folder the top-level online_server is made local:
+# a non-local one is rewritten to the dead address, a missing one is added at the top. Throws for a folder
+# that isn't a test's own. Returns the server the launcher will use. (The launcher itself also refuses
+# account requests off this PC in --capture runs unless SVR2011_ALLOW_LIVE=1.)
+function Use-SvrTestLauncher([string]$GameDir) {
+    $cfg = Join-Path $GameDir "svr2011.toml"
+    if (-not (Test-SvrPrivatePath $cfg)) { throw "test_guard: $GameDir is not a test's own folder - refusing to start a launcher there." }
+    $text = if (Test-Path -LiteralPath $cfg) { [IO.File]::ReadAllText($cfg) } else { "" }
+    $top = ($text -split '(?m)^\s*\[', 2)[0]   # (the top-level part: before the first [section] header)
+    $server = ""
+    foreach ($m in [regex]::Matches($top, '(?m)^\s*online_server\s*=\s*"?([^"\r\n]*)"?')) { $server = $m.Groups[1].Value.Trim() }
+    if ($server -and (Test-SvrLocalServer $server)) { return $server }
+    if ($server) {
+        $text = ($top -replace '(?m)^(\s*online_server\s*=\s*).*$', "`${1}`"$SvrDeadServer`"") + $text.Substring($top.Length)
+        Write-Host "test_guard: $cfg pointed the launcher at $server - now $SvrDeadServer"
+    } else {
+        $text = "online_server = `"$SvrDeadServer`"`r`n" + $text
+        Write-Host "test_guard: $cfg had no top-level online_server (the launcher's default is the live server) - now $SvrDeadServer"
+    }
+    [IO.File]::WriteAllText($cfg, $text)
+    return $SvrDeadServer
+}
+
 # Game load: while the user plays something (or has their own SvR open), at most
 # 2 test games run machine-wide (all chats), at below-normal priority; otherwise 4.
 # Process names without .exe; add more here, or for one shell in
 # SVR2011_BUSY_GAMES="name1,name2".
 $SvrBusyGames = @(
-    "VALORANT-Win32-Shipping", "VRChat", "FortniteClient-Win64-Shipping", "cs2",
+    "VALORANT-Win64-Shipping", "VALORANT-Win32-Shipping", "VALORANT", "VRChat", "FortniteClient-Win64-Shipping", "cs2",
     "RocketLeague", "r5apex", "GTA5", "eldenring", "Overwatch", "LeagueClient", "League of Legends",
     "Minecraft.Windows", "Cyberpunk2077", "FC25", "FC26", "WWE2K25", "WWE2K26")
-$SvrTestLimit = 4
-$SvrTestLimitBusy = 2
+# (27 Oct 2026, the user: up to 6 at once, no lower limit while they game)
+$SvrTestLimit = 6
+$SvrTestLimitBusy = 6
 
 # Why the PC is busy ("" when it isn't): a known game running, or the user's own
 # svr2011.exe (a game not started by a test).

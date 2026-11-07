@@ -64,7 +64,7 @@ def main():
                                  "--secret", str(secret_file), "--log", str(edge_log), "--report", "1"],
                                 creationflags=flags)
         procs.append(edge)
-        server = subprocess.Popen([PY, str(HERE / "server.py"), "--port", str(p + 10), "--data", str(tmp / "data"),
+        server = subprocess.Popen([PY, str(HERE / "server.py"), "--port", str(p + 10), "--data", str(tmp / "data"), "--test-open-accounts",
                                    "--relay-udp-port", str(p), "--relay-edge", "127.0.0.1:%d" % (p + 1),
                                    "--relay-secret", str(secret_file), "--log", str(server_log)],
                                   creationflags=flags, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
@@ -132,7 +132,7 @@ def main():
         procs = []
 
         # the server on its own (no edge) still relays UDP itself
-        server = subprocess.Popen([PY, str(HERE / "server.py"), "--port", str(p + 11), "--data", str(tmp / "data2"),
+        server = subprocess.Popen([PY, str(HERE / "server.py"), "--port", str(p + 11), "--data", str(tmp / "data2"), "--test-open-accounts",
                                    "--relay-udp-port", str(p + 2)],
                                   creationflags=flags, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
         procs.append(server)

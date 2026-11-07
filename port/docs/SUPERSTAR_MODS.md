@@ -179,7 +179,7 @@ tab), `manifest.txt`:
 | key | |
 |---|---|
 | `type=attire` | |
-| `superstar=<id>` | a superstar the game has (100-321). A superstar mod takes `attireN=` in its own manifest instead |
+| `superstar=<id>` | a superstar the game has (100-321), or an installed DLC superstar (51-58, see below). A superstar mod takes `attireN=` in its own manifest instead |
 | `attire=<1-4>` or `new` | replace that attire, or take the first one the superstar's own pac doesn't have |
 | `name=` | shown on CHANGE ATTIRE (31 characters) |
 | `model=attire.pac` | a character model pac; its first attire is used |
@@ -236,11 +236,53 @@ tab), `manifest.txt`:
     guard and prints what it did.
 - A `disabled` file in the folder turns it off.
 
+- DLC superstars and DLC attires (2.2.0). The installed DLC packages (unpacked by dlc.cpp to
+  `<user data>\0000000000000000\5451085D\00000002\<package>`, only ever read) hold model pacs
+  `pac\ch\ch<id>_dlcNN.pac`: the DLC superstars' own (Vol. 2 ch51-56, Vol. 3 ch57 / ch58 - Lex Luger 51,
+  British Bulldog 52, ...) and extra attires of disc superstars (Vol. 2 ch145 / ch178, Vol. 3 ch131 / ch279).
+  - They count as the superstar's own attires (`OwnAttires`): a DLC superstar takes attire mods like a disc
+    one, and a `new` attire for a disc superstar skips the DLC's attires.
+  - A new attire: the guest pac, as for disc superstars (the game finds it by name).
+  - A replaced DLC attire: a guest pac with the same name loses to the DLC's (tested), and the game reads a
+    package's pacs at the places its `info\catalog_hd.arc` / `catalog_sd.arc` give (8-character model names,
+    big-endian sector and size). So the generated pack says `pacentry dlc\ch\ch52_dlc02.pac EMD 00005202
+    entry.bin`; move_packs makes a copy of that package file with the entry (`DlcCopies` /
+    `BuildEntryPacFile`), the catalogs with its places (`PatchCatalog`, EPAC and EPK8 names), and serves both
+    when the game mounts the package (`OnContentMount`) - the same path as the packs' DLC m / mpsp / misc copies.
+  - The DLC superstars have no record in the game's attire (COS) table (count 0): the count answers the mods'
+    highest attire, and the `{name, unlock}` lookup gives ORIGINAL ATTIRE / always for attires with no record,
+    else ADVANCED offered no CHANGE ATTIRE.
+  - Tools: the Mod Maker's Attires page lists them under "DLC" (`DlcStars`, names from the package's chEtc.pac)
+    and counts their DLC pacs; the launchers' attire guards (PC `own_attires`, Android `ownAttires`) read the DLC
+    pacs and take ids 51-58 when installed.
+  - Tested 4 Nov (hidden, private data): Lex Luger new attire 2 picked on the select screen (Downloaded
+    Superstars, ADVANCED, CHANGE ATTIRE) and played; British Bulldog attire 1 replaced; Shawn Michaels' DLC
+    attire 2 replaced; Orton's disc attire 1 still replaced; after a match-end save, a new start (overlay up to
+    date) plays them the same. Test aid `SVR2011_TEST_ATTIRE_LOG=1` logs the count / pair lookups.
+
 - Every model (a superstar mod's ch.pac and attire pacs, an attire mod's model)
   must fit the match's vertex memory: 192 pages per wrestler
   (`tools/model_budget.py`). Over it, the blood overlays (0x7532, 0x7531,
   0x7530) are left out of the overlay copy; still over, the mod is left out,
   with a log line.
+
+#### A superstar from another game as attires of a game superstar
+
+The Mod Maker, From another game -> Superstar: after converting, **Or put it on a game superstar as an
+attire...** opens the Attires page with the converted mod taken in ("From a superstar mod..." on the Attires
+page takes an installed one, a .svrmod or a project the same way). Pick the game superstar, the attire number
+and **Its attire** (which of the ported attires); save or install, then again for the next attire.
+
+What follows the attire: the model (with its entrance gear, unless left out) and the entrance ("Keep its
+entrance": `entrance=`). What can't: the moveset, theme / music, titantron, ratings, abilities and name call are
+the superstar's profile (CHAR/PRO and the record), one per superstar for every attire - so they stay the game
+superstar's. (The game's only attire-dependent entrance - Rey Mysterio's attire 1 - is code, and Swagger's
+attire 1 music the same; none of it is data an attire mod can carry.) For his whole moveset and theme too, install
+the converted superstar as a superstar mod of its own.
+
+Test aids: `--port-test "superstar@wwe13,<disc folder>,101,--base 101 --no-port" --port-as-attire
+"101,3,1,Stone Cold 13;<save .svrmod>"` (convert, then attire 3 of 101 from its attire 1); `--attire
+101,4,<mod .svrmod>,<save>` with `--attire-from 2,Stone Cold 13 B`.
 
 Tested: an attire mod replacing Mark Henry's attire 1 with Sabu's model plays
 in a match; new attires (guest pacs) on Mark Henry (2) and Chris Jericho (3 and

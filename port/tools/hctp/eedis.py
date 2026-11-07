@@ -4,23 +4,41 @@
     python eedis.py dis <name|0xaddr> [n]  disassemble a function (or n instructions)
     python eedis.py xref <name|0xaddr>     functions that call / reference an address
 """
+import os
 import re
 import struct
 import sys
 
 import capstone
-from elftools.elf.elffile import ELFFile
 
-ELF = r"D:\Xbox Games Ports\HCTP Extract\SLES_520.36"
-_f = open(ELF, 'rb')
-_e = ELFFile(_f)
-_main = _e.get_section_by_name('main')
-BASE = _main['sh_addr']
-CODE = _main.data()
-SYMS = []
-for s in _e.get_section_by_name('.symtab').iter_symbols():
-    if s.name and s['st_value']:
-        SYMS.append((s['st_value'], s['st_size'], s.name, s['st_info']['type']))
+ELF = os.environ.get('HCTP_ELF', '')  # (the disc's SLES_520.36)
+
+
+def _read_elf(path):
+    """the 'main' section (address, bytes) and .symtab as (value, size, name, 'STT_FUNC'|...) - a 32-bit LE ELF,
+    read with struct (no pyelftools needed)"""
+    if not path:
+        raise SystemExit('set HCTP_ELF to the HCTP disc\'s SLES_520.36')
+    d = open(path, 'rb').read()
+    shoff, = struct.unpack_from('<I', d, 0x20)
+    shentsize, shnum, shstrndx = struct.unpack_from('<HHH', d, 0x2E)
+    secs = [struct.unpack_from('<IIIIIIIIII', d, shoff + i * shentsize) for i in range(shnum)]
+    names = secs[shstrndx]
+
+    def cstr(off):
+        return d[off:d.index(b'\0', off)].decode('latin-1')
+    by = {cstr(names[4] + s[0]): s for s in secs}
+    m = by['main']
+    syms = []
+    st, strtab = by['.symtab'], secs[by['.symtab'][6]]
+    for o in range(st[4], st[4] + st[5], 16):
+        nm, val, size, info = struct.unpack_from('<IIIB', d, o)
+        if nm and val:
+            syms.append((val, size, cstr(strtab[4] + nm), 'STT_FUNC' if info & 0xF == 2 else 'other'))
+    return m[3], d[m[4]:m[4] + m[5]], syms
+
+
+BASE, CODE, SYMS = _read_elf(ELF)
 SYMS.sort()
 BY_ADDR = {}
 for a, sz, n, t in SYMS:

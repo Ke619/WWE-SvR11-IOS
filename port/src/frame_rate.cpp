@@ -29,15 +29,20 @@
 #include "match_diag.h"
 #include "free_cam.h"
 #include "thread_cpu.h"
+#include "fast_loads.h"
 #include "fast_start.h"
 #include "pad_icons.h"
+#include "pad_map.h"
 
 #if defined(_WIN32)
 #include <windows.h>
+#include <dbghelp.h>
+#include <tlhelp32.h>
 #endif
 
 #include <algorithm>
 #include <atomic>
+#include <map>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -58,6 +63,7 @@
 #include <rex/system/xmemory.h>
 #include <rex/system/xthread.h>
 #include <rex/ui/presenter.h>
+#include <rex/thread.h>
 
 #include "arena_mods.h"
 #include "caw_limits.h"
@@ -69,8 +75,11 @@
 #include "online_overlay.h"
 #include "online_rules.h"
 #include "players.h"
+#include "android_perf.h"
 #include "mem_trace.h"
+#include "report_page.h"
 #include "superstar_mods.h"
+#include "../modmaker/svrfmt/bytes.h"
 #if SVR2011_DEBUG_SUITE
 #include "debug_suite/debug_suite.h"
 #endif
@@ -95,26 +104,7 @@ std::atomic<bool> g_lockstep{false};      // online: one world update per frame 
 std::atomic<bool> g_in_match{false};      // 30 fps applies in matches only
 std::atomic<void (*)()> g_match_start{nullptr};  // armed match start (ArmMatchStart)
 
-void Wr32(uint8_t* p, uint32_t v) {
-  v = __builtin_bswap32(v);
-  std::memcpy(p, &v, 4);
-}
-uint32_t Rd32(const uint8_t* p) {
-  uint32_t v;
-  std::memcpy(&v, p, 4);
-  return __builtin_bswap32(v);
-}
-float RdF(const uint8_t* p) {
-  const uint32_t v = Rd32(p);
-  float f;
-  std::memcpy(&f, &v, 4);
-  return f;
-}
-void WrF(uint8_t* p, float f) {
-  uint32_t v;
-  std::memcpy(&v, &f, 4);
-  Wr32(p, v);
-}
+using svrfmt::Rd32, svrfmt::RdF, svrfmt::Wr32, svrfmt::WrF;
 
 // The frame clock: the frames the game draws a second. 30 fps (in a match,
 // or an entrance at the original's 30) with the native renderer: the game
@@ -266,8 +256,27 @@ void DumpGuestThreads(uint8_t* base) {
       chain += fmt::format(" {:08X}", Rd32(base + prev - 8));
       sp = prev;
     }
-    REXLOG_WARN("frame rate: thread {:08X} '{}' at {}", t->thread_id(), t->name(), chain);
+    // (r3: in a wait - RtlEnterCriticalSection, a wait for an object - what it waits on)
+    REXLOG_WARN("frame rate: thread {:08X} '{}' at {} (r3 {:08X})", t->thread_id(), t->name(), chain, c->r3.u32);
   }
+  // The game's heap locks held (a critical section per heap, 28 bytes each from 0x82EC55B0: +0x10 lock count,
+  // +0x14 recursion, +0x18 the owner's KTHREAD): a stuck update waiting on one (2.1.7 reports 228dce / 9ce92b: the
+  // world update freeing in sub_8269B2D0 -> sub_8269AAD8, RtlEnterCriticalSection, after a match) shows its owner.
+  // A busy one with no owner too (lock count not -1: 2.1.8 report 73e349 - the world update held heap 1 and waited
+  // on a lock no thread was listed as holding).
+  std::string held;
+  for (uint32_t h = 0; h < 64; ++h) {
+    const uint32_t cs = 0x82EC55B0 + h * 28, owner = Rd32(base + cs + 0x18);
+    int32_t waiting = 0;  // (the lock count is the host's own int, updated atomically - not big-endian)
+    std::memcpy(&waiting, base + cs + 0x10, 4);
+    if ((!owner && waiting == -1) || base[cs] != 1) continue;  // (free; or not a critical section's event header)
+    uint32_t id = 0;
+    for (auto& t : kernel->object_table()->GetObjectsByType<rex::system::XThread>())
+      if (t && owner && t->guest_object() == owner) id = t->thread_id();
+    held += fmt::format(" [heap {} at {:08X}: thread {:08X} (KTHREAD {:08X}), lock count {}, recursion {}]", h, cs, id,
+                        owner, waiting, int32_t(Rd32(base + cs + 0x14)));
+  }
+  REXLOG_WARN("frame rate: heap locks held:{}", held.empty() ? std::string(" none") : held);
 }
 std::atomic<int64_t> g_dbg_since{0};
 
@@ -283,8 +292,94 @@ void Virt(PPCContext& ctx, uint8_t* base, uint32_t obj, int slot, uint32_t r4 = 
   REX_CALL_INDIRECT_FUNC(ctx.ctr.u32);
 }
 
+// Test aid (Windows): SVR2011_TEST_HW_WATCH=<hex guest address> - a hardware write breakpoint (DR0, 4 bytes) on that
+// guest word in every thread of the game (threads made later armed within a second): each write logs the new value
+// and the writing thread's host calls, symbolized - the recompiled guest functions (sub_XXXXXXXX) that wrote it. For
+// the INFERNO's system AED0F740, whose first word turns FFFFFFFF while it's still listed.
+#if defined(_WIN32)
+uint8_t* g_hw_watch = nullptr;  // (the watched word's host address)
+LONG CALLBACK HwWatchHandler(EXCEPTION_POINTERS* e) {
+  if (e->ExceptionRecord->ExceptionCode != EXCEPTION_SINGLE_STEP || !(e->ContextRecord->Dr6 & 1)) return EXCEPTION_CONTINUE_SEARCH;
+  e->ContextRecord->Dr6 = 0;
+  static std::atomic<int> hits{0};
+  if (const int n = ++hits; n <= 40) {
+    static std::mutex mu;
+    std::lock_guard lock(mu);
+    static const bool sym = [] {
+      SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
+      return SymInitialize(GetCurrentProcess(), nullptr, TRUE) != FALSE;
+    }();
+    void* frames[24];
+    const USHORT count = RtlCaptureStackBackTrace(0, 24, frames, nullptr);
+    std::string calls;
+    alignas(SYMBOL_INFO) char buf[sizeof(SYMBOL_INFO) + 128] = {};
+    auto* s = reinterpret_cast<SYMBOL_INFO*>(buf);
+    s->SizeOfStruct = sizeof(SYMBOL_INFO), s->MaxNameLen = 127;
+    for (USHORT i = 1; i < count; ++i) {  // (0: this handler)
+      DWORD64 d = 0;
+      if (sym && SymFromAddr(GetCurrentProcess(), DWORD64(frames[i]), &d, s)) calls += fmt::format(" {}+{:X}", s->Name, d);
+      else calls += fmt::format(" {:X}", uintptr_t(frames[i]));
+      if (calls.size() > 900) break;
+    }
+    const uint32_t v = svrfmt::Rd32(g_hw_watch);
+    REXLOG_WARN("frame rate: hw watch #{} - the word is now {:08X} (host thread {}, rip {:X}):{}", n, v,
+                GetCurrentThreadId(), e->ContextRecord->Rip, calls);
+  }
+  return EXCEPTION_CONTINUE_EXECUTION;
+}
+
+void HwWatchAt(uint8_t* base, uint32_t guest) {
+  static std::once_flag once;
+  std::call_once(once, [base, guest] {
+    g_hw_watch = base + guest;
+    AddVectoredExceptionHandler(1, HwWatchHandler);
+    REXLOG_INFO("frame rate: hw watch on guest {:08X} (host {:X})", guest, uintptr_t(g_hw_watch));
+    std::thread([] {
+      std::vector<DWORD> armed;
+      const DWORD self = GetCurrentThreadId(), pid = GetCurrentProcessId();
+      for (;;) {
+        if (HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0); snap != INVALID_HANDLE_VALUE) {
+          THREADENTRY32 te{sizeof(te)};
+          for (BOOL ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te)) {
+            if (te.th32OwnerProcessID != pid || te.th32ThreadID == self ||
+                std::find(armed.begin(), armed.end(), te.th32ThreadID) != armed.end())
+              continue;
+            HANDLE t = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE, te.th32ThreadID);
+            if (!t) continue;
+            bool set = false;  // (nothing allocated while it's suspended: it may hold the heap's lock)
+            if (SuspendThread(t) != DWORD(-1)) {
+              CONTEXT c{};
+              c.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+              if (GetThreadContext(t, &c)) {
+                c.Dr0 = DWORD64(g_hw_watch);
+                c.Dr7 = (c.Dr7 & ~0xF0003ull) | 1 | (1ull << 16) | (3ull << 18);  // (L0; write; 4 bytes)
+                set = SetThreadContext(t, &c) != FALSE;
+              }
+              ResumeThread(t);
+            }
+            if (set) armed.push_back(te.th32ThreadID);
+            CloseHandle(t);
+          }
+          CloseHandle(snap);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+      }
+    }).detach();
+  });
+}
+
+void HwWatchStart(uint8_t* base) {
+  const char* v = std::getenv("SVR2011_TEST_HW_WATCH");
+  if (const uint32_t guest = v ? uint32_t(std::strtoul(v, nullptr, 16)) : 0u) HwWatchAt(base, guest);
+}
+#else
+void HwWatchAt(uint8_t*, uint32_t) {}
+void HwWatchStart(uint8_t*) {}
+#endif
+
 // The manager's systems (list +0..+8, then +68): their slot `slot`.
 void Systems(PPCContext& ctx, uint8_t* base, uint32_t m, int slot, bool scheduler_first) {
+  HwWatchStart(base);  // (test aid, above)
   // (as the original: list ends read once before each loop, +68 read when used)
   if (scheduler_first)
     if (const uint32_t o = G32(base, m + 68)) Virt(ctx, base, o, slot);
@@ -310,6 +405,9 @@ void Compact(uint8_t* base, uint32_t l) {
 // pin judge's count, set by its hook) - each task or system call that
 // changes it is logged.
 bool g_extra_update = false;  // (see below: an extra update of this frame)
+// A pin's count is on: the pin judge's hook (sub_822446E0) sets it each update - the pinner's +516 is 2 and the
+// referee is in his count motion (190).
+std::atomic<bool> g_pin_counting{false};
 
 // The characters' job's hand-offs, the last 512 (all threads), dumped with a
 // stuck world update - for the "stuck in pass 20" freeze (Android, 4+ people
@@ -444,11 +542,45 @@ void TestMatchTime(uint8_t* base) {
 
 }  // namespace
 
+void svr2011::HwWatchOn(uint8_t* base, uint32_t guest) { HwWatchAt(base, guest); }
+
 // The world update, once a frame of the game's loop: how many 60 Hz ticks
 // this frame runs (at least one).
 REX_EXTERN(__imp__sub_8269D768);
 REX_HOOK_RAW(sub_8269D768) {
+  svr2011::PerfHintThread();  // (android_perf.h: the world update's thread in the phone's hint session)
   if (!g_kernel) g_kernel = REX_KERNEL_STATE();  // (for the stuck-update thread dump)
+  // Test aid: SVR2011_TEST_GUEST_FAULT=<seconds> - that long after the first world update, one write to guest
+  // address 0 (unmapped: a fault no handler takes) - proves guest_faults.cpp: one log line with the place, then a
+  // crash report and the game closes (Android: no endless retry).
+  static const int fault_secs = [] { const char* v = std::getenv("SVR2011_TEST_GUEST_FAULT"); return v ? std::atoi(v) : 0; }();
+  if (fault_secs > 0) {
+    static const auto first = std::chrono::steady_clock::now();
+    if (std::chrono::steady_clock::now() - first >= std::chrono::seconds(fault_secs)) {
+      REXLOG_WARN("frame rate: SVR2011_TEST_GUEST_FAULT - writing guest address 0 now");
+      rex::FlushLogging();
+      *reinterpret_cast<volatile uint32_t*>(base) = 0x0DEFACED;
+    }
+  }
+  // Test aid: SVR2011_TEST_HEAP_LOCK_SHOW=<heap> (with SVR2011_TEST_DUMP_AT=<s>): from 2 s before the dump to 2 s
+  // after it, that heap's lock names this thread (the world update's) as its owner - the lock itself left free, so a
+  // real taker just writes its own - and the dump's "heap locks held" line shows it.
+  if (static const char* v = std::getenv("SVR2011_TEST_HEAP_LOCK_SHOW"); v && *v) {
+    static const int dump_at = [] { const char* d = std::getenv("SVR2011_TEST_DUMP_AT"); return d ? std::atoi(d) : 0; }();
+    static const auto t0 = Clock::now();
+    static int state = 0;  // (0 before, 1 shown, 2 done)
+    const uint32_t cs = 0x82EC55B0 + uint32_t(std::atoi(v)) * 28;
+    const auto at = std::chrono::duration<double>(Clock::now() - t0).count();
+    if (state == 0 && dump_at > 2 && at > dump_at - 2) {
+      state = 1;
+      const uint32_t me = rex::system::XThread::GetCurrentThread()->guest_object();
+      for (int k = 0; k < 4; ++k) base[cs + 0x18 + k] = uint8_t(me >> (24 - 8 * k));
+      REXLOG_WARN("frame rate: test - heap {}'s lock shown as owned by this thread (KTHREAD {:08X})", std::atoi(v), me);
+    } else if (state == 1 && at > dump_at + 2) {
+      state = 2;
+      for (int k = 0; k < 4; ++k) base[cs + 0x18 + k] = 0;
+    }
+  }
   // Test aid: SVR2011_TEST_SLOW_MS=<ms> - a slow PC (each frame that much longer).
   static const int slow_ms = [] { const char* v = std::getenv("SVR2011_TEST_SLOW_MS"); return v ? std::atoi(v) : 0; }();
   // (SVR2011_TEST_SLOW_IN_MATCH=1: only while a match runs - the menus at speed for the scripted route)
@@ -466,10 +598,17 @@ REX_HOOK_RAW(sub_8269D768) {
   g_world_ticks = std::clamp(int(g_world_acc), 1, kMaxTicks);
   g_world_acc = std::clamp(g_world_acc - g_world_ticks, -0.5, 1.0);
   if (g_lockstep || !REXCVAR_GET(full_speed)) g_world_ticks = 1, g_world_acc = 0;
+  // (Test aid SVR2011_TEST_PIN_ONE_UPDATE=1: a pin's count at one update a frame - 2.2.0's way, which slowed the
+  // world down below 60 fps. The count's lost step is put right at its cause now: sub_822EB8D8, below.)
+  if (static const bool one = std::getenv("SVR2011_TEST_PIN_ONE_UPDATE") != nullptr; one && g_pin_counting.load())
+    g_world_ticks = 1, g_world_acc = 0;
 #if SVR2011_DEBUG_SUITE
   if (const int n = svr2011::dbg::SpeedTicks(); n && !g_lockstep) g_world_ticks = n, g_world_acc = 0;  // (dbg_speed)
 #endif
   if (const int n = svr2011::MatchReplayPasses(); n > 0) g_world_ticks = n, g_world_acc = 0;  // (a replay: as recorded)
+  // (a static loading / info screen: fast_loads.h)
+  if (const int n = svr2011::FastLoadsTicks(base); n > 1 && !g_lockstep && !g_in_match.load())
+    g_world_ticks = n, g_world_acc = 0;
   // 30 fps at 60 Hz (SetHalfFrames): while frames take two updates (a PC that
   // can't keep 60 Hz) every frame is shown - as 30 fps did before - and every
   // other one again once it keeps up (a running average of the updates).
@@ -586,6 +725,7 @@ REX_HOOK_RAW(sub_8269C728) {
     const int ms = v ? std::atoi(v) : 0;
     if (ms <= 0) return;
     std::thread([ms] {
+      rex::thread::set_current_thread_name("frame pacing test");
       int64_t logged_for = -1;
       for (;;) {
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
@@ -602,6 +742,7 @@ REX_HOOK_RAW(sub_8269C728) {
   });
   std::call_once(watchdog, [] {
     std::thread([] {
+      rex::thread::set_current_thread_name("frame watchdog");
       // (test aid: SVR2011_TEST_DUMP_AT=<s> - every guest thread's back chain once, <s> s after the start)
       static const int dump_at = [] { const char* v = std::getenv("SVR2011_TEST_DUMP_AT"); return v ? std::atoi(v) : 0; }();
       const auto started = Clock::now();
@@ -776,7 +917,11 @@ REX_HOOK_RAW(sub_82905058) {
     base[out + 4] = uint8_t(b >> 8), base[out + 5] = uint8_t(b);
     svr2011::OnlineRulesPad(b);  // (LB / RB: the PORT RULES row - online_rules.h)
   }
+  if (out && ctx.r3.u32 == 0) {
+    svr2011::ReportPagePad(base, base + out);  // (the pause menu's REPORT A PROBLEM: report_page.h)
+  }
   if (out && ctx.r3.u32 == 0) svr2011::PadIconsInput(user, base + out);  // (who pressed last: pad_icons.h)
+  if (out && ctx.r3.u32 == 0) svr2011::PadMapApply(base, user, base + out);  // (the player's layout, in play: pad_map.h)
   if (out) {  // (a replay: the recording's pad this frame - match_record.h)
     uint32_t result = ctx.r3.u32;
     if (svr2011::MatchReplayPad(user, result, base + out)) ctx.r3.u64 = result;
@@ -872,6 +1017,7 @@ void StartDeveloperAids(uint8_t* base) {
   // the game's speed), the frames shown and wrestler 1's position.
   if (const char* v = std::getenv("SVR2011_FPS_PROBE"); v && (*v == '1' || *v == '2')) {
     std::thread([base, v] {
+      rex::thread::set_current_thread_name("fps probe");
       uint32_t last = Rd32(base + kMatchFrames);
       uint64_t last_presents = rex::ui::HostPresentCount(), last_new = rex::ui::HostNewGuestFramePresentCount();
       for (;;) {
@@ -903,6 +1049,7 @@ void StartDeveloperAids(uint8_t* base) {
   // compares two runs).
   if (const char* path = std::getenv("SVR2011_FPS_DUMP"); path && *path) {
     std::thread([base, file = std::string(path)] {
+      rex::thread::set_current_thread_name("fps dump");
       constexpr uint32_t kSize = 0x10000;
       const auto t0 = Clock::now();
       for (;;) {
@@ -1134,6 +1281,7 @@ void LatencyOnPublish() {
   static std::once_flag started;
   std::call_once(started, [] {
     std::thread([] {
+      rex::thread::set_current_thread_name("frame times");
       uint64_t seen = rex::ui::HostNewGuestFramePresentCount();
       double sum_ms = 0, max_ms = 0;
       int n = 0;
@@ -1174,11 +1322,53 @@ void LatencyOnPublish() {
 // noted, and a free (operator delete: sub_8269B2D0(ptr, ?)) of a block
 // holding a pending type-24 command's object turns that command into type 0
 // (nothing). The free itself is made as always.
+namespace {
+uint32_t g_queue = 0;  // (the queue: its buffers and size read by sub_826DFFA0's hook)
+std::atomic<uint32_t> g_queue_peak{0};  // (the fullest thread part since RenderQueuePeakTake, %)
+}  // namespace
 REX_EXTERN(__imp__sub_826DFFA0);
 REX_HOOK_RAW(sub_826DFFA0) {
+  const uint32_t queue = ctx.r3.u32, desc = ctx.r4.u32;
   __imp__sub_826DFFA0(ctx, base);
+  if (!ctx.r3.u32) {  // (a thread's part of the buffer full: the caller writes to the 0 - logged)
+    static std::atomic<uint32_t> full{0};
+    if (const uint32_t n = ++full; n <= 5)
+      REXLOG_WARN("frame rate: render command queue {:08X} full ({} units a buffer, a command of {} units)", queue,
+                  Rd32(base + queue + 20), desc ? Rd32(base + desc + 8) + 1 : 0);
+  }
+  // (how full the buffer gets in a match: its record 0 - +0 buffer, +4 units used, +8 units - every 64th command;
+  // in menus and loads the records are laid out otherwise)
+  static std::atomic<uint32_t> calls{0};
+  if (queue == g_queue && ((++calls & 63) == 0 || !ctx.r3.u32) && svr2011::InMatch()) {
+    const uint32_t rec = Rd32(base + queue + 76);
+    const uint32_t used = rec ? Rd32(base + rec + 4) : 0, cap = rec ? Rd32(base + rec + 8) : 0;
+    if (cap) {
+      const uint32_t pct = uint32_t(std::min<uint64_t>(uint64_t(used) * 100 / cap, 100));
+      for (uint32_t was = g_queue_peak.load(); pct > was && !g_queue_peak.compare_exchange_weak(was, pct);) {
+      }
+      static std::atomic<uint32_t> step{0};  // (a new 10% step of the run: logged)
+      if (uint32_t was = step.load(); pct / 10 > was && step.compare_exchange_strong(was, pct / 10))
+        REXLOG_INFO("frame rate: render command queue {}% full in a match ({} of {} units)", pct, used, cap);
+    }
+  }
   if (ctx.r3.u32 && std::this_thread::get_id() == g_logic_thread.load() && g_frame_commands.size() < 100000)
     g_frame_commands.push_back(ctx.r3.u32);
+}
+
+uint32_t svr2011::RenderQueuePeakTake() { return g_queue_peak.exchange(0); }
+
+// The queue is made once (sub_826DF610, from sub_82578B80): r8 = its 16-byte units per buffer (393,216 on PC - 6 MB
+// a buffer; two buffers, +40 / +44). In a match record 0 (+76) is the whole buffer, at times the buffer is split in
+// 30,720-unit thread parts; a command takes one or more units. An arena with too many meshes ran a part full in a 6-man
+// (27 Oct: bg16 x5, 1,770 meshes; the caller wrote to the 0 it got - sub_826DE130 / sub_826DE0A8): the Mod Maker's and
+// the converters' mesh cap (svrfmt/arena.h kMaxArenaMeshesNew) keeps arenas under it. (A 3x buffer didn't help: the
+// parts stay 30,720 units.) Logged: its size, how full it gets in a match (sub_826DFFA0's hook).
+REX_EXTERN(__imp__sub_826DF610);
+REX_HOOK_RAW(sub_826DF610) {
+  const uint32_t q = ctx.r3.u32;
+  __imp__sub_826DF610(ctx, base);
+  g_queue = q;
+  REXLOG_INFO("frame rate: render command queue {:08X}: {} units per buffer", q, Rd32(base + q + 20));
 }
 
 // And where the render thread runs them (sub_826E02A8(?, command)): a
@@ -1289,7 +1479,16 @@ SVR2011_LOST_TRACE(sub_822473B0)
 // has dropped to 0 with the referee still in the count motion and the pin
 // still on, the count follows that timing. A real kick-out ends the pin
 // (+516), changes the wrestlers' pin motions (the pinner's +212 and his
-// opponent's, +96) or the referee's: then it's left alone.
+// opponent's, +96) or the referee's: then it's left alone. A kick-out at the
+// last moment drops the count in the same window as the lost step, and not
+// always with the motion change in the same update - so a drop there is first
+// held (HoldFrames, the game's 0 left as it is): the pin ending or a motion
+// changing in that time is a kick-out; only a pin still on in the same
+// motions is the lost step (HoldFrames). The lost step's drop comes at
+// 141 / 153 frames in for the 2 and 203 / 204 for the 3 (before its slap:
+// left to the game there, the pin stays on and the referee counts again).
+// The lost step is put right at its cause (sub_822EB8D8, below); this stays for
+// what that doesn't reach (SVR2011_TEST_PIN_GATE_OFF shows it working).
 namespace {
 struct PinGuard {
   uint32_t judge = 0;
@@ -1298,7 +1497,14 @@ struct PinGuard {
   bool broken = false;  // (the count dropped to 0: the timing rules)
   uint32_t motions = 0; // (the pinner's and his opponent's motions at the start)
   int32_t voiced = 0;   // (the count the judge last called out: its +104 after the judge ran)
+  uint32_t held = 0;    // (match frame a drop in the lost step's window was seen: held, 0 = none)
 };
+// How long a drop in the lost step's window is held before it's taken as the lost step (match frames: a kick-out's
+// motion change comes in that time). Test aid SVR2011_TEST_PIN_HOLD=<frames>.
+uint32_t HoldFrames() {
+  static const uint32_t n = [] { const char* v = std::getenv("SVR2011_TEST_PIN_HOLD"); return v ? uint32_t(std::atoi(v)) : 12u; }();
+  return n;
+}
 int32_t CountAt(uint32_t frames) { return frames >= 210 ? 3 : frames >= 140 ? 2 : frames >= 78 ? 1 : 0; }
 PinGuard g_pin;
 
@@ -1312,6 +1518,27 @@ struct PinLog {
   uint32_t start = 0;  // (match frame the count began: its first step)
 };
 PinLog g_pin_log;
+// Problem reports: after a count drops to 0 with the pin on, how many frames later the pin ends or a pin motion
+// changes - a kick-out shows it, the lost step doesn't (60 frames watched; 60 lines a session).
+struct DropWatch {
+  uint32_t judge = 0, frame = 0, motions = 0;
+  int32_t was = 0;
+  bool extra = false;
+};
+DropWatch g_drop;
+void WatchDrop(uint32_t judge, int32_t before, int32_t count, bool pin_on, uint32_t motions, uint32_t frame) {
+  static int lines = 0;
+  if (g_drop.judge == judge && g_drop.frame) {
+    const bool ended = !pin_on, moved = motions != g_drop.motions;
+    if ((ended || moved || frame - g_drop.frame >= 60) && lines < 60 && ++lines)
+      REXLOG_INFO("pin count: the drop from {} ({}) - {} {} frames later", g_drop.was,
+                  g_drop.extra ? "in an extra update" : "in a frame's last update",
+                  ended ? "the pin ended" : moved ? "a pin motion changed" : "still pinned", frame - g_drop.frame);
+    if (ended || moved || frame - g_drop.frame >= 60) g_drop = DropWatch{};
+    return;
+  }
+  if (before > 0 && count == 0 && pin_on) g_drop = DropWatch{judge, std::max<uint32_t>(frame, 1), motions, before, g_extra_update};
+}
 int PersonOf(uint8_t* base, uint32_t ch) {  // (the character's place in the match's list)
   for (int i = 0; i < 10; ++i)
     if (Rd32(base + kChars + uint32_t(i) * 4) == ch) return i;
@@ -1354,6 +1581,11 @@ REX_HOOK_RAW(sub_822446E0) {
   const uint32_t frame = Rd32(base + kMatchFrames);
   const bool pin_on = pinner && Rd32(base + pinner + 516) == 2;
   const bool counting = ref && (Rd32(base + ref + 212) & 0x7FFF) == 190;
+  g_pin_counting = pin_on && counting;
+  // (a new match - its frame count starts again, the judge object is the same: nothing from the last one's pins)
+  static uint32_t last_frame = 0;
+  if (frame < last_frame) g_pin = PinGuard{}, g_drop = DropWatch{}, g_pin_log = PinLog{};
+  last_frame = frame;
   // Test aid: SVR2011_TEST_PIN_DROP_3=1 - once a session, a count of 2 drops to 0 in an extra update when the 3 is
   // due (as the lost step does), to try the guard's repair at the 3.
   if (static const bool drop3 = std::getenv("SVR2011_TEST_PIN_DROP_3") != nullptr; drop3 && g_extra_update && pin_on &&
@@ -1369,10 +1601,25 @@ REX_HOOK_RAW(sub_822446E0) {
   const int32_t count = int32_t(Rd32(base + judge + 100));
   const uint32_t pinned = pinner ? Rd32(base + pinner + 96) : 0;
   const uint32_t motions = pinner && pinned ? (Rd32(base + pinner + 212) << 16) ^ Rd32(base + pinned + 212) : 0;
-  if (!pin_on || !counting || g_pin.judge != judge || motions != g_pin.motions) {
+  if (g_pin.held && g_pin.judge == judge && pin_on && motions == g_pin.motions && !counting) {
+    // (held, and the referee's count motion ended with the pin still on in the same motions: the lost step at the
+    // 3 - the 3 now, or he'd count again)
+    g_pin.broken = true;
+    g_pin.count = std::max(g_pin.count, CountAt(frame - g_pin.start));
+    REXLOG_INFO("frame rate: the held pin count drop was the lost step (the referee's count ended, {} frames held) - {}",
+                frame - g_pin.held, g_pin.count);
+    Wr32(base + judge + 100, uint32_t(g_pin.count));
+    if (g_pin.voiced > 0) Wr32(base + judge + 104, uint32_t(std::min(g_pin.voiced, g_pin.count)));
+    g_pin = PinGuard{};
+  } else if (!pin_on || !counting || g_pin.judge != judge || motions != g_pin.motions) {
+    if (g_pin.held && g_pin.judge == judge)
+      REXLOG_INFO("frame rate: the held pin count drop was a kick-out ({} after {} frames) - the game's count",
+                  !pin_on ? "the pin ended" : motions != g_pin.motions ? "a pin motion changed" : "the judge changed",
+                  frame - g_pin.held);
     g_pin = PinGuard{pin_on && counting ? judge : 0, pin_on && counting ? count : 0, frame, false, motions};
   } else if (count > g_pin.count) {
     g_pin.count = count;
+    g_pin.held = 0;
   } else if (count == 0 && g_pin.count > 0) {
     // Only the lost step is put right: a count of 1 dropping when the 2 is due (140 frames in), or of 2 when
     // the 3 is due (210) - the same lost step one slap later, seen in an extra update (the only place it
@@ -1384,15 +1631,18 @@ REX_HOOK_RAW(sub_822446E0) {
     const uint32_t into = frame - g_pin.start;
     const bool lost_2 = g_pin.count == 1 && into >= 128 && into <= 160;
     const bool lost_3 = g_pin.count == 2 && into >= 198 && into <= 230 && g_extra_update;
-    if (!g_pin.broken && !lost_2 && !lost_3) {
+    if (!g_pin.broken && !g_pin.held && !lost_2 && !lost_3) {
       g_pin = PinGuard{};  // (a kick-out: the game's own count)
+    } else if (!g_pin.broken && (!g_pin.held || frame - g_pin.held < HoldFrames())) {
+      // (held: the game's 0 stays while a kick-out can still show - the pin ending or a motion changing, above)
+      if (!g_pin.held) g_pin.held = std::max<uint32_t>(frame, 1);
     } else {
       if (!g_pin.broken) {
         g_pin.broken = true;
         static int fixed = 0;
         if (++fixed <= 20 || fixed % 100 == 0)
-          REXLOG_INFO("frame rate: a pin count of {} dropped to 0 {} frames into the count - it goes on by its timing ({} times)",
-                      g_pin.count, into, fixed);
+          REXLOG_INFO("frame rate: a pin count of {} dropped to 0 {} frames into the count - still pinned {} frames later: "
+                      "it goes on by its timing ({} times)", g_pin.count, into, frame - g_pin.held, fixed);
       }
       g_pin.count = std::max(g_pin.count, CountAt(into));
       Wr32(base + judge + 100, uint32_t(g_pin.count));
@@ -1403,6 +1653,7 @@ REX_HOOK_RAW(sub_822446E0) {
       if (g_pin.voiced > 0) Wr32(base + judge + 104, uint32_t(std::min(g_pin.voiced, g_pin.count)));
     }
   }
+  WatchDrop(judge, g_pin_log.judge == judge ? g_pin_log.count : 0, int32_t(Rd32(base + judge + 100)), pin_on, motions, frame);
   if (!LostTraceOn()) {
     __imp__sub_822446E0(ctx, base);
     if (g_pin.judge == judge) g_pin.voiced = int32_t(Rd32(base + judge + 104));
@@ -1432,6 +1683,57 @@ REX_HOOK_RAW(sub_82165AD8) {
                 Rd32(base + kMatchFrames), g_extra_update ? " (extra update)" : "");
   __imp__sub_82165AD8(ctx, base);
 }
+// The referee's count (sub_822EB8D8: he is in motion 190, key 1 and its frame +24). Past frame 62 he goes round for the
+// next slap, or to key 3 for the last - when his controller presses a button (the gate: sub_8221CB90, the bit 0x40 of its
+// +72), which his AI does on that very frame. With two updates in a frame the press often doesn't come: he runs on to the
+// end of the key, into key 2, and there the handler zeroes the count with the pin still on - the lost step (a count of 2
+// or 3 made 0, and a kick-out gone with it: reports 4f62f3, a2fd0a, c35ceb). 2.2.0 ran the count at one update a frame,
+// which made it and what followed slow motion (report f7ad46). Here: while the pin is on, the press he should have made.
+// Test aids: SVR2011_TEST_PIN_GATE_OFF=1 (the game's alone), SVR2011_TEST_PIN_STEP_LOG=1 (each update of his count).
+REX_EXTERN(__imp__sub_822EB8D8);
+REX_HOOK_RAW(sub_822EB8D8) {
+  static const bool off = std::getenv("SVR2011_TEST_PIN_GATE_OFF") != nullptr;
+  static const bool log = std::getenv("SVR2011_TEST_PIN_STEP_LOG") != nullptr;
+  constexpr uint32_t kJudge = 0x82E3BC84;
+  constexpr float kPressFrame = 62.0f;  // (where his AI presses at 60 fps: the handler itself takes a press from about 30)
+  const uint32_t ch = ctx.r4.u32, gate = ctx.r3.u32 ? Rd32(base + ctx.r3.u32 + 36) : 0;
+  const uint32_t judge = Rd32(base + kJudge);
+  const auto f32 = [&](uint32_t a) {
+    const uint32_t v = Rd32(base + a);
+    float x;
+    std::memcpy(&x, &v, 4);
+    return x;
+  };
+  const uint32_t y0 = Rd32(base + ch + 216);
+  const float f0 = f32(ch + 24);
+  const int32_t c0 = judge ? int32_t(Rd32(base + judge + 100)) : -1;
+  bool pressed = false;
+  uint32_t word = 0;
+  if (!off && gate && judge && y0 == 1 && (Rd32(base + ch + 212) & 0x7FFF) == 190 && f0 >= kPressFrame &&
+      Rd32(base + judge + 92) == 1) {
+    const uint32_t pinner = Rd32(base + kChars + Rd32(base + judge + 112) * 4);
+    if (pinner && Rd32(base + pinner + 516) == 2) {
+      word = Rd32(base + gate + 72);
+      if (!(word & 0x00400000)) {  // (+72 is a halfword: the word's high half)
+        Wr32(base + gate + 72, word | 0x00400000);
+        pressed = true;
+      }
+    }
+  }
+  __imp__sub_822EB8D8(ctx, base);
+  if (pressed) {
+    Wr32(base + gate + 72, word);
+    static int told = 0;
+    if (++told <= 20 || told % 100 == 0)
+      REXLOG_INFO("pin count: the referee's press for the next slap didn't come - made for him at frame {:.0f}, count {} ({} times)",
+                  f0, c0, told);
+  }
+  if (log)
+    REXLOG_INFO("pin step: clock {}{} motion {} y {} f {:.2f} count {}{} -> y {} f {:.2f} count {}", Rd32(base + kMatchFrames),
+                g_extra_update ? " x" : "", Rd32(base + ch + 212), y0, f0, c0, pressed ? " pressed" : "", Rd32(base + ch + 216),
+                f32(ch + 24), judge ? int32_t(Rd32(base + judge + 100)) : -1);
+}
+
 SVR2011_LOST_TRACE(sub_82245DF8)
 SVR2011_LOST_TRACE(sub_82243660)
 SVR2011_LOST_TRACE(sub_822EB378)

@@ -9,7 +9,8 @@ base 40002, 2K15 - 2K17: 18000) - so the special stages (60+) get names too (GM 
   xcompressed); 2K17 pac/string_360.pac, xcompressed HSPC, its first SHDC with the run (English).
 Thumbnails: the match intro's stage backdrop, pac/menu/MatchHD.pac MLYE/MB<NN> (the texture 'bg',
 1024 x 512), the same picture the loading screen shows. 2K17 keeps MatchHD.pac as an HSPC with
-hashed entry names (not cracked): no thumbnails there.
+hashed entry names; its texture bundles (ZLIB leaves of its SHDCs) keep their names, and one holds the arena
+select pictures Ar<NN> (256 x 128, NN = the stage number): those are its thumbnails.
 """
 import json
 import os
@@ -21,7 +22,7 @@ import discfs  # noqa: F401 (callers pass a discfs disc)
 import svrfmt
 
 XCOMPRESS = b'\x0f\xf5\x12\xed'
-CACHE_VERSION = 2  # (2: thumbsgNN_full.png, the backdrop at its own size, beside each thumb)
+CACHE_VERSION = 3  # (2: thumbs/bgNN_full.png, the backdrop at its own size, beside each thumb; 3: 2K17's Ar<NN>)
 
 
 def _unz(b):
@@ -90,9 +91,26 @@ def _hspc_blocks(d):
 
 
 def strings(disc, svrmod=None):
-    """the English string table of a WWE '12 - 2K17 disc that holds the arena names -> (strings, base)"""
-    for rel in ('pac/string.pac', 'pac/string_360.pac'):
-        if not disc.exists(rel):
+    """the English string table of a WWE '12 - 2K17 disc that holds the arena names -> (strings, base); a DLC package's
+    string table (dlc_src.SourceView) fills the numbers the disc's has no name for: its arenas"""
+    t, base = _strings(disc, ('pac/string.pac', 'pac/string_360.pac'), svrmod)
+    if base is not None:
+        for pk in getattr(getattr(disc, 'dlc', None), 'packages', []):
+            for rel in pk.matching(r'^pac/string[^/]*\.pac$'):
+                t2, base2 = _strings(pk, (rel,), svrmod)
+                if base2 is not None:
+                    for n in range(100):
+                        v = t2.get(base2 + n, '')
+                        if v.strip() and v.strip().lower() not in ('(null)', '-') and not t.get(base + n, '').strip():
+                            t[base + n] = v
+    return t, base
+
+
+def _strings(disc, rels, svrmod=None):
+    for rel in rels:
+        if hasattr(disc, 'files') and rel not in disc.files:
+            continue
+        if not hasattr(disc, 'files') and not disc.exists(rel):
             continue
         raw = _xdec(disc.read(rel), svrmod)
         tables = []
@@ -160,6 +178,31 @@ def _backdrop(entry):
     return None
 
 
+def _hspc_textures(raw, pattern):
+    """{name: dds} of an HSPC menu pac's texture bundles (2K17) whose names match the regex pattern"""
+    out = {}
+    for b in _hspc_blocks(raw):
+        if b[:4] != b'SHDC':
+            continue
+        for leaf in _shdc_leaves(b):
+            try:
+                x = _unz(leaf)
+            except Exception:  # noqa: BLE001 - not a bundle
+                continue
+            n = struct.unpack_from('<I', x, 0)[0] if len(x) >= 48 else 0
+            if not (0 < n < 600) or x[32:35] != b'dds':
+                continue
+            for i in range(n):
+                r = x[16 + 32 * i:48 + 32 * i]
+                name = r[:16].split(b'\0')[0].decode('latin1')
+                if not re.fullmatch(pattern, name):
+                    continue
+                sz, off = struct.unpack_from('<II', r, 20)
+                if x[off:off + 4] == b'DDS ':
+                    out.setdefault(name, x[off:off + sz])
+    return out
+
+
 def thumbnails(disc, numbers, out_dir, svrmod=None, size=(320, 160), progress=None):
     """{number: png path} - each stage's backdrop: the match intro's (MatchHD.pac MLYE/MB<NN>), else the
     loading screen's (LoadHD.pac LOAD/90<NN>, WWE '12 also 70<NN>) - the same pictures. Beside each thumb
@@ -168,12 +211,17 @@ def thumbnails(disc, numbers, out_dir, svrmod=None, size=(320, 160), progress=No
     import io
     from PIL import Image
     es = {}
+    select = {}   # (2K17: the arena select pictures Ar<NN>)
     for rel in ('pac/menu/MatchHD.pac', 'pac/menu/LoadHD.pac'):
         if not disc.exists(rel):
             continue
         raw = _xdec(disc.read(rel), svrmod)
+        if raw[:4] == b'HSPC':
+            if not select:
+                select = _hspc_textures(raw, r'Ar\d\d')
+            continue
         if raw[:4] not in (b'EPAC', b'EPK8'):
-            continue   # (2K17: HSPCs with hashed names)
+            continue
         _, g, _ = svrfmt.epac_read(raw)
         for t, ents in g:
             for n, b in ents:
@@ -189,6 +237,8 @@ def thumbnails(disc, numbers, out_dir, svrmod=None, size=(320, 160), progress=No
                 dds = _backdrop(es[key])
                 if dds:
                     break
+        if not dds:
+            dds = select.get('Ar%02d' % num)
         if not dds:
             continue
         try:

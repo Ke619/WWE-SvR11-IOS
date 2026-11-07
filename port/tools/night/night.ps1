@@ -8,6 +8,7 @@
 #   night.ps1 [-Workers 4] [-Only B,C] [-Ids B2B,C100_101] [-Redo] [-Setup]
 param([int]$Workers = 4, [string[]]$Only = @(), [string[]]$Ids = @(), [switch]$Redo, [switch]$Setup,
       [string]$Scenarios = "")
+$env:SVR2011_AUDIO_MUTE = "1"  # (test games stay muted even if their command line is lost)
 $ErrorActionPreference = "Continue"
 # (powershell -File passes "a,b" as one string)
 $Only = @($Only | ForEach-Object { $_ -split "," } | Where-Object { $_ })
@@ -39,7 +40,7 @@ function Sync-Worker([int]$w) {
     $d = Join-Path $night "w$w"
     New-Item -ItemType Directory -Force $d | Out-Null
     # program files: refreshed when Game Files has a newer build
-    foreach ($f in "svr2011.exe", "rexruntime.dll", "rexgpu-xenos.dll", "default.xex", "nxeart", "plist360.arc", "plist360_4x3.arc") {
+    foreach ($f in "svr2011.exe", "rexruntime.dll", "rexgpu-xenos.dll", "rexffmpeg.dll", "rexmspack.dll", "default.xex", "nxeart", "plist360.arc", "plist360_4x3.arc") {
         $src = Join-Path $game $f; $dst = Join-Path $d $f
         if ((Test-Path $src) -and (-not (Test-Path $dst) -or (Get-Item $src).LastWriteTime -ne (Get-Item $dst).LastWriteTime)) {
             Copy-Item $src $dst -Force

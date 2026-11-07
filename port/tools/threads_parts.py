@@ -62,8 +62,7 @@ FAMILIES = {
 }
 
 
-def _unpack(b):
-    return svrfmt.bpe_decode(b) if b[:4] == b'BPE ' else b
+_unpack = svrfmt.unbpe
 
 
 # ---- the game's part names: SSTL ids (edit.pac) with their text (string.pac, English group 0600)

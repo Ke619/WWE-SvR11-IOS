@@ -15,8 +15,17 @@ ENTRANCE like the game's, and given to any superstar, CAW or team. Code: `src/ca
   (10000 + 1000k + n, k = scene 0-4 - the converters always install all five).
 - The label: the superstar mod's name (manifest `name=`) for its own entrance - with the script's
   name when it has several - else the script's own name and the game it was converted from
-  (`MOD: MANKIND (WWE '13)`). SELECT TEMPLATE stays stock (the game's template code needs a template
-  record for every row).
+  (`MOD: MANKIND (WWE '13)`).
+- Every installed superstar mod has its own row too, `MOD: <name>`, for its `entrance=` /
+  `attire<N>_entrance=` numbers - also when the number is a game entrance (most older mods use one: Jeff
+  Hardy's 535 is listed as Matt Hardy's) or another mod's. In a scene list only when that scene's part
+  exists. Editing a mod's entrance highlights its own row, not the first row with its number (the select
+  screen's pick, `CaeNotePick` / `CaePreferredRow`).
+- SELECT TEMPLATE (ADVANCED CREATION, a list per scene filled by sub_8287E0F0, categories = scenes 0-4)
+  gets the same rows. A template pick reads a 16-byte template record by the row's value
+  (sub_82883A68; +4 the motion): a mod's number has none - the null record crashed the game - so it gets
+  a copy of the scene's first record with the mod's motion (29 Oct: MOD: MANKIND picked -> MOTION
+  MOD: MANKIND). Test aid `SVR2011_TEST_CAE_LISTS=1`: every list filled (category, rows, first values).
 - A stored number the list doesn't have keeps a row of its own instead of turning into row 0
   (ALICIA FOX) and being saved so: its mod's row, `ENTRANCE n` (a script the list leaves out,
   e.g. a DLC slot's own), or `MISSING MOD (n)` when no script n exists any more.

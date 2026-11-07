@@ -43,6 +43,9 @@
              shipped app: no debugging access, just CPU sampling. -->
         <profileable android:shell="true" />
 
+        <!-- Android 13+ Game Mode: the game's own settings serve the Performance / Battery modes. -->
+        <meta-data android:name="android.game_mode_config" android:resource="@xml/game_mode_config" />
+
         <!-- SDL reads SDL_ENV.* into its environment: landscape only (its window is
              resizable, which otherwise lets it turn to portrait). -->
         <meta-data android:name="SDL_ENV.SDL_ORIENTATIONS" android:value="LandscapeLeft LandscapeRight" />

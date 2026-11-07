@@ -6,6 +6,7 @@
 // (textures.cpp loads the rest from guest memory), and the front buffer is
 // shown at Present.
 
+#include "android_perf.h"
 #include "frame_rate.h"
 #include "native/native_renderer.h"
 
@@ -79,6 +80,8 @@
 #include "native/guest_d3d.h"
 #include "native/textures.h"
 #include "free_cam.h"
+#include "gpu_probe.h"
+#include "../util.h"
 #if SVR2011_DEBUG_SUITE
 #include "debug_suite/debug_suite.h"
 #endif
@@ -830,6 +833,9 @@ bool g_main = false;
 // times the guest's pixels (the emulator's resolution_scale setting); sizes the
 // game sees and computes with stay the guest's.
 uint32_t g_scale = 1;
+// [svr2011] The render scale's ceiling after memory ran out (OutOfVideoMemory): a step lower each time a target or
+// the frame images can't be made above 1x.
+uint32_t g_memory_scale_cap = UINT32_MAX;
 // native_scale_effects off: only the main scene's targets (and their resolves
 // and the frame images) are scaled; the effect buffers (the 1120 x 1120 shadow
 // map, reflections, glow and blur chains) keep the guest's size.
@@ -856,8 +862,14 @@ bool g_dlss = false;
 // The intermediate's place in the 2D texture table: after the three placeholders, before the texture cache's.
 constexpr uint32_t kFsrSrv = 3;
 
-// Whether a target of this guest size is the main scene (1280 x 720).
-bool SceneTarget(uint32_t width, uint32_t height) { return width >= 1152 && height >= 640; }
+// Whether a target of this guest size is the main scene (1280 x 720). Not Superstar Threads' attire bake
+// (2080 x 1024, read back by the game's CPU: WriteBackResolve): sized as the scene - native_render_scale /
+// native_scene_height's fraction, the wide factor, the upscalers' jitter - its write-back took the wrong host pixels
+// and every Threads attire came out with another superstar's face and parts (2.1.8 report b43b9e: render scale 2x,
+// scene at 87%).
+bool SceneTarget(uint32_t width, uint32_t height) {
+  return width >= 1152 && height >= 640 && !(width == 2080 && height == 1024);
+}
 
 // Host pixels per guest pixel for a target of this guest size.
 uint32_t TargetScale(uint32_t width, uint32_t height) {
@@ -879,6 +891,12 @@ float g_wide = 1.0f;
 float g_tall = 1.0f;
 std::atomic<float> g_fov_scale{1.0f};
 std::atomic<bool> g_match_scene{false};
+std::atomic<bool> g_capture_wanted{false};  // (RequestFrameCapture: the next shown frame into g_capture)
+std::atomic<int> g_capture_output{-1};      // (... or this frame image: the one shown before - previous)
+std::atomic<int> g_last_shown_output{-1};   // (the frame image last shown)
+std::mutex g_capture_mutex;
+std::vector<uint8_t> g_capture;  // (RGB)
+uint32_t g_capture_w = 0, g_capture_h = 0;
 // The last frame drew nothing in 3D (a pause menu, a loading or transition
 // screen): 2D art filling the screen - all of it goes in the 16:9 middle,
 // with black sides.
@@ -943,16 +961,7 @@ void Fail(const char* reason = "it stopped working") {
 #endif
 }
 
-bool EnvFlag(const char* name) {
-  char* v = nullptr;
-  size_t n = 0;
-  bool on = false;
-  if (_dupenv_s(&v, &n, name) == 0 && v) {
-    on = v[0] == '1';
-    free(v);
-  }
-  return on;
-}
+using svr2011::EnvFlag;
 
 int EnvInt(const char* name, int fallback) {
   char* v = nullptr;
@@ -984,6 +993,23 @@ bool g_no_depth = false;  // SVR2011_NATIVE_NO_DEPTH=1
 double g_pipeline_ms = 0;  // pipeline builds since the last perf line
 // Bytes hashed since the last perf line: static / dynamic vertex buffers, constants.
 uint64_t g_hash_vb_static = 0, g_hash_vb_dynamic = 0, g_hash_const = 0;
+// Test aid SVR2011_TEST_CONST_TIMES=1: the constants path's time a frame on the native perf line - SharedConstants
+// (its texture lookups, its sets), GpuConstants - and the textures looked up a draw.
+const bool g_const_times = std::getenv("SVR2011_TEST_CONST_TIMES") != nullptr;
+uint64_t g_ct_shared_ns = 0, g_ct_tex_ns = 0, g_ct_sets_ns = 0, g_ct_gpu_ns = 0, g_ct_textures = 0, g_ct_draws = 0;
+uint64_t g_ct_tex_same = 0, g_ct_memo_hits = 0;  // (a slot's fetch as its last draw's; SharedConstants' kept answers)
+uint32_t g_ct_last_fetch[2][32][6] = {};
+struct ConstTimer {
+  uint64_t& sum;
+  std::chrono::steady_clock::time_point t0;
+  explicit ConstTimer(uint64_t& s) : sum(s) {
+    if (g_const_times) t0 = std::chrono::steady_clock::now();
+  }
+  ~ConstTimer() {
+    if (g_const_times)
+      sum += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count());
+  }
+};
 uint32_t g_vb_demotions = 0;
 uint64_t g_repeat_same = 0, g_repeat_changed = 0;  // (total) dynamic buffers seen changing within a frame after trusting them
 // Debug (SVR2011_NATIVE_VB_STATS=1): hashed uses per dynamic buffer (address << 32 | size).
@@ -1416,17 +1442,46 @@ bool CreatePipelineLayout(Renderer* r) {
   return r->texture_sets[0] && r->texture_sets[1] && r->texture_sets[2] && r->sampler_set;
 }
 
+// A target that can't be made is asked for again at each draw: the first 16 logged, then every 1000th (the GT 710
+// report's log would have been all of them - the start rotated away).
+bool TargetFailureLogged() {
+  static std::atomic<uint64_t> n{0};
+  const uint64_t i = n++;
+  return i < 16 || i % 1000 == 0;
+}
+
+// createTexture, with a C++ out-of-memory as no texture: Direct3D 11 fills a new target from a buffer of zeros
+// (plume) - a 2.1.8 report (GeForce GT 710, the PC's memory full) crashed there making a 2x depth target.
+// (test: SVR2011_TEST_TEXTURE_LIMIT=<pixels> - a target or frame image bigger fails as out of memory)
+std::unique_ptr<plume::RenderTexture> TryCreateTexture(Renderer* r, const plume::RenderTextureDesc& d) {
+  static const uint64_t test_limit = uint64_t(EnvInt("SVR2011_TEST_TEXTURE_LIMIT", 0));
+  if (test_limit && uint64_t(d.width) * d.height > test_limit) {
+    if (TargetFailureLogged()) REXLOG_WARN("native renderer: test texture limit - {}x{} not made", d.width, d.height);
+    return nullptr;
+  }
+  try {
+    return r->device->createTexture(d);
+  } catch (const std::bad_alloc&) {
+    REXLOG_ERROR("native renderer: out of memory making a {}x{} texture", d.width, d.height);
+    return nullptr;
+  }
+}
+
+void OutOfVideoMemory(Renderer* r, const char* what);
+
 // The frame images, g_out_w x g_out_h, handed to the emulator's presentation
 // (committed, so the reference the presentation holds keeps one alive).
+// False (out of memory): none are left - BeginFrame draws nothing until they're made.
 bool CreateOutputs(Renderer* r) {
   for (uint32_t i = 0; i < kOutputs; ++i) {
     plume::RenderTextureDesc d = plume::RenderTextureDesc::Texture2D(
         g_out_w, g_out_h, 1, RenderFormat::R8G8B8A8_UNORM, plume::RenderTextureFlag::RENDER_TARGET);
     d.committed = true;
     r->output_framebuffers[i].reset();
-    r->outputs[i] = r->device->createTexture(d);
+    r->outputs[i] = TryCreateTexture(r, d);
     if (!r->outputs[i]) {
-      REXLOG_ERROR("native renderer: could not create the frame images");
+      REXLOG_ERROR("native renderer: could not create the frame images ({}x{})", g_out_w, g_out_h);
+      for (uint32_t j = 0; j < kOutputs; ++j) r->output_framebuffers[j].reset(), r->outputs[j].reset();
       return false;
     }
     r->outputs[i]->setName(fmt::format("frame image {}", i));
@@ -1437,7 +1492,7 @@ bool CreateOutputs(Renderer* r) {
   r->fsr_framebuffer.reset();
   r->fsr_view.reset();
   // (FSR 2 writes it too: a storage texture where there is compute - not Direct3D 11)
-  r->fsr_image = r->device->createTexture(plume::RenderTextureDesc::Texture2D(
+  r->fsr_image = TryCreateTexture(r, plume::RenderTextureDesc::Texture2D(
       g_out_w, g_out_h, 1, RenderFormat::R8G8B8A8_UNORM,
       plume::RenderTextureFlag::RENDER_TARGET |
           (SlotTables() ? 0u : plume::RenderTextureFlag::STORAGE | plume::RenderTextureFlag::UNORDERED_ACCESS)));
@@ -1464,6 +1519,7 @@ bool CreateOutputs(Renderer* r) {
 
 void ReportDeviceRemoved(Renderer* r);
 void StartPrebuildingPipelines(Renderer* r);
+uint64_t VideoMemoryBytes();
 
 bool Initialize() {
   if (!g_memory) {
@@ -1504,6 +1560,15 @@ bool Initialize() {
     return false;
   }
   REXLOG_INFO("native renderer: GPU {}", r->device->getDescription().name);
+#if defined(_WIN32)
+  {  // (for reports: what a GPU that runs out of memory had)
+    MEMORYSTATUSEX m = {sizeof(m)};
+    GlobalMemoryStatusEx(&m);
+    REXLOG_INFO("native renderer: video memory {} MB; system memory {} MB free of {} MB, page file {} MB free of {} MB",
+                VideoMemoryBytes() >> 20, m.ullAvailPhys >> 20, m.ullTotalPhys >> 20, m.ullAvailPageFile >> 20,
+                m.ullTotalPageFile >> 20);
+  }
+#endif
   backend::LoadPipelineCache(r->device.get(), PipelineCacheFile());
   if (g_debug_solid) g_debug_ps = ReadShader("debug_solid.ps");
   r->queue = r->device->createCommandQueue(plume::RenderCommandListType::DIRECT);
@@ -1599,12 +1664,27 @@ bool Initialize() {
   return true;
 }
 
+// The device lost: in the first minute on the API gpu_backend "any" picked (a 2.1.8 report: GeForce GT 710, driver
+// 456.71, Direct3D 12 removed - DXGI_ERROR_DRIVER_INTERNAL_ERROR - before the first frame, every start), the next
+// start uses the next one (gpu_probe.h), and the message says so.
+std::string DeviceLostReason(Renderer* r) {
+  std::string reason = "the GPU stopped (device lost)";
+  if (r->frames < 3600) {
+    if (const std::string next = svr2011::AvoidPickedGraphicsApi(fmt::format("device lost at frame {}", r->frames));
+        !next.empty()) {
+      reason += " - restart the game: it will use " + next + " on this GPU; updating the graphics driver can also help";
+      REXLOG_WARN("native renderer: the next start uses {} (gpu_backend any)", next);
+    }
+  }
+  return reason;
+}
+
 // The GPU faulted (device removed): logs why (and the faulting allocation,
 // when the driver tells) and turns the native renderer off for the rest of
 // the run.
 void ReportDeviceRemoved(Renderer* r) {
   backend::ReportDeviceLost(r->device.get());
-  Fail("the GPU stopped (device lost)");
+  Fail(DeviceLostReason(r).c_str());
 }
 
 // Waits (CPU) for frame slot `slot`'s last submission. A GPU that stops
@@ -1623,7 +1703,7 @@ bool WaitForFrame(Renderer* r, uint32_t slot, const char* what) {
   REXLOG_ERROR("native renderer: GPU did not finish ({}) in {} ms{}", what, kGpuTimeoutMs,
                lost ? " - device lost" : "");
   if (lost) backend::ReportDeviceLost(r->device.get());
-  Fail(lost ? "the GPU stopped (device lost)" : "the GPU stopped answering");
+  Fail(lost ? DeviceLostReason(r).c_str() : "the GPU stopped answering");
   // Releases the emulator's waits for the frames in flight (each slot's).
   for (auto& fence : r->fences) backend::ReleaseFence(fence.get());
   return false;
@@ -1721,18 +1801,56 @@ uint64_t VideoMemoryBytes() {
     return best;
   }();
   return bytes;
+#elif defined(__ANDROID__)
+  // (phones: the memory the driver gives the GPU - VK_EXT_memory_budget, shared with the game - at the start)
+  static const uint64_t bytes = [] {
+    uint64_t used = 0, budget = 0;
+    return backend::VideoMemory(&used, &budget) ? budget : uint64_t(0);
+  }();
+  return bytes;
 #else
   return 0;
 #endif
 }
 
 // The highest scale up to `s` that fits (`why`: what lowered it).
+// [svr2011] Phones (supersampling above the screen): the GPU's own image limit
+// (Mali / Adreno: 8192-16384) and a quarter of the GPU memory budget - the
+// game's own textures and buffers share it - from 2x up.
 uint32_t FitRenderScale(uint32_t s, float wide, float tall, const char*& why) {
   const float tw = float(kWidth) * wide, th = float(kHeight) * tall;
-  while (s > 1 && (tw * float(s) > kMaxTargetSide || th * float(s) > kMaxTargetSide)) --s, why = "the 16384 texture limit";
+  float side = kMaxTargetSide;
+  if (const uint32_t gpu_side = backend::VulkanMaxImageSide()) side = std::min(side, float(gpu_side));
+  while (s > 1 && (tw * float(s) > side || th * float(s) > side)) --s, why = "the GPU's texture size limit";
+  if (s > g_memory_scale_cap) s = g_memory_scale_cap, why = "video memory full";
+#if defined(__ANDROID__)
+  constexpr uint32_t kMemoryFrom = 1, kShare = 4;
+#else
+  constexpr uint32_t kMemoryFrom = 4, kShare = 2;
+#endif
   if (const uint64_t vram = VideoMemoryBytes())
-    while (s > 4 && uint64_t(tw * float(s)) * uint64_t(th * float(s)) * kBytesPerScenePixel > vram / 2) --s, why = "video memory";
+    while (s > kMemoryFrom && uint64_t(tw * float(s)) * uint64_t(th * float(s)) * kBytesPerScenePixel > vram / kShare)
+      --s, why = "video memory";
   return s;
+}
+
+// A target or the frame images couldn't be made (out of memory - a 2.1.8 report, GeForce GT 710: the 2x targets of
+// a 1366x768 window, then a crash): above 1x the next frame lowers the render scale a step and makes them again; the
+// frame images at 1x: nothing can be shown - the message says why instead of a crash.
+void OutOfVideoMemory(Renderer* r, const char* what) {
+  if (g_failed) return;
+  if (g_scale > 1) {
+    if (g_memory_scale_cap < g_scale) return;  // (lowered already: the next frame)
+    g_memory_scale_cap = g_scale - 1;
+    REXLOG_WARN("native renderer: {} could not be made at render scale {}x (out of memory; video memory {} MB) - "
+                "lowered to {}x", what, g_scale, VideoMemoryBytes() >> 20, g_memory_scale_cap);
+    return;
+  }
+  if (std::strcmp(what, "the frame images") != 0) return;  // (a target at 1x: its draws skipped, as before)
+  Fail(fmt::format("not enough memory for the frame images on {} ({} MB video memory) - close other programs, play "
+                   "in a smaller window, set texture quality to low or update the graphics driver",
+                   r->device->getDescription().name, VideoMemoryBytes() >> 20)
+           .c_str());
 }
 
 void ApplyOutputSettings(Renderer* r) {
@@ -1864,7 +1982,7 @@ void ApplyOutputSettings(Renderer* r) {
 #endif
   const bool res_changed = std::fabs(res - g_res) > 0.001f;
   if (scale == g_scale && effects == g_scale_effects && out_w == g_out_w && out_h == g_out_h &&
-      !wide_changed && !res_changed) {
+      !wide_changed && !res_changed && r->outputs[0]) {
     return;
   }
 
@@ -1886,10 +2004,10 @@ void ApplyOutputSettings(Renderer* r) {
     SetCameraAspect(kAspect16x9 * wide / tall);
     g_fov_scale = tall;
   }
-  if (out_w != g_out_w || out_h != g_out_h) {
+  if (out_w != g_out_w || out_h != g_out_h || !r->outputs[0]) {
     g_out_w = out_w;
     g_out_h = out_h;
-    CreateOutputs(r);
+    if (!CreateOutputs(r)) OutOfVideoMemory(r, "the frame images");
   }
   r->list_state = {};
   if (fit_why)
@@ -1933,7 +2051,7 @@ bool BeginFrame(Renderer* r) {
   if (r->frame_open) return true;
   if (g_main) ApplyTextureQuality(r);
   if (g_main) ApplyOutputSettings(r);
-  if (g_failed) return false;
+  if (g_failed || !r->outputs[0]) return false;  // (no frame images: out of memory - made again at the next frame)
   r->back_index = uint32_t(r->frames % kFrames);
   r->output_index = uint32_t(r->frames % kOutputs);
   r->frame_begin = std::chrono::steady_clock::now();
@@ -1959,6 +2077,7 @@ bool BeginFrame(Renderer* r) {
   r->hidden_frame = g_half_frames.load() && !g_half_suspended.load() && (r->frames & 1);
   r->frame_stats = {};
   r->texture_context = TextureContext(r);
+  if (!r->hidden_frame) textures::UploadChanging(r->texture_context);
   g_resolved_this_frame = false;
   return true;
 }
@@ -1971,7 +2090,12 @@ double g_resident_mb = 0;  // (the textures' host memory at the last 5 s perf lo
 
 int BlankedSlot(Renderer* r);
 
+std::atomic<uint32_t> g_last_draws{0};
+std::atomic<uint64_t> g_frames_shown{0};
+
 void UpdateTitle(Renderer* r) {
+  g_last_draws = r->frame_stats.draws;
+  ++g_frames_shown;
   ++r->stat_frames;
   ++r->perf_frames;
   r->perf_draws += r->frame_stats.draws;
@@ -2019,10 +2143,11 @@ void UpdateTitle(Renderer* r) {
     if (SlotTables()) {
       auto* d = static_cast<plume::D3D11Device*>(r->device.get());
       REXLOG_INFO("native perf: D3D11 per frame: uploads {:.2f} ms ({:.1f} MB), replay {:.2f} ms ({:.0f} draws), "
-                  "context lock wait {:.2f} ms, flush {:.2f} ms",
+                  "context lock wait {:.2f} ms, flush {:.2f} ms; frame waits {} ({} without the context lock)",
                   d->statUploadNs.exchange(0) / f / 1e6, d->statUploadBytes.exchange(0) / f / 1e6,
                   d->statReplayNs.exchange(0) / f / 1e6, d->statDraws.exchange(0) / f,
-                  d->statLockWaitNs.exchange(0) / f / 1e6, d->statFlushNs.exchange(0) / f / 1e6);
+                  d->statLockWaitNs.exchange(0) / f / 1e6, d->statFlushNs.exchange(0) / f / 1e6,
+                  d->statFenceWaits.exchange(0), d->statFenceLockFree.exchange(0));
     }
 #endif
     REXLOG_INFO("native perf: {:.1f} fps, per frame: draw {:.2f} ms, gpu wait {:.2f} ms, submit {:.2f} ms, "
@@ -2064,6 +2189,17 @@ void UpdateTitle(Renderer* r) {
         g_vb_stats.clear();
       }
       r->perf_const_uploads = r->perf_const_reused = 0;
+      if (g_const_times && g_ct_draws) {
+        REXLOG_INFO("native perf: constants per frame: shared {:.3f} ms (texture lookups {:.3f}, sets {:.3f}), "
+                    "gpu constants {:.3f} ms; {:.2f} textures a draw ({:.0f} draws); a slot's texture as its last "
+                    "draw's {:.0f}%; kept answers {:.0f}%",
+                    g_ct_shared_ns / f / 1e6, g_ct_tex_ns / f / 1e6, g_ct_sets_ns / f / 1e6, g_ct_gpu_ns / f / 1e6,
+                    double(g_ct_textures) / double(g_ct_draws), g_ct_draws / f,
+                    g_ct_textures ? 100.0 * g_ct_tex_same / g_ct_textures : 0.0,
+                    g_ct_textures ? 100.0 * g_ct_memo_hits / g_ct_textures : 0.0);
+      }
+      g_ct_shared_ns = g_ct_tex_ns = g_ct_sets_ns = g_ct_gpu_ns = g_ct_textures = g_ct_draws = 0;
+      g_ct_tex_same = g_ct_memo_hits = 0;
     }
     g_pipeline_ms = 0;
     r->perf_draw_ms = r->perf_wait_ms = r->perf_span_ms = r->perf_submit_ms = 0;
@@ -2159,9 +2295,10 @@ ColorTarget* GetColorTarget(Renderer* r, uint32_t base, uint32_t pitch, uint32_t
   d.committed = true;
   const plume::RenderClearValue cv = plume::RenderClearValue::Color(plume::RenderColor(0, 0, 0, 0), f.rtv);
   d.optimizedClearValue = &cv;
-  std::shared_ptr<plume::RenderTexture> resource = r->device->createTexture(d);
+  std::shared_ptr<plume::RenderTexture> resource = TryCreateTexture(r, d);
   if (!resource) {
-    REXLOG_ERROR("native renderer: could not create a render target");
+    if (TargetFailureLogged()) REXLOG_ERROR("native renderer: could not create a render target ({}x{})", host_w, host_h);
+    OutOfVideoMemory(r, "a render target");
     return nullptr;
   }
   ColorTarget& t = r->color_targets[key];
@@ -2198,9 +2335,10 @@ DepthTarget* GetDepthTarget(Renderer* r, uint32_t base, uint32_t pitch, uint32_t
   const plume::RenderClearValue cv =
       plume::RenderClearValue::Depth(plume::RenderDepth(1.0f), backend::DepthFormat());
   d.optimizedClearValue = &cv;
-  std::shared_ptr<plume::RenderTexture> resource = r->device->createTexture(d);
+  std::shared_ptr<plume::RenderTexture> resource = TryCreateTexture(r, d);
   if (!resource) {
-    REXLOG_ERROR("native renderer: could not create a depth target");
+    if (TargetFailureLogged()) REXLOG_ERROR("native renderer: could not create a depth target ({}x{})", host_w, host_h);
+    OutOfVideoMemory(r, "a depth target");
     return nullptr;
   }
   DepthTarget& t = r->depth_targets[key];
@@ -3039,6 +3177,7 @@ RenderBufferReference Constants(Renderer* r, uint32_t device_offset, uint32_t by
 // the upload; the constants loaded from memory for this draw (so far only
 // the shaders' literal c252-c255) take precedence.
 RenderBufferReference GpuConstants(Renderer* r, uint32_t first, uint32_t bytes) {
+  ConstTimer timer(g_ct_gpu_ns);
   const uint32_t count = bytes / 16;
   const uint8_t* mirror = Device() + 0x780 + 16 * first;
   bool loaded_here = false;
@@ -3171,9 +3310,24 @@ uint32_t SlotSwizzle(Renderer* r, uint32_t index) {
 #endif
 }
 
+// Each shader stage's fetch slots' last answers (SharedConstants): most draws sample what the draw before them did
+// in the same slot (80% of the lookups in a 6-man match), and while the frame and textures::Generation stay the same
+// fetch constants get the same texture and sampler - the lookups (a key hash, two maps, the recheck rules) are
+// skipped. Debug: SVR2011_NATIVE_NO_SLOT_MEMO=1 looks every one up.
+struct SlotMemo {
+  uint32_t fetch[6] = {};
+  uint32_t dimension = UINT32_MAX;
+  uint64_t frame = ~0ull, generation = 0;
+  uint32_t srv = UINT32_MAX, sampler = UINT32_MAX;  // (sampler: UINT32_MAX until asked)
+};
+SlotMemo g_slot_memo[2][32];
+const bool g_slot_memo_on = std::getenv("SVR2011_NATIVE_NO_SLOT_MEMO") == nullptr;
+
 // `ndc`: g_NdcScale (x, y) and g_HalfPixelOffset (the NDC offset, z, w).
 RenderBufferReference SharedConstants(Renderer* r, bool alpha_test, const Shader* vs,
                                       const Shader* ps, const float ndc[4]) {
+  ConstTimer timer(g_ct_shared_ns);
+  ++g_ct_draws;
   auto [cpu, gpu] = Allocate(r, kSharedConstantsBytes);
   if (!cpu) return {};
   auto* u = reinterpret_cast<uint32_t*>(cpu);
@@ -3196,11 +3350,19 @@ RenderBufferReference SharedConstants(Renderer* r, bool alpha_test, const Shader
   }
   // The textures the shaders sample, from the fetch constants.
   const textures::Context& ctx = r->texture_context;
+  {
+  ConstTimer tex_timer(g_ct_tex_ns);
   for (const Shader* s : {vs, ps}) {
     for (const auto& [slot, dimension] : s->textures) {
+      ++g_ct_textures;
       const uint8_t* f = Device() + guest::RegisterOffset(0x4800) + slot * 24;
       uint32_t fetch[6];
       for (int k = 0; k < 6; ++k) fetch[k] = Be32(f + 4 * k);
+      if (g_const_times) {
+        uint32_t* lf = g_ct_last_fetch[s == ps ? 1 : 0][slot & 31];
+        if (!std::memcmp(lf, fetch, sizeof(fetch))) ++g_ct_tex_same;
+        std::memcpy(lf, fetch, sizeof(fetch));
+      }
       {
         // debug: SVR2011_NATIVE_BLANK_CYCLE slot gets the placeholder, or with
         // SVR2011_NATIVE_CYCLE_ALPHA=1 its alpha forced to 1 (=2: every other
@@ -3223,13 +3385,31 @@ RenderBufferReference SharedConstants(Renderer* r, bool alpha_test, const Shader
             fetch[3] = (fetch[3] & ~(7u << 10)) | (5u << 10);
         }
       }
-      const uint32_t srv = textures::Texture(ctx, fetch, dimension);
+      SlotMemo& memo = g_slot_memo[s == ps ? 1 : 0][slot & 31];
+      uint32_t srv;
+      if (g_slot_memo_on && memo.frame == ctx.frame && memo.dimension == dimension &&
+          memo.generation == textures::Generation() && !std::memcmp(memo.fetch, fetch, sizeof(fetch))) {
+        srv = memo.srv;
+        ++g_ct_memo_hits;
+      } else {
+        srv = textures::Texture(ctx, fetch, dimension);
+        std::memcpy(memo.fetch, fetch, sizeof(fetch));
+        memo.dimension = dimension;
+        memo.frame = ctx.frame;
+        memo.generation = textures::Generation();  // (after the lookup: its own upload counted)
+        memo.srv = srv;
+        memo.sampler = UINT32_MAX;
+      }
+      auto sampler_of = [&] {
+        if (memo.sampler == UINT32_MAX) memo.sampler = textures::Sampler(ctx, fetch);
+        return memo.sampler;
+      };
       if (slots) {
         if (dimension > 2 || slot >= kSlotCount[dimension] || srv == UINT32_MAX) continue;
         const uint32_t index = r->texture_base[dimension] + srv;
         places[0][kSlotFirst[dimension] + slot] = index;
         u[(dimension * 8 + slot / 4) * 4 + slot % 4] = SlotSwizzle(r, index);
-        places[1][SlotSampler(slot) & 15] = textures::Sampler(ctx, fetch);
+        places[1][SlotSampler(slot) & 15] = sampler_of();
         continue;
       }
       if (compact) {
@@ -3244,7 +3424,7 @@ RenderBufferReference SharedConstants(Renderer* r, bool alpha_test, const Shader
             srv == UINT32_MAX ? UINT32_MAX : r->texture_base[dimension] + srv;
         u[(dimension * 8 + slot / 4) * 4 + slot % 4] = place;
         if (srv == UINT32_MAX) continue;
-        const uint32_t sampler = textures::Sampler(ctx, fetch);
+        const uint32_t sampler = sampler_of();
         uint32_t s = 0;
         while (s < samplers && places[1][s] != sampler) ++s;  // (shared)
         if (s == samplers && samplers < kCompactSamplers) places[1][samplers++] = sampler;
@@ -3253,10 +3433,12 @@ RenderBufferReference SharedConstants(Renderer* r, bool alpha_test, const Shader
       }
       if (srv == UINT32_MAX) continue;
       u[(dimension * 8 + slot / 4) * 4 + slot % 4] = srv;
-      u[(3 * 8 + slot / 4) * 4 + slot % 4] = textures::Sampler(ctx, fetch);
+      u[(3 * 8 + slot / 4) * 4 + slot % 4] = sampler_of();
     }
   }
+  }
   if (compact || slots) {
+    ConstTimer sets_timer(g_ct_sets_ns);
     r->draw_sets[0] = CompactSet(r, 0, places[0]);
     r->draw_sets[1] = CompactSet(r, 1, places[1]);
   }
@@ -4349,6 +4531,9 @@ void Draw(Renderer* r, uint32_t primitive, int32_t base_vertex, uint32_t start, 
 // ---------------------------------------------------------------------------
 // entry points
 
+uint32_t LastFrameDraws() { return g_last_draws.load(); }
+uint64_t FramesShown() { return g_frames_shown.load(); }
+
 FrameCosts LastFrameCosts() {
   std::lock_guard lock(g_costs_mutex);
   return g_costs;
@@ -4414,6 +4599,22 @@ bool NativeActive() { return g_main && !g_failed && !g_suspended; }
 
 void SetMatchScene(bool in_match) { g_match_scene = in_match; }
 
+void RequestFrameCapture(bool previous) {
+  {
+    std::lock_guard lock(g_capture_mutex);
+    g_capture.clear();
+  }
+  g_capture_output = previous ? g_last_shown_output.load() : -1;
+  g_capture_wanted = true;
+}
+bool TakeFrameCapture(std::vector<uint8_t>& rgb, uint32_t& width, uint32_t& height) {
+  std::lock_guard lock(g_capture_mutex);
+  if (g_capture.empty()) return false;
+  rgb = std::move(g_capture), width = g_capture_w, height = g_capture_h;
+  g_capture.clear();
+  return true;
+}
+
 float CameraFovScale() { return g_fov_scale.load(std::memory_order_relaxed); }
 
 // a^-1 (4 x 4, Gauss-Jordan); false if singular.
@@ -4459,6 +4660,7 @@ void Attach(rex::memory::Memory* memory) {
       s = *e == ',' ? e + 1 : e;
     }
     std::thread([memory, regions] {
+      rex::thread::set_current_thread_name("memory regions log");
       for (;;) {
         std::this_thread::sleep_for(std::chrono::seconds(2));
         std::string line;
@@ -4868,6 +5070,7 @@ bool PresentFrontBuffer(Renderer* r, uint32_t front_buffer) {
 
 void OnPresent(uint32_t front_buffer) {
   svr2011::LatencyOnSwap();  // (frame_rate.h: test aid)
+  svr2011::PerfHintFrame(svr2011::FrameRateNow());  // (android_perf.h: the phone's clocks)
   std::lock_guard lock(g_mutex);
   Renderer* r = Get();
   if (!r) return;
@@ -4970,6 +5173,14 @@ void OnPresent(uint32_t front_buffer) {
   }();
   static uint32_t shot_request_poll = 0;
   std::string requested_file;
+  const bool capture = !r->hidden_frame && g_capture_wanted.exchange(false);  // (RequestFrameCapture)
+  if (capture) test_shot = true;
+  // (the frame shown before this one: its image is still in the ring - kOutputs - for a few frames)
+  const int capture_output = capture ? g_capture_output.exchange(-1) : -1;
+  plume::RenderTexture* shot_src = capture_output >= 0 && uint32_t(capture_output) != r->output_index
+                                       ? r->outputs[uint32_t(capture_output) % kOutputs].get()
+                                       : back;
+  if (!r->hidden_frame) g_last_shown_output = int(r->output_index);
   if (!test_shot && !shot_request.empty() && !r->hidden_frame && ++shot_request_poll % 15 == 0)
     if (FILE* f = std::fopen(shot_request.c_str(), "rb")) {
       char name[512] = {};
@@ -4988,14 +5199,14 @@ void OnPresent(uint32_t front_buffer) {
       const size_t dot = shot_file.rfind('.');
       shot_file.insert(dot == std::string::npos ? shot_file.size() : dot, "_" + std::to_string(frame_shots_taken));
     }
-    if (requested_file.empty()) ++frame_shots_taken;
+    if (requested_file.empty() && !capture) ++frame_shots_taken;
     shot = r->device->createBuffer(plume::RenderBufferDesc::ReadbackBuffer(uint64_t(shot_row) * g_out_h * 4));
     if (shot) {
-      Barrier(r, back, RenderTextureLayout::COPY_SOURCE);
+      Barrier(r, shot_src, RenderTextureLayout::COPY_SOURCE);
       list->copyTextureRegion(plume::RenderTextureCopyLocation::PlacedFootprint(
                                   shot.get(), RenderFormat::R8G8B8A8_UNORM, g_out_w, g_out_h, 1, shot_row),
-                              plume::RenderTextureCopyLocation::Subresource(back));
-      Barrier(r, back, RenderTextureLayout::SHADER_READ);
+                              plume::RenderTextureCopyLocation::Subresource(shot_src));
+      Barrier(r, shot_src, RenderTextureLayout::SHADER_READ);
     }
   }
 #if SVR2011_DEBUG_SUITE
@@ -5038,11 +5249,25 @@ void OnPresent(uint32_t front_buffer) {
     r->queue->executeCommandLists(submit, r->fences[r->back_index].get());
   }
   r->submitted[r->back_index] = true;
-  if (backend::DeviceLost(r->device.get())) {
+  // (test: SVR2011_TEST_DEVICE_LOST_AT=<frame> - the device taken as lost there)
+  static const uint64_t test_lost = uint64_t(EnvInt("SVR2011_TEST_DEVICE_LOST_AT", 0));
+  if (backend::DeviceLost(r->device.get()) || (test_lost && r->frames == test_lost)) {
     ReportDeviceRemoved(r);
     return;
   }
-  if (shot && test_shot && WaitForFrame(r, r->back_index, "test frame shot")) {
+  if (shot && capture && WaitForFrame(r, r->back_index, "frame capture")) {
+    if (const auto* px = static_cast<const uint8_t*>(shot->map())) {
+      std::vector<uint8_t> rgb(size_t(g_out_w) * g_out_h * 3);
+      for (uint32_t y = 0; y < g_out_h; ++y) {
+        const uint8_t* s = px + size_t(y) * shot_row * 4;
+        uint8_t* d = rgb.data() + size_t(y) * g_out_w * 3;
+        for (uint32_t x = 0; x < g_out_w; ++x) std::memcpy(d + size_t(x) * 3, s + size_t(x) * 4, 3);
+      }
+      shot->unmap();
+      std::lock_guard lock(g_capture_mutex);
+      g_capture = std::move(rgb), g_capture_w = g_out_w, g_capture_h = g_out_h;
+    }
+  } else if (shot && test_shot && WaitForFrame(r, r->back_index, "test frame shot")) {
     if (const auto* px = static_cast<const uint8_t*>(shot->map())) {
       if (FILE* f = std::fopen(shot_file.c_str(), "wb")) {  // (binary PPM, RGB)
         std::fprintf(f, "P6\n%u %u\n255\n", g_out_w, g_out_h);
@@ -5592,10 +5817,19 @@ void OnLoadShaderConstants(uint32_t shader_object, uint32_t base) {
   const uint32_t table_offset = Be32(obj + 20);
   if (!table_offset) return;
   const uint8_t* table = obj + table_offset + 20;
-  const uint8_t* end = table + Be32(obj + table_offset + 16);
+  const uint32_t table_size = Be32(obj + table_offset + 16);
+  if (table_size > 0x10000) {  // (not a shader object's table: 8 bytes an entry, a few dozen at most)
+    static std::atomic<int> bad{0};
+    if (bad++ < 4)
+      REXLOG_WARN("native renderer: shader object {:08X} has a constant table of {} bytes - not loaded", shader_object,
+                  table_size);
+    return;
+  }
+  const uint8_t* end = table + table_size;
   {
-    // Log each distinct table once (which constant ranges come from memory).
-    static std::unordered_map<uint64_t, int> seen;
+    // Log each distinct table once (which constant ranges come from memory). Never destroyed: the runtime's disc
+    // error path left by exit() while this thread drew on - a destroyed map's read of 0 (2.1.9 report edcc87).
+    static auto& seen = *new std::unordered_map<uint64_t, int>;
     const uint64_t key = end > table ? XXH3_64bits(table, size_t(end - table)) : 0;
     if (seen.size() < 64 && seen.emplace(key, 0).second) {
       std::string entries;

@@ -20,8 +20,7 @@ PROP_PAC = 'evt\\evtobj.pac'
 PORTED = {('wwe2k14', 2540): 2541, ('hctp', 2035): 2542, ('low', 2552): 2552, ('low', 2565): 2565}
 
 
-def _unpack(b):
-    return svrfmt.bpe_decode(b) if b[:4] == b'BPE ' else b
+_unpack = svrfmt.unbpe
 
 
 def game_prop(game_pac, pid):

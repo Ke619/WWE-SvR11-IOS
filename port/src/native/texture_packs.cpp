@@ -20,6 +20,7 @@
 #include <rex/cvar.h>
 #include <rex/filesystem.h>
 #include <rex/logging.h>
+#include <rex/thread.h>
 #define XXH_INLINE_ALL
 #include <xxhash.h>
 
@@ -31,6 +32,8 @@
 #define STBI_ONLY_PNG
 #define STBI_NO_STDIO
 #include "stb_image.h"
+#include "../title_mods.h"
+#include "../util.h"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -139,10 +142,7 @@ bool HashOfStem(const std::string& stem, uint64_t* hash) {
   return true;
 }
 
-std::string Lower(std::string s) {
-  for (char& c : s) c = char(std::tolower(static_cast<unsigned char>(c)));
-  return s;
-}
+using svr2011::Lower;
 
 std::string Safe(const std::string& s) {
   std::string o;
@@ -377,6 +377,7 @@ bool DecodeDds(const std::vector<uint8_t>& d, Replacement& r) {
 }
 
 void LoaderThread() {
+  rex::thread::set_current_thread_name("texture pack loader");
   LowPriority();
   for (;;) {
     uint64_t hash;
@@ -495,6 +496,7 @@ std::vector<fs::path> PacFiles() {
 }
 
 void NamesThread() {
+  rex::thread::set_current_thread_name("texture pack names");
   LowPriority();
   const auto t0 = std::chrono::steady_clock::now();
   const std::vector<fs::path> files = PacFiles();
@@ -550,6 +552,7 @@ fs::path DumpPath(uint64_t hash, uint32_t w, uint32_t h, const std::string& form
 }
 
 void DumpThread() {
+  rex::thread::set_current_thread_name("texture dump");
   LowPriority();
   uint32_t written = 0;
   for (;;) {
@@ -653,6 +656,20 @@ void Start() {
       }
     }
     uint32_t used = 0;
+    // (title mods' textures\ first: a championship's belt and pictures - title_mods.h - as packs that are always on)
+    for (const fs::path& dir : svr2011::TitleModTextureFolders()) {
+      std::error_code ec;
+      uint32_t n = 0;
+      for (fs::recursive_directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+        if (!it->is_regular_file(ec)) continue;
+        const std::string ext = Lower(it->path().extension().string());
+        uint64_t h;
+        if ((ext == ".png" || ext == ".dds") && HashOfStem(it->path().stem().string(), &h) &&
+            g_files.emplace(h, it->path()).second)
+          ++n;
+      }
+      REXLOG_INFO("texture packs: title mod \"{}\": {} textures", dir.parent_path().filename().string(), n);
+    }
     for (const std::string& pack : packs) {
       const fs::path dir = g_game / "Texture Packs" / fs::u8path(pack);
       std::error_code ec;

@@ -1,7 +1,7 @@
 /* WWE SmackDown vs. Raw 2011 - "Report a problem" sent to the online server (the launcher and the Mod Maker):
    POST <online_server>/api/reports, multipart/form-data -
      "report"  application/json: {"format":1, "app", "version", "platform", "os", "problem", "happens", "what",
-               "before", "contact", "signature"} (report_json)
+               "before", "contact", "signature", "updater"} (report_json)
      "zip"     the report zip (report.c / the Mod Maker's), already without tokens, passwords and addresses
      "image0".."image4"  png / jpeg / webp pictures the player picked
      "match"   application/zip (match.zip): a recorded match's folder (report_match.h), 5 MB at most
@@ -42,6 +42,7 @@ typedef struct {
 typedef struct {
     int status;              /* the HTTP status (0: no answer - offline, no server) */
     char id[64];             /* the report's id on the server */
+    char secret[80];         /* its receipt (report_receipts.h keeps it: the Reports tab asks with it), "" if none */
     int seen_before;         /* earlier reports of the same problem (the server's signature) */
     WCHAR why[300];          /* when it failed: what to show */
     int match_stored;        /* the server kept the match */
@@ -51,9 +52,10 @@ typedef struct {
     WCHAR mods_why[300];     /* why mods weren't kept (the server's words), "" if all were */
 } ReportResult;
 
-/* The "report" part (malloc'd, the caller frees). Every text is JSON-escaped; NULL is "". */
+/* The "report" part (malloc'd, the caller frees). Every text is JSON-escaped; NULL is "". updater: the updates'
+   log's last result (update_log_last: an update's / a repair's end). */
 char *report_json(const char *app, const char *version, const char *problem, const char *happens, const char *what,
-                  const char *before, const char *contact, const char *signature);
+                  const char *before, const char *contact, const char *signature, const char *updater);
 
 /* A hint for the server's duplicate check: the first line of the newest crash report in <game>\crashes, else the
    newest log's last error line; "" if none (UTF-8). */

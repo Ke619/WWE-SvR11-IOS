@@ -190,7 +190,7 @@ struct BuildJob {
   std::vector<std::string> keep;  // textures FitFile leaves as they are
   std::shared_ptr<Arena> arena;
   std::string manifest, id;
-  Image banner, load;
+  Image banner, load, card;
   std::map<std::string, Image> vs;
   Bytes theme_pac;  // its own VS theme (the vs pictures go into it)
   Bytes kept_pac;   // the opened mod's arena.pac, unedited since: written as it is
@@ -242,6 +242,7 @@ bool PrepareBuild(BuildJob& job) {
   editor::ApplyBuild(*job.arena);
   job.banner = g_proj.banner.image;
   job.load = g_proj.load.image;
+  job.card = g_proj.card.image;
   job.vs = g_proj.vs;
   job.theme_pac = g_proj.theme_pac;
   if (!g_proj.opened_pac.empty() && g_proj.opened_edits >= 0 && editor::EditCount() == g_proj.opened_edits)
@@ -258,6 +259,8 @@ bool PrepareBuild(BuildJob& job) {
                  (g_proj.source.empty() ? std::string() : "source=" + g_proj.source + "\n") +
                  (g_proj.theme_pac.empty() ? std::string() : "vs_theme=" + g_proj.theme_label + "\n") +
                  (g_proj.theme_pac.empty() || g_proj.theme_font.empty() ? std::string() : "vs_font=" + g_proj.theme_font + "\n") +
+                 (g_proj.city[0] ? std::string("city=") + g_proj.city + "\n" : std::string()) +
+                 (g_proj.crowd_area[0] ? std::string("crowd_area=") + g_proj.crowd_area + "\n" : std::string()) +
                  editor::ManifestLines();
   return true;
 }
@@ -271,6 +274,7 @@ bool FinishBuild(BuildJob& job, std::vector<ZipEntry>& files) {
     files.push_back({"arena.pac", std::move(job.kept_pac)});
     files.push_back({"banner.dds", DdsEncode(job.banner, DxtFormat::kDxt5, false)});
     if (job.load.w) files.push_back({"load.dds", DdsEncode(job.load, DxtFormat::kDxt5, false)});
+    if (job.card.w) files.push_back({"card.dds", DdsEncode(job.card, DxtFormat::kDxt5, false)});
     if (!job.theme_pac.empty()) {
       files.push_back({"vs/theme.pac", BakeTheme(job.theme_pac, job.vs)});
       return true;
@@ -307,6 +311,7 @@ bool FinishBuild(BuildJob& job, std::vector<ZipEntry>& files) {
   }
   files.push_back({"banner.dds", DdsEncode(job.banner, DxtFormat::kDxt5, false)});
   if (job.load.w) files.push_back({"load.dds", DdsEncode(job.load, DxtFormat::kDxt5, false)});
+  if (job.card.w) files.push_back({"card.dds", DdsEncode(job.card, DxtFormat::kDxt5, false)});
   if (!job.theme_pac.empty()) {  // its own VS theme, the replaced pictures in it
     Progress("The VS screen ...");
     files.push_back({"vs/theme.pac", BakeTheme(job.theme_pac, job.vs)});
@@ -448,10 +453,22 @@ bool LoadEditedArena(const Bytes& data, int host, int area, const std::string& m
 
 // ---- the mod type's name/author/version and the VS screen (shared tabs)
 
+// A title card logo: at most 512 x 256, its shape kept (the game fits it into each of the card's logo pictures).
+Image CardLogo(const Image& img) {
+  const float k = std::min({1.0f, 512.0f / float(std::max(1, img.w)), 256.0f / float(std::max(1, img.h))});
+  return k < 1.0f ? Resize(img, std::max(4, int(img.w * k)), std::max(4, int(img.h * k))) : img;
+}
+
 void DetailsFields() {
   TextField("Name", g_proj.name, sizeof g_proj.name, g_proj.backstage >= 0 || g_page == PageId::kBackstage ? "the mod's name" : "the arena's name on the select page");
   TextField("Author (optional)", g_proj.author, sizeof g_proj.author);
   TextField("Version (optional)", g_proj.version, sizeof g_proj.version, "1.0");
+  if (g_proj.backstage < 0 && g_page != PageId::kBackstage)
+    TextField("City (optional)", g_proj.city, sizeof g_proj.city, "the entrance title card's city, e.g. PITTSBURGH, PA");
+  if (g_proj.backstage < 0 && g_page != PageId::kBackstage)
+    TextField("Crowd area (optional)", g_proj.crowd_area, sizeof g_proj.crowd_area,
+              "crowd fighting beyond the barricade (Extreme Rules): x0,z0,x1,z1 in the stage's x / z, e.g. 75,-135,190,-40 - "
+              "a player at the barricade there holds Y to climb in");
 }
 
 struct VsTexture {
@@ -607,7 +624,7 @@ void PickTheme(const std::string& game, const std::wstring& src, const std::stri
 
 // Test aid (--vs-test "<step>;<step>..."): the VS screen tab's steps on the opened mod, as its buttons do -
 // theme=<game>,<src>,<n>[,<label>] (Pick a theme), font=<game>,<src>,<n>[,<label>] (Font from another theme), replace=<picture>,<png>
-// (Replace...), version=<v>, save=<file.svrmod> (the mod made, then the Mod Maker closes; the log beside it).
+// (Replace...), version=<v>, city=<text>, crowd_area=<x0,z0,x1,z1>, card=<picture>, save=<file.svrmod> (the mod made, then the Mod Maker closes; the log beside it).
 std::vector<std::string> g_vs_test;
 size_t g_vs_test_at = 0;
 int g_vs_test_wait = 0;  // frames (an opened mod settles first)
@@ -635,6 +652,16 @@ void VsTestStep() {
     for (const auto& t : g_vs)
       if (t.name == p[0] && LoadPicture(Wide(p[1]), img)) g_proj.vs[t.name] = Resize(img, t.w, t.h), Touch();
     if (!g_proj.vs.count(p[0])) Log("vs test: no picture " + p[0]);
+  } else if (what == "card") {
+    Image img;
+    if (LoadPicture(Wide(arg), img)) g_proj.card.Set(CardLogo(img)), Touch();
+    else Log("vs test: no picture " + arg);
+  } else if (what == "city") {
+    std::snprintf(g_proj.city, sizeof g_proj.city, "%s", arg.c_str());
+    Touch();
+  } else if (what == "crowd_area") {
+    std::snprintf(g_proj.crowd_area, sizeof g_proj.crowd_area, "%s", arg.c_str());
+    Touch();
   } else if (what == "version") {
     std::snprintf(g_proj.version, sizeof g_proj.version, "%s", arg.c_str());
     Touch();
@@ -932,6 +959,27 @@ void DetailsTab() {
   } else {
     g_proj.load.Draw(512 * g_scale, 256 * g_scale);
   }
+  ImGui::Spacing();
+  ImGui::TextDisabled("Entrance title card logo (the show's logo on the card as the entrances start; transparent PNG)");
+  if (ImGui::Button("Card logo picture...", ImVec2(220 * g_scale, 0))) {
+    const std::wstring f = PickFile(false, L"Title card logo (a transparent picture)", kPictureFilter, 1);
+    Image img;
+    if (!f.empty() && LoadPicture(f, img)) {
+      g_proj.card.Set(CardLogo(img));
+      Touch();
+      Log("Title card logo set from " + Utf8(f));
+    }
+  }
+  if (!g_proj.card.Empty()) {
+    ImGui::SameLine();
+    if (ImGui::SmallButton("x##card")) g_proj.card.Clear(), Touch();
+  }
+  if (g_proj.card.Empty()) {
+    ImGui::SameLine();
+    ImGui::TextDisabled("none: the card shows the logo of the arena it plays in place of");
+  } else {
+    g_proj.card.Draw(float(g_proj.card.image.w) * g_scale, float(g_proj.card.image.h) * g_scale);
+  }
 }
 
 // Backstage: the area-of-its-own settings (row=, gimmick=, box=, camera=, camera_height=).
@@ -1149,6 +1197,8 @@ bool ReadModOrProject(const ProjectIn& in, bool mod) {
   g_proj.id = mod ? in.Get("id") : in.Get("mod_id");  // (a mod's own id; a project: the mod it came from)
   std::snprintf(g_proj.author, sizeof g_proj.author, "%s", in.Get("author").c_str());
   std::snprintf(g_proj.version, sizeof g_proj.version, "%s", in.Get("version").c_str());
+  std::snprintf(g_proj.city, sizeof g_proj.city, "%s", in.Get("city").c_str());
+  std::snprintf(g_proj.crowd_area, sizeof g_proj.crowd_area, "%s", in.Get("crowd_area").c_str());
   if (!g_proj.version[0]) std::snprintf(g_proj.version, sizeof g_proj.version, "1.0");
   g_proj.vs.clear();
   for (const auto& e : in.files)
@@ -1168,6 +1218,10 @@ bool ReadModOrProject(const ProjectIn& in, bool mod) {
   if (const ZipEntry* l = in.Find("load.dds")) {
     Image img;
     if (DdsDecode(l->data, img)) g_proj.load.Set(std::move(img));
+  }
+  if (const ZipEntry* l = in.Find("card.dds")) {
+    Image img;
+    if (DdsDecode(l->data, img)) g_proj.card.Set(std::move(img));
   }
   g_proj.fbx = in.Get("fbx");
   for (int i = 0; !mod && i < 999; ++i) {  // (Simple arena's crowd signs: projects only)
@@ -1212,6 +1266,8 @@ void WriteProject(ProjectOut& out) {
   out.Key("name", g_proj.name);
   out.Key("author", g_proj.author);
   out.Key("version", g_proj.version);
+  out.Key("city", g_proj.city);
+  out.Key("crowd_area", g_proj.crowd_area);
   if (g_proj.backstage >= 0) out.Key("area", g_proj.backstage);
   else if (g_proj.arena >= 0) out.Key("base", g_arenas[g_proj.arena].banner), out.Key("tile", g_proj.arena);
   out.Key("fbx", g_proj.fbx);
@@ -1233,6 +1289,7 @@ void WriteProject(ProjectOut& out) {
   if (!out.keys_only) {  // (the pictures: files, not keys)
     if (!g_proj.banner.Empty()) out.files.push_back({"banner.dds", DdsEncode(g_proj.banner.image, DxtFormat::kDxt5, false)});
     if (!g_proj.load.Empty()) out.files.push_back({"load.dds", DdsEncode(g_proj.load.image, DxtFormat::kDxt5, false)});
+    if (!g_proj.card.Empty()) out.files.push_back({"card.dds", DdsEncode(g_proj.card.image, DxtFormat::kDxt5, false)});
     if (!g_proj.theme_pac.empty())  // (its own theme, the replaced pictures baked in)
       out.files.push_back({"vs/theme.pac", BakeTheme(g_proj.theme_pac, g_proj.vs)});
     else

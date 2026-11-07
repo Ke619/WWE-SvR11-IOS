@@ -16,10 +16,10 @@ Exit codes: 0 ok, 2 bad input, 3 conversion failed.
   converted motions) and hctp.txt (tools/hctp/build_room.py; docs/HCTP_BACKSTAGE.md). Each item is its own
   row in the BACKSTAGE list. Needs the player's 2011 pac/bg/bg78.pac and pac/gm.pac (--pac11).
   The worlds (hctpworld, hctpfountain) are several rooms in one row that the wrestlers walk between
-  through HCTP's doors (tools/hctp/build_world.py). hctpworld is the whole backstage, rooms 30-35 (about 625
-  stage meshes: since 2.1.5 a stage over the game's vertex window is placed elsewhere - src/model_mem.cpp,
-  sub_8215A380; before, ~400 meshes crashed the load and it was two worlds). hctpfountain (34 + 35) is kept
-  for the rows already installed.
+  through HCTP's own gates (tools/hctp/build_world.py: HCTP's move points, where they lead and the exit acts).
+  hctpworld is the backstage as HCTP has it, rooms 30-34; hctpfountain is HCTP's other one, where Fountain
+  Square (35) takes the place of Outside the Arena (34): 35, 31, 30 and 32 (Times Square, 33, is only
+  reached from 34). Since 2.1.5 a stage over the game's vertex window is placed elsewhere (src/model_mem.cpp).
 """
 import argparse
 import json
@@ -49,16 +49,18 @@ HCTP_ROOMS = {
 }
 # world item -> (row name, rooms - the first is where the match starts, about)
 HCTP_WORLDS = {
-    'hctpworld': ('HCTP Backstage', (30, 31, 32, 33, 34, 35),
-                  'Back Entrance, Parking Lot, Training Room, Times Square, Outside the Arena and Fountain Square '
-                  'in one: walk through the doors'),
-    'hctpfountain': ('HCTP Fountain Square', (34, 35), 'Outside the Arena and Fountain Square in one: walk through the doors'),
+    'hctpworld': ('HCTP Backstage', (30, 31, 32, 33, 34),
+                  'Back Entrance, Parking Lot, Training Room, Outside the Arena and Times Square in one: walk '
+                  'to a door and press Y, as in HCTP'),
+    'hctpfountain': ('HCTP Fountain Square', (35, 31, 30, 32),
+                     'Fountain Square, Parking Lot, Back Entrance and Training Room in one: walk to a door and '
+                     'press Y, as in HCTP'),
 }
 
 
 def worlds_on():
-    """The walkable worlds aren't in a release yet (not in 2.1.4): offered only with SVR2011_HCTP_WORLDS=1."""
-    return os.environ.get('SVR2011_HCTP_WORLDS') == '1'
+    """The walkable worlds are offered as a beta (HCTP's gates: 2.1.6); SVR2011_HCTP_WORLDS=0 hides them."""
+    return os.environ.get('SVR2011_HCTP_WORLDS') != '0'
 
 
 class BadInput(Exception):
@@ -85,7 +87,7 @@ def hctp_list(disc):
     stg = {name for (g, name) in hctp_unpack.dpac(disc.read('PAC/BG.PAC', 0, 0x4000)) if g == 'STG'}
     return ([{'key': 'hctp%d' % r, 'name': n, 'room': r, 'about': about, 'status': 'ready' if '%04d' % r in stg else 'missing'}
              for r, (n, about) in sorted(HCTP_ROOMS.items())] +
-            [{'key': k, 'name': n, 'rooms': list(rs), 'about': about,
+            [{'key': k, 'name': n, 'rooms': list(rs), 'about': 'BETA - ' + about, 'beta': True,
               'status': 'ready' if all('%04d' % r in stg for r in rs) else 'missing'}
              for k, (n, rs, about) in HCTP_WORLDS.items() if worlds_on()])
 

@@ -17,7 +17,7 @@ $zip   = Join-Path $port "out\$name.zip"
 
 Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $stage | Out-Null
-$files = @("svr2011.exe", "SvR2011 Launcher.exe", "SvR2011 Updater.exe", "rexruntime.dll", "rexgpu-xenos.dll")
+$files = @("svr2011.exe", "SvR2011 Launcher.exe", "SvR2011 Updater.exe", "rexruntime.dll", "rexgpu-xenos.dll", "rexffmpeg.dll", "rexmspack.dll")
 foreach ($f in $files) {
     $src = Join-Path $build $f
     if (-not (Test-Path $src)) { throw "$f is missing from $build - build first" }
@@ -32,12 +32,12 @@ if ($WithModMaker) {
     New-Item -ItemType Directory -Force $mmtools | Out-Null
     foreach ($t in @("svrfmt.py", "jboy.py", "ch_tool.py", "svr10_char.py", "svr10_bruise.py", "svr10_moves.py",
                      "svr10_superstar.py", "movepack.py", "w13_char.py", "svr08_stage.py", "svr08_gimmick.py",
-                     "discfs.py", "arena_port.py",
+                     "discfs.py", "dlc_src.py", "stfs.py", "arena_port.py", "vs_port.py", "vs_renders.py", "crowd_walkway.py",
                      # the Port page's converters (Mod Maker 3 contract) and what they import / read
                      "superstar_port.py", "abilities_port.py", "ratings_port.py", "ps2_records.py", "ps2_moves.py", "prop_bones.py", "prop_bones_stock.json", "svr08_char.py", "entrance_port.py", "ymks.py", "svr08_entrance.py",
                      "hctp_entrance.py", "hctp_motion.py", "svr10_entrance.py", "wwe13_entrance.py", "w13_retarget.py",
-                     "w13_skeletons.py", "yanm_decode.py", "belt_port.py", "weapon_port.py", "reskin_port.py",
-                     "moves_port.py", "ymbs.py", "ymbs_retarget.py", "attire_port.py", "pro_slots.json", "announcer_calls.json", "bink2_convert.py",
+                     "w13_skeletons.py", "yanm_decode.py", "belt_port.py", "weapon_port.py", "reskin_port.py", "title_port.py",
+                     "moves_port.py", "dlc_move_ids.json", "ymbs.py", "ymbs_retarget.py", "attire_port.py", "pro_slots.json", "announcer_calls.json", "bink2_convert.py",
                      "wwe13_pack.py", "arena_tool.py", "arena_names.py",  # (imports checked transitively: arena_port needs these; arena_names since the named arena lists)
                      "ps2_entrance.py", "sym_entrance.py", "svr06_entrance.py", "jbi_entrance.py",  # (entrance_port: PS2 discs, SYM, SvR 2006, JBI)
                      "hand_tracks.py", "svr06_hands.py", "finger_retarget.py",  # (entrance_port: finger tracks)
@@ -95,6 +95,11 @@ if ($WithModMaker) {
         $vdst = Join-Path $mmtools "vgmstream"
         New-Item -ItemType Directory -Force $vdst | Out-Null
         Get-ChildItem $vgm -File | Copy-Item -Destination $vdst   # (VERSION.txt too: where it came from + its SHA-256)
+        # (the exe won't start without a libg719_decode.dll, and no game audio we convert uses G.719: our stand-in,
+        # modmaker\g719_stub.c, in place of the release's)
+        $g719 = Join-Path $port "out\modmaker\g719\libg719_decode.dll"
+        if (-not (Test-Path $g719)) { throw "no $g719 - build it in this checkout (bash port/modmaker/build_cli.sh)" }
+        Copy-Item -Force $g719 $vdst
     } else {   # (2.1.0 shipped without it: WWE '12+ themes didn't convert)
         throw "no $vgm\vgmstream-cli.exe - WWE '12+ themes won't convert. Copy the vgmstream release (vgmstream-cli.exe, its DLLs and VERSION.txt) from the main checkout's port\third_party\vgmstream into $vgm, then package again."
     }
@@ -103,6 +108,9 @@ if ($WithModMaker) {
     if (Test-Path $cli) { Copy-Item $cli $mmtools } else {   # (2.1.0 shipped without it: "ToolMissing: svrmod.exe")
         throw "no $cli - the Mod Maker's converters need it (WWE '13+ ports fail with ToolMissing: svrmod.exe). Build it in this checkout (bash port/modmaker/build_cli.sh -> port\out\modmaker\svrmod.exe), then package again."
     }
+    # (svrmod.exe doesn't start without its LZX decoder beside it)
+    $cliDll = Join-Path $port "out\modmaker\rexmspack.dll"
+    if (Test-Path $cliDll) { Copy-Item $cliDll $mmtools } else { throw "no $cliDll - svrmod.exe won't start without it. Build it with bash port/modmaker/build_cli.sh, then package again." }
     # the guide (pictures, diagrams, tutorials): docs/guide -> "Mod Maker Guide"
     $guide = Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) "docs\guide"
     if (Test-Path $guide) { Copy-Item $guide (Join-Path $stage "Mod Maker Guide") -Recurse }
@@ -115,7 +123,7 @@ $vcrt = @("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140_at
 Get-ChildItem $build -Filter "*.dll" | Where-Object { $files -notcontains $_.Name -and $vcrt -notcontains $_.Name.ToLower() } |
     Copy-Item -Destination $stage
 Copy-Item (Join-Path $port "dist\Read Me.txt") $stage
-Copy-Item (Join-Path $port "dist\Third-party notices.txt") $stage   # (AMD FSR 1 / FSR 2: MIT)
+Copy-Item (Join-Path $port "dist\Third-party notices.txt") $stage   # (credits and licence texts; the APK carries it too: build_apk.py)
 # NVIDIA DLSS (experimental): a build with the DLSS SDK (CMake SVR2011_DLSS_SDK) has nvngx_dlss.dll beside the exe -
 # copied above with the other DLLs. It ships only in this zip, never in the repository, with NVIDIA's licence
 # (the RTX SDKs licence from the same SDK folder) beside it.

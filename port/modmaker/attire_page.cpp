@@ -46,6 +46,9 @@ void Editor();
 void RunEditorTest();
 AttireProject g_at;
 std::wstring g_test_save;
+int g_test_from = 0;          // (--attire-from: which of the source's attires)
+std::wstring g_use_star;      // (UseStarMod: taken in on the next frame)
+std::string g_test_name;      // (and the attire's name)
 struct {
   int star = -1;
   std::wstring model;
@@ -54,25 +57,37 @@ struct {
 } g_test;
 
 fs::path StockPac(int id) { return fs::path(g_game) / L"pac" / L"ch" / (L"ch" + std::to_wstring(id) + L".pac"); }
+// A superstar's model pacs: the game's pac\ch\chNNN.pac (disc superstars) and the installed DLC's ch<id>_dlcNN.pac
+// (a DLC superstar's own, DLC attires of disc superstars) - the game counts both as their own attires.
+std::vector<fs::path> ModelPacs(int id) {
+  std::vector<fs::path> out;
+  if (id >= 100) out.push_back(StockPac(id));
+  for (const auto& p : DlcModelPacs(id)) out.push_back(p);
+  return out;
+}
 
 // The superstar's attires now: its model pac's EMD entries "%06d%02d" (attire * 10 + kind; kind 2 = a model).
 std::vector<int> CurrentAttires(int id) {
   static std::map<int, std::vector<int>> cache;
   if (cache.count(id)) return cache[id];
   std::vector<int> out;
-  PacIndex idx;
-  if (ReadPacIndex(StockPac(id), idx))
-    for (const auto& e : idx.entries)
-      if (e.group == "EMD " && e.name.size() == 8 && e.name[7] == '2') {
-        const int a = (e.name[6] - '0') + 1;
-        if (a >= 1 && a <= 4 && std::find(out.begin(), out.end(), a) == out.end()) out.push_back(a);
-      }
+  char want[8];
+  std::snprintf(want, sizeof want, "%06d", id);
+  for (const fs::path& pac : ModelPacs(id)) {  // (the game's pac and the DLC's: a DLC superstar has only those)
+    PacIndex idx;
+    if (ReadPacIndex(pac, idx))
+      for (const auto& e : idx.entries)
+        if (e.group == "EMD " && e.name.size() == 8 && e.name.compare(0, 6, want) == 0 && e.name[7] == '2') {
+          const int a = (e.name[6] - '0') + 1;
+          if (a >= 1 && a <= 4 && std::find(out.begin(), out.end(), a) == out.end()) out.push_back(a);
+        }
+  }
   std::sort(out.begin(), out.end());
   return cache[id] = out;
 }
 
 std::string ModId() {
-  const StarInfo* s = StarById(g_at.star);
+  const StarInfo* s = StarOrDlcById(g_at.star);
   return IdFrom(std::string(g_at.name[0] ? g_at.name : "attire") + "_" + (s ? s->name : std::to_string(g_at.star)), "attire");
 }
 
@@ -167,9 +182,10 @@ bool EntranceGear(int star) {
   bool gear = false;
   char id[8];
   std::snprintf(id, sizeof id, "%06d", star);
-  if (ReadPacIndex(fs::path(g_game) / L"pac" / L"ch" / (L"ch" + std::to_wstring(star) + L".pac"), idx))
-    for (const auto& e : idx.entries)
-      if (e.group == "EMD " && e.name.size() == 8 && e.name.compare(0, 6, id) == 0 && e.name[6] == '0' && e.name[7] != '2') gear = true;
+  for (const fs::path& pac : ModelPacs(star))
+    if (ReadPacIndex(pac, idx))
+      for (const auto& e : idx.entries)
+        if (e.group == "EMD " && e.name.size() == 8 && e.name.compare(0, 6, id) == 0 && e.name[6] == '0' && e.name[7] != '2') gear = true;
   return cache[star] = gear;
 }
 std::string GearText(const std::string& star, size_t own) {
@@ -297,7 +313,7 @@ void Problems(std::vector<Problem>& p) {
       p.push_back(Error("The superstar already has 4 attires - the game's limit.", "Replace one of them instead."));
     const auto mods = ModAttires(g_at.star);
     const int next = NextFreeAttire(g_at.star);
-    const StarInfo* who = StarById(g_at.star);
+    const StarInfo* who = StarOrDlcById(g_at.star);
     const std::string star = who ? who->name : "superstar " + std::to_string(g_at.star);
     const bool gear = EntranceGear(g_at.star);
     const bool own_slot = g_at.slot && std::find(now.begin(), now.end(), g_at.slot) != now.end();
@@ -330,15 +346,21 @@ void Problems(std::vector<Problem>& p) {
 
 void Draw() {
   if (!g_ed_test.empty()) RunEditorTest();
+  if (!g_use_star.empty()) {
+    TakeStarSource(g_use_star);
+    g_use_star.clear();
+  }
   if (g_test.pending) {
     g_test.pending = false;
     g_at.star = g_test.star, g_at.slot = g_test.slot;
     if (Lower(FileName(g_test.model)).ends_with(".pac")) {
       g_at.model = g_test.model;
-      std::snprintf(g_at.name, sizeof g_at.name, "TEST GEAR");
+      std::snprintf(g_at.name, sizeof g_at.name, "RING GEAR");
     } else {
       TakeStarSource(g_test.model);  // (a superstar mod: an installed folder, a .svrmod or a project)
     }
+    if (g_test_from > 0) g_at.from = g_test_from;
+    if (!g_test_name.empty()) std::snprintf(g_at.name, sizeof g_at.name, "%s", g_test_name.c_str());
   }
   if (!g_test_save.empty() && g_at.star >= 0 && !g_at.model.empty()) {
     std::vector<ZipEntry> files;
@@ -351,10 +373,14 @@ void Draw() {
   Problems(problems);
   ImGui::BeginChild("attire_body", ImVec2(ImGui::GetContentRegionAvail().x * 0.58f, -48 * g_scale), false);
   const auto& stars = Stars();
-  const StarInfo* who = StarById(g_at.star);
+  const StarInfo* who = StarOrDlcById(g_at.star);
   ImGui::SetNextItemWidth(320 * g_scale);
   if (ImGui::BeginCombo("Superstar", who ? who->name.c_str() : g_at.star >= 0 ? std::to_string(g_at.star).c_str() : "(pick one)")) {
     for (const auto& s : stars)
+      if (ImGui::Selectable((s.name + "##" + std::to_string(s.id)).c_str(), g_at.star == s.id)) g_at.star = s.id, g_at.slot = EntranceGear(s.id) ? 1 : 0, Touch();
+    // (the installed DLC's superstars: their attires are in the DLC packages - the game replaces / adds them the same way)
+    if (!DlcStars().empty()) ImGui::SeparatorText("DLC");
+    for (const auto& s : DlcStars())
       if (ImGui::Selectable((s.name + "##" + std::to_string(s.id)).c_str(), g_at.star == s.id)) g_at.star = s.id, g_at.slot = EntranceGear(s.id) ? 1 : 0, Touch();
     ImGui::EndCombo();
   }
@@ -382,7 +408,7 @@ void Draw() {
     }
     const int next = NextFreeAttire(g_at.star);
     if (gear) {
-      const StarInfo* w = StarById(g_at.star);
+      const StarInfo* w = StarOrDlcById(g_at.star);
       ImGui::PushTextWrapPos(0);
       ImGui::TextColored(ImVec4(1, 0.8f, 0.35f, 1), "%s", GearText(w ? w->name : std::to_string(g_at.star), now.size()).c_str());
       ImGui::PopTextWrapPos();
@@ -706,6 +732,8 @@ void TestStart(int star, const std::wstring& model, int slot, const std::wstring
   g_test_save = save;
 }
 void TestKeepEntrance() { g_keep_entrance = true; }
+void TestFrom(int from, const std::string& name) { g_test_from = from, g_test_name = name; }
+void UseStarMod(const std::wstring& src) { g_use_star = src; }
 
 PageHooks hooks = {
     "attire", Draw, Problems, Reset, StateText, WriteProject,

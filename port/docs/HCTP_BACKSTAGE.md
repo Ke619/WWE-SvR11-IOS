@@ -137,9 +137,10 @@ pad) by the forklift (31) / under the helicopter (33).
 ## The HCTP backstage as walkable worlds (2026-10-20, branch hctp-full)
 
 `tools/backstage_port.py convert --item hctpworld` (Back Entrance, Parking Lot, Training Room, Times Square,
-Outside the Arena) and `--item hctpfountain` (Outside the Arena, Fountain Square) build one backstage row each
-whose rooms the fighters walk between through HCTP's doors (`tools/hctp/build_world.py <unpacked> <pac11>
-<work> <mod> [rooms]`; the first room is where the match starts).
+Outside the Arena) and `--item hctpfountain` (Fountain Square, Parking Lot, Back Entrance, Training Room) build
+one backstage row each whose rooms the fighters walk between through HCTP's own gates (`tools/hctp/build_world.py
+<unpacked> <pac11> <work> <mod> [rooms]`; the first room is where the match starts). Both are offered as a BETA
+(the Mod Maker's Backstage page lists them; `SVR2011_HCTP_WORLDS=0` hides them) and need 2.1.6.
 - Limits found: 2011 loads ~400 stage meshes at most (stock bg78 445 with its characters' share; 5 rooms =
   ~400 load, 6 = 625 fail in the stage loader sub_826E73F8 - the null comes from allocator 128's physical
   window 0x15140000-0x16230000, ~17 MB, shared with the stage textures and the gimmick package; texture bytes
@@ -156,20 +157,48 @@ whose rooms the fighters walk between through HCTP's doors (`tools/hctp/build_wo
   its own first key (31: 13000, 32: 13100, 33: 13200, 34: 13300, 35: 13400; room 30's are in bank_h3).
 - hctp.txt: `room <n> <model lo> <hi> <object lo> <hi> <object act key> <x0> <x1> <z0> <z1> <tri lo> <hi>
   <spot lo> <hi>` before each room's lines (triangles after stage_wrap's dummies: k + k // 255), `door <id>
-  <to> <x> <y> <z> <entry x> <entry z> <entry yaw>` and `spawn <model> <x> <y> <z>` (weapons put down on the
-  room's first visit; the first room's are the manifest's weapons=). HCTP's move points (50000.txt `m`, ids
-  201-210) pair 202-203, 204-205, 206-207, 208-209, 210-201: Back Entrance (30) is the hub (Training Room 32,
-  Parking Lot 31, Times Square 33), Parking Lot -> Outside the Arena (34) -> Fountain Square (35). The trigger
-  is 8 in from the move point, the entry 30 in.
+  <to> <x> <y> <z> <exit act> <way out> <x,z;x,z;... 8 spots> <way in>` (older builds: `<entry x> <entry z>
+  <entry yaw>`) and `spawn <model> <x> <y> <z>` (weapons put down on the room's first visit; the first room's
+  are the manifest's weapons=).
+- HCTP's gates (SLES_520.36, `tools/hctp/re/gate/`: CGate4 / CMoveStage disassembly and gate_tables.py): each
+  stage 50000.txt `m` point (id at weapon +0x30) is a gate. g_stg_audi_list (0x419FB0, 2 bytes per id) gives
+  the stage it leads to (0 = the arena) and the point there you come in at; bord_group_list+0x10 (0x419F90,
+  s16 per id) the exit act. CGate4::Action (backstage rules only, not in the first 300 frames, 209 only once
+  hide item 11 is unlocked): a wrestler on his feet within 10 of the point on x, y and z who presses the action
+  button (pad 0x80; the CPU too) while walking. CMoveStage plays the exit act on him at the point, the others
+  stand (act 0), then loads the stage; Rear puts wrestler i at the entry point + its rotation of
+  (offx[i], 0, offz[i] - 33), offx -9 9 -9 9 -12 12 0 14, offz 8 8 -8 -8 0 0 0 -10. CGate4::Draw draws a lit
+  marker, no text.
+
+  | gate (room) | leads to | exit act |   | gate (room) | leads to | exit act |
+  |---|---|---|---|---|---|---|
+  | 201 (30) | arena 200 | 15919 | | 206 (31) | 207 (34) / 208 (35) | 15919 |
+  | 202 (30) | 203 (32) | 15900 | | 207 (34) | 206 (31) | 15919 |
+  | 203 (32) | 202 (30) | 15907 | | 208 (35) | 206 (31) | 15919 |
+  | 204 (30) | 205 (31) | 15902 | | 209 (34) | 210 (33) | 15909 |
+  | 205 (31) | 204 (30) | 15902 | | 210 (33) | 209 (34) | 15909 |
+
+  Fountain Square (35) is never next to Outside the Arena (34): 35 takes 34's place when the match started
+  in stage 0x16 / 0x17 (31's gate 206 then leads to 35's 208) - hence two worlds, and Times Square (33, only
+  through 34's 209) isn't in the fountain one. The exit acts (HCTP MOT_GAME/00004.bin 15900-15919) are in the
+  world bank as 12900 + n. 201 (back to the arena) has no room here.
 - Game (hctp_room.cpp): after each CFRS update (match_types.cpp hook) only the current room's models
   (sub_8252FF40) and its records' objects (sub_824B4198) are shown; the other rooms' collision triangles are
   lifted away (as DropCollision) and their climb spots inactive (sub_824B8FE0); only its props run. A player at a
-  door (within 22, on his feet: motion 0 / stance 20 / walking / running) sees the prompt "<Y> GO TO <room>"
-  (DoorPromptOverlay, match_hud.h's panel; the button as his pad names it: Y, TRIANGLE or his keybind_y key)
-  and goes through with Y (HCTP's way); a CPU (port char+1152 >= 4) walks or runs into one for 30 frames
-  (its AI chasing - CPU-vs-CPU keeps changing rooms); ROOF=walkin gives players the walk-in too. Either
-  takes every fighter through (in HCTP the opponent came along): placed side by side at the other
-  door's entry, the fight box moved to that room (SetFightBox), the camera's eye put at the framed target +
+  gate (within 10 on each axis in HCTP, 16 across here: 2011's walls keep him 12 from room 30's roof gate;
+  an older door line: within 22, 4 up or down; on his feet: motion 0 /
+  stance 20 / walking / running) sees the prompt "<Y> GO TO <room>" (DoorPromptOverlay, match_hud.h's panel;
+  the button as his pad names it: Y, TRIANGLE or his keybind_y key) and goes through with Y; a CPU (port
+  char+1152 >= 4) walks or runs into one for 30 frames (its AI chasing - CPU-vs-CPU keeps changing rooms);
+  ROOF=walkin gives players the walk-in too. He plays the gate's exit act there facing out (held placement at
+  the point; through once his motion is no longer the act or its frames have played - the act holds its last
+  frame - at once if the bank lacks it; the others get act 0 and are kept where they stood meanwhile - HCTP
+  stops the pads; the acts' screen fade, event op 18, is dropped by hctp2ymks.py: HCTP's next stage load fades
+  back in, 2011 stayed black - DoorPromptOverlay draws the fade instead: black over the act's last 20 frames,
+  back in over 20 in the new room),
+  then every fighter goes through (in HCTP the opponent came along): fighter i at the other gate's spot i
+  (older lines: side by side at its entry), the fight box moved to that room (SetFightBox), the camera's eye
+  put at the framed target +
   its old offset for 30 views (SnapMatchCamera - moving the eye once didn't hold: the camera rebuilt it).
   A room's runtime state (later shows, taxis, poles, heli, forklift, what ShowRec hid) is kept while it is
   away. Test switches `SVR2011_TEST_HCTP_ROOF=tour`: a door every 6 seconds; `=door`: fighter 0 put on the first door's trigger 5 s in (walk with the scripted stick); `=fork` (room 31): fighter 0 gets on the forklift 5 s in; `SVR2011_TEST_HCTP_NOVIS=1 /

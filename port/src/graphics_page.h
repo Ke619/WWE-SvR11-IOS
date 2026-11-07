@@ -37,6 +37,9 @@ void InstallGraphicsPage(rex::ui::ImGuiDrawer* drawer, rex::ui::Window* window,
 // Fonts for the page (from the app's font setup; null: ImGui's default).
 void SetGraphicsPageFonts(ImFont* menu, ImFont* title);
 
+// One of the port's pages is up: the game gets no pad input.
+bool GuestPagesHoldInput();
+
 // Opens the page (any thread; the guest's menu hook).
 void OpenGraphicsPage();
 

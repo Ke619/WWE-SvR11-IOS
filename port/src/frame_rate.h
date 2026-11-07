@@ -58,6 +58,8 @@ int WorldPassesThisFrame();
 
 // A guest address in readable memory (a mapped, accessible page) - is a word a pointer?
 bool GuestReadable(uint32_t address);
+// Test aid (Windows): the hardware write watch of SVR2011_TEST_HW_WATCH on this guest word, from now on (once a run).
+void HwWatchOn(uint8_t* base, uint32_t guest);
 
 // Chooses the frame rate, at once (GRAPHICS -> FRAME RATE).
 void SetTargetFrameRate(int fps);
@@ -71,5 +73,9 @@ void WriteTiming(uint8_t* base, int fps);
 void LatencyOnPublish();
 // ... and a game swap reached the native renderer (OnPresent).
 void LatencyOnSwap();
+// The render command queue's fullest in a match since the last call, in % of its buffer (record 0 at queue +76: +4
+// units used, +8 units; a full buffer crashes the game - 27 Oct, six heavy superstars). Logged per match at its end
+// (model_mem.cpp).
+uint32_t RenderQueuePeakTake();
 
 }  // namespace svr2011

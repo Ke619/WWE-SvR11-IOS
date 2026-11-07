@@ -36,7 +36,8 @@ namespace {
 namespace fs = std::filesystem;
 
 constexpr uint32_t kSavePtr = 0x82E407B4, kUniverse = 0x364B4, kEntries = 16, kRivalry = 3616, kEntrySize = 24;
-constexpr uint32_t kPlaces = 150, kMax = 137, kRow = kPlaces + kMax;  // (137: the mod slots, superstar_mods.cpp)
+// (317: the mod slots, superstar_mods.cpp - 137 pool ids + big_roster's 323-502)
+constexpr uint32_t kPlaces = 150, kMax = 317, kRow = kPlaces + kMax;
 
 rex::memory::Memory* g_memory = nullptr;
 fs::path g_file;            // Saves\.universe\mods.bin
@@ -218,7 +219,7 @@ void InstallUniverseMods(rex::memory::Memory* memory, const fs::path& saves) {
       REXLOG_INFO("[svr2011] universe mods: side table moved to {}", g_file.string());
     }
   }
-  g_ids = SuperstarModIds();
+  g_ids = SuperstarModIds(false);  // (not the host's fetched ones)
   if (g_ids.size() > kMax) {
     REXLOG_WARN("[svr2011] universe mods: {} mods - the first {} take part in Universe", g_ids.size(), kMax);
     g_ids.resize(kMax);

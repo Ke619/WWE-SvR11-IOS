@@ -11,6 +11,7 @@
 param([Parameter(Position = 0)][string]$Action, [Parameter(Position = 1, ValueFromRemainingArguments = $true)][string[]]$Rest,
       [string]$Name = "online", [string]$Config = "test_config_online.toml", [string]$UserData = "", [string]$LogLevel = "info",
       [string]$Slot = "")
+$env:SVR2011_AUDIO_MUTE = "1"  # (test games stay muted even if their command line is lost)
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Drawing
 Add-Type @"

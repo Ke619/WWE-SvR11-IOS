@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <map>
@@ -33,6 +34,7 @@
 #include "cae_mod_motions.h"
 
 #include "generated/default/svr2011_init.h"
+#include "../modmaker/svrfmt/bytes.h"
 
 namespace {
 
@@ -49,16 +51,8 @@ std::map<int, std::string> g_ids;             // id -> file name (ASCII)
 std::set<std::string> g_pending;              // files being written (ReserveUserMovie)
 std::map<std::string, uint32_t> g_labels;     // label -> guest string
 
-uint32_t Rd32(uint8_t* base, uint32_t a) {
-  uint32_t v;
-  std::memcpy(&v, base + a, 4);
-  return __builtin_bswap32(v);
-}
+using svrfmt::Rd32, svrfmt::Wr32;
 int16_t Rd16(uint8_t* base, uint32_t a) { return int16_t(base[a] << 8 | base[a + 1]); }
-void Wr32(uint8_t* base, uint32_t a, uint32_t v) {
-  v = __builtin_bswap32(v);
-  std::memcpy(base + a, &v, 4);
-}
 
 // A path for the log (UTF-8).
 std::string Utf8(const std::filesystem::path& p) {
@@ -68,6 +62,19 @@ std::string Utf8(const std::filesystem::path& p) {
 
 bool Ascii(const std::wstring& s) {
   return std::all_of(s.begin(), s.end(), [](wchar_t c) { return c >= 32 && c < 127; });
+}
+
+// The same bytes (a copy).
+bool SameFile(const std::filesystem::path& a, const std::filesystem::path& b) {
+  std::error_code ec;
+  if (std::filesystem::file_size(a, ec) != std::filesystem::file_size(b, ec) || ec) return false;
+  std::ifstream fa(a, std::ios::binary), fb(b, std::ios::binary);
+  std::vector<char> x(65536), y(65536);
+  while (fa && fb) {
+    fa.read(x.data(), x.size()), fb.read(y.data(), y.size());
+    if (fa.gcount() != fb.gcount() || std::memcmp(x.data(), y.data(), size_t(fa.gcount()))) return false;
+  }
+  return true;
 }
 
 // Rescans the folder: ids for new .bik files, drops files that are gone.
@@ -94,6 +101,16 @@ void Refresh() {
     const std::string bik = e.path().stem().string() + ".bik";
     static std::set<std::string> no_decoder;  // (probed once per run)
     if (no_decoder.count(bik)) continue;
+    // (a mod's own .mp4 under that name - prepared first, superstar / media mods - plays, not this one: the
+    // launcher's Shrink movies made "<name>.mp4" here from the game's copy of the mod's .bik - its fallback, or its
+    // HD stub: a black movie - and this scan took the mod's tron over for good)
+    if (const auto mp4 = svr2011::HdMovieMp4(bik); !mp4.empty() && !std::filesystem::equivalent(mp4.parent_path(), g_folder, ec)) {
+      static std::set<std::string> told;
+      if (told.insert(bik).second)
+        REXLOG_INFO("user movies: {} left out - a mod's own movie plays under that name ({})", e.path().filename().string(),
+                    mp4.string());
+      continue;
+    }
     if (!svr2011::PrepareHdMovie(g_folder, bik, e.path())) no_decoder.insert(bik);
   }
   for (const auto& e : std::filesystem::directory_iterator(g_folder, ec)) {
@@ -115,6 +132,12 @@ void Refresh() {
       const bool usable = stem.find_first_not_of(L" ._-") != std::wstring::npos;
       const std::wstring plain = stem + L".bik";
       const auto to = g_folder / plain;
+      // (an older copy of a superstar mod's movie under its accented name, the plain-letters one there now: dropped)
+      if (usable && std::filesystem::exists(to, ec) && SameFile(to, p) && std::filesystem::remove(p, ec)) {
+        REXLOG_INFO("user movies: removed {} (the same as {})", Utf8(p.filename()), to.filename().string());
+        continue;
+      }
+      ec.clear();
       if (!usable || std::filesystem::exists(to, ec) || (std::filesystem::rename(p, to, ec), ec)) {
         REXLOG_WARN("user movies: skipping {} (use plain letters in the name)", Utf8(p.filename()));
         ec.clear();
@@ -302,13 +325,47 @@ REX_HOOK_RAW(sub_8287CFB0) {
   std::vector<uint8_t> out;
   const uint8_t* all = base + rows_at;
   out.insert(out.end(), all + (count - n) * kListItemSize, all + count * kListItemSize);
+  // (test aid: SVR2011_TEST_FAKE_REELS=1 keeps the empty reel slots, shown as saved - a full reel list)
+  static const bool fake_reels = std::getenv("SVR2011_TEST_FAKE_REELS") != nullptr;
   for (uint32_t i = 0; i < count - n; ++i) {
     const uint8_t* row = all + i * kListItemSize;
-    if (Rd32(base, rows_at + i * kListItemSize + 4) == 0) out.insert(out.end(), row, row + kListItemSize);
+    if (fake_reels) {
+      out.insert(out.end(), row, row + kListItemSize);
+      std::memset(&out[out.size() - kListItemSize + 4], 0, 4);
+    } else if (Rd32(base, rows_at + i * kListItemSize + 4) == 0) {
+      out.insert(out.end(), row, row + kListItemSize);
+    }
   }
   std::memcpy(base + rows_at, out.data(), out.size());
   Wr32(base, list, uint32_t(out.size() / kListItemSize));
   ctx.r3.u64 = reels + uint32_t(n);
+}
+
+// The sub-list's page: sub_8287FD08(menu) fills the rows of the page shown
+// (view = menu+380: page +276, rows a page +32; the widget menu+16) with
+// sub_8272C228(widget, page, row, item) and stops at the list's end - the
+// highlight reels were always 2 full pages, so the rows after it kept the
+// page shown before ("38 39 40" under 47 movies). Here: those rows hidden
+// (sub_8272C228 with no item hides a row).
+REX_EXTERN(__imp__sub_8287FD08);
+REX_HOOK_RAW(sub_8287FD08) {
+  const uint32_t menu = ctx.r3.u32;
+  __imp__sub_8287FD08(ctx, base);
+  const uint32_t view = Rd32(base, menu + 380);
+  if (!view) return;
+  auto call = ctx;
+  call.r3.u64 = view;
+  sub_8287BE70(call, base);  // (the row count, as sub_8287FD08 reads it)
+  const int32_t count = call.r3.s32;
+  const int32_t per_page = int32_t(Rd32(base, view + 32)), page = int32_t(Rd32(base, view + 276));
+  if (per_page <= 0 || per_page > 64 || page < 0) return;
+  for (int32_t row = std::max(0, count - page * per_page); row < per_page; ++row) {
+    call.r3.u64 = menu + 16;
+    call.r4.u64 = uint32_t(page);
+    call.r5.u64 = uint32_t(row);
+    call.r6.u64 = 0;
+    sub_8272C228(call, base);
+  }
 }
 
 // An entrance's movie -> the CREATE AN ENTRANCE menus (B16). Two loaders put
@@ -363,7 +420,9 @@ thread_local int t_page_movie = -1;
 REX_EXTERN(__imp__sub_8287E960);
 REX_HOOK_RAW(sub_8287E960) {
   const uint32_t slots = ctx.r3.u32, e = ctx.r4.u32;
+  svr2011::CaeLoadingEntrance(true);  // (the edited mod's own scene parts: "MOD: <name>" - cae_mod_motions.cpp)
   __imp__sub_8287E960(ctx, base);
+  svr2011::CaeLoadingEntrance(false);
   if (!g_memory || !slots || !e) return;
   const int id = uint16_t(Rd16(base, e + 14));
   if (id < kFirstId || id > kLastId) return;
@@ -385,6 +444,9 @@ REX_HOOK_RAW(sub_828823E0) {
   // (an entrance motion list missing the stored number - a removed mod's: a MISSING MOD row keeps it)
   if (ctx.r3.s32 < 0)
     if (const int row = svr2011::CaeMissingRow(ctx, base, list, value); row >= 0) ctx.r3.u64 = uint32_t(row);
+  // (a number several rows have: the edited mod's own row)
+  if (ctx.r3.s32 >= 0)
+    if (const int row = svr2011::CaePreferredRow(ctx, base, list, value); row >= 0) ctx.r3.u64 = uint32_t(row);
 }
 REX_EXTERN(__imp__sub_82875320);
 REX_HOOK_RAW(sub_82875320) {

@@ -99,7 +99,8 @@ IN-GAME OVERLAYS
 
 FILES
   svr2011.exe        the game
-  *.dll              runtime (ReXGlue) and GPU plugin (rexgpu-xenos.dll)
+  *.dll              runtime (ReXGlue), GPU plugin (rexgpu-xenos.dll), FFmpeg
+                     (rexffmpeg.dll) and LZX decoder (rexmspack.dll)
   native_shaders\    the native renderer's shaders (without them the game
                      uses the emulated renderer)
   svr2011.toml       settings
@@ -119,7 +120,8 @@ CREDITS
   Mod Maker Tools\vgmstream is vgmstream r2117 (https://github.com/vgmstream/vgmstream),
   which decodes the theme songs of WWE '12 and later for the superstar
   converter; its licence is Mod Maker Tools\vgmstream\COPYING, and its
-  *-vgmstream-*.dll files are FFmpeg libraries under the LGPL.
+  *-vgmstream-*.dll files are FFmpeg libraries under the LGPL. Its
+  libg719_decode.dll is the port's own stand-in, which decodes nothing.
 
 STATUS
   Preview. Menus, exhibition matches with entrances, Create modes (superstar,

@@ -740,17 +740,17 @@ void SourceRow() {
     ImGui::Separator();
     if (ImGui::Selectable("A disc image (.iso) ...")) {
       static const COMDLG_FILTERSPEC kIso[1] = {{L"Disc images (*.iso)", L"*.iso"}};
-      const std::wstring f = PickFile(false, L"A disc image (Xbox 360 / PS2)", kIso, 1);
-      if (!f.empty()) g_source = f, g_source_name = PathStr(fs::path(f).filename());
+      const std::wstring f = PickFile(false, L"A disc image (Xbox 360 / PS2)", kIso, 1, nullptr, nullptr, OtherGameStart());
+      if (!f.empty()) OtherGamePicked(f), g_source = f, g_source_name = PathStr(fs::path(f).filename());
     }
     if (ImGui::Selectable("A folder (an extracted disc) ...")) {
-      const std::wstring f = PickFolder(L"A folder with game files");
-      if (!f.empty()) g_source = f, g_source_name = PathStr(fs::path(f).filename());
+      const std::wstring f = PickFolder(L"A folder with game files", OtherGameStart());
+      if (!f.empty()) OtherGamePicked(f), g_source = f, g_source_name = PathStr(fs::path(f).filename());
     }
     ImGui::EndCombo();
   }
-  Hint(("Look inside this game, or straight inside your other WWE discs (Xbox 360 and PS2 disc images, nothing "
-        "extracted): the disc images in the disc folders (" + Utf8(DiscFolders()[0]) + " ...) are listed by game. "
+  Hint(std::string("Look inside this game, or straight inside your other WWE discs (Xbox 360 and PS2 disc images, nothing "
+        "extracted): the disc images in the disc folders are listed by game. "
         "WWE '13 and later pack most files with xcompress; they are unpacked when opened.").c_str());
   ImGui::SameLine();
   if (ImGui::SmallButton("Disc folders...")) {

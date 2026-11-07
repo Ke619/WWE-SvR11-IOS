@@ -53,6 +53,8 @@
 #include <rex/ui/imgui_dialog.h>
 
 #include "generated/default/svr2011_init.h"
+#include "../modmaker/svrfmt/bytes.h"
+#include "util.h"
 
 namespace {
 
@@ -81,22 +83,9 @@ std::atomic<int64_t> g_grid_seen{0};  // ms; the grid's last update (label)
 constexpr uint32_t kSlotScreenVtable = 0x82027C20, kSlotScreenMode = 260, kSlotScreenFile = 272;
 std::atomic<svr2011::PaintDownloadCheck> g_download_check{nullptr};
 
-uint32_t Rd32(const uint8_t* p) {
-  uint32_t v;
-  std::memcpy(&v, p, 4);
-  return __builtin_bswap32(v);
-}
-uint16_t Rd16(const uint8_t* p) { return uint16_t(p[0] << 8 | p[1]); }
-void Wr32(uint8_t* p, uint32_t v) {
-  v = __builtin_bswap32(v);
-  std::memcpy(p, &v, 4);
-}
+using svrfmt::Rd32, svrfmt::Rd16, svrfmt::Wr32;
 
-int64_t NowMs() {
-  return std::chrono::duration_cast<std::chrono::milliseconds>(
-             std::chrono::steady_clock::now().time_since_epoch())
-      .count();
-}
+using svr2011::NowMs;
 
 // The game's slot checksum (sub_827B3118; launcher pt_slot_sum): every field
 // of the slot added as the type the game reads it as. `b` = the slot's start

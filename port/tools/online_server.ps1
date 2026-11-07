@@ -12,7 +12,7 @@ if ($old) { Stop-Process -Id $old -Force; Start-Sleep 1 }
 if ($Action -eq "stop") { "stopped"; return }
 $python = "F:\ClaudeProjects\Project Index\venv\Scripts\python.exe"
 if (-not (Test-Path $python)) { $python = "python" }
-$a = @("`"$(Join-Path $port 'server\server.py')`"", "--host", "127.0.0.1", "--port", "8411",
+$a = @("`"$(Join-Path $port 'server\server.py')`"", "--host", "127.0.0.1", "--port", "8411", "--test-open-accounts",
        "--data", "`"$(Join-Path $data 'data')`"", "--log", "`"$(Join-Path $data 'server.log')`"")
 Start-Process $python -ArgumentList $a -WindowStyle Hidden | Out-Null
 for ($t = 0; $t -lt 40 -and -not (Get-NetTCPConnection -LocalPort 8411 -State Listen -ErrorAction SilentlyContinue); $t++) { Start-Sleep -Milliseconds 250 }

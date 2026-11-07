@@ -16,6 +16,7 @@
 #include <string>
 
 #include "svrfmt/archive.h"
+#include "svrfmt/arena_full.h"
 #include "svrfmt/arena.h"
 #include "svrfmt/arena_import.h"
 #include "svrfmt/jboy.h"
@@ -101,6 +102,19 @@ int Roundtrip(int argc, char** argv) {
 
 }  // namespace
 
+int ExportFull(const char* pac, const char* out) {
+  Arena a;
+  std::string err;
+  if (!a.Load(pac, &err)) { std::printf("%s: %s\n", pac, err.c_str()); return 1; }
+  ArenaFullReport rep;
+  const bool ok = ExportArenaFull(a, out, pac, rep);
+  std::printf("%s: %d objects (%d placed by motion, %d mirrored copies, %d ring parts, %d models not drawn left out), %d meshes, %d triangles, %d textures (%d failed), %d normal map links, %d lights (%d sets in lights.json)\n",
+              ok ? "exported" : "FAILED", rep.objects, rep.placed, rep.mirrored, rep.ring_parts, rep.not_drawn, rep.meshes, rep.triangles, rep.textures, rep.textures_failed,
+              rep.normal_maps, rep.lights, rep.light_sets);
+  for (const auto& w : rep.warnings) std::printf("  %s\n", w.c_str());
+  return ok ? 0 : 1;
+}
+
 int Export(const char* pac, const char* out) {
   Arena a;
   std::string err;
@@ -182,6 +196,20 @@ int Lights(const char* pac, const char* host_pac, const char* out) {
   for (int id : replaced) std::printf(" %d", id);
   std::printf("\n");
   return WriteFile(out, EpacWrite(e)) ? 0 : 1;
+}
+
+// tablelid <arena.pac> <out.pac>: the announce tables' black lid tinted (svrfmt LiftTableLids, as the WWE '13
+// converter does) - for arenas converted before it.
+int TableLid(const char* pac, const char* out) {
+  Arena a;
+  std::string err;
+  if (!a.Load(pac, &err)) { std::printf("%s: %s\n", pac, err.c_str()); return 1; }
+  const int n = LiftTableLids(a);
+  std::printf("lids tinted: %d\n", n);
+  if (!n) return 0;
+  const Bytes o = a.Save(&err);
+  if (o.empty()) { std::printf("save: %s\n", err.c_str()); return 1; }
+  return WriteFile(out, o) ? 0 : 1;
 }
 
 // move <arena.pac> <model name> <right m> <up m> <forward m> <yaw deg> <pitch deg> <roll deg> <out.pac> [vis]:
@@ -745,6 +773,15 @@ int main(int argc, char** argv) {
     return MakeMod(argv[2], argv[3], argv[4], argv[5], argv[6], argc == 8 ? argv[7] : nullptr);
   if (argc == 5 && !std::strcmp(argv[1], "ring")) return Ring(argv[2], argv[3], argv[4]);
   if (argc >= 5 && !std::strcmp(argv[1], "wwe13")) return Wwe13(argc, argv);
+  if ((argc == 4 || argc == 5) && !std::strcmp(argv[1], "wwe13prop")) {  // <entry> <out> [scale]: an entrance prop (entrance_port)
+    Bytes in, out;
+    std::string err;
+    if (!ReadFile(argv[2], in) || !ConvertProp13(in, out, argc == 5 ? float(std::atof(argv[4])) : 0.1f, &err)) {
+      std::printf("%s: %s\n", argv[2], err.c_str());
+      return 1;
+    }
+    return WriteFile(argv[3], out) ? 0 : 1;
+  }
   if (argc == 4 && !std::strcmp(argv[1], "xdec")) {
     Bytes in, out;
     std::string err;
@@ -758,10 +795,12 @@ int main(int argc, char** argv) {
   if (argc == 6 && !std::strcmp(argv[1], "obj-export")) return ObjExport(argv);
   if (argc == 4 && !std::strcmp(argv[1], "bpe")) return Bpe(argv[2], argv[3]);
   if ((argc == 11 || argc == 12) && !std::strcmp(argv[1], "move")) return Move(argc, argv);
+  if (argc == 4 && !std::strcmp(argv[1], "tablelid")) return TableLid(argv[2], argv[3]);
   if ((argc == 4 || argc == 5) && !std::strcmp(argv[1], "lights")) return Lights(argv[2], argv[3], argc == 5 ? argv[4] : nullptr);
   if (argc >= 3 && !std::strcmp(argv[1], "bpetest")) return BpeTest(argv[2], argc >= 4 ? argv[3] : nullptr);
   if (argc >= 3 && !std::strcmp(argv[1], "roundtrip")) return Roundtrip(argc - 2, argv + 2);
   if (argc == 4 && !std::strcmp(argv[1], "export")) return Export(argv[2], argv[3]);
+  if (argc == 4 && !std::strcmp(argv[1], "export-full")) return ExportFull(argv[2], argv[3]);
   if (argc == 4 && !std::strcmp(argv[1], "banner")) {
     // any picture -> the arena select banner: 256 x 128 DXT5, one level
     Image img;
@@ -854,6 +893,7 @@ int main(int argc, char** argv) {
     return 0;
   }
   std::printf("usage: svrmod roundtrip <file.pac>... | export <bgNN.pac> <out dir> | import <bgNN.pac> <fbx> <out.pac>\n"
-              "       | banner <picture> <out.dds> | bpe <raw> <out> | bpetest <file.pac> [out.pac]\n");
+              "       | banner <picture> <out.dds> | bpe <raw> <out> | bpetest <file.pac> [out.pac]\n"
+              "       | tablelid <arena.pac> <out.pac>\n");
   return 2;
 }

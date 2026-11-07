@@ -7,7 +7,10 @@ One aiohttp service with two halves:
                     game's GameSpy traffic here over HTTP(S), see
                     port/src/online.cpp); behind Project Index this is its
                     public mount, e.g. https://sho-ti.me/svr
-      api/register, api/login, api/logout     accounts (name + password)
+      api/register, api/login, api/logout     accounts (name + password; 2.1.6 sign-up needs an invite
+                                              code - signup.py)
+      api/account, api/reactivate, api/password/{reset,change}
+                                              the launcher's account steps (signup.py: codes only)
       api/session                             the game's login (profile, ticket)
       api/logo/<hash>, api/logos/wanted       the port's extra Superstar logos
       api/status                              is the server up
@@ -15,7 +18,8 @@ One aiohttp service with two halves:
       api/relay/<id>                          the online match relay (relay.py)
   /                 the admin dashboard: connections, bandwidth, storage,
                     players, uploads and accounts (Project Index admins, or
-                    anyone on this PC when run on its own)
+                    anyone on this PC when run on its own); the name filter's
+                    list (namefilter.py, docs/NAME_FILTER.md)
 
 Everything a player does is tied to their account (a bearer token from
 api/login): the game's own identities - its XUID, login ticket - are not
@@ -36,6 +40,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import sqlite3
 import sys
 import threading
@@ -53,8 +58,10 @@ import discovery
 import leaderboards
 import match_names
 import media
+import namefilter
 import relay
 import reports
+import signup
 import thumbs
 
 HERE = Path(__file__).resolve().parent
@@ -130,6 +137,21 @@ SETTINGS_SPEC = {
                               "relay = every match through this server's relay; p2p = matches directly only (the "
                               "relay just helps games find each other) - for when the server struggles. New "
                               "sessions follow it (games ask every 20 s); running matches keep theirs"},
+    # (signup.py: off until 2.1.6 is out - every account plays as before, old launchers sign up as before; the
+    # codes work, to get accounts ready. On: invite sign-up only, and online needs an active account - its sign-up
+    # or re-activation code used)
+    "account_checks": {"default": "off", "choices": ["off", "on"], "live": True,
+                       "help": "the 2.1.6 account rules: off = nobody is blocked (2.1.5 launchers and games as "
+                               "before; codes can be made ready); on = new accounts need an invite code, and "
+                               "accounts from before need their re-activation code to play online - 2.1.5 "
+                               "launchers are told to update. At once"},
+    # (the Online Rollback Netcode chat's: in every /api/friends config; the host latches it into session property
+    # 0x1000F005 at session creation - 0 lockstep, 2 lockstep_vclock, 1 rollback; joiners follow the session's,
+    # none or unknown = lockstep. Games before that ignore it)
+    "netcode": {"default": "lockstep", "choices": ["lockstep", "lockstep_vclock", "rollback"], "live": True,
+                "help": "online matches' netcode for new sessions (the host's game latches it per match): lockstep "
+                        "= today's; lockstep_vclock = lockstep with a fixed 1/60 s clock per world update (both "
+                        "games step alike); rollback = the rollback netcode. Games without one play lockstep"},
     "online_news": {"default": "", "text": True, "max_len": NEWS_MAX, "live": True,
                     "help": "the NEWS panel on the game's ONLINE screen (after the players-online count): plain "
                             "text, new lines kept; characters the game's font lacks are replaced or left out. "
@@ -158,8 +180,27 @@ def release_at_least(text, want):
     """'2.1.5' (or 'v2.1.5.1') >= want, a tuple; False when empty or not a version."""
     parts = re.findall(r"\d+", text or "")
     return bool(parts) and tuple(int(p) for p in parts[:len(want)]) >= want
+# Where a player is (the game's presence poll, 2.1.7 on: &place=) - the dashboard's names for the tokens.
+PLACE_NAMES = {
+    "match_online": "Online match", "match_offline": "Offline match",
+    "lobby_host": "Lobby (host)", "lobby_join": "Lobby (joined)",
+    "matchmaking": "Matchmaking", "online_menu": "Online menu",
+    "cc": "Community Creations", "cc_download": "CC: downloading", "cc_upload": "CC: uploading",
+    "leaderboards": "Leaderboards",
+    "menus": "Offline menus", "match_setup": "Match setup", "universe": "WWE Universe", "rtwm": "Road to WrestleMania",
+    "shop": "Shop", "my_wwe": "My WWE", "practice": "Practice arena", "options": "Options",
+    "create_superstar": "Create a Superstar", "paint_tool": "Paint Tool", "threads": "Superstar Threads",
+    "create_story": "Story Designer", "create_finisher": "Create a Finisher", "create_entrance": "Create an Entrance",
+    "highlight_reel": "Highlight Reel", "create_moveset": "Create a Move-Set", "create_menu": "Create modes",
+}
+
 LIVE_LIFE = 60      # seconds a session host's report stays (it reports every 20 s)
 RESTART_CODE = 75
+# A storage node stopped from the dashboard: its exit code (the supervisor ends too, not a restart) and the
+# marker in its data folder that keeps it stopped (it refuses to start; the watchdog, pc_watchdog.ps1, leaves
+# it) until the dashboard's Start (the core's wanted state, which the watchdog asks for).
+STOP_CODE = 76
+NODE_STOPPED = "node.stopped"
 # the dashboard's own pages (admin_auth.py): never framed, cached or sent on as a referrer
 ADMIN_HEADERS = {"X-Frame-Options": "DENY", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
                  "X-Content-Type-Options": "nosniff"}   # the exit code that asks the supervisor (--supervise) to start the server again
@@ -222,6 +263,7 @@ class Accounts:
             """)
             self.db.commit()
         self.cache = {}  # token hash -> (account row, cached at)
+        self.names = None  # (the name filter - the service's)
 
     @staticmethod
     def hash_password(password, salt):
@@ -253,6 +295,9 @@ class Accounts:
         name = name.strip()
         if not NAME_RE.match(name):
             return None, "Names are 3-15 letters, digits, spaces, dots, dashes or underscores."
+        if self.names and self.names.check(name):
+            gs.log("accounts: sign-up as %r from %s refused: the name filter" % (name, ip))
+            return None, "That account name isn't allowed - pick another."
         if len(password) < 6:
             return None, "Passwords need at least 6 characters."
         salt = secrets.token_hex(16)
@@ -272,7 +317,7 @@ class Accounts:
 
     def check(self, name, password):
         with self.lock:
-            row = self.db.execute("SELECT id, salt, pwhash, banned FROM accounts WHERE name = ?",
+            row = self.db.execute("SELECT id, salt, pwhash, banned FROM accounts WHERE name = ? COLLATE NOCASE",
                                   (name.strip(),)).fetchone()
         if not row or not hmac.compare_digest(self.hash_password(password, row[1]), row[2]):
             return None, "Wrong name or password."
@@ -501,6 +546,7 @@ class Stats:
         self.minute = self._zero()
         self.recent = {}      # account id -> last presence poll (?here=1): its game runs (old clients: from start)
         self.online_mode = {}  # account id -> last poll marked &mode=online (2.1.4 on: only in online mode)
+        self.places = {}  # account id -> (place, kind) of its last poll (2.1.7 on: &place=, &kind=; the dashboard's)
         self.days_counted = set()  # (day, account id) already in player_days
         self.total_in = 0
         self.total_out = 0
@@ -534,11 +580,16 @@ class Stats:
     def count(self, what, n=1):
         self.minute[what] += n
 
-    def seen(self, account_id, online_mode=False):
-        """A game's presence poll: its game runs - in online mode when it says so (2.1.4 on)."""
+    def seen(self, account_id, online_mode=False, place="", kind=""):
+        """A game's presence poll: its game runs - in online mode when it says so (2.1.4 on), and where in the game
+        it is (2.1.7 on: a token, PLACE_NAMES; "" from an older game)."""
         self.recent[account_id] = now()
         if online_mode:
             self.online_mode[account_id] = now()
+        if place:
+            self.places[account_id] = (place, kind)
+        else:
+            self.places.pop(account_id, None)
         self.day(account_id)
 
 
@@ -630,6 +681,17 @@ class Service:
         if getattr(args, "role", "all") == "core":  # (the blob bytes on the storage node: the user's PC)
             blobs = gs.RemoteBlobs(args.storage_url, read_key(args.storage_key))
         self.store = gs.Store(args.data, max_file=args.max_file_mb << 20, quota=args.quota_mb << 20, blobs=blobs)
+        # (the storage node's panel: its address and key; the wanted state - running / stopped - the PC's
+        # watchdog asks for; the last time it asked)
+        self.node_url = args.storage_url.rstrip("/") if blobs is not None else ""
+        self.node_key = read_key(args.storage_key) if blobs is not None else ""
+        self.node_state_path = os.path.join(args.data, "storage_node.json")
+        try:
+            self.node_state = json.load(open(self.node_state_path, encoding="utf-8"))
+        except (OSError, ValueError):
+            self.node_state = {}
+        self.node_state.setdefault("wanted", "running")
+        self.node_polled = 0.0
         # (problem reports: where the blobs are - the storage node's reports folder, readable on the PC)
         self.reports = (reports.RemoteReports(args.storage_url, read_key(args.storage_key)) if blobs is not None
                         else reports.LocalReports(args.data))
@@ -642,6 +704,13 @@ class Service:
         discovery.init(self.store)
         self.mod_upload = asyncio.Lock()  # (one .svrmod stored at a time: they are up to 250 MB, held in memory)
         self.accounts = Accounts(self.store)
+        # (the name filter: Community Creations names, Discovery mods, entrances, account names - namefilter.py)
+        self.names = namefilter.NameFilter(args.data, gs.log)
+        self.accounts.names = self.names
+        self.signup = signup.Signup(self.store, self.accounts, gs.log,
+                                    open_accounts=bool(getattr(args, "test_open_accounts", False)),
+                                    exempt=(getattr(args, "admin_account", None) or "").strip(),
+                                    checks=lambda: SETTINGS["account_checks"] == "on")
         self.stats = Stats(self.store)
         self.slots = asyncio.Semaphore(args.max_connections)
         self.max_connections = args.max_connections
@@ -650,15 +719,18 @@ class Service:
         self.netreport_last = {}  # account id -> its last match report (memory only)
         self.relay = relay.Relay(self, gs.log, getattr(args, "relay_udp_port", 0),
                                  edge=(edge.rsplit(":", 1)[0], int(edge.rsplit(":", 1)[1])) if edge else None,
-                                 secret=relay.rl.read_secret(args.relay_secret) if edge else None)
+                                 secret=relay.rl.read_secret(args.relay_secret) if edge else None,
+                                 network=lambda: SETTINGS["match_network"])
         self.leaderboards = leaderboards.Leaderboards(self.store)
-        # the ONLINE menu's NEWS: how many play now, first; then the dashboard's
-        # text (online_news) when it has one, else the stored record's
-        self.sake.news_prefix = lambda: "%d player%s online now. " % (
-            self.stats.playing_now(), "" if self.stats.playing_now() == 1 else "s")
+        # the ONLINE menu's NEWS: how many look for a match now, first; then the dashboard's
+        # text (online_news) when it has one, else the stored record's. (" online now. " stays in the line: the
+        # game rewrites its news panel only over a text that has it - online.cpp SetOnlineNews)
+        self.sake.news_prefix = lambda: (lambda n: "%d player%s looking for a match online now. " % (
+            n, "" if n == 1 else "s"))(self.looking_for_match())
         self.sake.news_text = lambda: news_fields(SETTINGS["online_news"])
         self.sake.refuse_unmarked = lambda: SETTINGS["cc_unmarked"] == "refuse" and release_at_least(
             SETTINGS["latest_release"], MODFREE_SINCE)
+        self.sake.name_check = self.sake_names
         self.invites = collections.defaultdict(dict)  # account id -> {inviter id: invite} (in memory)
         self.max_connections = args.max_connections
         self.attempts = collections.defaultdict(collections.deque)  # ip -> login/register times
@@ -687,6 +759,8 @@ class Service:
         if not auth.startswith("Bearer "):
             return None
         account = self.accounts.from_token(auth[7:].strip())
+        if account and not self.signup.online_ok(account):  # (no re-activation code yet)
+            return None
         if account:  # (not presence: a game outside online mode fetches logos / Community Creations too)
             self.stats.day(account["id"])
         return account
@@ -761,20 +835,92 @@ class Service:
         try:
             body = await request.json()
             name, password = str(body.get("name", "")), str(body.get("password", ""))
-        except (ValueError, AttributeError):
+            client = int(body.get("client", 0) or 0)  # (2: a 2.1.6+ launcher - it walks the account steps)
+        except (ValueError, AttributeError, TypeError):
             return web.json_response({"ok": False, "error": "Bad request."}, status=400)
+        if not register and self.signup.limits.hit(("login", name.strip().lower()), 10, 600):
+            return web.json_response({"ok": False, "error": "Too many tries - wait a few minutes."}, status=429)
         loop = asyncio.get_running_loop()
-        if register:
+        if register and client < 2:  # (a 2.1.5 launcher: name and password only)
+            if not self.signup.relaxed():
+                return web.json_response({"ok": False, "error": "New accounts need the 2.1.6 launcher now: "
+                                                                "update to 2.1.6 and sign up there with the invite "
+                                                                "code the server owner gives you."}, status=403)
+            # (account_checks off: as before 2.1.6 - an account without a code: it needs a re-activation code once on)
             account, error = await loop.run_in_executor(None, self.accounts.register, name, password, ip)
+        elif register and self.signup.relaxed() and not str(body.get("invite", "")).strip():
+            # (account_checks off and no code typed: an account as before 2.1.6 - it needs a re-activation code once on)
+            account, error = await loop.run_in_executor(None, self.accounts.register, name, password, ip)
+        elif register:
+            account, error = await loop.run_in_executor(None, self.signup.register, name, password,
+                                                        str(body.get("invite", "")), ip)
         else:
             account, error = await loop.run_in_executor(None, self.accounts.check, name, password)
         if not account:
             return web.json_response({"ok": False, "error": error}, status=403)
+        why = self.signup.blocked_why(account, old_client=client < 2)
+        if why and client < 2:  # (an old launcher: it can't do the steps - it shows this, as it is)
+            gs.log("accounts: %s refused on an old launcher from %s (%s)" % (account["name"], ip, why))
+            return web.json_response({"ok": False, "error": why}, status=403)
         token = self.accounts.new_token(account, ip)
         self.stats.count("registrations" if register else "logins")
         gs.log("accounts: %s %s from %s" % (account["name"], "registered" if register else "signed in", ip))
-        return web.json_response({"ok": True, "token": token, "name": account["name"], "id": account["id"],
-                                  "xuid": "%016X" % Accounts.xuid(account)})
+        return web.json_response(dict(self.signup.account_json(account), ok=True, token=token, id=account["id"],
+                                      xuid="%016X" % Accounts.xuid(account), why=why))
+
+    # the launcher's account steps (signup.py): a token's account, blocked or not
+
+    def raw_account(self, request):
+        auth = request.headers.get("Authorization", "")
+        return self.accounts.from_token(auth[7:].strip()) if auth.startswith("Bearer ") else None
+
+    async def _account_step(self, request, step):
+        account = self.raw_account(request)
+        if not account:
+            return web.json_response({"ok": False, "error": "Not signed in."}, status=401)
+        try:
+            body = await request.json() if request.method == "POST" else {}
+        except ValueError:
+            return web.json_response({"ok": False, "error": "Bad request."}, status=400)
+        ip = self.client_ip(request)
+        error = await asyncio.get_running_loop().run_in_executor(None, step, account, body, ip)
+        account = self.accounts.get(account["id"])
+        return web.json_response(dict(self.signup.account_json(account), ok=not error, error=error or "",
+                                      why=self.signup.blocked_why(account, False)), status=200 if not error else 403)
+
+    async def api_account(self, request):
+        return await self._account_step(request, lambda a, b, ip: "")
+
+    async def api_reactivate(self, request):
+        return await self._account_step(request, lambda a, b, ip: self.signup.reactivate(a, str(b.get("code", "")), ip))
+
+    async def api_password_change(self, request):
+        token = request.headers.get("Authorization", "")[7:].strip()
+
+        def step(a, b, ip):
+            if self.signup.limits.hit(("login", a["name"].lower()), 10, 600):
+                return "Too many tries - wait a few minutes."
+            if not self.accounts.check(a["name"], str(b.get("password", "")))[0]:
+                return "Your password isn't right."
+            new = str(b.get("new_password", ""))
+            if len(new) < signup.MIN_PASSWORD:
+                return "Passwords need at least %d characters." % signup.MIN_PASSWORD
+            self.signup.set_password(a["id"], new, keep_token=token)
+            gs.log("accounts: %s changed its password (its other sessions ended)" % a["name"])
+            return ""
+        return await self._account_step(request, step)
+
+    async def api_password_reset(self, request):
+        try:
+            body = await request.json()
+        except ValueError:
+            return web.json_response({"ok": False, "error": "Bad request."}, status=400)
+        error = await asyncio.get_running_loop().run_in_executor(
+            None, self.signup.reset, str(body.get("name", "")), str(body.get("code", "")),
+            str(body.get("password", "")), self.client_ip(request))
+        if error:
+            return web.json_response({"ok": False, "error": error}, status=403)
+        return web.json_response({"ok": True, "message": "Your password is set: sign in with it."})
 
     async def api_logout(self, request):
         auth = request.headers.get("Authorization", "")
@@ -786,7 +932,9 @@ class Service:
         """The game's login: its profile, a login ticket, its name and XUID."""
         account = self.account(request)
         if not account:
-            return web.json_response({"ok": False, "error": "Not signed in."}, status=401)
+            raw = self.raw_account(request)
+            why = raw and self.signup.blocked_why(raw, old_client=request.query.get("client") != "2")
+            return web.json_response({"ok": False, "error": why or "Not signed in."}, status=403 if why else 401)
         ticket = self.store.new_ticket(account["profileid"])
         self.stats.count("logins")
         return web.json_response({"ok": True, "name": account["name"], "profileid": account["profileid"],
@@ -809,6 +957,18 @@ class Service:
                 names |= {p["name"] for p in v["players"] if p.get("name")}
         return len(names)
 
+    def looking_for_match(self):
+        """Players looking for a match now (the in-game NEWS line): searching or on the ONLINE MATCH screens (the
+        presence poll's place "matchmaking", 2.1.7 on), or hosting a lobby others can find (place "lobby_host"; any
+        game's: the live reports of sessions still in the lobby). Not players in a match - a started session isn't
+        offered to searches - nor ones who joined a lobby."""
+        t = now()
+        ids = {a for a, (place, _) in list(self.stats.places.items())
+               if place in ("matchmaking", "lobby_host") and t - self.stats.recent.get(a, 0) < SETTINGS["presence_window"]}
+        ids |= {v["host_id"] for v in list(self.live.values())
+                if v.get("host_id") and v.get("state") == "lobby" and t - v["seen"] <= LIVE_LIFE}
+        return len(ids)
+
     def presence(self, account_id):
         """playing: in an online match or its lobby (its game has the relay open);
         online: its game in online mode - the ONLINE menus or an online match (it
@@ -819,6 +979,10 @@ class Service:
             return "playing"
         if account_id in self.in_online_mode():
             return "online"
+        # ingame: its game runs, signed in, outside online mode (2.1.7 on: ?here=1 from the offline menus too) -
+        # it can be invited (the game walks there); older games show it as offline but let it be invited
+        if self.stats.recent.get(account_id, 0) >= now() - SETTINGS["presence_window"]:
+            return "ingame"
         return "offline"
 
     def friends_json(self, account):
@@ -829,10 +993,11 @@ class Service:
         added = {a["id"] for a in mine}
         friends = [{"name": a["name"], "status": self.presence(a["id"]), "last_seen": a["last_seen"],
                     "mutual": any(t["id"] == a["id"] for t in theirs)} for a in mine if not a["banned"]]
-        friends.sort(key=lambda f: ("playing", "online", "offline").index(f["status"]))  # (online first)
+        friends.sort(key=lambda f: ("playing", "online", "ingame", "offline").index(f["status"]))  # (online first)
         return {
             "ok": True,
             "config": {"mods_online": bool(SETTINGS["mods_online"]), "match_network": SETTINGS["match_network"],
+                       "netcode": SETTINGS["netcode"],
                        # (the NEWS panel's text as the game's Sake fetch gets it: the game shows it at the
                        # next visit to ONLINE, without a restart)
                        "news": self.sake.news_panel()},
@@ -844,20 +1009,26 @@ class Service:
         }
 
     def token_account(self, request):
-        """The signed-in account, without counting it as playing (the launchers)."""
-        auth = request.headers.get("Authorization", "")
-        return self.accounts.from_token(auth[7:].strip()) if auth.startswith("Bearer ") else None
+        """The signed-in account, without counting it as playing (the launchers) - one that may play online."""
+        account = self.raw_account(request)
+        return account if account and self.signup.online_ok(account) else None
 
     async def api_friends(self, request):
         account = self.token_account(request)
         if not account:
-            return web.json_response({"ok": False, "error": "Not signed in."}, status=401)
+            raw = self.raw_account(request)  # (blocked: say why - an old launcher shows the error)
+            why = raw and self.signup.blocked_why(raw, old_client=request.query.get("client") != "2")
+            return web.json_response({"ok": False, "error": why or "Not signed in."}, status=403 if why else 401)
         if request.query.get("bye"):  # (the game closing / leaving online mode: offline now)
             self.stats.recent.pop(account["id"], None)
             self.stats.online_mode.pop(account["id"], None)
+            self.stats.places.pop(account["id"], None)
             return web.json_response({"ok": True})
         if request.query.get("here"):  # (the game asking: it's running, signed in; 2.1.4 on: &mode=online)
-            self.stats.seen(account["id"], request.query.get("mode") == "online")
+            place = request.query.get("place", "")
+            kind = request.query.get("kind", "")
+            self.stats.seen(account["id"], request.query.get("mode") == "online",
+                            place if place in PLACE_NAMES else "", kind if kind in ("ranked", "player") else "")
         if request.method == "POST":
             try:
                 body = await request.json()
@@ -900,12 +1071,15 @@ class Service:
             return web.json_response({"ok": True})
         if len(self.live) >= 2000 and sid not in self.live:
             return web.json_response({"ok": False}, status=503)
-        players = [{"name": str(p.get("name") or "")[:32], "path": str(p.get("path") or "")[:8]}
+        # (2.1.6 on: each peer's relay id too - a peer the host has no name for, "?" - an older game's, or one whose
+        # first ping hasn't come - is named from the relay's account for it on the dashboard)
+        players = [{"name": str(p.get("name") or "")[:32], "path": str(p.get("path") or "")[:8],
+                    "id": str(p.get("id") or "")[:12].lower() if re.fullmatch(r"[0-9A-Fa-f]{12}", str(p.get("id") or "")) else ""}
                    for p in (body.get("players") or [])[:16] if isinstance(p, dict)]
         old = self.live.get(sid, {})
         state = str(body.get("state") or "lobby")[:12]
         self.live[sid] = {
-            "session": sid, "host": account["name"], "kind": str(body.get("kind") or "")[:40],
+            "session": sid, "host": account["name"], "host_id": account["id"], "kind": str(body.get("kind") or "")[:40],
             "rule": str(body.get("rule") or "")[:40],
             "rule_name": match_names.rule_name(str(body.get("rule") or "")) or "", "arena": str(body.get("arena") or "")[:40],
             "arena_name": match_names.arena_name(body.get("arena"), str(body.get("arena_mod") or "")[:60]),
@@ -967,7 +1141,7 @@ class Service:
 
     # The games' per-match connection reports (p2p.cpp): how online matches
     # connected - only counts per day, nothing about who or from where.
-    NET_PATHS = ("direct", "relay", "lan")
+    NET_PATHS = ("direct", "ipv6", "relay", "lan")
     NET_NATS = ("cone", "symmetric", "mapped", "open", "unknown")
     NET_RTT = (50, 100, 150, 250, 400, 100000)  # (upper bounds, ms)
 
@@ -986,13 +1160,18 @@ class Service:
             rtt = max(0, int(body.get("rtt") or 0))
             version = re.sub(r"[^0-9A-Za-z.\-]", "", str(body.get("version") or ""))[:24] or "?"
             network = str(body.get("network") or "")  # (2.1.4 on: the match network it played on)
+            # (2.2.0 on: "ipv6": true beside path "direct". A server before that doesn't know the field and counts a
+            # direct match; a path it doesn't know it would refuse, and the report would be lost)
+            if path == "direct" and body.get("ipv6") is True:
+                path = "ipv6"
         except (ValueError, TypeError, AttributeError):
             return web.json_response({"ok": False}, status=400)
         if path not in self.NET_PATHS or nat not in self.NET_NATS:
             return web.json_response({"ok": False}, status=400)
         step = step if abs(step) <= 16 else 99  # (a small steady step: port prediction can follow it)
         gs.log("netreport: %s played a match, path %s, match network %s (server %s)" % (
-            account["name"], path, network if network in ("auto", "relay", "p2p") else "?", SETTINGS["match_network"]))
+            account["name"], path, network if network in ("auto", "relay", "p2p") else "not sent (a game before 2.1.4)",
+            SETTINGS["match_network"]))
         raw_rtt = min(rtt, 100000)
         rtt = next(b for b in self.NET_RTT if rtt <= b)
         with self.store.lock:
@@ -1065,7 +1244,8 @@ class Service:
         return web.json_response({"ok": False}, status=404)
 
     async def api_status(self, request):
-        return web.json_response({"ok": True, "server": "svr2011-community", "version": 1})
+        return web.json_response({"ok": True, "server": "svr2011-community", "version": 1,
+                                  "invite_needed": not self.signup.relaxed()})  # (sign-up asks for a code)
 
     # the port's logo store
 
@@ -1154,7 +1334,10 @@ class Service:
                 return None
             return web.Response(body=data[start:end + 1] if rng else data, status=206 if rng else 200,
                                 content_type=content_type, headers=headers)
-        pieces = await loop.run_in_executor(None, lambda: self.store.blob_chunks(sha, start=start))
+        try:
+            pieces = await loop.run_in_executor(None, lambda: self.store.blob_chunks(sha, start=start))
+        except gs.StorageBusy:   # (the storage node's disk too slow just now: the launcher tries again)
+            return web.Response(status=503, text="storage busy, try again shortly", headers={"Retry-After": "10"})
         first = await loop.run_in_executor(None, next, pieces, None) if pieces is not None else None
         if first is None:
             return None
@@ -1221,6 +1404,12 @@ class Service:
             m = body.get(kind)
             if not isinstance(m, dict):
                 continue
+            # (the names land on the downloader's PC - the playlist's, the files': the name filter first)
+            why = self.names_why(account, *(str(m.get(n, "")) for n in names))
+            if why:
+                gs.log("entrance: file %d by %s refused: %s (%s)" % (fileid, account["name"], why,
+                                                                    ", ".join(str(m.get(n, "")) for n in names)))
+                return web.json_response({"ok": False, "error": why}, status=400, headers={"X-Svr-Notice": why})
             sent = str(m.get("sha", "")).lower()
             sha = self.store.stored_media(sent)
             if not sha:
@@ -1278,11 +1467,15 @@ class Service:
                 xml = gs.login(self.store, func, call, account["profileid"], account["name"])
             elif path.endswith("sakestorageserver/storageserver.asmx"):
                 modfree = request.headers.get("X-Svr-ModFree") == "1"  # (the game's relay: checked for mods)
+                notes = []
                 xml = await loop.run_in_executor(None, self.sake.handle, func, call, account["profileid"], xuid,
-                                                 modfree)
+                                                 modfree, notes)
                 result = re.search(rb"<%sResult>([^<]*)<" % func.encode(), xml)
                 gs.log("sake: %s %s %s by %s -> %s" % (func, gs.text_of(call, "tableid"), gs.text_of(call, "recordid", ""),
                                                      account["name"], result.group(1).decode() if result else "?"))
+                if notes:  # (the game's relay shows it on screen: 2.1.6 on)
+                    return web.Response(body=xml, content_type="text/xml", charset="utf-8",
+                                        headers={"X-Svr-Notice": notes[0]})
             elif path.endswith("competitionservice/competitionservice.asmx"):
                 xml = gs.competition(func, call)
             else:
@@ -1455,6 +1648,10 @@ class Service:
                 order = None
         if not why and not fields and order is None:
             why = "Nothing to change."
+        if not why:
+            why = self.names_why(account, *fields.values())
+            if why:
+                gs.log("discovery: edit of mod %d from %s refused: %s" % (mid, account["name"], why))
         if why:
             return web.json_response({"ok": False, "error": why}, status=400)
         loop = asyncio.get_running_loop()
@@ -1465,12 +1662,36 @@ class Service:
         info, _ = discovery.get(self.store, mid, True)
         return web.json_response({"ok": True, "mod": info})
 
+    def mod_admin_key(self, request):
+        """The storage node's key (X-Storage-Key) on a core that has a node: an admin's update of any mod from the
+        PC (the bulk movie shrink) - through /svr/api/mods/{id}/file, whose nginx location takes big bodies."""
+        key = request.headers.get("X-Storage-Key", "")
+        return bool(self.node_key and key and hmac.compare_digest(key, self.node_key))
+
     async def api_mod_update_file(self, request):
-        """PUT multipart: svrmod (the new file) + version (a new one); maybe name / tags / description / types."""
+        """PUT multipart: svrmod (the new file) + version (a new one); maybe name / tags / description / types.
+        Its owner's (Bearer), or an admin's with the storage node's key (mod_admin_key)."""
         mid = self._mod_id(request)
+        if self.mod_admin_key(request):
+            if mid is None or discovery.owner_of(self.store, mid) is None:
+                return web.json_response({"ok": False, "error": "No such mod."}, status=404)
+            return await self.mod_update_file(request, mid, None)
         account, err = self.mod_owner_check(request, mid)
         if err:
             return err
+        return await self.mod_update_file(request, mid, account)
+
+    @admin_only
+    async def admin_mod_update_file(self, request):
+        """The dashboard's PUT of a mod's new version (as api_mod_update_file; the owner stays)."""
+        mid = self._mod_id(request)
+        if mid is None or discovery.owner_of(self.store, mid) is None:
+            return web.json_response({"ok": False, "error": "No such mod."}, status=404)
+        return await self.mod_update_file(request, mid, None)
+
+    async def mod_update_file(self, request, mid, account):
+        """A new version of mod mid from its owner (account), or from an admin (None): then no quota, and the
+        owner, author, id and downloads stay all the same; the form's "why" goes in the log."""
         length = request.content_length
         if not length:
             return web.json_response({"ok": False, "error": "no length"}, status=411)
@@ -1481,7 +1702,7 @@ class Service:
             return web.json_response({"ok": False, "error": "Another mod is being stored - try again in a minute."},
                                      status=503)
         async with self.mod_upload:
-            raw, data, file_name = {}, None, ""
+            raw, data, file_name, admin_why = {}, None, "", "admin"
             reader = await request.multipart()
             while True:
                 part = await reader.next()
@@ -1493,6 +1714,8 @@ class Service:
                     data = await part.read()
                 elif name in discovery.MAX_TEXT or name == "types":
                     raw[name] = (await part.text()).strip()[:discovery.MAX_TEXT.get(name, 100)]
+                elif name == "why" and account is None:
+                    admin_why = (await part.text()).strip()[:60] or admin_why
                 else:
                     await part.release()
             fields, why = self.mod_fields(raw)
@@ -1506,17 +1729,22 @@ class Service:
                 elif fields["version"] == (old or {}).get("version"):
                     why = "Give the update a new version (it is %s now)." % old["version"]
             if not why:
-                manifest, why = await loop.run_in_executor(None, discovery.check_svrmod, data)
+                why = self.names_why(account, *fields.values())
             if not why:
+                manifest, why = await loop.run_in_executor(None, discovery.check_svrmod, data)
+            if not why and account:
                 why = self.mod_quota_why(account, len(data), but=mid)
+            by = "its owner" if account else "admin (%s)" % admin_why
             if why:
-                gs.log("discovery: update of mod %d from %s refused: %s" % (mid, account["name"], why))
+                gs.log("discovery: update of mod %d from %s refused: %s" % (
+                    mid, account["name"] if account else by, why))
                 return web.json_response({"ok": False, "error": why}, status=400)
+            fields["needs"] = manifest.get("needs", "")[:20]  # (the new file's own)
             was = await loop.run_in_executor(None, discovery.replace_file, self.store, mid, data, file_name, fields)
             if was is None:
                 return web.json_response({"ok": False, "error": "No such mod."}, status=404)
-            gs.log("discovery: mod %d updated by its owner (file) %s -> %s (%d bytes, %s)" % (
-                mid, was, fields["version"], len(data), manifest.get("type", "?")))
+            gs.log("discovery: mod %d updated by %s (file) %s -> %s (%d -> %d bytes, %s)" % (
+                mid, by, was, fields["version"], (old or {}).get("size", 0), len(data), manifest.get("type", "?")))
             info, _ = discovery.get(self.store, mid, True)
             return web.json_response(dict({"ok": True, "mod": info}, **self.mod_size_warning(len(data))))
 
@@ -1628,6 +1856,8 @@ class Service:
                         break
             loop = asyncio.get_running_loop()
             if not why:
+                why = self.names_why(account, *(fields.get(k, "") for k in discovery.MAX_TEXT))
+            if not why:
                 manifest, why = await loop.run_in_executor(None, discovery.check_svrmod, data)
             if not why:
                 why = self.mod_quota_why(account, len(data))
@@ -1637,11 +1867,123 @@ class Service:
             fields["types"] = types
             fields["tags"] = discovery.clean_tags(fields.get("tags", ""))
             fields.setdefault("description", "")
+            fields["needs"] = manifest.get("needs", "")[:20]
             mid = await loop.run_in_executor(None, discovery.add, self.store, account["id"], account["name"], fields,
                                              data, file_name, [images[n] for n in range(discovery.IMAGES)])
             gs.log("discovery: mod %d \"%s\" %s (%d bytes, %s) from %s" % (
                 mid, fields["name"], fields["version"], len(data), manifest.get("type", "?"), account["name"]))
             return web.json_response(dict({"ok": True, "id": mid, "size": len(data)}, **self.mod_size_warning(len(data))))
+
+    # -- the name filter (namefilter.py; the dashboard's Names tab) --------------------------------------------
+
+    STRING_TYPES = ("asciiStringValue", "unicodeStringValue")
+    NOT_NAMES = ("AuthorName", "UserID")  # (the game's ids, not text a player wrote)
+
+    def names_why(self, account, *texts):
+        """Why these texts (and the uploader's account name) are refused, or None."""
+        why = self.names.check(*texts)
+        if not why and account and self.names.check(account["name"]):
+            why = namefilter.ACCOUNT_REASON
+        return why
+
+    def sake_names(self, owner, values):
+        """A Community Creations record's texts - its title, tags and comments - and its uploader's name."""
+        texts = [str(v) for k, (t, v) in values.items() if t in self.STRING_TYPES and k not in self.NOT_NAMES]
+        return self.names_why(self.accounts.by_profile(owner), *texts)
+
+    def names_flagged(self):
+        """What is on the server now that the list flags (whatever the switch): uploads, Discovery mods,
+        entrances, accounts. Nothing is changed - the dashboard's Delete buttons are the owner's say."""
+        nf, out = self.names, []
+        by_profile = {a["profileid"]: a for a in self.accounts.all()}
+
+        def who(profileid):
+            a = by_profile.get(profileid)
+            return a["name"] if a else "profile %d" % profileid
+
+        files = {}  # (an entrance's Superstar file -> its upload)
+        for rec in self.store.all("UserContent"):
+            f = rec["fields"]
+            fid = int((f.get("F00") or [None, 0])[1] or 0)
+            if fid:
+                files[fid] = rec["recordid"]
+            for k, (t, v) in sorted(f.items()):
+                term = nf.match(v) if t in self.STRING_TYPES and k not in self.NOT_NAMES else None
+                if term:
+                    out.append({"kind": "upload", "id": rec["recordid"], "field": k, "text": str(v)[:200],
+                                "term": term, "author": who(rec["ownerid"]),
+                                "title": str((f.get("Title") or [None, ""])[1] or "")[:80]})
+                    break
+        with self.store.lock:
+            mods = self.store.db.execute("SELECT id, name, tags, description, version, author FROM mods").fetchall()
+            entrances = self.store.db.execute("SELECT fileid, ownerid, info FROM entrances").fetchall()
+        for mid, *texts, author in mods:
+            for k, v in zip(("name", "tags", "description", "version"), texts):
+                term = nf.match(v)
+                if term:
+                    out.append({"kind": "mod", "id": mid, "field": k, "text": str(v)[:200], "term": term,
+                                "author": author, "title": texts[0]})
+                    break
+        for fileid, ownerid, info in entrances:
+            try:
+                info = json.loads(info)
+            except ValueError:
+                continue
+            hits = [(kind + " " + k, str(v)) for kind, m in sorted(info.items()) if isinstance(m, dict)
+                    for k, v in sorted(m.items()) if k in ("playlist", "file", "name") and nf.match(v)]
+            if hits:
+                out.append({"kind": "entrance", "id": files.get(fileid), "file": fileid, "field": hits[0][0],
+                            "text": hits[0][1][:200], "term": nf.match(hits[0][1]), "author": who(ownerid),
+                            "title": ""})
+        for a in by_profile.values():
+            term = nf.match(a["name"])
+            if term:
+                out.append({"kind": "account", "id": a["id"], "field": "name", "text": a["name"], "term": term,
+                            "author": a["name"], "title": "", "banned": bool(a["banned"])})
+        return out
+
+    @admin_only
+    async def admin_names(self, request):
+        """GET: the list, the allow list, the switch. POST {enabled?, words?, allow?}: saved, used at once."""
+        if request.method == "POST":
+            try:
+                body = await request.json()
+            except ValueError:
+                body = None
+            if not isinstance(body, dict):
+                return web.json_response({"ok": False, "error": "Send a JSON object."}, status=400)
+            lists = {}
+            for k in ("words", "allow"):
+                v = body.get(k)
+                if v is None:
+                    continue
+                v = v.splitlines() if isinstance(v, str) else v
+                if not isinstance(v, list) or len(v) > 5000 or any(len(str(w)) > 100 for w in v):
+                    return web.json_response({"ok": False, "error": "%s: at most 5000 lines of 100 characters" % k},
+                                             status=400)
+                lists[k] = [str(w).strip() for w in v if str(w).strip()]
+            await asyncio.get_running_loop().run_in_executor(
+                None, lambda: self.names.save(body.get("enabled"), lists.get("words"), lists.get("allow")))
+            gs.log("admin: name filter saved (%s, %d words, %d allowed)" % (
+                "on" if self.names.enabled else "off", len(self.names.word_lines), len(self.names.allow_lines)))
+        return web.json_response(dict({"ok": True}, **self.names.state()))
+
+    @admin_only
+    async def admin_names_test(self, request):
+        """POST {text}: would this name pass? (the list as it is saved; the switch aside)"""
+        try:
+            body = await request.json()
+        except ValueError:
+            body = {}
+        text = str((body or {}).get("text", ""))[:2000]
+        term = self.names.match(text)
+        return web.json_response({"ok": True, "passes": term is None, "term": term,
+                                  "readings": [" ".join(r) for r in namefilter.words(text)]})
+
+    @admin_only
+    async def admin_names_flagged(self, request):
+        rows = await asyncio.get_running_loop().run_in_executor(None, self.names_flagged)
+        return web.json_response({"ok": True, "enabled": self.names.enabled, "flagged": rows})
 
     # Problem reports (reports.py, docs/REPORTS_API.md): anyone may send one (a Bearer account is noted);
     # 5 in 10 minutes and 20 a day per address, and per account.
@@ -1691,7 +2033,8 @@ class Service:
     async def api_report(self, request):
         """multipart: report (JSON), zip (optional), image0-image4 (optional png / jpg / webp), match (the match
         folder's zip, optional), mod0..modN (a mod's zip each, named <content hash>.zip: only those the check
-        asked for) -> {ok, id, signature, seen_before, match, mods_stored, mods_refused}"""
+        asked for) -> {ok, id, secret (the sender's receipt: its Reports list asks with it), signature, seen_before,
+        match, mods_stored, mods_refused}"""
         def no(status, why):
             return web.json_response({"ok": False, "error": why}, status=status)
         length = request.content_length
@@ -1806,13 +2149,177 @@ class Service:
                    "seen %d before" % (got["id"], meta["app"], meta["version"], meta["problem"], len(zip_bytes) >> 10,
                                        len(images), len(match_bytes) >> 10, len(mod_files), len(stored),
                                        got["signature"], got["seen_before"]))
-            return web.json_response({"ok": True, "id": got["id"], "signature": got["signature"],
+            return web.json_response({"ok": True, "id": got["id"], "secret": got.get("secret", ""),
+                                      "signature": got["signature"],
                                       "seen_before": got["seen_before"], "match": bool(match_bytes),
                                       "mods_stored": stored, "mods_refused": refused})
         finally:
             for path in mod_files.values():
                 if os.path.exists(path):
                     os.remove(path)
+
+    STATUS_LIMIT = (600, 60)  # receipt lookups per IP: 60 in 10 minutes (a launcher asks when its tab opens)
+
+    async def api_report_status(self, request):
+        """{"reports": [{"id", "secret"}, ...]} (100 at most; signed in: the account's other reports too) ->
+        {ok, reports: [{id, state, received, app, problem, what, note, version, question, date, replies,
+        from_account}]} - state: received / looking / fixed / needs_info / replied / done / duplicate / unknown
+        (no such report, or not its secret). Never another report, never the logs, zip, pictures or contact."""
+        t, q = now(), self.check_times["status:" + self.client_ip(request)]
+        while q and q[0] < t - self.STATUS_LIMIT[0]:
+            q.popleft()
+        if len(q) >= self.STATUS_LIMIT[1]:
+            return web.json_response({"ok": False, "error": "Too many lookups from here - try again later."}, status=429)
+        q.append(t)
+        try:
+            receipts = (await request.json()).get("reports")
+        except (ValueError, AttributeError):
+            return web.json_response({"ok": False, "error": "Send {\"reports\": [{\"id\", \"secret\"}]} as JSON."},
+                                     status=400)
+        if not isinstance(receipts, list):
+            return web.json_response({"ok": False, "error": "reports: a list"}, status=400)
+        account = self.raw_account(request)  # (a blocked account still owns its reports)
+        try:
+            rows = await asyncio.get_running_loop().run_in_executor(
+                None, self.reports.status, receipts[:reports.MAX_STATUS_IDS], account["name"] if account else None)
+        except Exception:
+            return web.json_response({"ok": False, "error": "The report store didn't answer - try again later."},
+                                     status=503)
+        return web.json_response({"ok": True, "reports": rows})
+
+    async def api_report_reply(self, request):
+        """multipart: report (JSON {id, secret, text}), image0-image2 (optional) -> {ok} / {ok: false, error}: the
+        sender's answer to a question we asked (needs_info). Rate-limited as reports, through the name filter."""
+        def no(status, why):
+            return web.json_response({"ok": False, "error": why}, status=status)
+        if (request.content_length or 0) > reports.MAX_REPLY_IMAGES * reports.MAX_IMAGE + (1 << 20):
+            return no(413, "The answer is too large (pictures: %d MB each)." % (reports.MAX_IMAGE >> 20))
+        meta, images = None, {}
+        try:
+            reader = await request.multipart()
+            while True:
+                part = await reader.next()
+                if part is None:
+                    break
+                name = part.name or ""
+                cap = (64 << 10 if name in ("report", "report.json") else
+                       reports.MAX_IMAGE if re.fullmatch(r"image[0-%d]" % (reports.MAX_REPLY_IMAGES - 1), name) else 0)
+                if not cap:
+                    await part.release()
+                    continue
+                data = bytearray()
+                while True:
+                    chunk = await part.read_chunk(1 << 16)
+                    if not chunk:
+                        break
+                    data += chunk
+                    if len(data) > cap:
+                        return no(413, "%s is too large." % name)
+                if name in ("report", "report.json"):
+                    try:
+                        meta = json.loads(bytes(data).decode("utf-8-sig"))
+                    except ValueError:
+                        return no(400, "report: not valid JSON")
+                else:
+                    images[int(name[5:])] = bytes(data)
+        except (ValueError, AssertionError, KeyError):
+            return no(400, "Send it as multipart/form-data.")
+        if not isinstance(meta, dict):
+            return no(400, "No report part.")
+        text = str(meta.get("text") or "").replace("\r\n", "\n").strip()[:reports.MAX_REPLY]
+        if not text and not images:
+            return no(400, "Write an answer first.")
+        for n, img in sorted(images.items()):
+            if not reports.image_ext(img):
+                return no(400, "image%d: only PNG, JPEG or WebP pictures." % n)
+        if reports.has_url(text):
+            return no(400, reports.url_refusal())
+        if text and self.names.check(text):
+            return no(400, "Your answer has a word that isn't allowed - please write it without it.")
+        ip = self.client_ip(request)
+        account = self.raw_account(request)
+        if self.report_throttled(["reply:" + ip] + (["reply-acc:%d" % account["id"]] if account else [])):
+            return no(429, "Too many answers from here - try again later.")
+        try:
+            ok, why = await asyncio.get_running_loop().run_in_executor(
+                None, self.reports.reply, str(meta.get("id") or ""), meta.get("secret"), text,
+                [images[n] for n in sorted(images)], account["name"] if account else None)
+        except Exception:
+            return no(503, "The report store didn't answer - try again later.")
+        if not ok:
+            return no(404 if why == "No such report." else 409, why)
+        gs.log("reports: %s answered (%d chars, %d pictures)" % (meta.get("id"), len(text), len(images)))
+        return web.json_response({"ok": True})
+
+    async def api_report_edit(self, request):
+        """multipart: report (JSON {id, secret, what, before, contact}), image0-image4 (optional) -> {ok, edits,
+        pictures} / {ok: false, error}: the sender adds to a report it sent - more of what happened / before, a new
+        contact, pictures (5 a report in all) - until it's done or a duplicate. Kept as an edit history beside the
+        report (reports.edit). Rate-limited as reports, through the name filter."""
+        def no(status, why):
+            return web.json_response({"ok": False, "error": why}, status=status)
+        if (request.content_length or 0) > reports.MAX_IMAGES * reports.MAX_IMAGE + (1 << 20):
+            return no(413, "The change is too large (pictures: %d MB each)." % (reports.MAX_IMAGE >> 20))
+        meta, images = None, {}
+        try:
+            reader = await request.multipart()
+            while True:
+                part = await reader.next()
+                if part is None:
+                    break
+                name = part.name or ""
+                cap = (64 << 10 if name in ("report", "report.json") else
+                       reports.MAX_IMAGE if re.fullmatch(r"image[0-%d]" % (reports.MAX_IMAGES - 1), name) else 0)
+                if not cap:
+                    await part.release()
+                    continue
+                data = bytearray()
+                while True:
+                    chunk = await part.read_chunk(1 << 16)
+                    if not chunk:
+                        break
+                    data += chunk
+                    if len(data) > cap:
+                        return no(413, "%s is too large." % name)
+                if name in ("report", "report.json"):
+                    try:
+                        meta = json.loads(bytes(data).decode("utf-8-sig"))
+                    except ValueError:
+                        return no(400, "report: not valid JSON")
+                else:
+                    images[int(name[5:])] = bytes(data)
+        except (ValueError, AssertionError, KeyError):
+            return no(400, "Send it as multipart/form-data.")
+        if not isinstance(meta, dict):
+            return no(400, "No report part.")
+        what, before = (str(meta.get(k) or "").replace("\r\n", "\n").strip()[:reports.MAX_EDIT_TEXT]
+                        for k in ("what", "before"))
+        contact = str(meta.get("contact") or "").replace("\n", " ").strip()[:200]
+        if not (what or before or contact or images):
+            return no(400, "Write what to add, or add a picture.")
+        for n, img in sorted(images.items()):
+            if not reports.image_ext(img):
+                return no(400, "image%d: only PNG, JPEG or WebP pictures." % n)
+        if any(reports.has_url(t) for t in (what, before, contact)):
+            return no(400, reports.url_refusal())
+        if any(t and self.names.check(t) for t in (what, before, contact)):
+            return no(400, "Your text has a word that isn't allowed - please write it without it.")
+        ip = self.client_ip(request)
+        account = self.raw_account(request)
+        if self.report_throttled(["edit:" + ip] + (["edit-acc:%d" % account["id"]] if account else [])):
+            return no(429, "Too many changes from here - try again later.")
+        try:
+            ok, result = await asyncio.get_running_loop().run_in_executor(
+                None, lambda: self.reports.edit(str(meta.get("id") or ""), meta.get("secret"), what, before, contact,
+                                                [images[n] for n in sorted(images)],
+                                                account["name"] if account else None))
+        except Exception:
+            return no(503, "The report store didn't answer - try again later.")
+        if not ok:
+            return no(404 if result == "No such report." else 409, result)
+        gs.log("reports: %s edited (%d + %d chars, %d pictures%s)" % (meta.get("id"), len(what), len(before),
+                                                                     len(images), ", contact" if contact else ""))
+        return web.json_response({"ok": True, "edits": result.get("edits", 0), "pictures": result.get("pictures", 0)})
 
     @admin_only
     async def admin_reports(self, request):
@@ -2228,10 +2735,9 @@ class Service:
             out[g.account["name"]] = "https"
         for g in list(getattr(r, "udp_games", {}).values()):
             out[g.account["name"]] = "UDP"
-        for gid in list(getattr(r, "edge_games", set())):
-            name = getattr(r, "ticket_names", {}).get(gid)
-            if name:
-                out[name] = "UDP (edge)"
+        for row in r.rows():
+            if row["link"] == "UDP (edge)" and row["known"]:
+                out[row["name"]] = "UDP (edge)"
         return out
 
     @admin_only
@@ -2267,10 +2773,15 @@ class Service:
                         "ORDER BY at DESC LIMIT 1", (aid,)).fetchone()
                     out.append({"name": a[0], "seen": self.stats.recent.get(aid, 0), "link": links.get(a[0], ""),
                                 "session": sessions.get(a[0].lower()),
+                                "place": self.stats.places.get(aid, ("", ""))[0],
+                                "kind": self.stats.places.get(aid, ("", ""))[1],
+                                "online_mode": aid in self.stats.online_mode and
+                                self.stats.online_mode[aid] >= cutoff,
                                 "last": dict(zip(("at", "path", "nat", "rtt", "network", "version"), e)) if e else None})
             return sorted(out, key=lambda r: r["name"].lower())
 
-        return web.json_response({"now": t, "players": await asyncio.get_running_loop().run_in_executor(None, rows)})
+        return web.json_response({"now": t, "place_names": PLACE_NAMES,
+                                  "players": await asyncio.get_running_loop().run_in_executor(None, rows)})
 
     @admin_only
     async def admin_player(self, request):
@@ -2328,7 +2839,39 @@ class Service:
             del self.live[k]
         sessions = sorted(self.live.values(), key=lambda v: -v["since"])
         relay = [{"name": g.account["name"], "since": getattr(g, "since", 0)} for g in self.relay.games.values()]
-        return web.json_response({"now": t, "sessions": sessions, "relay": relay,
+        games = self.relay.rows()
+        # (a host's peer without a name - "?" - named from the relay's account for its id, 2.1.6 hosts on)
+        named = []
+        for v in sessions:
+            players = []
+            for p in v["players"]:
+                p = dict(p)
+                aid = self.relay.account_of(p["id"]) if p.get("id") else 0
+                if aid:
+                    p["account"] = aid
+                    if not p["name"] or p["name"] == "?":
+                        p["name"], p["named_by"] = self.relay.name_of(aid) or "?", "relay"
+                players.append(p)
+            named.append(dict(v, players=players))
+        hosts = {v["host"].lower(): v.get("version", "") for v in sessions}
+
+        def versions():
+            # (a game's version: its last match report's, else the session it hosts now; banned: the Ban button's state)
+            out = {}
+            with self.store.lock:
+                for r in games:
+                    if not r["account"] or r["account"] in out:
+                        continue
+                    e = self.store.db.execute("SELECT version FROM net_events WHERE account = ? AND version != '' "
+                                              "ORDER BY at DESC LIMIT 1", (r["account"],)).fetchone()
+                    b = self.store.db.execute("SELECT banned FROM accounts WHERE id = ?", (r["account"],)).fetchone()
+                    out[r["account"]] = (e[0] if e else "", bool(b and b[0]))
+            return out
+        known = await asyncio.get_running_loop().run_in_executor(None, versions)
+        for r in games:
+            r["version"], r["banned"] = known.get(r["account"], ("", False))
+            r["version"] = r["version"] or hosts.get(r["name"].lower(), "")
+        return web.json_response({"now": t, "sessions": named, "relay": relay, "relay_games": games,
                                   "udp_games": len(getattr(self.relay, "udp_games", {})),
                                   "match_network": SETTINGS["match_network"]})
 
@@ -2415,7 +2958,7 @@ class Service:
         out = []
         uploads = collections.Counter(r["ownerid"] for r in self.store.all("UserContent"))
         for a in self.accounts.all():
-            out.append(dict(a, uploads=uploads.get(a["profileid"], 0),
+            out.append(dict(a, activated=self.signup.activated(a["id"]), uploads=uploads.get(a["profileid"], 0),
                             storage=self.store.owner_bytes(a["profileid"]),
                             online=a["id"] in self.stats.recent))
         return web.json_response(out)
@@ -2428,19 +2971,116 @@ class Service:
         result = {"ok": True}
         if action == "ban":
             self.accounts.set_banned(aid, True)
+            self.relay.ban(aid)  # (its relay streams, UDP and the edge's: not only its sign-ins)
         elif action == "unban":
             self.accounts.set_banned(aid, False)
+            self.relay.unban(aid)
         elif action == "reset":
             result["password"] = self.accounts.reset_password(aid)
         elif action == "delete":
             result["removed"] = self.accounts.delete(aid)
+            self.relay.ban(aid, "deleted")
+        elif action == "reactivation-code":  # (shown once: only its hash is kept)
+            result["id"], result["code"] = self.signup.make_code("reactivate", "", aid)
+        elif action == "activate":  # (no code: the server owner's own say)
+            self.signup.set_active(aid)
+        elif action == "reset-code":  # (a forgotten password: the player types it in the launcher; 24 h, once)
+            result["id"], result["code"] = self.signup.make_code("reset", "", aid)
         else:
             return web.json_response({"ok": False}, status=400)
         gs.log("admin: account %d %s" % (aid, action))
         return web.json_response(result)
 
+    @admin_only
+    async def admin_invites(self, request):
+        if request.method == "POST":  # (new sign-up codes: shown once)
+            try:
+                body = await request.json()
+            except ValueError:
+                body = {}
+            n = max(1, min(int(body.get("count", 1) or 1), 50))
+            note = str(body.get("note", ""))
+            codes = [self.signup.make_code("signup", note) for _ in range(n)]
+            gs.log("admin: %d invite code(s) made%s" % (n, " (%s)" % note[:40] if note else ""))
+            return web.json_response({"ok": True, "codes": [{"id": i, "code": c} for i, c in codes]})
+        return web.json_response({"ok": True, "invites": self.signup.invites()})
+
+    @admin_only
+    async def admin_checks(self, request):
+        """The account checks' numbers: how many accounts account_checks on would keep off online now."""
+        blocked, total = await asyncio.get_running_loop().run_in_executor(None, self.signup.blocked_count)
+        return web.json_response({"ok": True, "checks": SETTINGS["account_checks"], "would_block": blocked,
+                                  "accounts": total, "test_open": self.signup.open})
+
+    @admin_only
+    async def admin_invite_revoke(self, request):
+        ok = self.signup.revoke(int(request.match_info["id"]))
+        gs.log("admin: invite %s revoked" % request.match_info["id"])
+        return web.json_response({"ok": ok})
+
     async def health(self, request):
         return web.json_response({"ok": True})
+
+    # -- the storage node (the user's PC behind the VPS): its state, Stop / Start ----------------
+
+    def node_save(self):
+        tmp = self.node_state_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(self.node_state, f)
+        os.replace(tmp, self.node_state_path)
+
+    def node_call(self, method, path, timeout=6):
+        """The node's answer (status, JSON or None); (0, None) when it doesn't answer."""
+        import urllib.error
+        import urllib.request
+        r = urllib.request.Request(self.node_url + path, method=method, data=b"" if method == "POST" else None,
+                                   headers={"X-Storage-Key": self.node_key})
+        try:
+            with urllib.request.urlopen(r, timeout=timeout) as f:
+                return f.status, json.loads(f.read() or b"null")
+        except urllib.error.HTTPError as e:
+            return e.code, None
+        except Exception:
+            return 0, None
+
+    @admin_only
+    async def admin_storage(self, request):
+        """GET: the node's state for the dashboard's panel. POST {"action": "stop" | "start"}: stop it (the core
+        tells it - it stays stopped) or want it running (the PC's watchdog asks for that and starts it)."""
+        if not self.node_url:
+            return web.json_response({"ok": True, "node": False})
+        loop = asyncio.get_running_loop()
+        if request.method == "POST":
+            try:
+                body = await request.json()
+            except ValueError:
+                body = {}
+            action = body.get("action")
+            if action not in ("stop", "start"):
+                return web.json_response({"ok": False, "error": "stop or start"}, status=400)
+            self.node_state.update(wanted="stopped" if action == "stop" else "running", changed=now())
+            self.node_save()
+            gs.log("storage node: %s asked from the dashboard" % action)
+            if action == "stop":
+                status, _ = await loop.run_in_executor(None, self.node_call, "POST", "/__stop")
+                if status != 200:  # (not answering: the watchdog stops it when it asks next)
+                    gs.log("storage node: it didn't take the stop now (%s) - the watchdog stops it" % (status or
+                                                                                                        "no answer"))
+        status, info = await loop.run_in_executor(None, self.node_call, "GET", "/__health")
+        up = status == 200 and bool(info and info.get("ok"))
+        if up:
+            self.node_state["answered"] = now()
+        return web.json_response({"ok": True, "node": True, "up": up, "info": info if up else None,
+                                  "wanted": self.node_state["wanted"], "changed": self.node_state.get("changed"),
+                                  "answered": self.node_state.get("answered"), "watchdog_polled": self.node_polled or None,
+                                  "now": now()})
+
+    async def api_storage_wanted(self, request):
+        """The PC's watchdog (pc_watchdog.ps1, every 2 minutes, with the node's key): running or stopped."""
+        if not self.node_url or not hmac.compare_digest(request.headers.get("X-Storage-Key", ""), self.node_key):
+            return web.Response(status=403)
+        self.node_polled = now()
+        return web.json_response({"wanted": self.node_state["wanted"]})
 
     def health_line(self):
         r = self.relay
@@ -2494,6 +3134,10 @@ class Service:
         app.router.add_post(b + "/api/register", self.api_register)
         app.router.add_post(b + "/api/login", self.api_login)
         app.router.add_post(b + "/api/logout", self.api_logout)
+        app.router.add_get(b + "/api/account", self.api_account)
+        app.router.add_post(b + "/api/reactivate", self.api_reactivate)
+        app.router.add_post(b + "/api/password/reset", self.api_password_reset)
+        app.router.add_post(b + "/api/password/change", self.api_password_change)
         app.router.add_route("*", b + "/api/session", self.api_session)
         app.router.add_get(b + "/api/status", self.api_status)
         app.router.add_get(b + "/api/friends", self.api_friends)
@@ -2512,13 +3156,17 @@ class Service:
         app.router.add_post(b + "/api/mods", self.api_mod_upload)
         app.router.add_route("*", b + "/api/mods/{id}", self.api_mod)  # (GET; PATCH / DELETE: its owner)
         app.router.add_get(b + "/api/mods/{id}/file", self.api_mod_file)
-        app.router.add_put(b + "/api/mods/{id}/file", self.api_mod_update_file)  # (its owner: an update)
+        app.router.add_put(b + "/api/mods/{id}/file", self.api_mod_update_file)  # (an update: its owner, or the node's key)
         app.router.add_put(b + "/api/mods/{id}/pictures/{n}", self.api_mod_update_picture)  # (its owner)
         app.router.add_get(b + "/api/mods/{id}/img/{n}", self.api_mod_image)
         app.router.add_post(b + "/api/reports", self.api_report)
         app.router.add_post(b + "/api/reports/mods/check", self.api_report_mods_check)
+        app.router.add_post(b + "/api/reports/status", self.api_report_status)
+        app.router.add_post(b + "/api/reports/reply", self.api_report_reply)
+        app.router.add_post(b + "/api/reports/edit", self.api_report_edit)
         self.relay.routes(app, b)
         app.router.add_get("/__health", self.health)
+        app.router.add_get(b + "/api/storage/wanted", self.api_storage_wanted)  # (the storage node's watchdog)
         # the dashboard: at / (the portal, --local-admin) and again under /svr-admin/ (its own
         # sign-in: admin_auth.py - what nginx passes on the VPS)
         app.router.add_get(aa.PREFIX, self.admin_slash)
@@ -2538,6 +3186,7 @@ class Service:
             app.router.add_post(p + "/api/admin/blobs/{sha}/delete", self.admin_blob_delete)
             app.router.add_get(p + "/api/admin/mod/{id}/image.jpg", self.admin_mod_image)
             app.router.add_post(p + "/api/admin/mod/{id}/{action}", self.admin_mod_action)
+            app.router.add_put(p + "/api/admin/mods/{id}/file", self.admin_mod_update_file)  # (a new version, owner kept)
             app.router.add_get(p + "/api/admin/users", self.admin_users)
             app.router.add_get(p + "/api/admin/reports", self.admin_reports)
             app.router.add_get(p + "/api/admin/report/{id}/replay.zip", self.admin_report_replay)
@@ -2551,7 +3200,14 @@ class Service:
             app.router.add_get(p + "/api/admin/log", self.admin_log)
             app.router.add_route("*", p + "/api/admin/settings", self.admin_settings)
             app.router.add_post(p + "/api/admin/restart", self.admin_restart)
+            app.router.add_route("*", p + "/api/admin/storage", self.admin_storage)
             app.router.add_post(p + "/api/admin/user/{id}/{action}", self.admin_user_action)
+            app.router.add_route("*", p + "/api/admin/invites", self.admin_invites)
+            app.router.add_post(p + "/api/admin/invite/{id}/revoke", self.admin_invite_revoke)
+            app.router.add_get(p + "/api/admin/checks", self.admin_checks)
+            app.router.add_route("*", p + "/api/admin/names", self.admin_names)  # (GET; POST: save)
+            app.router.add_post(p + "/api/admin/names/test", self.admin_names_test)
+            app.router.add_get(p + "/api/admin/names/flagged", self.admin_names_flagged)
         app.cleanup_ctx.append(self.background)
         return app
 
@@ -2595,8 +3251,44 @@ def storage_app(args):
                     "X-Packed": "1" if packed else "0", "Content-Type": "application/octet-stream"})
         return web.Response(status=404)
 
+    started = time.time()
+    count = {"at": 0, "n": 0}
+
+    def blob_count():  # (the blobs folder's files, counted at most once a minute)
+        if time.time() - count["at"] > 60:
+            try:
+                count["n"] = sum(1 for d in os.scandir(blobs.folder) if d.is_dir()
+                                 for e in os.scandir(d.path) if e.is_file())
+            except OSError:
+                pass
+            count["at"] = time.time()
+        return count["n"]
+
     async def health(request):
-        return web.json_response({"ok": True, "role": "storage"})
+        out = {"ok": True, "role": "storage"}
+        if ok(request):  # (the core asking: the details for the dashboard's panel)
+            try:
+                du = shutil.disk_usage(args.data)
+                out.update(free_bytes=du.free, total_bytes=du.total)
+            except OSError:
+                pass
+            out.update(up_s=int(time.time() - started), pid=os.getpid(), supervised=bool(os.environ.get(
+                "SVR2011_SUPERVISOR_PID")), blobs=await asyncio.get_running_loop().run_in_executor(None, blob_count))
+        return web.json_response(out)
+
+    async def stop(request):  # (the dashboard's Stop: stopped until its Start - the marker, then a clean exit)
+        if not ok(request):
+            return web.Response(status=403)
+        with open(os.path.join(args.data, NODE_STOPPED), "w", encoding="utf-8") as f:
+            json.dump({"at": time.time(), "why": "the dashboard's Stop"}, f)
+        gs.log("storage node: stop asked from the dashboard - stopped until its Start")
+
+        def bye():
+            gs.log("stopped %s: the dashboard's Stop" % time.strftime("%Y-%m-%d %H:%M:%S"))
+            os._exit(STOP_CODE)
+
+        asyncio.get_running_loop().call_later(0.5, bye)
+        return web.json_response({"ok": True})
 
     async def blob_list(request):  # (the core's blob audit)
         if not ok(request):
@@ -2606,6 +3298,7 @@ def storage_app(args):
     app = web.Application(client_max_size=1 << 31)  # (any blob: songs, movies, mods - only the key's holder puts)
     app.router.add_route("*", "/blob/{sha}", blob)
     app.router.add_get("/__health", health)
+    app.router.add_post("/__stop", stop)
     app.router.add_get("/blobs", blob_list)
     reports.node_routes(app, args.data, ok, int(args.report_mod_quota_gb * (1 << 30)))  # (problem reports: <data>/reports)
     return app
@@ -2633,6 +3326,9 @@ def supervise(args):
             gs.log("supervisor: restart asked - starting it again")
             backoff = 2.0
             continue
+        if code == STOP_CODE:  # (a storage node stopped from the dashboard: stays stopped)
+            gs.log("supervisor: the server stopped on purpose (the dashboard's Stop) - not starting it again")
+            return
         gs.log("supervisor: the server exited (code %s) after %.0f s - again in %.0f s" % (code, ran, backoff))
         time.sleep(backoff)
         backoff = 2.0 if ran > 60 else min(backoff * 2, 60.0)
@@ -2707,10 +3403,54 @@ def main():
     ap.add_argument("--admin-password-file", default=None, help="where the dashboard password's hash is "
                     "(default: <data>/admin_password)")
     ap.add_argument("--admin-account", default=None,
-                    help="the dashboard's sign-in is this online account's name and password instead")
+                    help="the dashboard's sign-in is this online account's name and password instead (it never "
+                         "needs a re-activation code online)")
+    ap.add_argument("--test-open-accounts", action="store_true",
+                    help="a private TEST server only: sign-up without an invite code, and no re-activation "
+                         "code for online play (the accounts' old rules)")
+    ap.add_argument("--activate", default=None, metavar="NAME",
+                    help="let this account play online without a re-activation code, then exit")
+    ap.add_argument("--prune-accounts", type=float, default=None, metavar="DAYS",
+                    help="list the accounts made more than DAYS ago and not seen for DAYS (with --yes: delete them, "
+                         "as the dashboard's Delete does), then exit - with the server stopped")
+    ap.add_argument("--yes", action="store_true", help="(--prune-accounts) really delete")
     args = ap.parse_args()
     if args.set_admin_password:
         return aa.set_password_cli(args.admin_password_file or os.path.join(args.data, "admin_password"))
+    if args.test_open_accounts and args.host not in ("127.0.0.1", "::1", "localhost"):
+        ap.error("--test-open-accounts is for a private test server: only with --host 127.0.0.1")
+    if args.activate and args.role == "storage":
+        ap.error("--activate: a storage node has no accounts (run it where the core's data is)")
+    if args.activate:
+        store = gs.Store(args.data)
+        signup.Signup(store, Accounts(store), print)  # (the column, if this database is from before)
+        with store.lock:
+            n = store.db.execute("UPDATE accounts SET activated = 1 WHERE name = ? COLLATE NOCASE",
+                                 (args.activate,)).rowcount
+            store.db.commit()
+        print("%s: %s" % (args.activate, "active" if n else "no such account"))
+        sys.exit(0 if n else 1)
+    if args.prune_accounts is not None:
+        if args.role == "storage":
+            ap.error("--prune-accounts: a storage node has no accounts (run it where the core's data is)")
+        store = gs.Store(args.data)
+        accounts = Accounts(store)
+        leaderboards.Leaderboards(store)  # (its tables: a delete clears the account's rows)
+        cut = now() - args.prune_accounts * 86400
+        with store.lock:
+            rows = store.db.execute("SELECT id, name, created, last_seen, banned FROM accounts WHERE created < ? AND "
+                                    "COALESCE(last_seen, 0) < ? ORDER BY last_seen", (cut, cut)).fetchall()
+        day = lambda t: time.strftime("%Y-%m-%d", time.localtime(t)) if t else "never"
+        for aid, name, created, seen, banned in rows:
+            print("%6d  %-16s made %s  last seen %s%s" % (aid, name, day(created), day(seen),
+                                                          "  (banned)" if banned else ""))
+        print("%d account(s) made more than %g days ago and not seen since" % (len(rows), args.prune_accounts))
+        if not args.yes:
+            print("(nothing deleted: add --yes to delete them)")
+            sys.exit(0)
+        records = sum(accounts.delete(aid) for aid, *_ in rows)
+        print("deleted %d account(s) and %d Community Creations record(s)" % (len(rows), records))
+        sys.exit(0)
     if args.relay_edge and (not args.relay_secret or not args.relay_udp_port):
         ap.error("--relay-edge needs --relay-secret and --relay-udp-port")
     # (a storage node never relays: linked to the edge too, it took half the
@@ -2724,8 +3464,14 @@ def main():
     if args.role == "core" and not args.storage_url:
         ap.error("--role core needs --storage-url")
     if args.role == "storage":
+        # (only the blobs: no accounts - no Service, so no signup.py migration or backup, no mail.json, no account
+        # routes; its data folder's community.db, if one is left there, is never opened)
         if args.log:
             gs.LOG = open(args.log, "a", encoding="utf-8")
+        if os.path.exists(os.path.join(args.data, NODE_STOPPED)):  # (stopped from the dashboard: stays so)
+            gs.log("storage node: not starting - stopped from the dashboard (%s; its Start removes it)" %
+                   os.path.join(args.data, NODE_STOPPED))
+            sys.exit(STOP_CODE)
         watch_supervisor()
         gs.log("storage node on %s:%d, blobs in %s" % (args.host, args.port, os.path.abspath(args.data)))
         web.run_app(storage_app(args), host=args.host, port=args.port, print=None, access_log=None)

@@ -41,6 +41,7 @@ public class InstallActivity extends Activity {
     private ProgressBar progress_;
     private Button button_;
     private Thread worker_;
+    private android.app.AlertDialog askInstall_;
 
     // The app's own storage (filesDir/game), set by each activity at its start.
     static File privateFolder_;
@@ -65,8 +66,37 @@ public class InstallActivity extends Activity {
         return false;
     }
 
+    // Files every install has. default.xex alone isn't enough: a folder with it and none of the disc's files offered
+    // Play and the game crashed at once (2.1.9 report 181cb0). Install again keeps what is there, saves and mods too.
+    private static final String[] kMustHave = {"plist360.arc", "pac/_startup.pac", "pac/m.pac", "pac/plist360.h", "sound/System.pck"};
+
+    // The first must-have file the game folder lacks, or null.
+    static String missingFile() {
+        File dir = gameFolder();
+        if (!new File(dir, "default.xex").isFile()) return "default.xex";
+        for (String f : kMustHave)
+            if (!new File(dir, f).isFile()) return f;
+        return null;
+    }
+
     static boolean installed() {
-        return new File(gameFolder(), "default.xex").isFile();
+        return missingFile() == null;
+    }
+
+    // Any of the game's files there already: not a first install.
+    private static boolean partlyInstalled() {
+        File dir = gameFolder();
+        if (new File(dir, "default.xex").isFile()) return true;
+        for (String f : kMustHave)
+            if (new File(dir, f).isFile()) return true;
+        return false;
+    }
+
+    // default.xex is there, but not everything: what the player is told.
+    static String incompleteText() {
+        String f = missingFile();
+        if (f == null || f.equals("default.xex")) return null;
+        return "Your install isn't complete (" + f + " is missing). Install again: your saves and mods are kept.";
     }
 
     // The package the launcher made, where the player may have copied it.
@@ -193,6 +223,13 @@ public class InstallActivity extends Activity {
                 next.putExtras(getIntent().getExtras());
             } else {
                 next = new Intent(this, LauncherActivity.class);
+                // (the launcher's own test extras - svr2011_test, svr2011_report_server, report_send, tab: adb
+                // can't start it, it isn't exported)
+                android.os.Bundle in = getIntent().getExtras();
+                if (in != null)
+                    for (String key : in.keySet())
+                        if (key.startsWith("svr2011_") || key.equals("report_send") || key.equals("tab"))
+                            next.putExtra(key, in.getString(key));
             }
             startActivity(next);
             finish();
@@ -200,14 +237,29 @@ public class InstallActivity extends Activity {
         }
         File zip = findPackage();
         if (zip == null) {
-            // The launcher's Install tab: from the disc image, or a package elsewhere.
-            Intent launcher = new Intent(this, LauncherActivity.class);
-            launcher.putExtra("tab", "Install");
-            startActivity(launcher);
-            finish();
+            openInstallTab();
+            return;
+        }
+        if (partlyInstalled()) {
+            // (not without asking: this zip may be older than the files already here)
+            if (askInstall_ != null && askInstall_.isShowing()) return;  // (onResume comes here again)
+            askInstall_ = new android.app.AlertDialog.Builder(this)
+                .setMessage("Install from " + zip.getName() + "? Your saves and mods are kept.")
+                .setPositiveButton("Install", (d, w) -> install(zip))
+                .setNegativeButton("Not now", (d, w) -> openInstallTab())
+                .setCancelable(false)
+                .show();
             return;
         }
         install(zip);
+    }
+
+    // The launcher's Install tab: from the disc image, or a package elsewhere.
+    private void openInstallTab() {
+        Intent launcher = new Intent(this, LauncherActivity.class);
+        launcher.putExtra("tab", "Install");
+        startActivity(launcher);
+        finish();
     }
 
     private void show(String message, String action, Runnable onClick) {
@@ -243,7 +295,7 @@ public class InstallActivity extends Activity {
         worker_.start();
     }
 
-    // Extracts every entry of zip into dest (default.xex last, so an
+    // Extracts the entries of zip into dest (default.xex last, so an
     // interrupted install is redone). Returns null or the error.
     private String extract(File zip, File dest) {
         try (ZipFile file = new ZipFile(zip)) {
@@ -260,6 +312,10 @@ public class InstallActivity extends Activity {
                     xex = entry;
                     continue;
                 }
+                if (keptIfThere(entry.getName()) && new File(dest, entry.getName()).exists()) {
+                    done += Math.max(0, entry.getSize());
+                    continue;
+                }
                 done = extractEntry(file, entry, dest, destPath, buffer, done, total);
             }
             if (xex == null) return "the package has no default.xex";
@@ -269,6 +325,11 @@ public class InstallActivity extends Activity {
             Log.e(kTag, "install", e);
             return e.toString();
         }
+    }
+
+    // The player's own: a package made on the PC can carry its saves and mods, and never replaces those here.
+    static boolean keptIfThere(String name) {
+        return name.startsWith("Saves/") || name.startsWith("Mods/") || name.startsWith("UserData/");
     }
 
     private long extractEntry(ZipFile file, ZipEntry entry, File dest, String destPath,

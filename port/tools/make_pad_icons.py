@@ -396,11 +396,7 @@ def keyboard_picture(w, h, filled):
                 col = (60, 60, 64, 255)
                 d.rounded_rectangle([kx0 + a * kw + g, ky0 + r * kh + g, kx0 + min(b, cols) * kw - g,
                                      ky0 + (r + 1) * kh - g], int(s * 1.5), fill=col)
-        # (the four movement keys in the 360 face-button colours)
-        for (c, r), col in zip([(2.4, 0), (1.7, 1), (2.7, 1), (3.7, 1)],
-                               [(240, 180, 30, 255), (30, 110, 220, 255), (200, 40, 40, 255), (60, 170, 60, 255)]):
-            d.rounded_rectangle([kx0 + c * kw + g, ky0 + r * kh + g, kx0 + (c + 1) * kw - g, ky0 + (r + 1) * kh - g],
-                                int(s * 1.5), fill=col)
+        # (plain keys: coloured movement keys read as glitches at the picture's size - 2.1.8 report 7edf25)
     return img.resize((w, h), Image.LANCZOS)
 
 
@@ -502,6 +498,80 @@ def button_boxes(xi, pi, codes, glyphs):
     if len(parts) != len(codes):
         return []
     return [(c,) + r for c, r in zip(codes, parts)]
+
+
+def light_caps(x_dds, p_dds, fcc, n):
+    """A match prompt's PS3 picture with light button caps, as the 360's (the PS3's dark caps with coloured symbols
+    showed as dim, washed-out buttons over the ring's mat - 2.1.8 report 7edf25): in each button - a dark opaque
+    piece up to 96 px across that differs from the 360 picture (text, logos and lines stay as they are) - grey
+    turns over (the cap light, white letters dark), the edge gets a dark outline, coloured symbols get stronger.
+    -> the DXT blocks (n bytes); the PS3's own if anything fails. (PIL only.)"""
+    import colorsys
+    from PIL import ImageChops, ImageFilter
+    try:
+        xi = Image.open(io.BytesIO(x_dds)).convert('RGBA')
+        pi = Image.open(io.BytesIO(p_dds)).convert('RGBA')
+
+        def flat(im):
+            bg = Image.new('RGBA', im.size, (0, 0, 0, 0))
+            rgb = Image.alpha_composite(bg, im).convert('RGB')
+            return Image.merge('RGBA', (*rgb.split(), im.split()[3]))
+        d = ImageChops.difference(flat(xi), flat(pi))
+        m = d.split()[0]
+        for band in d.split()[1:]:
+            m = ImageChops.lighter(m, band)
+        changed = m.point(lambda v: 255 if v > 40 else 0).filter(ImageFilter.MaxFilter(5)).load()
+        alpha = pi.split()[3]
+        solid = alpha.point(lambda v: 255 if v >= 128 else 0)
+        edge = ImageChops.subtract(solid, solid.filter(ImageFilter.MinFilter(3))).load()
+        w, h = pi.size
+        ap, pp = alpha.load(), pi.load()
+        take = Image.new('L', (w, h), 0)
+        tk = take.load()
+        seen = bytearray(w * h)
+        for y0 in range(h):
+            for x0 in range(w):
+                if seen[y0 * w + x0] or ap[x0, y0] < 128:
+                    continue
+                stack, pts, hit = [(x0, y0)], [], False
+                seen[y0 * w + x0] = 1
+                while stack:
+                    x, y = stack.pop()
+                    pts.append((x, y))
+                    hit = hit or changed[x, y] > 0
+                    for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+                        if 0 <= nx < w and 0 <= ny < h and not seen[ny * w + nx] and ap[nx, ny] >= 128:
+                            seen[ny * w + nx] = 1
+                            stack.append((nx, ny))
+                xs, ys = [q[0] for q in pts], [q[1] for q in pts]
+                bw, bh = max(xs) - min(xs) + 1, max(ys) - min(ys) + 1
+                # (a button: a dark cap - white text that only moved on the PS3 is light on the whole)
+                dark = sum(sum(pp[q][:3]) for q in pts) < 120 * 3 * len(pts)
+                if hit and bw <= 96 and bh <= 96 and dark:
+                    for q in pts:
+                        tk[q] = 255
+        mask = take.filter(ImageFilter.MaxFilter(3)).load()  # (and the soft edge around each)
+        out = pi.copy()
+        px = out.load()
+        for y in range(h):
+            for x in range(w):
+                r, g, b, a = px[x, y]
+                if not a or not mask[x, y]:
+                    continue
+                if max(r, g, b) - min(r, g, b) > 30:  # (a coloured symbol / arrow)
+                    hh, ss, vv = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
+                    r2, g2, b2 = colorsys.hsv_to_rgb(hh, min(1.0, ss * 1.7), vv * 0.9)
+                    px[x, y] = (int(r2 * 255), int(g2 * 255), int(b2 * 255), a)
+                    continue
+                v = 70 if edge[x, y] else int(232 - (r + g + b) // 3 * 0.75)
+                px[x, y] = (v, v, min(255, v + 4), a)
+        dds = io.BytesIO()
+        out.save(dds, 'DDS', pixel_format=fcc.decode())
+        data = dds.getvalue()[128:128 + n]
+        return data if len(data) == n else p_dds[128:128 + n]
+    except Exception as e:  # (never a broken picture: the PS3's own)
+        print(f'light caps: kept the PS3 picture ({e})')
+        return p_dds[128:128 + n]
 
 
 def main():
@@ -639,7 +709,8 @@ def main():
             if (hsh, 'ps') not in seen:
                 seen.add((hsh, 'ps'))
                 sprites.append(f'sprite ps {hsh:016x} {w} {h} {fcc.decode()} {len(blob)} {n}   # {rel}:{key}')
-                blob += pb
+                # (the match HUD's: light caps, as the 360's buttons - the PS3's dark ones read badly in matches)
+                blob += light_caps(xd, p[key], fcc, n) if rel.startswith('game2d') else pb
                 # (keyboard prompts: where its buttons are; the 360 picture the game paints keycaps into)
                 codes = PROMPT_BUTTONS.get(key[key.find('BASE/'):]) if rel.startswith('game2d') and '2D/BASE/' in key else None
                 if fcc == b'DXT5' and codes:

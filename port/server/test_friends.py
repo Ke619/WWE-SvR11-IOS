@@ -120,6 +120,13 @@ def main():
     _, r = request(server, "GET", "/api/friends", token=a)
     check(next(x for x in r["friends"] if x["name"] == names[2])["status"] == "offline",
           "a game closing (?bye=1) is offline at once")
+    request(server, "GET", "/api/friends?here=1", token=c)
+    _, r = request(server, "GET", "/api/friends", token=a)
+    check(next(x for x in r["friends"] if x["name"] == names[2])["status"] == "ingame",
+          "a game in the offline menus (?here=1, no mode) is in the game: it can be invited")
+    status, _ = request(server, "POST", "/api/invite", {"to": names[2], "session": info, "kind": "Match"}, a)
+    _, r = request(server, "GET", "/api/friends?here=1", token=c)
+    check(status == 200 and len(r.get("invites", [])) == 1, "the invite reaches a friend outside online mode")
     print("friends: " + ("all ok" if not failures else "%d failed" % len(failures)))
     return 1 if failures else 0
 

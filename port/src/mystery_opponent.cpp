@@ -27,6 +27,7 @@
 // SVR2011_TEST_MYSTERY_NO_EVENT=1 ignores the entrances' sound events (the
 // reveal's fallbacks).
 
+#include "big_roster.h"
 #include "mystery_opponent.h"
 
 #include <algorithm>
@@ -50,7 +51,9 @@
 #include <rex/ui/imgui_dialog.h>
 
 #include "generated/default/svr2011_init.h"
+#include "rtwm_streak.h"
 #include "superstar_mods.h"
+#include "../modmaker/svrfmt/bytes.h"
 
 namespace {
 
@@ -68,10 +71,7 @@ constexpr uint32_t kStatePick = 4, kStateAttire = 6;
 
 using Clock = std::chrono::steady_clock;
 
-uint32_t Rd32(const uint8_t* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; }
-uint16_t Rd16(const uint8_t* p) { return uint16_t(p[0] << 8 | p[1]); }
-void Wr32(uint8_t* p, uint32_t v) { p[0] = uint8_t(v >> 24), p[1] = uint8_t(v >> 16), p[2] = uint8_t(v >> 8), p[3] = uint8_t(v); }
-void Wr16(uint8_t* p, uint16_t v) { p[0] = uint8_t(v >> 8), p[1] = uint8_t(v); }
+using svrfmt::Rd32, svrfmt::Rd16, svrfmt::Wr32, svrfmt::Wr16;
 
 uint8_t* g_base = nullptr;
 std::atomic<bool> g_on{false};
@@ -92,9 +92,9 @@ int64_t NowMs() {
 
 const uint8_t* Record(uint8_t* base, uint32_t id) {
   if (id == 0 || id >= 1000) return nullptr;
-  const uint32_t index = Rd16(base + kIdToIndex + id * 2);
+  const uint32_t index = svr2011::RosterIndex(base, id);
   if (index >= 1000) return nullptr;
-  const uint8_t* rec = base + kRecords + index * kRecordSize;
+  const uint8_t* rec = base + svr2011::RosterEntry(kRecords, kRecordSize, index);
   return Rd16(rec + kOwnId) == id ? rec : nullptr;
 }
 
@@ -129,7 +129,7 @@ uint32_t Choose(uint8_t* base, uint32_t player) {
     const uint8_t* rec = Record(base, id);
     if (rec && rec[kSelectable] == 1 && !rec[kDlc] && fits(id)) pool.push_back(id);
   }
-  for (uint32_t id : svr2011::SuperstarModIds())
+  for (uint32_t id : svr2011::SuperstarModIds(false))
     if (fits(id) && std::find(pool.begin(), pool.end(), id) == pool.end()) pool.push_back(id);
   if (rex::cvar::GetFlagByName("managers_tile") != "false")
     for (uint32_t id : kManagers)
@@ -394,7 +394,9 @@ REX_HOOK_RAW(sub_828C3AC8) {
 REX_EXTERN(__imp__sub_82465038);
 REX_HOOK_RAW(sub_82465038) {
   const uint32_t cursor = ctx.r3.u32;
+  const bool mod_shown = svr2011::RtwmShowModBegin(base);  // (RTWM's Streak list: its panel shows the mod)
   __imp__sub_82465038(ctx, base);
+  svr2011::RtwmShowModEnd(base, mod_shown);
   if (!g_on.load() || !cursor) return;
   if (!g_player_ready.load()) {
     g_auto_done = false;

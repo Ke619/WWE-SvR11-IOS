@@ -35,7 +35,32 @@ namespace svr2011 {
 // The app's paths (before the settings are read), then - with online on
 // (InstallOnline) - the checks start (threads).
 void SetGameFilesPaths(const std::filesystem::path& game_root, const std::filesystem::path& user_data);
+const std::filesystem::path& UserDataFolder();
+
+// A gameplay mod folder's CRC as the mod set has it (a downloaded copy is checked with it: mod_transfer.cpp),
+// and plain CRC-32 (a running value, start 0; a file's: false if unreadable).
+uint32_t ModFolderCrc(const std::filesystem::path& dir);
+uint32_t Crc32(uint32_t crc, const void* data, size_t n);
+bool FileCrc32(const std::filesystem::path& file, uint32_t* out);
 void StartGameFilesCheck();
+
+// At start, before the game runs: the disc's files (the launcher's list, the optional ones left out) that aren't in
+// the game folder - only whether each is there, no reading. `essential`: one the game can't start without
+// (default.xex, the .arc lists, pac\...): a folder without pac\_startup.pac / plist360.h crashed 0.3 s in, a read
+// of guest 0x28 (2.1.7 report ea8202). Test aid SVR2011_TEST_MISSING_GAME_FILE=<path in the list> - as if missing.
+struct MissingGameFile {
+  std::string path;  // in the game folder (UTF-8, backslashes)
+  bool essential = false;
+};
+std::vector<MissingGameFile> MissingGameFiles();
+
+// default.xex against the disc's (the launcher's list: its size and CRC-32). The port's code is that xex recompiled,
+// so another release's (the Japanese disc: 2.1.8 report 6fd821 - "No function registered at 8216B140", then out)
+// can't run. 1: the supported one (or no xex / no list entry: MissingGameFiles' business), 0: another release's,
+// -1: unreadable. *size / *crc: what the folder's is. Test aid SVR2011_TEST_OTHER_XEX=1: as if another release's.
+int DefaultXexSupported(uint64_t* size, uint32_t* crc);
+// The supported one's size and CRC-32 (the list's).
+void SupportedXex(uint64_t* size, uint32_t* crc);
 
 enum class GameFiles { kChecking, kClean, kModified };
 // The check's result; `first_bad`: the first file that differs (when modified).
@@ -56,6 +81,16 @@ const std::string& GameplayModSet();
 // Its hash (FNV-1a 64; 0 with no mods).
 uint64_t GameplayModSetHash();
 
+// The installed DLC packages that bring game files (UserData/0000000000000000/5451085D/00000002/<package>/pac:
+// motions, models, arenas), one line each ("DLC <fingerprint> - <fingerprint> <name>"), sorted; "" with none.
+// A package is known by its pac files' names and sizes, not its folder's name (a package file's name is the
+// player's: 42 hex digits from the console, DLC_02.pck, ...). Catalog-only packages (Fan Axxess, the port's
+// own) and string.pac (the port rewrites its wording) are left out. Read once.
+const std::string& DlcSet();
+// Why two games' DLC keep them apart ("" when the same): "Your downloadable content doesn't match: they have
+// DLC Vol02, you don't." Moves of a DLC's motions play otherwise without it - a lockstep match drifts apart.
+std::string DlcDifference(const std::string& mine, const std::string& theirs);
+
 // Why two sets differ, for both players: "Your mods don't match: they have
 // Practice Arena 1.0, you don't; ..." (`theirs`: the other side's set;
 // superstars = false leaves superstar and arena mods out: they are
@@ -68,6 +103,10 @@ bool OnlineModsAllowed();
 // The friends poll got no answer (no server, an error): as mods_online off
 // for ModsOnlineMessage until it answers again.
 void OnlineServerUnanswered();
+// The friends poll was refused for this account (2.1.6 servers: no re-activation code / confirmed email yet -
+// the launcher's Online tab does the steps): the server's reason, "" when it answers again. ModsOnlineMessage
+// says it first.
+void SetOnlineAccountBlock(const std::string& why);
 
 // The mods on in this run that change match data (Mods/<kind>/<folder>, not
 // "disabled"; the kinds: Superstars - their pack moves are merged into the

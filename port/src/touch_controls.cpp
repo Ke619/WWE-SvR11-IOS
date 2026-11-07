@@ -5,6 +5,7 @@
 #include "pad_types.h"
 #include "online_overlay.h"
 #include "keyboard_typing.h"
+#include "menu_touch.h"
 
 #include <algorithm>
 #include <atomic>
@@ -40,6 +41,9 @@ REXCVAR_DEFINE_BOOL(touch_controls, true, "UI", "On-screen touch controller");
 #else
 REXCVAR_DEFINE_BOOL(touch_controls, false, "UI", "On-screen touch controller");
 #endif
+REXCVAR_DEFINE_BOOL(menu_touch, true, "UI", "Tap the game's menus directly");
+REXCVAR_DEFINE_BOOL(menu_touch_mouse, false, "UI", "A left click counts as a tap on the game's menus");
+
 REXCVAR_DEFINE_BOOL(touch_auto_layout, true, "UI",
                     "Touch controller: MATCH layout in matches, MENU layout in menus");
 
@@ -618,6 +622,40 @@ void EditorMove(uint32_t pointer, float x, float y) {
 // ---------------------------------------------------------------------------
 // fingers (UI thread)
 
+// A tap on the game's own menus (menu_touch.h): a finger that came down off the controls and lifted about where it
+// was. The events go on to the others meanwhile, as they did.
+constexpr uint32_t kMousePointer = 0xFFFFFFF0u;
+constexpr uint32_t kNoTap = UINT32_MAX;
+uint32_t g_tap_pointer = kNoTap;
+float g_tap_x = 0, g_tap_y = 0;
+Clock::time_point g_tap_at;
+
+void TapDown(uint32_t pointer, float x, float y) {
+  if (!REXCVAR_GET(menu_touch) || (pointer == kMousePointer && !REXCVAR_GET(menu_touch_mouse))) return;
+  g_tap_pointer = pointer, g_tap_x = x, g_tap_y = y, g_tap_at = Clock::now();
+}
+
+void TapMove(uint32_t pointer, float x, float y) {
+  if (pointer != g_tap_pointer) return;
+  if (std::fabs(x - g_tap_x) > g_w * 0.03f || std::fabs(y - g_tap_y) > g_h * 0.05f) g_tap_pointer = kNoTap;
+}
+
+void TapPress(uint16_t buttons) {
+  std::lock_guard lock(g_mutex);
+  const auto until = std::chrono::steady_clock::now() + kMinPress;
+  for (int b = 0; b < 16; ++b)
+    if (buttons >> b & 1) g_hold_until[b] = until;
+}
+
+void TapUp(uint32_t pointer) {
+  if (pointer != g_tap_pointer) return;
+  g_tap_pointer = kNoTap;
+  if (Clock::now() - g_tap_at > std::chrono::milliseconds(700) || g_w <= 0 || g_h <= 0) return;
+  // Menus are 16:9 with bars on other shapes of screen.
+  const float pw = std::min(g_w, g_h * 16 / 9), ph = pw * 9 / 16;
+  MenuTouchTap((g_tap_x - (g_w - pw) / 2) / pw, (g_tap_y - (g_h - ph) / 2) / ph, TapPress);
+}
+
 bool Down(uint32_t pointer, float x, float y) {
   g_last_touch = Clock::now();
   static int logged = 0;
@@ -634,9 +672,11 @@ bool Down(uint32_t pointer, float x, float y) {
     g_help = false;
     return true;
   }
-  if (!Visible()) return false;
-  const int i = Find(x, y);
-  if (i < 0) return false;
+  const int i = Visible() ? Find(x, y) : -1;
+  if (i < 0) {
+    TapDown(pointer, x, y);
+    return false;
+  }
   Control& c = Current()[i];
   switch (c.kind) {
     case Kind::kLayout:
@@ -673,6 +713,7 @@ bool Move(uint32_t pointer, float x, float y) {
     EditorMove(pointer, x, y);
     return true;
   }
+  TapMove(pointer, x, y);
   auto it = g_pointers.find(pointer);
   if (it == g_pointers.end()) return false;
   auto& layout = Current();
@@ -700,6 +741,7 @@ bool Up(uint32_t pointer) {
     if (pointer == g_drag_pointer) g_drag_pointer = UINT32_MAX;
     return true;
   }
+  TapUp(pointer);
   auto it = g_pointers.find(pointer);
   if (it == g_pointers.end()) return false;
   const int i = it->second.control;
@@ -715,8 +757,6 @@ bool Up(uint32_t pointer) {
   UpdatePad();
   return true;
 }
-
-constexpr uint32_t kMousePointer = 0xFFFFFFF0u;
 
 // Window events are in physical pixels; the overlay (ImGui) works in its
 // display units - fewer on high-density screens (a phone: 2.6 pixels each).
@@ -1200,6 +1240,15 @@ void TouchInject(uint32_t pointer, int action, float x, float y) {
     else if (action == 1) Move(pointer, px, py);
     else Up(pointer);
   });
+}
+
+void TouchControlsHeld(uint16_t* buttons, uint8_t* left_trigger, uint8_t* right_trigger) {
+  std::lock_guard lock(g_mutex);
+  uint16_t held = uint16_t(g_pad.buttons);
+  const auto now = std::chrono::steady_clock::now();
+  for (int b = 0; b < 16; ++b)
+    if (now < g_hold_until[b]) held |= uint16_t(1u << b);
+  *buttons = held, *left_trigger = uint8_t(g_pad.left_trigger), *right_trigger = uint8_t(g_pad.right_trigger);
 }
 
 }  // namespace svr2011

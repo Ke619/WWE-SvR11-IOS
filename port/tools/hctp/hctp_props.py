@@ -24,7 +24,7 @@ import svr08_stage as s8  # noqa: E402
 import hctp2jboy  # noqa: E402
 import yobj  # noqa: E402
 
-GOBJ = os.path.join(os.environ.get('HCTP_UNPACKED', r"D:\Xbox Games Ports\HCTP Extract\_unpacked"), 'gm', 'GMMC_GOBJ')
+GOBJ = os.path.join(os.environ.get('HCTP_UNPACKED', ''), 'gm', 'GMMC_GOBJ')
 
 # class kind -> (model params, solid collision params at rest) by param index (param[0] = model)
 # (indices into the tag's float list)
@@ -33,7 +33,7 @@ KINDS = {
     89: ([0], [2]),           # gmAttackObjAndWeapon: model, coll p1 (param 2)
     47: ([0], [1]),           # CGmWireNetting: ami, wall coll 2063
     51: ([0], [1]),           # CGmThrowObject: model, coll
-    36: ([0], [1]),           # CGmShutObject: kizai_box, coll A
+    36: ([0], [8]),           # CGmShutObject: kizai_box, p8 its solid box (p1 is the floor zone in front, flat)
     37: ([0], []),            # CGmSwitch: panel (2056 = zone)
     39: ([0], []),            # CGmSwitchOnOffParticle: valve (2057 = zone)
     46: ([0], [1]),           # CGmComeOffObject: roof half, panel coll 2060

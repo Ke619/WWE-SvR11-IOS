@@ -1,0 +1,249 @@
+; __ct__10CMoveStageFP5CChariP7CWeaponii size 0x3e0
+0022eb40:  addiu    $sp, $sp, -0x70
+0022eb44:  sd       $ra, 0x60($sp)
+0022eb48:  subu.qb  $zero, $sp, $s5
+0022eb4c:  ext      $s4, $sp, 1, 1
+0022eb50:  move     $s5, $t0
+0022eb54:  dpa.w.ph $ac0, $sp, $s3
+0022eb58:  move     $s4, $t1
+0022eb5c:  .word 7fb20020
+0022eb60:  move     $s3, $a0
+0022eb64:  addu.qb  $zero, $sp, $s1
+0022eb68:  move     $s2, $a1
+0022eb6c:  ext      $s0, $sp, 0, 1
+0022eb70:  move     $s1, $a2
+0022eb74:  jal      0x13e370    ; __ct__7CObjectFv
+0022eb78:  move     $s0, $a3
+0022eb7c:  addiu    $a0, $s3, 0x10
+0022eb80:  jal      0x13e440    ; __ct__7CActionFUi
+0022eb84:  move     $a1, $zero
+0022eb88:  addiu    $a0, $s3, 0x18
+0022eb8c:  jal      0x13c330    ; __ct__5CLinkFPv
+0022eb90:  move     $a1, $s3
+0022eb94:  lui      $v0, 0x48
+0022eb98:  lui      $v1, 0x48
+0022eb9c:  addiu    $v0, $v0, -0x1450    ; = 0x47ebb0 __vt__10CMoveStage
+0022eba0:  addiu    $v1, $v1, -0x1440    ; = 0x47ebc0 __vt__10CMoveStage+0x10
+0022eba4:  sw       $v0, ($s3)
+0022eba8:  lui      $v0, 0x48
+0022ebac:  sw       $v1, 0x10($s3)
+0022ebb0:  addiu    $v0, $v0, -0x1430    ; = 0x47ebd0 __vt__10CMoveStage+0x20
+0022ebb4:  jal      0x1adf60    ; end_background_enviromentMusic__Fv
+0022ebb8:  sw       $v0, 0x30($s3)
+0022ebbc:  addiu    $v0, $zero, 0x22
+0022ebc0:  bne      $s1, $v0, 0x22ec04
+0022ebc4:  sb       $zero, 0x48($s3)
+0022ebc8:  addiu    $v0, $zero, 0xcf
+0022ebcc:  bne      $s4, $v0, 0x22ec04
+0022ebd0:  nop      
+0022ebd4:  jal      0x1f5bb0    ; CommonStartStage__Fv
+0022ebd8:  nop      
+0022ebdc:  addiu    $v1, $zero, 0x17
+0022ebe0:  beq      $v0, $v1, 0x22ebfc
+0022ebe4:  nop      
+0022ebe8:  jal      0x1f5bb0    ; CommonStartStage__Fv
+0022ebec:  nop      
+0022ebf0:  addiu    $v1, $zero, 0x16
+0022ebf4:  bne      $v0, $v1, 0x22ec04
+0022ebf8:  nop      
+0022ebfc:  addiu    $s1, $zero, 0x23
+0022ec00:  addiu    $s4, $zero, 0xd0
+0022ec04:  jal      0x1f5be0    ; GetRule__Fv
+0022ec08:  nop      
+0022ec0c:  lbu      $v1, 0x17($v0)    ; [0x47ebe7] 
+0022ec10:  addiu    $v0, $zero, 2
+0022ec14:  bne      $v1, $v0, 0x22ec38
+0022ec18:  nop      
+0022ec1c:  jal      0x1f5bc0    ; GetNowStage__Fv
+0022ec20:  nop      
+0022ec24:  addiu    $v1, $zero, 0x23
+0022ec28:  bne      $v0, $v1, 0x22ec38
+0022ec2c:  nop      
+0022ec30:  addiu    $s1, $zero, 0x21
+0022ec34:  addiu    $s4, $zero, 0xd2
+0022ec38:  lui      $at, 0x52
+0022ec3c:  move     $a0, $s2
+0022ec40:  beqz     $s2, 0x22ec4c
+0022ec44:  sb       $s4, 0x76c8($at)    ; [0x5276c8] nAnyOutObj__13GameVariables
+0022ec48:  addiu    $a0, $a0, 0x1b4
+0022ec4c:  lui      $v0, 0x5341
+0022ec50:  jal      0x13c640    ; SearchLink__5CLinkCFUi
+0022ec54:  ori      $a1, $v0, 0x5241    ; = 0x53415241 
+0022ec58:  beqz     $v0, 0x22ec64
+0022ec5c:  move     $a0, $zero
+0022ec60:  lw       $a0, 0x10($v0)    ; [0x53410010] 
+0022ec64:  jal      0x1c4660    ; Pos__5CSaraFR9objVector
+0022ec68:  addiu    $a1, $s0, 0xe0
+0022ec6c:  move     $a0, $s2
+0022ec70:  jal      0x1c0880    ; JumpAct__9C3DObjectFi
+0022ec74:  move     $a1, $s5
+0022ec78:  ave_s.b  $w3, $w0, $w11
+0022ec7c:  addiu    $t1, $zero, -9
+0022ec80:  daddiu   $t2, $zero, 8
+0022ec84:  addiu    $v0, $zero, -5
+0022ec88:  daddiu   $v1, $zero, 4
+0022ec8c:  move     $a1, $s5
+0022ec90:  addiu    $a3, $zero, 1
+0022ec94:  move     $a0, $s0
+0022ec98:  move     $a2, $zero
+0022ec9c:  move     $t0, $zero
+0022eca0:  .word 7e4b00d0
+0022eca4:  ld.b     $w3, -0x1f5($zero)
+0022eca8:  .word 7e4b00e0
+0022ecac:  lbu      $t3, 0x18d($s2)
+0022ecb0:  and      $t1, $t3, $t1
+0022ecb4:  or       $t1, $t1, $t2
+0022ecb8:  sb       $t1, 0x18d($s2)
+0022ecbc:  lbu      $t1, 0x188($s2)
+0022ecc0:  and      $v0, $t1, $v0
+0022ecc4:  or       $v0, $v0, $v1
+0022ecc8:  jal      0x1c08a0    ; JumpAct__9C3DObjectFiiii
+0022eccc:  sb       $v0, 0x188($s2)
+0022ecd0:  addiu    $v0, $zero, 0x3e8
+0022ecd4:  lui      $at, 0x52
+0022ecd8:  sw       $v0, 0x77f0($at)    ; [0x5277f0] padstop__13GameVariables
+0022ecdc:  lui      $a3, 0x52
+0022ece0:  addiu    $v1, $zero, 1
+0022ece4:  lui      $at, 0x52
+0022ece8:  sb       $v1, 0x76d0($at)    ; [0x5276d0] AnyNowLoad__13GameVariables
+0022ecec:  move     $t1, $zero
+0022ecf0:  lui      $at, 0x52
+0022ecf4:  andi     $a1, $zero, 1
+0022ecf8:  sw       $v1, 0x77e8($at)    ; [0x5277e8] PlayTimeStop__13GameVariables
+0022ecfc:  addiu    $a0, $zero, -2
+0022ed00:  addiu    $a2, $zero, -1
+0022ed04:  b        0x22ed50
+0022ed08:  addiu    $a3, $a3, 0x6bc0    ; = 0x526bc0 g_pWeapon
+0022ed0c:  addu     $v1, $a3, $v0
+0022ed10:  lw       $t0, ($v1)
+0022ed14:  beqz     $t0, 0x22ed4c
+0022ed18:  nop      
+0022ed1c:  lw       $v0, 0x18($t0)
+0022ed20:  beq      $v0, $a2, 0x22ed4c
+0022ed24:  nop      
+0022ed28:  lbu      $v0, 0x190($t0)
+0022ed2c:  and      $v0, $v0, $a0
+0022ed30:  or       $v0, $v0, $a1
+0022ed34:  sb       $v0, 0x190($t0)
+0022ed38:  lw       $v1, ($v1)
+0022ed3c:  lbu      $v0, 0x188($v1)    ; [0x47ed48] __vt__17CSpriteCtrlGame2D+0x8
+0022ed40:  and      $v0, $v0, $a0
+0022ed44:  or       $v0, $v0, $a1
+0022ed48:  sb       $v0, 0x188($v1)    ; [0x47ed48] __vt__17CSpriteCtrlGame2D+0x8
+0022ed4c:  addiu    $t1, $t1, 1
+0022ed50:  sltiu    $v0, $t1, 0x48
+0022ed54:  bnez     $v0, 0x22ed0c
+0022ed58:  sll      $v0, $t1, 2
+0022ed5c:  b        0x22edc0
+0022ed60:  move     $s5, $zero
+0022ed64:  sll      $v1, $s5, 2
+0022ed68:  addiu    $v0, $v0, 0x6ba0    ; = 0x53416ba0 
+0022ed6c:  addu     $s4, $v0, $v1
+0022ed70:  lw       $a0, ($s4)
+0022ed74:  beqz     $a0, 0x22edbc
+0022ed78:  nop      
+0022ed7c:  beq      $a0, $s2, 0x22edbc
+0022ed80:  move     $a1, $zero
+0022ed84:  addiu    $a2, $zero, 1
+0022ed88:  move     $a3, $zero
+0022ed8c:  jal      0x1c08a0    ; JumpAct__9C3DObjectFiiii
+0022ed90:  move     $t0, $zero
+0022ed94:  lw       $a2, ($s4)
+0022ed98:  addiu    $v0, $zero, -2
+0022ed9c:  andi     $a0, $zero, 1
+0022eda0:  addiu    $v1, $zero, 0x64
+0022eda4:  lbu      $a1, 0x188($a2)
+0022eda8:  and      $v0, $a1, $v0
+0022edac:  or       $v0, $v0, $a0
+0022edb0:  sb       $v0, 0x188($a2)
+0022edb4:  lw       $v0, ($s4)
+0022edb8:  sw       $v1, 0x280($v0)    ; [0x53416e20] 
+0022edbc:  addiu    $s5, $s5, 1
+0022edc0:  sltiu    $v0, $s5, 8
+0022edc4:  bnez     $v0, 0x22ed64
+0022edc8:  lui      $v0, 0x52
+0022edcc:  lui      $at, 0x52
+0022edd0:  sw       $zero, 0x7880($at)    ; [0x527880] sw_dq__13GameVariables
+0022edd4:  sw       $s2, 0x34($s3)
+0022edd8:  sw       $s1, 0x38($s3)
+0022eddc:  lw       $v0, 0x34($s3)
+0022ede0:  lw       $v0, 0xa4($v0)    ; [0x5200a4] m_HeadBuf__5CFile+0xc5e4
+0022ede4:  sw       $v0, 0x3c($s3)
+0022ede8:  jal      0x205cf0    ; StopCamGame__Fv
+0022edec:  sw       $zero, 0x40($s3)
+0022edf0:  jal      0x207b10    ; StopFixCam__Fv
+0022edf4:  nop      
+0022edf8:  b        0x22ee80
+0022edfc:  move     $s2, $zero
+0022ee00:  sll      $v1, $s2, 2
+0022ee04:  addiu    $v0, $v0, 0x6bc0    ; = 0x526bc0 g_pWeapon
+0022ee08:  addu     $v0, $v0, $v1
+0022ee0c:  lw       $s1, ($v0)
+0022ee10:  beqz     $s1, 0x22ee7c
+0022ee14:  nop      
+0022ee18:  lw       $v1, 0x30($s1)
+0022ee1c:  slti     $v0, $v1, 0xc8
+0022ee20:  bnez     $v0, 0x22ee34
+0022ee24:  addiu    $a0, $s1, 0xe0
+0022ee28:  slti     $at, $v1, 0xd4
+0022ee2c:  bnez     $at, 0x22ee7c
+0022ee30:  nop      
+0022ee34:  jal      0x144360    ; GetKyori__9objVectorCFRC9objVector
+0022ee38:  addiu    $a1, $s0, 0xe0
+0022ee3c:  lui      $v0, 0x41f0
+0022ee40:  mtc1     $v0, $f1
+0022ee44:  nop      
+0022ee48:  c.olt.s  $f0, $f1
+0022ee4c:  bc1f     0x22ee7c
+0022ee50:  nop      
+0022ee54:  lbu      $v0, 0x188($s1)
+0022ee58:  addiu    $v1, $zero, -2
+0022ee5c:  andi     $a0, $zero, 1
+0022ee60:  and      $v0, $v0, $v1
+0022ee64:  or       $v0, $v0, $a0
+0022ee68:  sb       $v0, 0x188($s1)
+0022ee6c:  lbu      $v0, 0x190($s1)
+0022ee70:  and      $v0, $v0, $v1
+0022ee74:  or       $v0, $v0, $a0
+0022ee78:  sb       $v0, 0x190($s1)
+0022ee7c:  addiu    $s2, $s2, 1
+0022ee80:  sltiu    $v0, $s2, 0x48
+0022ee84:  bnez     $v0, 0x22ee00
+0022ee88:  lui      $v0, 0x52
+0022ee8c:  sw       $zero, 0x44($s3)
+0022ee90:  lui      $at, 0x52
+0022ee94:  sw       $zero, 0x65e8($at)    ; [0x5265e8] g_pStage_cdata
+0022ee98:  lw       $v0, 0x38($s3)
+0022ee9c:  lui      $at, 0x49
+0022eea0:  jal      0x231560    ; ComStageDataReSetup__Fv
+0022eea4:  sb       $v0, 0x1fc0($at)    ; [0x491fc0] g_common+0x200
+0022eea8:  jal      0x1fdc90    ; MakeGameLoad_SFX__Fv
+0022eeac:  nop      
+0022eeb0:  jal      0x1f5be0    ; GetRule__Fv
+0022eeb4:  nop      
+0022eeb8:  lbu      $v1, 0x17($v0)    ; [0x520017] m_HeadBuf__5CFile+0xc557
+0022eebc:  addiu    $v0, $zero, 2
+0022eec0:  bne      $v1, $v0, 0x22eee0
+0022eec4:  lui      $at, 0x52
+0022eec8:  lb       $v0, 0x7768($at)    ; [0x527768] slobber_stage__13GameVariables
+0022eecc:  addiu    $v0, $v0, 1    ; = 0x520001 m_HeadBuf__5CFile+0xc541
+0022eed0:  lui      $at, 0x52
+0022eed4:  sb       $v0, 0x7768($at)    ; [0x527768] slobber_stage__13GameVariables
+0022eed8:  jal      0x230090    ; MakeGameLoad_CharSlobber__Fi
+0022eedc:  lw       $a0, 0x38($s3)
+0022eee0:  lw       $a0, 0x38($s3)
+0022eee4:  lui      $a1, 0x23
+0022eee8:  lui      $a2, 0x23
+0022eeec:  addiu    $a1, $a1, 0x120    ; = 0x230120 Front__FP6CStage
+0022eef0:  jal      0x1fe0d0    ; MakeGameLoad_Stage__FiPFP6CStage_vPFP6CStage_v
+0022eef4:  addiu    $a2, $a2, 0x1e0    ; = 0x2301e0 Rear__FP6CStage
+0022eef8:  move     $v0, $s3
+0022eefc:  ld       $ra, 0x60($sp)
+0022ef00:  aver_u.h $w1, $w0, $w21
+0022ef04:  xori.b   $w1, $w0, 0xb4
+0022ef08:  .word 7bb30030
+0022ef0c:  ld.b     $w0, -0x4e($zero)
+0022ef10:  aver_u.h $w0, $w0, $w17
+0022ef14:  xori.b   $w0, $w0, 0xb0
+0022ef18:  jr       $ra
+0022ef1c:  addiu    $sp, $sp, 0x70

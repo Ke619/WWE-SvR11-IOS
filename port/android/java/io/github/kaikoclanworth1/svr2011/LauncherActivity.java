@@ -58,6 +58,7 @@ public class LauncherActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        ProblemReport.ctx = getApplicationContext();  // (report.txt's "last exit" lines)
         InstallActivity.init(this);
         getWindow().setStatusBarColor(kBackground);
         getWindow().setNavigationBarColor(kBackground);
@@ -113,12 +114,23 @@ public class LauncherActivity extends Activity {
         addPage(tabRow, content, "DLC", dlc.view(), dlc::refresh);
         ModsPage mods = new ModsPage(this);
         addPage(tabRow, content, "Mods", mods.view(), mods::refresh);
+        DiscoverPage discover = new DiscoverPage(this, mods);
+        addPage(tabRow, content, "Discovery", discover.view(), discover::onShow);
         MoviesPage movies = new MoviesPage(this);
         addPage(tabRow, content, "Movies", movies.view(), movies::refresh);
         InstallPage install = new InstallPage(this);
         addPage(tabRow, content, "Install", install.view(), install::refresh);
         String tab = getIntent().getStringExtra("tab");
         select(Math.max(0, tab == null ? 0 : names_.indexOf(tab)));
+        // Tests (adb: am start --es svr2011_test 1): reports go only to a test server (ReportSend.refuses);
+        // --es report_send <answers file> sends one with no window (ReportForm.testSend).
+        ReportSend.testRun = getIntent().getStringExtra("svr2011_test") != null;
+        ReportSend.allowLive = "1".equals(getIntent().getStringExtra("svr2011_allow_live"));
+        // (--es svr2011_report_server <test server>: Report a problem and My reports use it instead of the
+        // settings' online_server - tests only, and still only a server on this phone or its network)
+        if (ReportSend.testRun) ReportSend.testServer = getIntent().getStringExtra("svr2011_report_server");
+        String reportSend = getIntent().getStringExtra("report_send");
+        if (reportSend != null) ReportForm.testSend(this, new java.io.File(reportSend));
         // The shaders from this APK into the game folder (when it's newer).
         if (InstallActivity.installed()) background(() -> Shaders.install(this), null);
         if (getPreferences(MODE_PRIVATE).getBoolean("check_updates", true)) checkUpdates(false);
@@ -388,14 +400,22 @@ public class LauncherActivity extends Activity {
         lp.topMargin = dp(18);
         c.addView(play, lp);
 
-        // Report a problem: what happened (ReportForm), then a zip of the logs,
-        // crash reports and settings in Download, posted on the Discord.
+        // Report a problem: what happened (ReportForm), sent to the online server
+        // with the logs, crash reports, settings, a recorded match and pictures.
         Button report = button("Report a problem…", kBackground);
         report.setOnClickListener(v -> ReportForm.show(this));
         LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT);
         rp.topMargin = dp(10);
         c.addView(report, rp);
+        // My reports: the ones sent and what became of them (fixed, a question to answer - ReportsList).
+        Button mine = button("My reports", kBackground);
+        mine.setOnClickListener(v -> ReportsList.show(this));
+        c.addView(mine, fullWidth(8));
+        // My suggestions: send an idea, and our answers (Sure / No / Done in - SuggestionsList).
+        Button ideas = button("My suggestions", kBackground);
+        ideas.setOnClickListener(v -> SuggestionsList.show(this));
+        c.addView(ideas, fullWidth(8));
 
         TextView tips = text("Play with a controller or the on-screen touch controls (Settings → Touch "
             + "controls). Display options are also in game: MY WWE → Options → Graphics.", 13, kDim);
@@ -513,7 +533,8 @@ public class LauncherActivity extends Activity {
 
     void play() {
         if (!InstallActivity.installed()) {
-            status_.setText("The game isn't installed.");
+            String incomplete = InstallActivity.incompleteText();
+            status_.setText(incomplete != null ? incomplete : "The game isn't installed.");
             startActivity(new Intent(this, InstallActivity.class));
             return;
         }
@@ -587,7 +608,14 @@ public class LauncherActivity extends Activity {
     }
 
     // An on/off setting.
-    void toggle(LinearLayout card, String label, String hint, String key, boolean fallback) {
+    Switch toggle(LinearLayout card, String label, String hint, String key, boolean fallback) {
+        return toggle(card, label, hint, key, fallback, null, null);
+    }
+
+    // warn_on: a warning to confirm each time it's switched on (Turn on / Cancel; Cancel leaves it off); also_on:
+    // what else Turn on does.
+    Switch toggle(LinearLayout card, String label, String hint, String key, boolean fallback, String warn_on,
+                  Runnable also_on) {
         Switch s = new Switch(this);
         // (the theme's own colours left an "on" switch nearly invisible on the dark cards)
         int[][] states = {{android.R.attr.state_checked}, {}};
@@ -595,11 +623,30 @@ public class LauncherActivity extends Activity {
         s.setTrackTintList(new android.content.res.ColorStateList(states, new int[] {0x88C8102E, 0xFF4A4A54}));
         s.setOnCheckedChangeListener((b, on) -> {
             if (loading_ || on == settings_.getBool(key, fallback)) return;
+            if (on && warn_on != null) {
+                final boolean[] yes = {false};
+                new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_DARK)
+                    .setTitle("\uD83E\uDDEA Experimental").setMessage(warn_on)
+                    .setPositiveButton("Turn on", (dlg, w) -> {
+                        yes[0] = true;
+                        settings_.setBool(key, true);
+                        if (also_on != null) also_on.run();
+                        saved(label);
+                    })
+                    .setNegativeButton("Cancel", null)
+                    .setOnDismissListener(dlg -> {
+                        if (!yes[0]) s.setChecked(false);
+                    })
+                    .show();
+                return;
+            }
             settings_.setBool(key, on);
             saved(label);
+            if (warn_on != null) refresh();  // (what Turn on locked - big_roster's per-mod switch - unlocks again)
         });
         refreshers_.add(() -> s.setChecked(settings_.getBool(key, fallback)));
         row(card, label, hint, s);
+        return s;
     }
 
     // A choice between labelled values (strings saved quoted, or numbers).
@@ -627,11 +674,12 @@ public class LauncherActivity extends Activity {
         sp.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override
             public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                if (loading_ || !touched[0] || values[position].equals(settings_.getString(key, fallback))) return;
+                if (loading_ || !touched[0] || values[position].equals(current(key, fallback))) return;
+                String[] v = values[position].split(":");
                 if (quoted) settings_.setString(key, values[position]);
-                else settings_.setInt(key, Integer.parseInt(values[position]));
+                else settings_.setInt(key, Integer.parseInt(v[0]));
                 // (the in-game 900P / 1080P choice would win over this one: graphics_page.cpp)
-                if (key.equals("native_max_scale")) settings_.setInt("native_scene_height", 0);
+                if (key.equals("native_max_scale")) settings_.setInt("native_scene_height", v.length > 1 ? Integer.parseInt(v[1]) : 0);
                 saved(label);
             }
 
@@ -639,12 +687,19 @@ public class LauncherActivity extends Activity {
             public void onNothingSelected(AdapterView<?> parent) {}
         });
         refreshers_.add(() -> {
-            String v = settings_.getString(key, fallback);
+            String v = current(key, fallback);
             int index = 0;
             for (int i = 0; i < values.length; i++) if (values[i].equals(v)) index = i;
             sp.setSelection(index, false);
         });
         row(card, label, hint, sp);
+    }
+
+    // A choice's value now: the render resolution with the scene height the in-game 900P / 1080P set ("2:1080").
+    String current(String key, String fallback) {
+        String v = settings_.getString(key, fallback);
+        int h = key.equals("native_max_scale") ? settings_.getInt("native_scene_height", 0) : 0;
+        return h > 0 ? v + ":" + h : v;
     }
 
     View settingsPage() {
@@ -657,6 +712,9 @@ public class LauncherActivity extends Activity {
         choice(display, "Performance corner", "Where the performance numbers sit", "perf_overlay_corner",
                new String[] {"Top left", "Top right", "Bottom left", "Bottom right"}, new String[] {"0", "1", "2", "3"}, false, "0");
         toggle(display, "VSync", "No tearing; waits for the screen's refresh", "vsync", true);
+        // (frame_rate.cpp: 30 = two world updates a frame, full speed; Mali mode picks 30 unless the player chose)
+        choice(display, "Frame rate", "60: smooth when the phone keeps up; 30: steadier on slow phones (Mali)",
+               "frame_rate", new String[] {"60", "30"}, new String[] {"60", "30"}, false, "60");
         // (no Renderer choice: the game draws only natively; an old "off" becomes "main")
         if ("off".equals(settings_.getString("native_renderer", "main"))) {
             settings_.setString("native_renderer", "main");
@@ -674,8 +732,11 @@ public class LauncherActivity extends Activity {
             "device_vibration", true);
 
         LinearLayout quality = card(c, "Quality");
-        choice(quality, "Render resolution", "The most the game renders at; lower is faster", "native_max_scale",
-            new String[] {"Auto", "720p (Xbox 360)", "1440p", "2160p"}, new String[] {"4", "1", "2", "3"}, false, "4");
+        // (above 720p: supersampling - rendered bigger, scaled down to the screen; "2:1080" is 2x with the in-game
+        // 1080P's native_scene_height)
+        choice(quality, "Render resolution", "The most the game renders at; lower is faster. Higher: sharper, warmer phone",
+            "native_max_scale", new String[] {"Auto", "720p (Xbox 360)", "1080p (1.5x)", "1440p (2x)", "2160p (3x)"},
+            new String[] {"4", "1", "2:1080", "2", "3"}, false, "4");
         toggle(quality, "Anti-aliasing", "Smoother edges, slower", "native_2x_msaa", true);
         choice(quality, "Textures", "Lower: big textures at half / a quarter size - less memory, faster loading",
             "native_texture_quality", new String[] {"High", "Medium", "Low"},
@@ -700,6 +761,29 @@ public class LauncherActivity extends Activity {
         toggle(game, "Skip the intro movies", "Straight to the Start Screen at launch", "skip_intros", false);
         toggle(game, "Skip the practice ring", "Straight to the main menu after the Start Screen", "skip_training",
             false);
+        // (src/fast_loads.cpp: the Start Screen's loading screens at four updates a frame)
+        toggle(game, "Faster loading screens", "Their animations play faster", "fast_loads", false);
+        // (src/superstar_mods.cpp: per_mod_saves - the save is backed up first when it's turned on)
+        Switch per_mod = toggle(game, "Experimental: mod saves in their own files",
+            "Each superstar mod's save data in Saves/.mods - an uninstalled mod leaves the save clean. At the next "
+            + "start. Always on while more superstar mods at once is on",
+            "per_mod_saves", false);
+        // (src/big_roster.cpp: big_roster - each time it's switched on, the warning first)
+        String big_roster_warning = "Experimental - still being worked on. More mod superstars is not finished. "
+            + "Turning it on may corrupt your save or even damage your game install. Back up your Saves folder "
+            + "first. This also turns on per-mod save files. Turn it on anyway?";
+        toggle(game, "\uD83E\uDDEA Experimental: more superstar mods at once", big_roster_warning, "big_roster",
+            false, big_roster_warning, () -> {
+                settings_.setBool("per_mod_saves", true);
+                refresh();
+            });
+        // (per-mod saves: on and locked while big_roster is on - its indices from 242 up are in no table SaveData.dat
+        // holds)
+        refreshers_.add(() -> {
+            boolean big = settings_.getBool("big_roster", false);
+            per_mod.setEnabled(!big);
+            if (big) per_mod.setChecked(true);
+        });
 
         drivers_ = new Drivers(this, settings_);
         drivers_.build(c);
@@ -726,6 +810,9 @@ public class LauncherActivity extends Activity {
             settings_.setBool("unlock_everything", true);
             settings_.setBool("skip_intros", false);
             settings_.setBool("skip_training", false);
+            settings_.setBool("fast_loads", false);
+            settings_.setBool("per_mod_saves", false);
+            settings_.setBool("big_roster", false);
             settings_.setString("native_texture_quality", "high");
             saved("Defaults");
             refresh();

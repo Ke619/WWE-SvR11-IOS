@@ -13,6 +13,7 @@
 #include "thread_cpu.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cstdint>
@@ -36,7 +37,9 @@
 
 #include <fmt/format.h>
 
+#include <rex/hook.h>
 #include <rex/ppc.h>
+#include <rex/system/xfile.h>
 #include <rex/system/kernel_state.h>
 #include <rex/system/thread_state.h>
 #include <rex/system/xmemory.h>
@@ -45,6 +48,8 @@
 #include <rex/thread.h>
 
 #include "match_types.h"
+
+#include "generated/default/svr2011_init.h"
 
 namespace svr2011 {
 
@@ -303,7 +308,10 @@ std::string Line() {
     else if (Has(t.name, "audio") || Has(t.name, "xma") || Has(t.name, "music")) label = "audio";
     else if (auto g = guest.find(t.tid); g != guest.end()) label = fmt::format("g{:08X}", g->second);
     else if (Has(t.name, "timer")) label = "timers";
-    else label = "other";
+    else if (!t.name.empty()) {  // (the port's own threads, by the name each gives itself: "file check", "hd movie")
+      label = t.name;
+      std::replace(label.begin(), label.end(), ' ', '_');
+    } else label = "other";
     const double pct = 100.0 * double(delta) / wall_ns;
     by_label[label] += pct;
     if (label[0] == 'g' && label != "gpu" && pct > top_pct) top_tid = t.tid, top_pct = pct;
@@ -372,3 +380,76 @@ void StartThreadCpuLog() {
 }
 
 }  // namespace svr2011
+
+// ---- A loader read that never completes (2.1.7 report 4a90f4: CREATE A MOVE-SET loaded for ever)
+// The loader reads an item as ReadFileEx + SleepEx(INFINITE, alertable) (sub_826BBA98: sub_8290CCF8, then
+// sub_8215AC98(-1, 1)) holding the item's lock; the completion comes as an APC, which NtReadFile queues only for a
+// read that succeeds. A read that failed (one starting at a file's end: a pac shorter than its list says) left that
+// thread asleep for ever, the loader thread waiting on the item's lock (RtlEnterCriticalSection at 826A5450) and the
+// mode's load never ending - the load watch's dump showed exactly that. Now a failed read is logged (file, offset,
+// size, error) and completed with 0 bytes, and that thread's next alertable endless sleep returns at once.
+// Test aids SVR2011_TEST_READ_FAIL=<text in a file's path>: its reads start past its end (through NtReadFile); SVR2011_TEST_READ_LOG,
+// SVR2011_TEST_READ_GUARD_OFF (the endless wait as before).
+namespace {
+
+thread_local bool t_read_failed = false;
+
+uint32_t GuestU32(const uint8_t* base, uint32_t a) {
+  return uint32_t(base[a] << 24 | base[a + 1] << 16 | base[a + 2] << 8 | base[a + 3]);
+}
+
+}  // namespace
+
+REX_EXTERN(__imp__sub_8290CCF8);
+REX_HOOK_RAW(sub_8290CCF8) {
+  constexpr uint32_t kItemDone = 0x826BB660;  // (the loader's completion: the byte count to *(overlapped + 16))
+  const uint32_t handle = ctx.r3.u32, size = ctx.r5.u32, overlapped = ctx.r6.u32, done = ctx.r7.u32;
+  std::string path;
+  uint64_t file_size = 0;
+  if (auto* kernel = REX_KERNEL_STATE())
+    if (auto file = kernel->object_table()->LookupObject<rex::system::XFile>(handle))
+      path = file->entry()->absolute_path(), file_size = file->entry()->size();
+  static const bool log_reads = std::getenv("SVR2011_TEST_READ_LOG") != nullptr;  // (test aid: each such read)
+  if (log_reads) REXLOG_INFO("load: test - read {} ({} bytes)", path, size);
+  // (test: the read starts 1 MB past the file's end - the runtime's NtReadFile fails it as a host read would)
+  static const char* test = std::getenv("SVR2011_TEST_READ_FAIL");
+  const bool fail = test && *test && overlapped && path.find(test) != std::string::npos;
+  uint8_t was[8];
+  if (fail) {
+    std::memcpy(was, base + overlapped + 8, 8);
+    const uint64_t past = file_size + (1u << 20);
+    const uint32_t lo = uint32_t(past), hi = uint32_t(past >> 32);
+    const uint8_t w[8] = {uint8_t(lo >> 24), uint8_t(lo >> 16), uint8_t(lo >> 8), uint8_t(lo),
+                          uint8_t(hi >> 24), uint8_t(hi >> 16), uint8_t(hi >> 8), uint8_t(hi)};
+    std::memcpy(base + overlapped + 8, w, 8);  // (Offset, OffsetHigh)
+  }
+  __imp__sub_8290CCF8(ctx, base);
+  if (fail) {
+    REXLOG_INFO("load: test - {} read past its end: {}", path, ctx.r3.u32 ? "the read call returned pending/done" : "the read call failed");
+    std::memcpy(base + overlapped + 8, was, 8);
+  }
+  if (ctx.r3.u32) return;
+  const uint64_t offset = overlapped ? uint64_t(GuestU32(base, overlapped + 12)) << 32 | GuestU32(base, overlapped + 8) : 0;
+  static std::atomic<int> told{0};
+  if (told++ < 20)
+    REXLOG_WARN("load: a read failed - {} ({} bytes) at {}, {} bytes, error {} - completed empty instead of waiting "
+                "for ever (a file shorter than the game expects?)",
+                path.empty() ? fmt::format("handle {:08X}", handle) : path, file_size, offset, size,
+                rex::system::XThread::GetLastError());
+  if (done == kItemDone && overlapped)
+    if (const uint32_t out = GuestU32(base, overlapped + 16)) std::memset(base + out, 0, 4);
+  t_read_failed = true;
+}
+
+// SleepEx (sub_8215AC98: r3 ms, r4 alertable; 192 = WAIT_IO_COMPLETION): after a failed read on this thread, the
+// endless alertable sleep that waited for its completion returns at once.
+REX_EXTERN(__imp__sub_8215AC98);
+REX_HOOK_RAW(sub_8215AC98) {
+  static const bool off = std::getenv("SVR2011_TEST_READ_GUARD_OFF") != nullptr;  // (test aid: the old endless wait)
+  if (t_read_failed && !off && ctx.r3.s32 == -1 && (ctx.r4.u32 & 0xFF)) {
+    t_read_failed = false;
+    ctx.r3.u64 = 192;
+    return;
+  }
+  __imp__sub_8215AC98(ctx, base);
+}

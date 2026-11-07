@@ -50,11 +50,13 @@
 
 #include <rex/logging.h>
 #include <rex/system/xmemory.h>
+#include <rex/thread.h>
 
 #include "movie_transcode.h"
 #include "music.h"
 #include "online_net.h"
 #include "user_movies.h"
+#include "../modmaker/svrfmt/bytes.h"
 
 namespace svr2011 {
 
@@ -75,12 +77,7 @@ rex::memory::Memory* g_memory = nullptr;
 
 // -- small helpers ------------------------------------------------------------------
 
-uint16_t Rd16(const uint8_t* p) { return uint16_t(p[0] << 8 | p[1]); }
-void Wr16(uint8_t* p, uint16_t v) { p[0] = uint8_t(v >> 8), p[1] = uint8_t(v); }
-uint32_t Rd32(const uint8_t* base, uint32_t a) {
-  const uint8_t* p = base + a;
-  return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3];
-}
+using svrfmt::Rd32, svrfmt::Rd16, svrfmt::Wr16;
 
 std::u16string SongName(const uint8_t* entrance) {
   std::u16string name;
@@ -280,6 +277,7 @@ std::string SendMedia(const char* kind, const std::string& data) {
 }
 
 void SendEntrance(int fileid, int slot, std::u16string song_name, std::filesystem::path movie) {
+  rex::thread::set_current_thread_name("entrance send");
   std::string music_json, movie_json;
   if (!song_name.empty()) {
     const auto song = PlaylistSong(song_name);
@@ -401,6 +399,7 @@ void FetchMovie(std::string file, std::string sha) {
 }
 
 void SettleDownload(int fileid) {
+  rex::thread::set_current_thread_name("entrance download");
   Incoming in;
   in.fileid = fileid;
   std::vector<std::thread> fetches;

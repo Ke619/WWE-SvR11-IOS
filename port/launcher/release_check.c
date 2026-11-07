@@ -70,6 +70,11 @@ int release_check(const WCHAR *dir, const WCHAR *list, int hashes, ReleaseCheck 
             swprintf_s(path, MAX_PATH, L"%s\\%s", dir, rel) < 0)
             continue;
         out->files++;
+        /* (the launcher's check at each start: the Android app is the one file a PC player may delete on purpose -
+           no nag and no 90 MB repair for that; a damaged one still counts, and the updater's own checks, with
+           hashes, still want it) */
+        if (!hashes && !_wcsicmp(rel, L"Android\\SvR2011.apk") && GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES)
+            continue;
         if (!GetFileAttributesExW(path, GetFileExInfoStandard, &a) || (a.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ||
             (((unsigned long long)a.nFileSizeHigh << 32) | a.nFileSizeLow) != size)
             bad = 1;

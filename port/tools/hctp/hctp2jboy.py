@@ -34,13 +34,16 @@ def argb(c, tone=1.0, alpha=1.0):
 
 
 def convert(M, tmpl_model, name=None, tone=1.0, xform=None, tex_rename=None, max_verts=0xFFFF, merge=True,
-            keep_nodes=False, double_sided=False, alpha=1.0):
+            keep_nodes=False, double_sided=False, alpha=1.0, both_below=0.0):
     """M: yobj.Model (world space). tmpl_model: jboy.Model whose meshes[0] and
     node are the template. xform(P) -> P for positions (normals rotate with
     xform's linear part if given as (R, t)). double_sided: True, or f(texture name) -> bool: those meshes
     drawn from both sides (render flags +0x88 without 0x2, back-face cull - the PS2 drew everything
     both sides: single-sided fences, signs and props vanished from behind). alpha: vertex alpha scale (an
-    additive PS2 layer drawn plain translucent: a faint one). Returns jboy.Model."""
+    additive PS2 layer drawn plain translucent: a faint one). both_below: in a culled mesh, each strip
+    smaller than this across gets a reverse-wound copy (the PS2 drew both sides: room 30's flight cases,
+    wound inward, vanished; walls stay one-sided, so a camera outside a room still sees in). Returns
+    jboy.Model."""
     tm = tmpl_model.meshes[0]
     out = copy.copy(tmpl_model)
     out.name = (name or M.name)[:15]
@@ -57,6 +60,7 @@ def convert(M, tmpl_model, name=None, tone=1.0, xform=None, tex_rename=None, max
             N = N @ R
         for sub in mesh['subs']:
             tname = M.textures[sub['tex']] if sub['tex'] < len(M.textures) else None
+            culled = not (double_sided is True or (callable(double_sided) and double_sided(tname)))
             verts, uvs, key, vnodes = [], [], {}, []
             strip = []
             for st in sub['strips']:
@@ -85,6 +89,22 @@ def convert(M, tmpl_model, name=None, tone=1.0, xform=None, tex_rename=None, max
                     if len(strip) % 2:
                         strip.append(ids[0])
                 strip += ids
+                if culled and both_below > 0:
+                    Q = P[[v[0] & 0xFFFF for v in st]]
+                    if float((Q.max(0) - Q.min(0)).max()) < both_below:
+                        # (the same strip again, one place further on: every triangle turned over - on copies of
+                        # its vertices with the normals turned too, or the back is lit as the front's inside)
+                        back = []
+                        for i in ids:
+                            v = verts[i]
+                            back.append(len(verts))
+                            verts.append(v[:3] + (-v[3], -v[4], -v[5]) + v[6:])
+                            uvs.append(uvs[i])
+                            vnodes.append(vnodes[i])
+                        strip += [strip[-1], back[0]]
+                        if len(strip) % 2 == 0:
+                            strip.append(back[0])
+                        strip += back
             if not strip:
                 continue
             if len(verts) > max_verts:

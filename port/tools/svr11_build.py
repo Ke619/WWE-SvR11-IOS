@@ -588,6 +588,10 @@ class Builder:
         if pages > model_budget.LIMIT:
             raise BuildError('%s: %d vertex pages, the game has %d per wrestler (%s) - reduce the vertex / triangle count'
                              % (entry_name, pages, model_budget.LIMIT, ', '.join('%s %d' % kv for kv in parts.items())))
+        if model_budget.parts_over(parts):
+            raise BuildError('%s: a part over %d vertex pages (%s) - the match draws at most 2,048 per part'
+                             % (entry_name, model_budget.PART_LIMIT,
+                                ', '.join('%s %d' % kv for kv in model_budget.parts_over(parts).items())))
         nmesh = sum(len(jboy.read(kids[k]).meshes) for k in (0, 0x2710, 0x4e20) if k in kids)
         return kids, {'name': entry_name, 'meshes': nmesh, 'pages': pages, 'parts': parts, 'dropped': dropped}
 

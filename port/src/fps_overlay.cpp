@@ -12,6 +12,7 @@
 #include <imgui.h>
 
 #include <rex/cvar.h>
+#include <rex/logging.h>
 #include <rex/ui/keybinds.h>
 
 #include "frame_rate.h"
@@ -60,7 +61,10 @@ static void DrawNotice(ImGuiIO& io) {
                                  ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
   if (ImGui::Begin("##svr2011_notice", nullptr, flags)) {
     ImGui::SetWindowFontScale(1.4f);
+    // (a long notice wraps instead of running off the screen: "Game files missing: ..." on a phone lost its end)
+    ImGui::PushTextWrapPos(io.DisplaySize.x * 0.88f);
     ImGui::TextUnformatted(text.c_str());
+    ImGui::PopTextWrapPos();
   }
   ImGui::End();
 }
@@ -142,15 +146,16 @@ static void DrawNativeFailure(ImGuiIO& io) {
 }
 
 // Online: the worst round trip to the other players (net_sim.h), as signal
-// bars and milliseconds at the top right - only while peers answer pings.
+// bars and milliseconds at the top right, with the path it took (direct, IPv6,
+// LAN, relay) - only while peers answer pings.
 static void DrawPing(ImGuiIO& io) {
   if (!REXCVAR_GET(show_ping)) return;
   const auto links = NetLinks();
   if (links.empty()) return;
   float worst = 0;
-  bool relayed = false;
+  const char* how = "";
   for (const auto& l : links) {
-    if (l.rtt_ms >= worst) worst = l.rtt_ms, relayed = l.relayed;
+    if (l.rtt_ms >= worst) worst = l.rtt_ms, how = l.how;
   }
   const int bars = worst < 80 ? 4 : worst < 150 ? 3 : worst < 250 ? 2 : 1;
   const ImVec4 colour = bars >= 3 ? ImVec4(0.45f, 1.0f, 0.45f, 1.0f)
@@ -174,7 +179,7 @@ static void DrawPing(ImGuiIO& io) {
     }
     ImGui::Dummy(ImVec2(4 * (w + 2.0f), h));
     ImGui::SameLine();
-    ImGui::TextColored(colour, "%.0f ms%s", worst, relayed ? " (relay)" : "");
+    ImGui::TextColored(colour, "%.0f ms (%s)", worst, how);
     // (outside a match - the lobby - or with more than one peer: every
     // player and their own ping, so players can see who is far)
     if (links.size() > 1 || !svr2011::InMatch()) {
@@ -184,7 +189,7 @@ static void DrawPing(ImGuiIO& io) {
                          : l.rtt_ms < 250 ? ImVec4(1.0f, 0.85f, 0.3f, 1.0f)
                                           : ImVec4(1.0f, 0.4f, 0.4f, 1.0f);
         const std::string who = l.name.empty() ? "Player" : l.name;
-        ImGui::TextColored(c, "%s  %.0f ms%s", who.c_str(), l.rtt_ms, l.relayed ? " (relay)" : "");
+        ImGui::TextColored(c, "%s  %.0f ms (%s)", who.c_str(), l.rtt_ms, l.how);
       }
     }
   }
@@ -269,6 +274,10 @@ int PerfOverlayCorner() { return g_corner.load(); }
 
 void ShowNotice(const std::string& text, float seconds) {
   std::lock_guard lock(g_notice_mutex);
+  // (logged when it comes up - not again while the same text is still showing: hidden tests and players' report logs
+  // see what the overlay said; frame shots don't hold the overlay)
+  if (text != g_notice || std::chrono::steady_clock::now() > g_notice_until)
+    REXLOG_INFO("[svr2011] notice on screen: {}", text);
   g_notice = text;
   g_notice_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(int(seconds * 1000));
 }

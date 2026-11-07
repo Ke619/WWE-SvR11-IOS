@@ -23,6 +23,12 @@ sys.path.insert(0, os.path.join(HERE, 'mot'))
 # the first game version that loads a stage over its vertex window (src/model_mem.cpp): what such a room says
 # in its manifest (needs=) - older games crash at its load
 NEEDS_BIG_STAGE = '2.1.5'
+
+
+def gimmick_entry(room):
+    """the room's own GMGB entry (78R0 .. 78R6): every installed HCTP mod gets its gimmicks, arena_mods.cpp
+    (before 2.1.6 every room was 78H3 and only the first mod's played)"""
+    return '78R%d' % (room - 30)
 BIG_STAGE_ROOMS = {34}   # (uncropped: over the window)
 # room -> (dx, dz, crop x0,x1,z0,z1 or None, row name)
 ROOMS = {
@@ -100,15 +106,17 @@ def bank_h3(unpacked, pac11, mot):
 
 def room_bank(room, unpacked, pac11, mot):
     """Room 30: bank_h3. Others: bank_h3 + every HCTP backstage act 12000-12099 as 12600 + n (12500-12599,
-    the high-ground acts, as 12800 + n) + the room's object acts (50102) n as 12700 + n."""
+    the high-ground acts, as 12800 + n; 15900-15919, the gates' exit acts, as 12900 + n - build_world.py) + the
+    room's object acts (50102) n as 12700 + n."""
     h3 = bank_h3(unpacked, pac11, mot)
     if room == 30:
         return h3
     conv = os.path.join(HERE, 'mot', 'hctp2ymks.py')
     hb = os.path.join(unpacked, 'm', 'MOT_GAME', '00004.bin')
-    wr = os.path.join(mot, 'bank_wr.bin')
+    wr = os.path.join(mot, 'bank_wx.bin')
     if not os.path.exists(wr):
-        ids = acts(hb, 600, lambda k: 12000 <= k < 12100) + ',' + acts(hb, 300, lambda k: 12500 <= k < 12600)
+        ids = ','.join((acts(hb, 600, lambda k: 12000 <= k < 12100), acts(hb, 300, lambda k: 12500 <= k < 12600),
+                        acts(hb, -3000, lambda k: 15900 <= k < 15920)))
         py([conv, hb, ids, '--into', h3, '--out', wr, '--jumpmap', JUMPMAP])
     out = os.path.join(mot, 'bank_r%d.bin' % room)
     objs = os.path.join(unpacked, 'bg', 'stg_00%d' % room, '50102.bin')
@@ -173,7 +181,7 @@ def build(room, unpacked, pac11, work, mod, name=None, progress=lambda p, t: Non
     # (id: the install folder's name - the launcher installs a mod under Mods/<type>/<id>)
     mod_id = mod_id or re.sub(r'[^A-Za-z0-9_]', '_', os.path.basename(os.path.normpath(mod))) or 'hctp_room_%d' % room
     lines = ['type=backstage', 'id=%s' % mod_id, 'name=%s' % name, 'author=HCTP port', 'version=1.0', 'area=0',
-             'row=%s' % name, 'gimmick=78H3',
+             'row=%s' % name, 'gimmick=%s' % gimmick_entry(room),
              'box=%.1f,%.1f,%.1f,%.1f' % ((x0 + x1) / 2, (z0 + z1) / 2, (x1 - x0) / 2, (z1 - z0) / 2),
              'camera_height=45', 'hctp=%d' % room, 'weapons=%s' % weapons]
     if room in BIG_STAGE_ROOMS and not ROOMS[room][2]:

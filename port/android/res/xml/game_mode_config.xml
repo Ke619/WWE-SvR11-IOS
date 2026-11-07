@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 13+ Game Mode (GameManager): the game handles the Performance / Battery modes itself (its own render
+     resolution and frame rate settings), so the system doesn't scale it down or cap its frame rate. -->
+<game-mode-config xmlns:android="http://schemas.android.com/apk/res/android"
+    android:supportsPerformanceGameMode="true"
+    android:supportsBatteryGameMode="true"
+    android:allowGameDownscaling="false"
+    android:allowGameFpsOverride="false" />

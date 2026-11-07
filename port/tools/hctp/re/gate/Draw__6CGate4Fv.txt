@@ -1,0 +1,159 @@
+; Draw__6CGate4Fv size 0x278
+0022f4a0:  addiu    $sp, $sp, -0x40
+0022f4a4:  sd       $ra, 0x20($sp)
+0022f4a8:  addu.qb  $zero, $sp, $s1
+0022f4ac:  ext      $s0, $sp, 0, 1
+0022f4b0:  lw       $v1, 0x94($a0)
+0022f4b4:  beqz     $v1, 0x22f704
+0022f4b8:  move     $s1, $a0
+0022f4bc:  lui      $at, 0x52
+0022f4c0:  lw       $a0, 0x50($s1)
+0022f4c4:  lw       $v1, 0x7660($at)    ; [0x527660] g_pStage
+0022f4c8:  lui      $at, 3
+0022f4cc:  addu     $at, $v1, $at
+0022f4d0:  lw       $v1, 0x1124($at)    ; [0x31124] 
+0022f4d4:  beqz     $v1, 0x22f704
+0022f4d8:  andi     $s0, $a0, 0x3f
+0022f4dc:  lui      $at, 0x52
+0022f4e0:  lui      $v0, 0x3f80
+0022f4e4:  lw       $a0, 0x4bb0($at)    ; [0x524bb0] s_pInstance__7CRender
+0022f4e8:  mtc1     $v0, $f12
+0022f4ec:  nop      
+0022f4f0:  mov.s    $f13, $f12
+0022f4f4:  jal      0x14d7b0    ; SetAmbient__7CRenderFfff
+0022f4f8:  mov.s    $f14, $f12
+0022f4fc:  lui      $at, 0x52
+0022f500:  move     $a1, $zero
+0022f504:  lw       $a0, 0x4bb0($at)    ; [0x524bb0] s_pInstance__7CRender
+0022f508:  mtc1     $zero, $f12
+0022f50c:  nop      
+0022f510:  mov.s    $f13, $f12
+0022f514:  jal      0x14d770    ; SetLightColor__7CRenderFifff
+0022f518:  mov.s    $f14, $f12
+0022f51c:  lui      $at, 0x52
+0022f520:  addiu    $a1, $zero, 1
+0022f524:  lw       $a0, 0x4bb0($at)    ; [0x524bb0] s_pInstance__7CRender
+0022f528:  mtc1     $zero, $f12
+0022f52c:  nop      
+0022f530:  mov.s    $f13, $f12
+0022f534:  jal      0x14d770    ; SetLightColor__7CRenderFifff
+0022f538:  mov.s    $f14, $f12
+0022f53c:  lui      $at, 0x52
+0022f540:  addiu    $a1, $zero, 2
+0022f544:  lw       $a0, 0x4bb0($at)    ; [0x524bb0] s_pInstance__7CRender
+0022f548:  mtc1     $zero, $f12
+0022f54c:  nop      
+0022f550:  mov.s    $f13, $f12
+0022f554:  jal      0x14d770    ; SetLightColor__7CRenderFifff
+0022f558:  mov.s    $f14, $f12
+0022f55c:  lh       $v1, 0x90($s1)
+0022f560:  addiu    $v0, $zero, 1
+0022f564:  bne      $v1, $v0, 0x22f570
+0022f568:  addiu    $a0, $zero, 0xe
+0022f56c:  addiu    $a0, $zero, 0xf
+0022f570:  bltz     $s0, 0x22f584
+0022f574:  srl      $v1, $s0, 1
+0022f578:  mtc1     $s0, $f0
+0022f57c:  b        0x22f59c
+0022f580:  cvt.s.w  $f3, $f0
+0022f584:  andi     $v0, $s0, 1
+0022f588:  or       $v1, $v1, $v0
+0022f58c:  mtc1     $v1, $f0
+0022f590:  nop      
+0022f594:  cvt.s.w  $f3, $f0
+0022f598:  add.s    $f3, $f3, $f3
+0022f59c:  lui      $at, 0x46
+0022f5a0:  lui      $v0, 0x4280
+0022f5a4:  lwc1     $f2, 0x64b0($at)    ; [0x4664b0] @9168
+0022f5a8:  sll      $s0, $a0, 2
+0022f5ac:  mtc1     $v0, $f1
+0022f5b0:  addiu    $a1, $sp, 0x30
+0022f5b4:  addiu    $a2, $s1, 0x60
+0022f5b8:  mul.s    $f2, $f2, $f3
+0022f5bc:  lui      $at, 0x46
+0022f5c0:  div.s    $f1, $f2, $f1
+0022f5c4:  lwc1     $f0, 0x64a8($at)    ; [0x4664a8] @9169
+0022f5c8:  sub.s    $f0, $f1, $f0
+0022f5cc:  lui      $at, 0x52
+0022f5d0:  swc1     $f0, 0x64($s1)
+0022f5d4:  lw       $v0, 0x7660($at)    ; [0x527660] g_pStage
+0022f5d8:  .word 7a230070
+0022f5dc:  lui      $at, 3
+0022f5e0:  addu     $v0, $s0, $v0
+0022f5e4:  ori      $at, $at, 0x1124    ; = 0x31124 
+0022f5e8:  addu     $a0, $v0, $at
+0022f5ec:  lw       $v0, ($a0)
+0022f5f0:  ext      $v1, $v0, 1, 1
+0022f5f4:  lw       $v1, ($a0)
+0022f5f8:  andi.b   $w1, $w0, 0x62
+0022f5fc:  addiu    $a0, $v1, 0x10
+0022f600:  jal      0x145760    ; SetPosRotZYX__9objMatrixFRC9objVectorRC9objVector
+0022f604:  ext      $v0, $a1, 0, 1
+0022f608:  lui      $at, 0x52
+0022f60c:  lw       $v0, 0x7660($at)    ; [0x527660] g_pStage
+0022f610:  addu     $v0, $s0, $v0
+0022f614:  lui      $at, 3
+0022f618:  addu     $at, $v0, $at
+0022f61c:  lw       $a0, 0x1124($at)    ; [0x31124] 
+0022f620:  lw       $t9, 0x98($a0)
+0022f624:  lw       $t9, 0x28($t9)
+0022f628:  jalr     $t9
+0022f62c:  nop      
+0022f630:  lui      $at, 0x52
+0022f634:  lw       $v0, 0x7878($at)    ; [0x527878] wazacamera__13GameVariables
+0022f638:  bnez     $v0, 0x22f668
+0022f63c:  nop      
+0022f640:  lui      $at, 0x52
+0022f644:  lw       $v0, 0x7660($at)    ; [0x527660] g_pStage
+0022f648:  addu     $v0, $s0, $v0
+0022f64c:  lui      $at, 3
+0022f650:  addu     $at, $v0, $at
+0022f654:  lw       $a0, 0x1124($at)    ; [0x31124] 
+0022f658:  lw       $t9, 0x98($a0)
+0022f65c:  lw       $t9, 0x2c($t9)
+0022f660:  jalr     $t9
+0022f664:  nop      
+0022f668:  lui      $at, 0x52
+0022f66c:  lw       $a0, 0x4bb0($at)    ; [0x524bb0] s_pInstance__7CRender
+0022f670:  lui      $at, 0x52
+0022f674:  lwc1     $f12, 0x6d90($at)    ; [0x526d90] g_GameLight+0xb0
+0022f678:  lui      $at, 0x52
+0022f67c:  lwc1     $f13, 0x6d94($at)    ; [0x526d94] g_GameLight+0xb4
+0022f680:  lui      $at, 0x52
+0022f684:  jal      0x14d7b0    ; SetAmbient__7CRenderFfff
+0022f688:  lwc1     $f14, 0x6d98($at)    ; [0x526d98] g_GameLight+0xb8
+0022f68c:  lui      $at, 0x52
+0022f690:  lw       $a0, 0x4bb0($at)    ; [0x524bb0] s_pInstance__7CRender
+0022f694:  lui      $at, 0x52
+0022f698:  lwc1     $f12, 0x6d60($at)    ; [0x526d60] g_GameLight+0x80
+0022f69c:  lui      $at, 0x52
+0022f6a0:  lwc1     $f13, 0x6d64($at)    ; [0x526d64] g_GameLight+0x84
+0022f6a4:  lui      $at, 0x52
+0022f6a8:  lwc1     $f14, 0x6d68($at)    ; [0x526d68] g_GameLight+0x88
+0022f6ac:  jal      0x14d770    ; SetLightColor__7CRenderFifff
+0022f6b0:  move     $a1, $zero
+0022f6b4:  lui      $at, 0x52
+0022f6b8:  lw       $a0, 0x4bb0($at)    ; [0x524bb0] s_pInstance__7CRender
+0022f6bc:  lui      $at, 0x52
+0022f6c0:  lwc1     $f12, 0x6d70($at)    ; [0x526d70] g_GameLight+0x90
+0022f6c4:  lui      $at, 0x52
+0022f6c8:  lwc1     $f13, 0x6d74($at)    ; [0x526d74] g_GameLight+0x94
+0022f6cc:  lui      $at, 0x52
+0022f6d0:  lwc1     $f14, 0x6d78($at)    ; [0x526d78] g_GameLight+0x98
+0022f6d4:  jal      0x14d770    ; SetLightColor__7CRenderFifff
+0022f6d8:  addiu    $a1, $zero, 1
+0022f6dc:  lui      $at, 0x52
+0022f6e0:  lw       $a0, 0x4bb0($at)    ; [0x524bb0] s_pInstance__7CRender
+0022f6e4:  lui      $at, 0x52
+0022f6e8:  lwc1     $f12, 0x6d80($at)    ; [0x526d80] g_GameLight+0xa0
+0022f6ec:  lui      $at, 0x52
+0022f6f0:  lwc1     $f13, 0x6d84($at)    ; [0x526d84] g_GameLight+0xa4
+0022f6f4:  lui      $at, 0x52
+0022f6f8:  lwc1     $f14, 0x6d88($at)    ; [0x526d88] g_GameLight+0xa8
+0022f6fc:  jal      0x14d770    ; SetLightColor__7CRenderFifff
+0022f700:  addiu    $a1, $zero, 2
+0022f704:  ld       $ra, 0x20($sp)
+0022f708:  aver_u.h $w0, $w0, $w17
+0022f70c:  xori.b   $w0, $w0, 0xb0
+0022f710:  jr       $ra
+0022f714:  addiu    $sp, $sp, 0x40

@@ -5,6 +5,9 @@
 #include <cstdint>
 
 struct PPCContext;
+namespace rex::ui {
+class ImGuiDrawer;
+}
 
 namespace svr2011 {
 
@@ -25,5 +28,12 @@ uint32_t CrowdCollisionId(uint8_t* base, uint32_t lr, uint32_t id);
 void CrowdMoveAsked(uint32_t fighter, uint32_t slot);
 // Each world update (match_types.cpp MatchTypesUpdate): the asked hand-offs made.
 void CrowdHandoffUpdate(PPCContext& ctx, uint8_t* base);
+
+// Into the crowd: a player at the barricade in front of the crowd area (a crowd match on an arena with crowd_area=)
+// sees "Y: CLIMB INTO THE CROWD"; Y climbs over and puts him on the crowd area's floor. Input-driven (the fighter's
+// own synced pad), the same on every game of an online match. Each world update (from CrowdHandoffUpdate).
+void CrowdVaultUpdate(PPCContext& ctx, uint8_t* base, uint32_t frames, bool new_match);
+// The prompt over the match (svr2011_app.cpp).
+void InstallCrowdOverlay(rex::ui::ImGuiDrawer* drawer);
 
 }  // namespace svr2011

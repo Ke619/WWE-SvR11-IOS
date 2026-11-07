@@ -49,12 +49,14 @@ import sys
 import collections
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))  # (tools\: ymks.py)
 import hmot  # noqa: E402
 import ymks as Y  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE_BANK = os.path.join(HERE, '78PK_bank.bin')   # 2011 GMGB 78PK motion bank (head = T table)
 JUMP_OPS = (49, 50, 51)
+FADE_OP = 18                         # (screen fade: r, g, b, alpha 0x80 = full, frames - dropped)
 
 
 # ---------------------------------------------------------------- tracks
@@ -132,6 +134,11 @@ def conv_events(ev, Th, T11, mode, idmap, rep):
                 rep['jump kept op%d -> %d' % (op, idmap[tgt])] += 1
             else:
                 rep['jump dropped op%d (target %d not converted)' % (op, tgt)] += 1
+            continue
+        # (the screen fade: HCTP's gates' exit acts fade to black for the next stage's load, which fades back
+        # in; nothing fades back in 2011 - the screen stayed black)
+        if op == FADE_OP:
+            rep['event dropped op%d (screen fade)' % op] += 1
             continue
         if mode == 'jumps' and op != 1:
             rep['event dropped op%d (--events jumps)' % op] += 1

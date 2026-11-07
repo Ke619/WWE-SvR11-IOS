@@ -7,6 +7,7 @@
 // when the session object (sub_82573F18) +0 is set, else the next byte of the table at 0x82037B98 by the counters at
 // 0x82EC6A2C / +1 (loaded.txt). The C runtime's rand() (sub_828F2430, its state per thread) is used besides, about 20
 // places in a match (replay research: SVR2011_TEST_RAND_LOG / SVR2011_TEST_RAND_FIXED).
+#include "superstar_mods.h"
 #include "match_record.h"
 
 #include <algorithm>
@@ -34,6 +35,7 @@
 #include <rex/hook.h>
 #include <rex/logging.h>
 #include <rex/ppc.h>
+#include <rex/thread.h>
 
 #include "arena_mods.h"
 #include "caw_limits.h"
@@ -44,6 +46,7 @@
 #include "pad_types.h"
 
 #include "generated/default/svr2011_init.h"
+#include "../modmaker/svrfmt/bytes.h"
 
 #ifndef SVR2011_PORT_VERSION
 #define SVR2011_PORT_VERSION "dev"
@@ -88,13 +91,7 @@ constexpr uint32_t kObjects = 0x82DE0220, kObjectSlots = 72;
 constexpr uint32_t kSeedCounters = 0x82EC6A2C;  // (u8 x2: the seed table's next index, by caller kind)
 constexpr uint32_t kInputsVersion = 1;  // (1: + the frames' world updates, user 0xFF)
 
-uint32_t Rd32(const uint8_t* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; }
-float RdF(const uint8_t* p) {
-  const uint32_t v = Rd32(p);
-  float f;
-  std::memcpy(&f, &v, 4);
-  return f;
-}
+using svrfmt::Rd32, svrfmt::RdF;
 
 std::string Json(const std::string& s) {  // (a JSON string, quoted)
   std::string o = "\"";
@@ -169,6 +166,7 @@ struct Recording {
   std::string start;
   std::chrono::steady_clock::time_point started;
   uint32_t rule = 0, arena = 0;
+  bool entrances = false;  // (the live rules' ENTRANCES, +38: a replay sets them alike - its bell comes after them)
   std::string arena_manifest, rule_name, arena_name;  // (the names: the game's strings, a mod arena's manifest)
   std::vector<svr2011::MatchPerson> people;
   std::map<uint32_t, std::pair<bool, int>> cpu_attire;  // (character index: a CPU, the attire 1-4 - wrestlers only)
@@ -194,7 +192,12 @@ FILE* g_trail_test = nullptr;  // (SVR2011_TEST_TRAIL)
 fs::path LogsDir() {
   const std::string log = rex::cvar::Query<std::string>("log_file");
   std::error_code ec;
-  return log.empty() ? fs::current_path(ec) / "logs" : fs::u8path(log).parent_path();
+  if (!log.empty()) return fs::u8path(log).parent_path();
+#if defined(__ANDROID__)
+  return rex::filesystem::GetExecutableFolder() / "logs";  // (the SDK's logs: the game folder's - the current one is "/")
+#else
+  return fs::current_path(ec) / "logs";
+#endif
 }
 
 std::string Safe(const std::string& name) {  // (a folder-name part: letters, digits, '-')
@@ -263,13 +266,13 @@ void WriteJson(bool complete) {  // (under g_rec)
       "{{\n  \"format\": 1,\n  \"complete\": {},\n  \"game\": {{\"version\": {}, \"commit\": {}}},\n  \"start\": {},\n"
       "  \"length_s\": {},\n  \"result\": {},\n  \"rule\": {{\"id\": {}, \"name\": {}}},\n"
       "  \"arena\": {{\"id\": {}, \"name\": {}, \"mod\": {}}},\n  \"people\": [\n    {}\n  ],\n  \"frame_rate\": {},\n"
-      "  \"online\": {},\n  \"renderer\": {},\n  \"cpu_tab\": {{\"reversal_chance\": {}, \"reversal_rates\": {}, "
+      "  \"online\": {},\n  \"entrances\": {},\n  \"renderer\": {},\n  \"cpu_tab\": {{\"reversal_chance\": {}, \"reversal_rates\": {}, "
       "\"damage_level\": {}, \"pin_level\": {}, \"momentum_level\": {}}},\n  \"weapons\": {{\"picks\": {}}},\n"
       "  \"inputs\": {{\"file\": \"inputs.bin\", \"version\": {}}},\n  \"frames\": {},\n  \"seeds\": {}\n}}\n",
       complete ? "true" : "false", Json(SVR2011_PORT_VERSION), Json(SVR2011_BUILD_COMMIT), Json(g.start), len, Json(g.result),
       g.rule, Json(g.rule_name), g.arena, Json(g.arena_name),
       arena_id.empty() ? std::string("null") : ModJson("Arenas", arena_id), people, REXCVAR_GET(frame_rate),
-      svr2011::P2POnlineMode() ? "true" : "false", Json(rex::cvar::Query<std::string>("gpu_backend")),
+      svr2011::P2POnlineMode() ? "true" : "false", g.entrances ? "true" : "false", Json(rex::cvar::Query<std::string>("gpu_backend")),
       REXCVAR_GET(cpu_reversal_chance), REXCVAR_GET(cpu_reversal_rates), REXCVAR_GET(cpu_damage_level),
       REXCVAR_GET(cpu_pin_level), REXCVAR_GET(cpu_momentum_level),
       Json(rex::cvar::Query<std::string>("extreme_weapons")), kInputsVersion, g_updates - g.bell, SeedsJson());
@@ -278,6 +281,7 @@ void WriteJson(bool complete) {  // (under g_rec)
 
 // The mods, in load order per kind (sorted folder names, as the game reads them), into mods.txt - a thread of its own.
 void ListMods(fs::path game, fs::path out, std::set<std::pair<std::string, std::string>> used, std::vector<ModInfo>* list) {
+  rex::thread::set_current_thread_name("match record mods");
   static const std::set<std::string> kGenerated = {"ArenaOverlay", "ArenaCrowdless", "PacOverlay", "ArenaTest"};
   std::error_code ec;
   std::vector<fs::path> kinds;
@@ -315,7 +319,7 @@ void ListMods(fs::path game, fs::path out, std::set<std::pair<std::string, std::
 // pace aren't replayed (docs/MATCH_RECORDINGS.md). The replay's own recording (a folder of its own) gets
 // replay.txt: second by second, how far each person is from the recording's trail.txt - where the two part.
 struct Replay {
-  bool loaded = false, on = false, done = false;
+  bool loaded = false, on = false, done = false, ended = false;  // (ended: the recording's match ended - not a crash)
   fs::path from;                        // (the recording)
   uint64_t bell = 0, frames = 0;        // (this run's bell frame; the recording's frames from its bell)
   std::array<std::vector<std::pair<uint32_t, std::array<uint8_t, 17>>>, 8> pads;
@@ -333,6 +337,7 @@ void ReplayLoad() {  // (under g_rec)
   const std::string json = ReadText(g_replay.from / "match.json");
   if (const size_t k = json.find("\"frames\": "); k != std::string::npos)
     g_replay.frames = std::strtoull(json.c_str() + k + 10, nullptr, 10);
+  g_replay.ended = json.find("\"result\": \"ended\"") != std::string::npos;
   FILE* f = std::fopen((g_replay.from / "inputs.bin").string().c_str(), "rb");
   uint32_t head[4] = {};
   if (!f || std::fread(head, 4, 4, f) != 4 || head[0] != 0x49525653u) {
@@ -385,14 +390,14 @@ std::map<int, std::map<int, std::array<double, 4>>> ReadTrail(const fs::path& fi
   return t;
 }
 
-void ReplayReport() {  // (under g_rec: the replay's end - replay.txt in this run's own folder)
+void ReplayReport(bool match_ended) {  // (under g_rec: the replay's end - replay.txt in this run's own folder)
   if (g.trail) std::fflush(g.trail);
   const auto a = ReadTrail(g_replay.from / "trail.txt"), b = ReadTrail(g.dir / "trail.txt");
   std::string text = fmt::format("replay of {}\n(second: the farthest any person is from the recording's place, "
                                  "in game units - the ring is about 50 across; * a motion differs)\n",
                                  g_replay.from.filename().string());
-  int parts = -1;
-  std::string why;
+  int parts = -1, first = -1;  // (first: anyone - the referee parted seconds before the wrestlers, 27 Oct)
+  std::string why, first_why;
   for (const auto& [second, people] : a) {
     const auto it = b.find(second);
     if (it == b.end()) continue;
@@ -405,6 +410,8 @@ void ReplayReport() {  // (under g_rec: the replay's end - replay.txt in this ru
                                  (v[1] - o->second[1]) * (v[1] - o->second[1]));
       if (person < 6 && v[3] != o->second[3]) motions = true;
       if (d > farthest) farthest = d;
+      if (first < 0 && d > 0.05)
+        first = second, first_why = fmt::format("person {} {:.2f} from the recording's place", person, d);
       if (parts < 0 && person < 6 && d > 2.0)
         parts = second, why = fmt::format("person {} is {:.1f} from the recording's place (motion {} - recorded {})", person,
                                           d, int(o->second[3]), int(v[3]));
@@ -414,8 +421,19 @@ void ReplayReport() {  // (under g_rec: the replay's end - replay.txt in this ru
   const std::string head =
       parts < 0 ? std::string("the replay stays with the recording (no person 2.0 or more from it at a second)")
                 : fmt::format("the replay parts from the recording at second {}: {}", parts, why);
+  // (the end: the replay's match ended, or the recording's frames ran out while it was still on)
+  const uint64_t at = g_updates - g_replay.bell;
+  const std::string ends =
+      match_ended ? fmt::format("the replay's match ended at frame {}; the recording {} at frame {}", at,
+                                g_replay.ended ? "ended" : "stopped (no end)", g_replay.frames)
+      : g_replay.ended ? fmt::format("the recording's match ended at frame {}; the replay's was still on", g_replay.frames)
+                       : fmt::format("the recording stopped at frame {} (no end); the replay's match was still on",
+                                     g_replay.frames);
+  const std::string firsts =
+      first < 0 ? std::string("no one parts at all (0.05 or more)")
+                : fmt::format("the first to part, by 0.05 or more: second {}, {}", first, first_why);
   if (FILE* f = std::fopen((g.dir / "replay.txt").string().c_str(), "wb"))
-    std::fputs((head + "\n" + text).c_str(), f), std::fclose(f);
+    std::fputs((head + "\n" + firsts + "\n" + ends + "\n" + text).c_str(), f), std::fclose(f);
   REXLOG_INFO("[svr2011] replay: {} - replay.txt in {}", head, g.dir.string());
 }
 
@@ -424,7 +442,7 @@ void ReplayFrame(uint8_t* base, uint32_t clock) {  // (under g_rec: each frame, 
   if (!g_replay.on || g_updates - g_replay.bell < g_replay.frames) return;
   g_replay.on = false, g_replay.done = true;
   REXLOG_INFO("[svr2011] replay: done - the recording's {} frames played; the pads are the players' again", g_replay.frames);
-  if (g.on) ReplayReport();
+  if (g.on) ReplayReport(false);
 }
 
 // bell.bin (exact replays, docs/MATCH_RECORDINGS.md): the state a replay takes over at its bell - "SVRB", version 1,
@@ -538,9 +556,10 @@ void Start(PPCContext& ctx, uint8_t* base, uint32_t clock) {  // (under g_rec)
   g.people = svr2011::MatchPeople(base);
   for (auto& p : g.people)  // (MatchPeople's names end " (id N)": the id is its own key)
     if (const size_t at = p.name.rfind(" (id "); at != std::string::npos) p.name.resize(at);
-  // Each wrestler's CPU flag and attire, from the match's pick slots (*0x82EDEB48 +432, 2116 bytes a person: -8
-  // the controller, 1 the CPU; +8 superstar * 100 + (attire - 1) * 10 + 2) and the character's player +1152 - a
-  // CPU only while no pad of a local player plays him (a test's cpu=all marks the picks too: match_types.cpp).
+  // Each wrestler's CPU flag and attire, from the match's pick slots (*0x82EDEB48 +432, 2116 bytes a person: +8
+  // superstar * 100 + (attire - 1) * 10 + 2) and the character's player +1152 - the CPU when no pad of a local
+  // player plays him. (Slot -8, 1 the CPU, isn't it: the select screen's CPU picks leave it 0, and a test's cpu=all
+  // sets it on person 0 too, whom pad 0 still plays.)
   if (const uint32_t match = Rd32(base + 0x82EDEB48); match >= 0x40000000u && !(match & 3))
     for (const auto& p : g.people) {
       if (p.person >= 6) continue;
@@ -549,7 +568,7 @@ void Start(PPCContext& ctx, uint8_t* base, uint32_t clock) {  // (under g_rec)
       const uint32_t port = c ? Rd32(base + c + 1152) : ~0u, pick = Rd32(slot + 8);
       const bool pad = port < svr2011::kMaxPlayers && svr2011::PlayerPadType(port) != svr2011::PadType::kNone;
       const int attire = pick != 51200 && pick / 100 < 512 ? int(pick % 100 / 10) + 1 : 0;
-      g.cpu_attire[p.index] = {slot[-8] == 1 && !pad, attire};
+      g.cpu_attire[p.index] = {!pad, attire};
       if (pad) g.ports[p.index] = port;
     }
   std::string names;
@@ -570,10 +589,13 @@ void Start(PPCContext& ctx, uint8_t* base, uint32_t clock) {  // (under g_rec)
   const fs::path root = LogsDir() / "matches";
   std::error_code ec;
   fs::create_directories(root, ec);
-  // (the newest `keep` folders: the oldest go - the names start with their time)
+  // (the newest `keep` folders: the oldest go - the names start with their time; never the recording a replay plays,
+  // SVR2011_REPLAY - it is read at this bell, after this)
+  const char* replaying = std::getenv("SVR2011_REPLAY");
   std::vector<fs::path> old;
   for (const auto& e : fs::directory_iterator(root, ec))
-    if (e.is_directory(ec)) old.push_back(e.path());
+    if (e.is_directory(ec) && !(replaying && *replaying && fs::equivalent(e.path(), fs::u8path(replaying), ec)))
+      old.push_back(e.path());
   std::sort(old.begin(), old.end());
   while (!old.empty() && int(old.size()) >= keep) fs::remove_all(old.front(), ec), old.erase(old.begin());
   g.dir = root / (std::string(stamp) + "_" + names);
@@ -593,7 +615,7 @@ void Start(PPCContext& ctx, uint8_t* base, uint32_t clock) {  // (under g_rec)
   g.last_table = g.table_bell;
   WriteBell(base);
   g.frames_load_to_bell = g_load_frame ? g_updates - g_load_frame : 0;
-  g.rule = base[kLive], g.arena = Rd32(base + kLive + 64);
+  g.rule = base[kLive], g.arena = Rd32(base + kLive + 64), g.entrances = base[kLive + 38] != 0;
   g.arena_manifest = svr2011::ArenaModManifest();
   // The names as the game shows them (port/server/match_names.py has the English ones): the rule record's +56 is
   // its name's string id (misc.pac RUL, *0x82EDE954, 100 bytes a rule); arena n's name is string 0x9C42 + n; a mod
@@ -691,6 +713,7 @@ void MatchRecordMatchLoads() {
   g_load_frame = g_updates;
   if (g_base) std::memcpy(g_load_table.data(), g_base + kTableIndexes, 4);
   REXLOG_INFO("[svr2011] record: a match loads - its rand() seed {:08X}", seed);
+  svr2011::CaeMenuLoads();
 }
 
 void MatchRecordUpdate(PPCContext& ctx, uint8_t* base) {
@@ -757,6 +780,7 @@ void MatchRecordUpdate(PPCContext& ctx, uint8_t* base) {
         }
         std::fputs((line + "\n").c_str(), g.trail);
         std::fflush(g.trail);
+        if (g.inputs) std::fflush(g.inputs);  // (a hung game that is killed keeps its pads up to the last second)
       }
     }
   }
@@ -868,7 +892,7 @@ void MatchRecordEnded(const std::string& box) {
   }
   if (g_replay.on) {  // (the replay's match ended before the recording's frames ran out)
     g_replay.on = false, g_replay.done = true;
-    ReplayReport();
+    ReplayReport(true);
   }
   if (g.inputs) std::fclose(g.inputs);
   if (g.trail) std::fclose(g.trail);
@@ -878,6 +902,17 @@ void MatchRecordEnded(const std::string& box) {
   if (FILE* f = std::fopen((g.dir / "done.txt").string().c_str(), "wb")) std::fclose(f);
   REXLOG_INFO("[svr2011] record: the match's folder done ({})", g.dir.filename().string());
   g.on = false;
+}
+
+std::string MatchRecordFolder() {
+  std::lock_guard lock(g_rec);
+  if (g.dir.empty()) return {};
+  if (g.on) {
+    if (g.inputs) std::fflush(g.inputs);
+    WriteJson(false);
+  }
+  const std::u8string u = g.dir.u8string();
+  return std::string(u.begin(), u.end());
 }
 
 void MatchRecordCrashText(FILE* f) {

@@ -49,11 +49,19 @@ bool StockPlays(uint16_t id);
 // computed at each MOVS/WAZE load (0 = none / not loaded).
 uint16_t CategoryDefaultMove(int category);
 
-// Has a match's move `id` nothing to play: a move a pack gave earlier (its id kept in
-// Mods\PacOverlay\pack_moves.txt) that no pack gives now and the stock game can't play (no stock record with
-// category bits, no stock EXH data). Stock moves are never "missing" (stock movesets name moves without
-// records, bits or EXH that play fine).
-bool MoveMissing(uint16_t id);
+// Has a match's move `id` nothing to play: a record with category bits but no motion in the game's banks (its
+// DLC's too) or a pack (NoMotionMove), a pack's move whose motions are missing or left out of a bank, or a move a
+// pack gave earlier (its id kept in Mods\PacOverlay\pack_moves.txt) that no pack gives now and the stock game
+// can't play (no stock record with category bits, no stock EXH data). Other stock moves are never "missing"
+// (stock movesets name moves without records, bits or EXH that play fine).
+// local false: only the pack-history rule - online, where NoMotionMove and the missing / left-out motions (each
+// player's own files: motion_ids.bin exists only after a merge) could make two peers' matches differ.
+bool MoveMissing(uint16_t id, bool local = true);
+// A move record with category bits whose id no bank of the game (m.pac, mpsp.pac, the DLC's) and no pack has a
+// motion for: a cut move, it plays as nothing. Never a created finisher's id (16001-19999, 30000-30999: the
+// game makes those motions) - so a save's 30073 (Sin Cara's old port) is one only through renumbered=.
+// False while the game's motion ids aren't known (Mods\PacOverlay\motion_ids.bin, made by a merge).
+bool NoMotionMove(uint16_t id);
 
 // The entrances the move packs add (pacentry EVP? <n>, n < 10000), for CREATE AN ENTRANCE's MODS
 // rows (cae_mod_motions.cpp): label = the superstar mod's name, else the script's own name and the

@@ -13,9 +13,11 @@
 #   svrtest.ps1 script <file> [--shot ..] [--quit ..]                        (script_input.h steps, one a line)
 # common: --exe release|dbg|<path>  --backend d3d12|vulkan|d3d11  --mods none|<folder>[,<folder>...]
 #         --userdata <dir>  --perf 0|1|2  --log-level info|debug  --name <run name>  --keep (leave it running)
+#         --slot <n> (its own game folder runs\svrtest\game<n>: runs side by side; give each its own --userdata)
 #         --fresh (the user data may have no save: a first-start test - else svrtest refuses one without
 #         Saves\SaveData.dat, the game would sit in its first-time screens)
 #         --arg "<game option>" (more of the game's --options, repeatable)
+#         --keep-overlay (Mods\PacOverlay as the last run left it: a start that finds the overlay up to date)
 #
 # Each run: refuses when the player's game runs or 4 test games already do (any chat); refreshes the private
 # game folder runs\svrtest\game (the exe + DLLs copied; pac's own files private copies - the game patches some at
@@ -55,7 +57,7 @@ public static class SvrTestWin {
 
 # ---- options
 $o = @{ p = @{}; exe = "release"; backend = ""; mods = "none"; perf = ""; loglevel = "info"; name = ""; keep = $false; args = @()
-        attire = ""; arena = ""; rule = ""; entrances = $false; shot = @(); every = ""; until = ""; quit = ""; userdata = ""; target = ""; state = @(); fast = ""; boot = $false; cpu = ""; fresh = $false }
+        attire = ""; arena = ""; rule = ""; entrances = $false; shot = @(); every = ""; until = ""; quit = ""; userdata = ""; target = ""; state = @(); fast = ""; boot = $false; cpu = ""; fresh = $false; slot = ""; slots = ""; keyfile = "" }
 for ($i = 0; $i -lt $Rest.Count; $i++) {
     $a = $Rest[$i]; $v = if ($i + 1 -lt $Rest.Count) { $Rest[$i + 1] } else { "" }
     switch -regex ($a) {
@@ -77,10 +79,14 @@ for ($i = 0; $i -lt $Rest.Count; $i++) {
         '^--backend$' { $o.backend = $v; $i++; continue }
         '^--mods$' { $o.mods = $v; $i++; continue }
         '^--userdata$' { $o.userdata = $v; $i++; continue }
+        '^--slots$' { $o.slots = $v; $i++; continue }
+        '^--keys$' { $o.keyfile = $v; $i++; continue }
+        '^--slot$' { $o.slot = $v; $i++; continue }  # (a game folder of its own: runs\svrtest\game<n> - runs side by side)
         '^--perf$' { $o.perf = $v; $i++; continue }
         '^--log-level$' { $o.loglevel = $v; $i++; continue }
         '^--name$' { $o.name = $v; $i++; continue }
         '^--keep$' { $o.keep = $true; continue }
+        '^--keep-overlay$' { $o.keepoverlay = $true; continue }
         '^--arg$' { $o.args += $v; $i++; continue }
         default { if (-not $o.target -and $a -notlike "--*") { $o.target = $a } else { throw "svrtest: unknown option $a" } }
     }
@@ -98,16 +104,14 @@ function Seconds([string]$t) {
 }
 
 # ---- guards: the player's game, the test-game cap (all chats), a free port
-Assert-NoPlayerGame
-$running = @(Get-SvrGames).Count
-if ($running -ge 4) { throw "svrtest: $running test games already run (4 at most, all chats together) - try again later" }
+Assert-NoPlayerGame  # (and waits for a test-game slot: test_guard's limit, all chats)
 $used = @(Get-NetUDPEndpoint -ErrorAction SilentlyContinue | ForEach-Object { $_.LocalPort })
 $p2p = 36500..36599 | Where-Object { $_ -notin $used } | Get-Random
 if (-not $p2p) { throw "svrtest: no free UDP port in 36500-36599" }
 
 # ---- the private game folder
 $root = Join-Path $port "runs\svrtest"
-$game = Join-Path $root "game"
+$game = Join-Path $root "game$($o.slot)"
 New-Item -ItemType Directory -Force $game, (Join-Path $game "Mods"), (Join-Path $root "music"), (Join-Path $root "movies") | Out-Null
 # pac: a real folder. The game patches pac\string.pac and pac\menu\menu.pac in place at start (game_files.cpp
 # PatchGameFiles: a .tmp renamed over the file) - through a junction that would rewrite the player's install. So
@@ -143,7 +147,9 @@ foreach ($f in "default.xex", "plist360.arc", "plist360_4x3.arc") {
 }
 $build = switch ($o.exe) { "release" { Join-Path $port "out\build\SourceRelease" } "dbg" { Join-Path $port "out\build\DebugSuite" } default { Split-Path $o.exe -Parent } }
 $exeName = switch ($o.exe) { "release" { "svr2011.exe" } "dbg" { "svr2011_dbg.exe" } default { Split-Path $o.exe -Leaf } }
-foreach ($f in $exeName, "rexruntime.dll", "rexgpu-xenos.dll") {
+foreach ($f in $exeName, "rexruntime.dll", "rexgpu-xenos.dll", "rexffmpeg.dll", "rexmspack.dll") {
+    # (the two LGPL DLLs: not in a build from an SDK copy without them)
+    if ($f -in "rexffmpeg.dll", "rexmspack.dll" -and -not (Test-Path (Join-Path $build $f))) { continue }
     $src = Join-Path $build $f
     if (-not (Test-Path $src) -and $f -ne $exeName) { $src = Join-Path $port "out\build\SourceRelease\$f" }
     if (-not (Test-Path $src)) { throw "svrtest: no $f in $build - build it first" }
@@ -155,8 +161,8 @@ foreach ($f in $exeName, "rexruntime.dll", "rexgpu-xenos.dll") {
     }
 }
 # its Mods: only --mods (a mod folder is placed by its manifest's type)
-$kinds = @{ superstar = "Superstars"; attire = "Attires"; arena = "Arenas"; moves = "Moves"; backstage = "Backstage"; signs = "Signs"; media = "Media"; backgrounds = "Backgrounds"; matchtype = "MatchTypes"; cawpart = "CawParts" }
-Get-ChildItem (Join-Path $game "Mods") -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne ".convert" } | Remove-Item -Recurse -Force
+$kinds = @{ superstar = "Superstars"; attire = "Attires"; arena = "Arenas"; moves = "Moves"; backstage = "Backstage"; signs = "Signs"; media = "Media"; backgrounds = "Backgrounds"; matchtype = "MatchTypes"; weapon = "Weapons"; title = "Titles"; cawpart = "CawParts" }
+Get-ChildItem (Join-Path $game "Mods") -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne ".convert" -and -not ($o.keepoverlay -and $_.Name -eq "PacOverlay") } | Remove-Item -Recurse -Force
 if ($o.mods -and $o.mods -ne "none") {
     foreach ($m in $o.mods -split ',') {
         $man = Join-Path $m "manifest.txt"
@@ -166,6 +172,16 @@ if ($o.mods -and $o.mods -ne "none") {
         New-Item -ItemType Directory -Force (Join-Path $game "Mods\$kind") | Out-Null
         Copy-Item -Recurse $m (Join-Path $game "Mods\$kind\$(Split-Path $m -Leaf)")
     }
+}
+# --slots <file>: its superstar mods' ids (Mods\Superstars\slots.txt, "<folder><TAB><id>" a line) - e.g. a mod on a DLC id
+if ($o.slots) {
+    New-Item -ItemType Directory -Force (Join-Path $game "Mods\Superstars") | Out-Null
+    Copy-Item $o.slots (Join-Path $game "Mods\Superstars\slots.txt")
+}
+# --keys <file>: its superstar mods' keys (Mods\Superstars\keys.txt, "<folder><TAB><key>" a line) - e.g. a mod already on key 512
+if ($o.keyfile) {
+    New-Item -ItemType Directory -Force (Join-Path $game "Mods\Superstars") | Out-Null
+    Copy-Item $o.keyfile (Join-Path $game "Mods\Superstars\keys.txt")
 }
 # (prepare: only the game folder, for svrtest_lan.ps1 - its last output line)
 if ($Command -eq "prepare") { $game; exit 0 }
@@ -204,8 +220,12 @@ $env:SDL_WINDOW_ACTIVATE_WHEN_SHOWN = "0"; $env:SDL_WINDOW_ACTIVATE_WHEN_RAISED 
 $env:SVR2011_NATIVE_WINDOW_POS = "-2600,0"
 foreach ($v in "SVR2011_TEST_MATCH", "SVR2011_TEST_RULE", "SVR2011_NATIVE_SHADERS") { [Environment]::SetEnvironmentVariable($v, $null, "Process") }
 $steps = @()
+# (no --arena: arena 1 - but a Royal Rumble its own, as the game forces it (RUL +40: 22, story copy 0x56: 19); on
+# another arena its eliminated never leave, no slot frees up, and no entrant past the sixth comes in - 3 Nov)
+$ruleHex = if (-not $o.rule) { "" } elseif ($o.rule -match '^\d+$' -and $o.rule.Length -lt 3) { "{0:X2}" -f [int]$o.rule } else { ($o.rule -replace '^0x', '').ToUpper() }
+$defaultArena = if ($ruleHex -in "14", "15", "16", "17", "18") { "22" } elseif ($ruleHex -eq "56") { "19" } else { "1" }
 if ($Command -eq "script" -and $o.p[1]) {  # (a script's "route match" with these people: test_match.cpp)
-    $env:SVR2011_TEST_MATCH = "people=" + (@(1..6 | Where-Object { $o.p[$_] } | ForEach-Object { $o.p[$_] }) -join ",") + " arena=" + $(if ($o.arena) { $o.arena } else { "1" })
+    $env:SVR2011_TEST_MATCH = "people=" + (@(1..6 | Where-Object { $o.p[$_] } | ForEach-Object { $o.p[$_] }) -join ",") + " arena=" + $(if ($o.arena) { $o.arena } else { $defaultArena })
     if ($o.rule) { $env:SVR2011_TEST_RULE = $o.rule -replace '^0x', '' }
 }
 if ($Command -in "match", "entrance") {
@@ -213,9 +233,12 @@ if ($Command -in "match", "entrance") {
     if ($people.Count -lt 2 -and $Command -eq "match") { throw "svrtest match: --p1 and --p2 at least" }
     if ($people.Count -lt 2) { $people += "EDGE" }
     $spec = "people=" + ($people -join ",")
-    if ($o.arena) { $spec += " arena=$($o.arena)" } else { $spec += " arena=1" }
+    if ($o.arena) { $spec += " arena=$($o.arena)" } else { $spec += " arena=$defaultArena" }
     if ($o.attire) { $spec += " attires=$($o.attire)" }
     if ($o.cpu -eq "all") { $spec += " cpu=all" }  # (every person a CPU: test_match.cpp)
+    # (only the people given: a slot the route's presses picked is emptied - a 1v1 had a third wrestler; a Royal
+    # Rumble's other entrants are the game's own)
+    if ($o.rule -notmatch '^(0x)?14$') { $spec += " exact=1" }
     $env:SVR2011_TEST_MATCH = $spec
     if ($o.rule) { $env:SVR2011_TEST_RULE = $(if ($o.rule -match '^\d+$' -and $o.rule.Length -lt 3) { "{0:X2}" -f [int]$o.rule } else { $o.rule -replace '^0x', '' }) }
     $steps = if ($o.boot) { @() } elseif ($o.entrances) { @("route normal", "pressuntil A test match: people") } else { @("route match") }

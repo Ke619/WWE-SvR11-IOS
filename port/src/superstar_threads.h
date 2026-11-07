@@ -27,8 +27,16 @@ bool BuildThreadsOverlay(rex::memory::Memory* memory, const std::filesystem::pat
 // The saves folder (its .threads subfolder holds the mods' slots); before InstallSuperstarMods.
 void SetThreadsSaves(const std::filesystem::path& saves);
 
+// The installed DLC packages' folder (<user data>\0000000000000000\<title>\00000002): a package's
+// pac\edit\edit_dlcNN.pac has its own EDIT/SSTL (the game's list plus its superstars); before InstallSuperstarMods.
+void SetThreadsDlc(const std::filesystem::path& dlc_root);
+
 // The resolver's lookup name for "/EDIT/SSTL" (a guest string "/EDIT/SSTM"), or 0.
 uint32_t ThreadsAlias(const char* name);
+
+// Test aid SVR2011_TEST_THREADS_SLOTS=1 (when Threads opens its list): each superstar id whose profile has a
+// named slot, with its profile index and the slots' names.
+void LogThreadsSlots(const uint8_t* base);
 
 // A mod's profile just set up (1056 bytes, guest memory): its three Threads slots (the last 324 bytes) are
 // the ones saved for its folder (Saves\.threads\<folder>.bin), else empty - never its base's.

@@ -2,7 +2,7 @@
 # docs/DEBUG_SUITE_PLAN.md 5). For us only: tools\dev is never packaged.
 #
 #   svrtest.ps1 lan --p1 EDGE --p2 KANE [--arena 1] [--rule 3C] [--attire 1,1] [--mods <folder>,...]
-#                   [--pad1 <steps file>] [--pad2 <steps file>] [--clock 600,1200,1800] [--play 30s] [--name lan1]
+#                   [--pad1 <steps file>] [--pad2 <steps file>] [--clock 600,1200,1800] [--play 30s] [--name lan1] [--arg <game option>]
 #
 # What it does: svrtest's private game folder (svrtest.ps1 prepare, the dbg exe); its own test server (a copy of
 # runs\ent_srv's accounts, a free port 8460-8499) and private copies of the two test players' user data and
@@ -19,17 +19,24 @@
 # Writes runs\svrtest\<stamp>_<name>\ (host\ and join\ dumps, host.log, join.log, server.log, result.json); stops
 # both games and the server by their PIDs.
 param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Rest)
+$env:SVR2011_AUDIO_MUTE = "1"  # (test games stay muted even if their command line is lost)
 $ErrorActionPreference = "Stop"
 $tools = Split-Path $PSScriptRoot -Parent
 $port = Split-Path $tools -Parent
 . (Join-Path $tools "test_guard.ps1")
 
-$o = @{ p = @{}; arena = ""; rule = ""; attire = ""; mods = "none"; pad1 = ""; pad2 = ""; clock = "600,1200,1800"; play = "30s"; name = "lan" }
+$o = @{ p = @{}; arena = ""; rule = ""; attire = ""; mods = "none"; pad1 = ""; pad2 = ""; clock = "600,1200,1800"; play = "30s"; name = "lan"; args = @(); picks1 = ""; picks2 = ""; hostenv = @(); hostargs = @(); joinargs = @(); joinenv = @(); session = ""; rumble = $false }
 for ($i = 0; $i -lt $Rest.Count; $i++) {
     $a = $Rest[$i]; $v = if ($i + 1 -lt $Rest.Count) { $Rest[$i + 1] } else { "" }
     switch -regex ($a) {
         '^--p([1-6])$' { $o.p[[int]$Matches[1]] = $v; $i++; continue }
-        '^--(arena|rule|attire|mods|pad1|pad2|clock|play|name)$' { $o[$Matches[1]] = $v; $i++; continue }
+        '^--join-env$' { $o.joinenv += $v; $i++; continue }  # (NAME=VALUE in the joiner's environment only, e.g. SVR2011_TEST_SLOT_SWAP)
+        '^--host-env$' { $o.hostenv += $v; $i++; continue }  # (the host's only: each behind its own NAT box router)
+        '^--host-arg$' { $o.hostargs += $v; $i++; continue }  # (a game option for one game, after the others: it wins)
+        '^--join-arg$' { $o.joinargs += $v; $i++; continue }
+        '^--rumble$' { $o.rumble = $true; continue }  # (ONLINE's ROYAL RUMBLE row instead of MATCH, both games)
+        '^--arg$' { $o.args += $v; $i++; continue }  # (a game option for both games, e.g. --arg --big_roster=true)
+        '^--(arena|rule|attire|mods|pad1|pad2|clock|play|name|picks1|picks2|session)$' { $o[$Matches[1]] = $v; $i++; continue }
         default { throw "svrtest lan: unknown option $a" }
     }
 }
@@ -39,7 +46,10 @@ function Seconds([string]$t) {
     throw "svrtest lan: a time is 5s, 1500ms or a number, not $t"
 }
 $people = @(1..6 | Where-Object { $o.p[$_] } | ForEach-Object { $o.p[$_] })
-if ($people.Count -lt 2) { throw "svrtest lan: --p1 and --p2 at least" }
+# (--p1 none: no people set - the lobby's own picks play, e.g. made by --picks1 / --picks2 step files that replace the
+# default A presses)
+$lobbyPicks = $o.p[1] -eq "none"
+if (-not $lobbyPicks -and $people.Count -lt 2) { throw "svrtest lan: --p1 and --p2 at least (or --p1 none)" }
 
 # ---- guards: the player's game, room for two test games (test_guard's limit, all chats)
 Assert-NoPlayerGame -Games 2
@@ -80,7 +90,7 @@ foreach ($side in @(@{ n = "host"; from = "test_config_ent_down.toml" }, @{ n = 
 
 # ---- the test server
 $py = "C:\Users\Ranger\AppData\Local\Programs\Python\Python311\python.exe"
-$srv = Start-Process $py -ArgumentList "`"$port\server\server.py`" --host 127.0.0.1 --port $sp --data `"$(Join-Path $root 'lan_srv\data')`" --log `"$out\server.log`"" -PassThru -WindowStyle Hidden
+$srv = Start-Process $py -ArgumentList "`"$port\server\server.py`" --test-open-accounts --host 127.0.0.1 --port $sp --data `"$(Join-Path $root 'lan_srv\data')`" --log `"$out\server.log`"" -PassThru -WindowStyle Hidden
 $procs = @{}
 $timings = [ordered]@{}; $ok = $true; $why = ""
 $t0 = Get-Date
@@ -103,13 +113,19 @@ function Start-Side([string]$side, [string[]]$extra) {
     $env:SVR2011_NATIVE_WINDOW_POS = "-2600,0"
     $spec = "people=$($people -join ',') arena=$(if ($o.arena) { $o.arena } else { 1 })"
     if ($o.attire) { $spec += " attires=$($o.attire)" }
-    $env:SVR2011_TEST_MATCH = $spec
+    $env:SVR2011_TEST_MATCH = if ($lobbyPicks) { $null } else { $spec }
     $env:SVR2011_TEST_RULE = if ($o.rule) { $(if ($o.rule -match '^\d+$' -and $o.rule.Length -lt 3) { "{0:X2}" -f [int]$o.rule } else { $o.rule -replace '^0x', '' }) } else { $null }
     $gameArgs = @("--log_file=`"$(Join-Path $out "$side.log")`"", "--log_level=info", "--audio_mute=true", "--fullscreen=false",
               "--mnk_mode=false", "--p2p_port_mapping=false", "--p2p_relay=false", "--dbg_boot=online",
-              "--dbg_state_clock=$($o.clock)", "--dbg_out=`"$(Join-Path $out $side)`"") + $extra
+              "--dbg_state_clock=$($o.clock)", "--dbg_out=`"$(Join-Path $out $side)`"") + $o.args + $extra + @(if ($side -eq "join") { $o.joinargs } else { $o.hostargs })
+    # (each option once, the last one asked for: the game ignores its whole command line when a text option comes twice)
+    $last = @{}; foreach ($a in $gameArgs) { $last[($a -split '=', 2)[0]] = $a }
+    $gameArgs = @($gameArgs | Where-Object { $last[($_ -split '=', 2)[0]] -ceq $_ })
     Use-SvrTestServer -GameDir $game -GameArgs $gameArgs | Out-Null
+    $sideEnv = @(if ($side -eq "join") { $o.joinenv } else { $o.hostenv })
+    foreach ($e in $sideEnv) { $k, $val = $e -split "=", 2; [Environment]::SetEnvironmentVariable($k, $val, "Process") }
     $procs[$side] = Start-Process $exe -WorkingDirectory $game -ArgumentList $gameArgs -PassThru -WindowStyle Minimized
+    foreach ($e in $sideEnv) { [Environment]::SetEnvironmentVariable(($e -split "=", 2)[0], $null, "Process") }
     Set-SvrTestPriority $procs[$side]
     foreach ($v in "SVR2011_TEST_MATCH", "SVR2011_TEST_RULE", "SVR2011_INPUT_FILE", "SVR2011_CONFIG", "SVR2011_USER_DATA") { [Environment]::SetEnvironmentVariable($v, $null, "Process") }
 }
@@ -118,26 +134,28 @@ try {
     for ($k = 0; $k -lt 40 -and -not (Get-NetTCPConnection -LocalPort $sp -State Listen -ErrorAction SilentlyContinue); $k++) { Start-Sleep -Milliseconds 500 }
     # host: ONLINE (dbg_boot) -> MATCH (it loads slowly) -> PLAYER MATCH -> CREATE SESSION, entrances off, CONTINUE
     Start-Side "host" @("--p2p_port=$hp")
-    In "host" @("until $online", "wait 15000", "press A 200", "wait 55000", "press DOWN 200", "wait 1500", "press A 200", "wait 12000",
-                "press DOWN 200", "wait 1200", "press DOWN 200", "wait 1200", "press A 200", "wait 12000",
-                "press DOWN 200", "wait 900", "press DOWN 200", "wait 900", "press DOWN 200", "wait 900", "press RIGHT 200", "wait 1200",
-                "press DOWN 200", "wait 900", "press DOWN 200", "wait 900", "press A 200")
+    In "host" (@("until $online", "wait 15000") + @(if ($o.rumble) { "press DOWN 200"; "wait 1500" }) + @("press A 200", "wait 55000", "press DOWN 200", "wait 1500", "press A 200", "wait 12000",
+                "press DOWN 200", "wait 1200", "press DOWN 200", "wait 1200", "press A 200", "wait 12000"))
+    # (CREATE SESSION's settings: --session <step file> instead, e.g. another match type)
+    if ($o.session) { In "host" @(Get-Content $o.session) }
+    else { In "host" @("press DOWN 200", "wait 900", "press DOWN 200", "wait 900", "press DOWN 200", "wait 900", "press RIGHT 200", "wait 1200",
+                       "press DOWN 200", "wait 900", "press DOWN 200", "wait 900", "press A 200") }
     if (-not (Wait-Log "host" "session .* hosted \(flags 42F" 300)) { throw "the host made no session" }
     $timings.hosted_s = Since
     # joiner: ONLINE -> MATCH -> PLAYER MATCH -> QUICK MATCH -> YES (it finds the host through p2p_peers)
     Start-Side "join" @("--p2p_port=$jp", "--p2p_address=127.0.0.2", "--p2p_peers=127.0.0.1:$hp")
-    In "join" @("until $online", "wait 15000", "press A 200", "wait 55000", "press DOWN 200", "wait 1500", "press A 200", "wait 12000",
-                "press A 200", "wait 15000", "press A 200")
+    In "join" (@("until $online", "wait 15000") + @(if ($o.rumble) { "press DOWN 200"; "wait 1500" }) + @("press A 200", "wait 55000", "press DOWN 200", "wait 1500", "press A 200", "wait 12000",
+                "press A 200", "wait 15000", "press A 200"))
     if (-not (Wait-Log "host" "join remote" 300)) { throw "the joiner didn't join" }
     $timings.joined_s = Since
     Start-Sleep 12
     # picks: the host 1P, the joiner 2P (its cursor one to the right); A on both until the match starts
-    In "host" @("press A 200", "wait 4000", "press A 200", "wait 3000", "press A 200", "wait 3000", "press A 200")
-    In "join" @("press RIGHT 200", "wait 2000", "press A 200", "wait 4000", "press RIGHT 200", "wait 1500", "press A 200", "wait 3000", "press A 200", "wait 3000", "press A 200")
+    if ($o.picks1) { In "host" @(Get-Content $o.picks1) } else { In "host" @("press A 200", "wait 4000", "press A 200", "wait 3000", "press A 200", "wait 3000", "press A 200") }
+    if ($o.picks2) { In "join" @(Get-Content $o.picks2) } else { In "join" @("press RIGHT 200", "wait 2000", "press A 200", "wait 4000", "press RIGHT 200", "wait 1500", "press A 200", "wait 3000", "press A 200", "wait 3000", "press A 200") }
     $until = (Get-Date).AddSeconds(180)
     while ((Get-Date) -lt $until -and -not (LogHas "host" "svr2011\] match starts")) {
         if ($procs.host.HasExited -or $procs.join.HasExited) { throw "a game exited before the match" }
-        In "host" @("press A 200"); In "join" @("press A 200"); Start-Sleep 4
+        if (-not $o.picks1) { In "host" @("press A 200") }; if (-not $o.picks2) { In "join" @("press A 200") }; Start-Sleep 4
     }
     if (-not (LogHas "host" "svr2011\] match starts")) { throw "no match started" }
     $timings.match_s = Since
@@ -171,7 +189,10 @@ foreach ($n in ($o.clock -split ',' | Where-Object { $_ })) {
     foreach ($pa in $a.people) {
         $pb = $b.people | Where-Object { $_.index -eq $pa.index }
         if (-not $pb) { $diff += "person $($pa.index) only on the host"; continue }
-        foreach ($f in "superstar", "last_move", "position_bits", "motion", "root_bits") { if ([string]$pa.$f -ne [string]$pb.$f) { $diff += "person $($pa.index) $f $($pa.$f) / $($pb.$f)" } }
+        # (who by name, its "(id N)" left out: with --join-env SVR2011_TEST_SLOT_SWAP the two games number a mod differently)
+        $na = [string]$pa.name -replace ' \(id \d+\)', ''; $nb = [string]$pb.name -replace ' \(id \d+\)', ''
+        if ($na -ne $nb) { $diff += "person $($pa.index) name $($pa.name) / $($pb.name)" }
+        foreach ($f in "last_move", "position_bits", "motion", "root_bits") { if ([string]$pa.$f -ne [string]$pb.$f) { $diff += "person $($pa.index) $f $($pa.$f) / $($pb.$f)" } }
     }
     $checks += [ordered]@{ clock = [int]$n; same = ($diff.Count -eq 0); differences = $diff }
 }

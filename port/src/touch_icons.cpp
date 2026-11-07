@@ -18,6 +18,7 @@
 #define STBI_ONLY_PNG
 #define STBI_NO_STDIO
 #include "stb_image.h"
+#include "util.h"
 
 namespace svr2011 {
 
@@ -55,10 +56,7 @@ std::string ToUtf8(const fs::path& p) {
   return std::string(reinterpret_cast<const char*>(u.data()), u.size());
 }
 
-std::string Lower(std::string s) {
-  for (char& c : s) c = char(std::tolower(static_cast<unsigned char>(c)));
-  return s;
-}
+using svr2011::Lower;
 
 // Reads `name` from the icons folder into a texture; false (with a log line)
 // when it cannot.

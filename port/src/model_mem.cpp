@@ -10,6 +10,7 @@
 // Every failed allocation is logged once per caller with its size, so a
 // model that doesn't fit shows what it asked for.
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -18,16 +19,24 @@
 #include <string>
 #include <mutex>
 #include <set>
+#include <thread>
+#include <vector>
 
 #include <rex/hook.h>
 #include <rex/logging.h>
 #include <rex/ppc.h>
 #include <rex/system/xmemory.h>
+#include <rex/thread.h>
 
 #include "arena_mods.h"
 #include "caw_limits.h"
+#include "frame_rate.h"
+#include "native/native_renderer.h"
+#include "fps_overlay.h"
+#include "match_box.h"
 #include "mem_trace.h"
 #include "generated/default/svr2011_init.h"
+#include "../modmaker/svrfmt/bytes.h"
 
 namespace {
 std::mutex g_mutex;
@@ -59,8 +68,158 @@ void LogHeaps() {
 }
 }  // namespace
 
+// The match's block heap (sub_821DB908 at each match start: up to 2 regions of 6.5 MB by XMemAlloc, allocator 0,
+// caller 821DB9B4 -> sub_8215A380 in 19EC0000-1A540000 and 1A540000-1ABC0000, each exactly its size, protect 4; the
+// second only when the first is full - big models: six 1,489-page superstars' blocks, 286 KB each at 82258AC4,
+// filled the first) needs its windows free (and a page more each: the 4 KB pages' 0x1000 offset, LowAbove below).
+// Another allocator shares them (1 MB / 64 KB / 48 KB ... blocks, protect 404) and model / arena loads push into
+// them: six 1,047-page superstars in a 327k-vertex arena left 73 MB of physical memory free and no 6.5 MB there. So
+// each window is held (a reserve in the physical heap) once the game's heaps are made (a reserve before that, at
+// start-up, broke their set-up: its own physical blocks found no room, the boot a crash in sub_8269AD08) and the
+// window is free, handed over for the block heap's own request only and taken back when XMemFree frees that block;
+// the other allocator's blocks go elsewhere at once (the "anywhere" path below, as with a full window before). Off:
+// test aid SVR2011_TEST_BLOCKHEAP_RESERVE_OFF=1.
+namespace {
+constexpr uint32_t kBlockSize = 0x680000;
+constexpr uint32_t kBlockLo[2] = {0x19EC0000, 0x1A540000};  // (the windows: lo .. lo + kBlockSize)
+constexpr uint32_t kPageOffset = 0x1000;  // (see LowAbove below: each reserve is at its window + this)
+std::mutex g_block_mutex;
+bool g_block_held[2] = {};      // (the reserves in place)
+uint32_t g_block_ptr[2] = {};   // (the block heap's blocks now, from XMemAlloc: given back to the reserves when freed)
+std::atomic<bool> g_blocks_all{false};  // (every window held or in the block heap's use: nothing to try)
+thread_local bool t_block_request = false;  // (inside the block heap's XMemAlloc)
+using svrfmt::Rd32;
+using svrfmt::Wr32;
+
+bool BlockReserveOn() {
+  static const bool on = std::getenv("SVR2011_TEST_BLOCKHEAP_RESERVE_OFF") == nullptr;
+  return on;
+}
+
+// (the window [lo, hi] is one of the block heap's: its index, else -1)
+int BlockWindow(uint32_t lo, uint32_t hi) {
+  for (int w = 0; w < 2; ++w)
+    if (lo == kBlockLo[w] && hi == kBlockLo[w] + kBlockSize) return w;
+  return -1;
+}
+
+// The SDK's 4 KB-page physical heap (E0000000) is the physical memory + 0x1000 (MmAllocatePhysicalMemoryEx: a window
+// [lo, hi] gives E0000000 + lo - 0x1000 at the lowest), and the game's check after the allocation (sub_82158818:
+// address & 0x1FFFFFFF >= the window's start, else freed and 0) sees that page below the start: a block at its
+// window's very bottom always failed - the only place for one exactly the window's size, as the block heap's (27 Oct:
+// F9EBF000, XMemAlloc 0, the crash). So such a request's window starts a page higher (this), and a widened one too.
+uint32_t LowAbove(uint32_t lo, uint32_t prot) { return (prot & 0xA0000000u) == 0 && lo ? lo + kPageOffset : lo; }
+
+// (g_block_mutex held) every free window held; true when they all are
+bool HoldBlockWindows(const char* when) {
+  if (!g_memory) return false;
+  auto* phys = g_memory->GetPhysicalHeap();
+  bool all = true;
+  for (int w = 0; w < 2; ++w) {
+    if (g_block_held[w] || g_block_ptr[w]) continue;
+    g_block_held[w] = phys && phys->AllocFixed(kBlockLo[w] + kPageOffset, kBlockSize, 0x1000,
+                                               rex::memory::kMemoryAllocationReserve,
+                                               rex::memory::kMemoryProtectRead | rex::memory::kMemoryProtectWrite);
+    all = all && g_block_held[w];
+    static int held = 0, missed = 0;
+    if (g_block_held[w] ? held++ < 8 : (missed++ < 3 || missed % 1000 == 0))
+      REXLOG_INFO("[svr2011] model memory: block heap window {:08X}-{:08X} {} ({})", kBlockLo[w], kBlockLo[w] + kBlockSize,
+                  g_block_held[w] ? "held" : "not held yet - something is in it", when);
+  }
+  return all;
+}
+}  // namespace
+
 namespace svr2011 {
 void InstallModelMem(rex::memory::Memory* memory) { g_memory = memory; }
+}  // namespace svr2011
+
+// The load watch: physical memory with no room anywhere for a block (above) is often survived - the caller has a
+// fallback, or does without - but a load can also wait on it for ever: a silent loading screen (27 Oct, six
+// 1,489-page superstars in an arena past the mesh cap). So after such a failure, 90 s of nothing but a loading
+// screen (a handful of draws a frame) ends the game with a plain "out of game memory" message, the window and the
+// physical memory left in the log, and a crash report - not an endless loading screen. A scene drawn in between
+// (more draws: entrances, the match) disarms it, and only a match's load counts (NoteMatchLoading: the menus draw a
+// handful too). Test aids: SVR2011_TEST_OOM_WATCH_S=<seconds> (90; Android 180), SVR2011_TEST_OOM_ARM=1.
+namespace {
+std::mutex g_oom_mutex;
+std::string g_oom_what;  // (the first failure since the last scene: window, size, physical pages free)
+std::atomic<bool> g_oom_armed{false};
+std::atomic<bool> g_match_loading{false};  // (NoteMatchLoading)
+void StartLoadWatch(uint32_t lo, uint32_t hi, uint32_t size);
+
+void NoteOutOfRoom(uint32_t lo, uint32_t hi, uint32_t size) {
+  if (g_oom_armed.exchange(true)) return;
+  StartLoadWatch(lo, hi, size);
+}
+
+void StartLoadWatch(uint32_t lo, uint32_t hi, uint32_t size) {
+  auto* phys = g_memory ? g_memory->GetPhysicalHeap() : nullptr;
+  {
+    std::lock_guard lock(g_oom_mutex);
+    g_oom_what = fmt::format("{} bytes in the window {:08X}-{:08X}; physical memory {} of {} 4K pages free", size, lo, hi,
+                             phys ? phys->GetUnreservedPageCount() : 0, phys ? phys->GetTotalPageCount() : 0);
+  }
+  static std::once_flag started;
+  std::call_once(started, [] {
+    std::thread([] {
+      rex::thread::set_current_thread_name("model memory");
+      static const int limit_s = [] {
+        const char* v = std::getenv("SVR2011_TEST_OOM_WATCH_S");
+#if defined(__ANDROID__)
+        constexpr int kDefault = 180;  // (a phone's loads are slower)
+#else
+        constexpr int kDefault = 90;
+#endif
+        return v && std::atoi(v) > 0 ? std::atoi(v) : kDefault;
+      }();
+      int quiet_s = 0;
+      uint64_t frames = 0;
+      for (;;) {
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        if (!g_oom_armed.load()) {
+          quiet_s = 0;
+          continue;
+        }
+        // (only frames this renderer counted: one that doesn't count them never trips it)
+        const uint64_t now = svr2011::native::FramesShown();
+        if (now == frames) continue;
+        frames = now;
+        // (a frame with a scene: disarmed - the load got through, or it's the match / menus)
+        if (svr2011::native::LastFrameDraws() > 5) {
+          g_oom_armed = false, quiet_s = 0;
+          continue;
+        }
+        if (!g_match_loading.load()) {  // (the menus draw a handful too: only a match's load counts)
+          quiet_s = 0;
+          continue;
+        }
+        if (++quiet_s < limit_s) continue;
+        std::string what;
+        {
+          std::lock_guard lock(g_oom_mutex);
+          what = g_oom_what;
+        }
+        REXLOG_ERROR("[svr2011] out of game memory: a load has waited {} s on a loading screen since physical memory had "
+                     "no room for {} - the mods / arena in this match are too much for the game's 512 MB; ending the "
+                     "game (crash report)", quiet_s, what);
+        svr2011::ShowNotice("Out of game memory: this match's superstars and arena are too big to load together. "
+                            "The game will close - pick lighter mods or another arena.", 10.0f);
+        std::this_thread::sleep_for(std::chrono::seconds(10));
+        std::abort();  // (the crash reporter writes the report, the log carries the line above)
+      }
+    }).detach();
+  });
+}
+}  // namespace
+
+namespace svr2011 {
+void NoteMatchLoading(bool loading) {
+  g_match_loading = loading;
+  // Test aid SVR2011_TEST_OOM_ARM=1: armed at every match load, as if physical memory had run out (the message path)
+  static const bool arm = std::getenv("SVR2011_TEST_OOM_ARM") != nullptr;
+  if (loading && arm && !g_oom_armed.exchange(true)) StartLoadWatch(0, 0, 0);
+}
 }  // namespace svr2011
 
 REX_EXTERN(__imp__sub_82914DD0);
@@ -90,7 +249,15 @@ REX_HOOK_RAW(sub_82914DD0) {
 REX_EXTERN(__imp__sub_82158C70);
 REX_HOOK_RAW(sub_82158C70) {
   const uint32_t size = ctx.r3.u32, attr = ctx.r4.u32, caller = uint32_t(ctx.lr);
+  const bool block = caller == 0x821DB9B4 && size == kBlockSize && BlockReserveOn();
+  t_block_request = block;
   __imp__sub_82158C70(ctx, base);
+  t_block_request = false;
+  if (block && ctx.r3.u32) {
+    std::lock_guard<std::mutex> lock(g_block_mutex);
+    for (int w = 0; w < 2; ++w)
+      if ((ctx.r3.u32 & 0x1FFFFFFF) == kBlockLo[w]) g_block_ptr[w] = ctx.r3.u32;
+  }
   // Big models / arenas: allocator 128 (the model loader's vertex / index buffers and textures - a wrestler's 768 KB
   // window, the stage's) full - the block from the fallback memory; XMemFree's hook (below) gives it back. Every
   // allocator-128 block is freed by XMemFree (SVR2011_TEST_MEMTRACE, 23 Oct: 21,782 of 21,782, two call sites).
@@ -130,7 +297,20 @@ REX_HOOK_RAW(sub_82158940) {
     }
     if (mine && svr2011::CawHeapFree(ptr)) return;
   }
+  const uint32_t ptr = ctx.r3.u32;
   __imp__sub_82158940(ctx, base);
+  if (ptr && BlockReserveOn()) {  // (the block heap's block freed: its window held again)
+    std::lock_guard<std::mutex> lock(g_block_mutex);
+    for (int w = 0; w < 2; ++w)
+      if (ptr == g_block_ptr[w]) {
+        g_block_ptr[w] = 0;
+        g_blocks_all = HoldBlockWindows("block heap freed");
+        if (auto* phys = g_memory ? g_memory->GetPhysicalHeap() : nullptr; phys && w == 0)  // (a match's end)
+          REXLOG_INFO("[svr2011] model memory: block heap freed - physical {} of {} 4K pages free, fallback {:.1f} MB; "
+                      "render queue peak {}%", phys->GetUnreservedPageCount(),
+                      phys->GetTotalPageCount(), svr2011::FallbackBytesInUse() / 1048576.0, svr2011::RenderQueuePeakTake());
+      }
+  }
 }
 
 // sub_8215A380(size, min, max, align, protect) -> MmAllocatePhysicalMemoryEx: an
@@ -141,7 +321,9 @@ REX_HOOK_RAW(sub_82158940) {
 // of its window taken - two big 2K14 ports in a mod arena (2.1.3 / 2.1.4.1 reports, every time: Eddie Guerrero
 // and Undertaker Biker in "Smackdown 13") - and the game cleared the null it got (memset at lr 821DBA14), a
 // crash 2.5 s after the entrances. The heap's users take its base as given (sub_821DB908 lays its blocks from
-// the address returned), so another place works; no room anywhere is still 0 (logged with the heaps).
+// the address returned), so another place works - above the window's start: the caller (sub_82158818) frees a
+// block below it and fails (27 Oct: the block heap placed at 138A8000 still crashed). No room there is still 0
+// (logged with the heaps).
 REX_EXTERN(__imp__sub_8215A380);
 REX_HOOK_RAW(sub_8215A380) {
   const uint32_t size = ctx.r3.u32, lo = ctx.r4.u32, hi = ctx.r5.u32, align = ctx.r6.u32, prot = ctx.r7.u32;
@@ -160,7 +342,33 @@ REX_HOOK_RAW(sub_8215A380) {
       ctx = in;
     }
   }
+  // The block heap's windows held (above): the block heap's own requests get them, any other goes elsewhere at once.
+  if (BlockReserveOn() && !g_blocks_all.load(std::memory_order_relaxed) && !t_block_request && Rd32(base, 0x82EC5F48) &&
+      Rd32(base, Rd32(base, 0x82EC5F48) + 53 * 36)) {  // (the heap table made - heap 53, the last, set up: hold them)
+    std::lock_guard<std::mutex> lock(g_block_mutex);
+    g_blocks_all = HoldBlockWindows("the game's heaps made");
+  }
+  const int bw = BlockReserveOn() ? BlockWindow(lo, hi) : -1;
+  bool block_window = false;
+  if (bw >= 0) {
+    std::lock_guard<std::mutex> lock(g_block_mutex);
+    if (t_block_request && size == kBlockSize) {
+      if (g_block_held[bw] && g_memory->GetPhysicalHeap()->Release(kBlockLo[bw] + kPageOffset)) g_block_held[bw] = false;
+      block_window = true;
+    } else if (g_block_held[bw]) {
+      static uint32_t moved = 0;
+      if (++moved <= 3 || moved % 500 == 0)
+        REXLOG_INFO("[svr2011] model memory: {} bytes for a block heap window placed elsewhere ({} so far)", size, moved);
+      ctx.r4.u64 = LowAbove(lo, prot), ctx.r5.u64 = 0x1FFFFFFF;  // (above the window: the reserves themselves skipped)
+    }
+  }
+  if (size && hi > lo && size >= hi - lo && ctx.r4.u32 == lo && ctx.r5.u32 == hi)  // (exactly its window's size)
+    ctx.r4.u64 = LowAbove(lo, prot), ctx.r5.u64 = hi + (LowAbove(lo, prot) - lo);
   __imp__sub_8215A380(ctx, base);
+  if (block_window && ctx.r3.u32 == 0) {
+    std::lock_guard<std::mutex> lock(g_block_mutex);
+    g_blocks_all = HoldBlockWindows("block heap request failed");
+  }
   static const bool log_all = std::getenv("SVR2011_TEST_BUFFER_LOG") != nullptr;
   if (ctx.r3.u32 == 0 || log_all)
     REXLOG_WARN("[svr2011] model memory: physical {} bytes in {:08X}-{:08X} (align {:X}, protect {:X}) -> {:08X} (caller {:08X})",
@@ -168,10 +376,11 @@ REX_HOOK_RAW(sub_8215A380) {
   if (ctx.r3.u32 == 0 && size && (lo != 0 || hi < 0x1FFFFFFF)) {
     LogHeaps();
     ctx = in;
-    ctx.r4.u64 = 0, ctx.r5.u64 = 0x1FFFFFFF;  // (anywhere)
+    ctx.r4.u64 = LowAbove(lo, prot), ctx.r5.u64 = 0x1FFFFFFF;  // (anywhere above the window's start: LowAbove)
     __imp__sub_8215A380(ctx, base);
     REXLOG_WARN("[svr2011] model memory: ... its window full: {}", ctx.r3.u32 ? fmt::format("placed at {:08X} instead", ctx.r3.u32)
                                                                           : std::string("no room anywhere either"));
+    if (!ctx.r3.u32) NoteOutOfRoom(lo, hi, size);
   }
 }
 
@@ -189,13 +398,15 @@ REX_HOOK_RAW(sub_8215A380) {
 // sub_8269B2D0, whose hook hands such a block back), so the match loads instead of hanging.
 // Test aids: SVR2011_TEST_CACHE_LOG=1 - every request of 1 MB or more; SVR2011_TEST_CACHE_FULL=<bytes> - the
 // cache finds no room for a request of at least that size (the hang, on purpose).
+namespace svr2011 {
+// (match_types.cpp: the cell's extra rule motions' read, '/MOT/RUWM' while pending)
+extern const char* const kExtraRuleMotionsRead;
+bool ExtraRuleMotionsPending();
+void ExtraRuleMotionsRead();
+}  // namespace svr2011
+
 namespace {
 constexpr uint32_t kLoaderCache = 0x82ED5FE8;
-
-uint32_t Rd32(const uint8_t* base, uint32_t a) {
-  const uint8_t* p = base + a;
-  return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3];
-}
 
 std::string GuestName(const uint8_t* base, uint32_t a) {
   std::string s;
@@ -211,6 +422,7 @@ struct CacheAlloc {
   bool active = false, stuck = false, given = false;
   uint32_t size = 0, tries = 0;
   std::chrono::steady_clock::time_point t0;
+  std::string name;  // (the file it is for: noted when it is found stuck)
 };
 thread_local CacheAlloc t_alloc;
 thread_local uint32_t t_request = 0;  // (the loader's request in sub_826A1C70: its file name at +50)
@@ -251,6 +463,17 @@ REX_EXTERN(__imp__sub_826A1C70);
 REX_HOOK_RAW(sub_826A1C70) {
   const bool loader = uint32_t(ctx.lr) == 0x826A1F1C;  // (sub_826A1D38's file read: r31 = the request)
   if (loader) t_request = ctx.r31.u32;
+  // (SVR2011_TEST_EMD_LOG=1: each model read - the request's first 50 bytes and its size: which pac a scene's
+  // character model is looked up in - research for the Streak walk's mod, rtwm_streak.cpp)
+  if (static const bool emd_log = std::getenv("SVR2011_TEST_EMD_LOG") != nullptr; emd_log && loader) {
+    const std::string name = GuestName(base, t_request + 50);
+    if (name.rfind("/EMD/", 0) == 0) {
+      std::string hex;
+      for (uint32_t k = 0; k < 50; ++k) hex += fmt::format("{}{:02X}", k % 4 ? "" : " ", base[t_request + k]);
+      REXLOG_INFO("[svr2011] file cache: read {} - {} bytes, request {:08X}:{} (caller {:08X})", name,
+                  uint64_t(Rd32(base, t_request + 44)) << 8, t_request, hex, uint32_t(ctx.lr));
+    }
+  }
   // A redirected arena's stage entry is read at the served file's size, not the mounted directory's (the shipped
   // file's): request +44 = size / 0x100, which this buffer and the read take (arena_mods.h ServedStageUnits).
   if (loader) {
@@ -290,6 +513,7 @@ REX_HOOK_RAW(sub_826BA928) {
     REXLOG_INFO("[svr2011] file cache: {} {} bytes -> {:08X} after {:.1f} s ({} tries)", name, size, ctx.r3.u32, s,
                 t_alloc.tries);
   t_alloc.active = false;
+  if (name == svr2011::kExtraRuleMotionsRead) svr2011::ExtraRuleMotionsRead();
 }
 
 // (inside sub_826BA928's retry loop: one call per failed try; r3 after it = the idle files it could still free)
@@ -302,9 +526,20 @@ REX_HOOK_RAW(sub_826B9FB8) {
   ++r.tries;
   if (r.stuck || ctx.r3.u32 != 0) return;
   const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - r.t0).count();
-  if (s < 3.0) return;
+  // (the cell's extra rule motions - match_types.cpp: Extreme Rules' RUWM read after the cell's own, when heap 16
+  // already holds the arena, the stage and the weapons' models - from the fallback memory at once, no 3 s wait)
+  // (nor for a file bigger than the cache's whole heap, with nothing idle left to free: packs' /MOTP/GAME, 30 MB in 20
+  // MB, waited 3 s at every match)
+  const uint32_t heap = Rd32(base, cache + 76), table = Rd32(base, 0x82EC5F48);
+  const bool too_big = heap < 54 && table && r.size > Rd32(base, table + heap * 36 + 4) - Rd32(base, table + heap * 36);
+  const bool at_once = too_big || (svr2011::ExtraRuleMotionsPending() && RequestName(base) == svr2011::kExtraRuleMotionsRead);
+  if (s < 3.0 && !at_once) return;
   r.stuck = true;
-  LogLoaderCache(base, cache, r, s);
+  r.name = RequestName(base);
+  if (at_once)
+    REXLOG_INFO("[svr2011] file cache: no room for {} ({} bytes) - from the fallback memory", r.name, r.size);
+  else
+    LogLoaderCache(base, cache, r, s);
 }
 
 namespace svr2011 {
@@ -320,7 +555,13 @@ bool LoaderCacheForcedFull(uint32_t size) {
 uint32_t LoaderCacheFallback(uint32_t size) {
   CacheAlloc& r = t_alloc;
   if (!r.active || !r.stuck) return 0;
-  const uint32_t p = FallbackBlock(size);
+  // (a request of 0 bytes: a file no mounted pac has - its directory entry not found, size 0 - e.g. a character's
+  // model under a name no pac carries. It never fits nothing, so it spun forever: a small zeroed block instead,
+  // the read empty - the load goes on, and the log names the missing file)
+  const uint32_t p = FallbackBlock(std::max(size, 2048u));
+  if (!size && !r.given)
+    REXLOG_ERROR("[svr2011] file cache: {} is in no pac (0 bytes) - read as an empty file so the load goes on",
+                 r.name);
   if (!r.given) {
     r.given = true;
     REXLOG_WARN("[svr2011] file cache: {} bytes {}", size,
@@ -329,3 +570,268 @@ uint32_t LoaderCacheFallback(uint32_t size) {
   return p;
 }
 }  // namespace svr2011
+
+// -- A match's motion files ----------------------------------------------------
+//
+// A match's motions live in one 36 MB buffer of heap 42 (sub_821636D8: table +344 the buffer, +336 its size, +340 what
+// is used; the table's two sets: table + 352 * set, the one loading = *(table + 704) ^ 1). Each file of the group -
+// MOT/BM00, BM01, BM02, BM03 ... - is read so that it ENDS at the buffer's top (sub_82162960, sub_82162890: dest = buffer
+// + size - file), and sub_821646E8 trims its banks down to the used end (sub_82163808: only the motions this match can
+// play). Nothing compares the two: packs grew MOT/BM01 from 17 MB to 35 MB and its read landed on the banks BM00 had
+// already left there - slots 3 to 7 of the motion list junk (report d10f64: every motion of a strike bank gone, the
+// wrestlers stand in a motion no bank has; 89cfee: the game's search crashed on them). Such a file is read into the
+// fallback memory instead, and given back when its banks have been copied (sub_826A2D78: the read's answer).
+// Test aid SVR2011_TEST_BANK_FILE_OFF=1: the game's place (the report's junk).
+namespace {
+thread_local uint32_t t_motion_table = 0;  // (sub_82162960 / sub_82162890 running: the table)
+constexpr uint32_t kMotionFileMargin = 0x1000;
+struct MotionFileBlock {
+  uint32_t reader, block;
+};
+std::mutex g_motion_file_mutex;
+std::vector<MotionFileBlock> g_motion_file_blocks;
+}  // namespace
+
+namespace svr2011 {
+// (online.cpp's sub_826A2FA8 hook, before the game's: r3 the reader, r4 the name, r5 where it goes)
+void MotionFileRead(PPCContext& ctx, uint8_t* base) {
+  const uint32_t table = t_motion_table;
+  if (!table || !ctx.r5.u32) return;
+  static const bool off = std::getenv("SVR2011_TEST_BANK_FILE_OFF") != nullptr;
+  if (off) return;
+  const uint32_t set = table + 352 * (Rd32(base, table + 704) ^ 1), buffer = Rd32(base, set + 344);
+  const uint32_t size = Rd32(base, set + 336), used = Rd32(base, set + 340), dest = ctx.r5.u32;
+  if (dest >= buffer + used + kMotionFileMargin) return;
+  const uint32_t bytes = buffer + size - dest;  // (the game's place: its size, rounded up to 2 KB)
+  // (the virtual system heap: only the CPU reads it, and the physical pool may have no 37 MB in one piece by now)
+  const uint32_t block = FallbackBlock(bytes, true, 0x1000);
+  const std::string name = GuestName(base, ctx.r4.u32);
+  if (!block) {
+    REXLOG_ERROR("[svr2011] motion file {} ({} bytes): no fallback memory - it overwrites the motions before it", name, bytes);
+    return;
+  }
+  {
+    std::lock_guard lock(g_motion_file_mutex);
+    g_motion_file_blocks.push_back({ctx.r3.u32, block});
+  }
+  static int told = 0;
+  if (told++ < 8)
+    REXLOG_WARN("[svr2011] motion file {} ({:.1f} MB) doesn't fit above the {:.1f} MB of motions before it in the {:.0f} MB "
+                "buffer - read into the fallback memory, at {:08X}", name, bytes / 1048576.0, used / 1048576.0,
+                size / 1048576.0, block);
+  ctx.r5.u64 = block;
+}
+}  // namespace svr2011
+
+REX_EXTERN(__imp__sub_82162960);
+REX_HOOK_RAW(sub_82162960) {
+  t_motion_table = ctx.r4.u32;
+  __imp__sub_82162960(ctx, base);
+  t_motion_table = 0;
+}
+
+REX_EXTERN(__imp__sub_82162890);
+REX_HOOK_RAW(sub_82162890) {
+  t_motion_table = ctx.r4.u32;
+  __imp__sub_82162890(ctx, base);
+  t_motion_table = 0;
+}
+
+// sub_826A2D78(.., .., reader): a read has come - its answer (for a motion file, sub_821646E8) copies what it keeps
+REX_EXTERN(__imp__sub_826A2D78);
+REX_HOOK_RAW(sub_826A2D78) {
+  const uint32_t reader = ctx.r5.u32;
+  __imp__sub_826A2D78(ctx, base);
+  std::lock_guard lock(g_motion_file_mutex);
+  for (size_t i = 0; i < g_motion_file_blocks.size(); ++i)
+    if (g_motion_file_blocks[i].reader == reader) {
+      svr2011::CawHeapFree(g_motion_file_blocks[i].block);
+      g_motion_file_blocks.erase(g_motion_file_blocks.begin() + long(i));
+      break;
+    }
+}
+
+// -- A heap's free list ---------------------------------------------------------
+//
+// The game's heaps (sub_8269AAD8 frees; a critical section per heap, 28 bytes each from 0x82EC55B0; the table at
+// 0x82EC5F48, 36 bytes each: +0 start, +4 end). A block is 16 bytes of header in units of 16 bytes from the start:
+// +0 the next block by address (low 28 bits), +4 the one before, +8 the next free block (0 while it's in use), the
+// byte at +15 its heap. The free list starts at start + 8 and goes up by address, to a number at or past the end.
+// sub_8269AAD8 walks it with no limit, holding the heap's lock: when something has overwritten a link, it runs for
+// ever (reports 228dce, 73e349, 57b79b: "world update stuck in pass 20", the logic thread at a full core, the black
+// screen after a match). This is a safety net and not a fix: whatever wrote over the list isn't found. The block
+// being freed is left in use, the list made again from the blocks by address (the free ones have a next: alloc and
+// free walk it too; if the address links are bad too, the list ends at the bad link and what's after it is lost), and
+// the log says all it can see.
+// Test aids: SVR2011_TEST_FREE_LIST=<heap>,<n>[,loop|double|junk] - the <n>th free on that heap (99: on any) meets that damage;
+// SVR2011_TEST_FREE_GUARD_OFF=1 - the game's walk alone.
+namespace {
+constexpr uint32_t kHeapLocks = 0x82EC55B0, kHeapTable = 0x82EC5F48, kHeapEntrySize = 36, kHeapLockSize = 28;
+constexpr uint32_t kHeapCount = 64;
+
+std::string HeapWords(const uint8_t* base, uint32_t at, uint32_t count, uint32_t start, uint32_t end) {
+  std::string s;
+  for (uint32_t i = 0; i < count; ++i) {
+    const uint32_t a = at + i * 4;
+    if (a < start || a + 4 > end) break;
+    s += fmt::format(" {:08X}", Rd32(base, a));
+  }
+  return s.empty() ? " (outside the heap)" : s;
+}
+
+std::string HeapCallers(const uint8_t* base, const PPCContext& ctx) {
+  std::string s = fmt::format("{:08X}", uint32_t(ctx.lr));
+  uint32_t sp = ctx.r1.u32;
+  const uint32_t top = sp + 0x40000;
+  for (int i = 0; i < 12 && sp >= 0x70000000 && sp < 0x80000000; ++i) {
+    const uint32_t prev = Rd32(base, sp);
+    if (prev <= sp || prev >= top) break;
+    s += fmt::format(" {:08X}", Rd32(base, prev - 8));
+    sp = prev;
+  }
+  return s;
+}
+
+// The free list again, from the blocks in address order; false if those links are bad as well (nothing changed).
+bool RebuildFreeList(uint8_t* base, uint32_t start, uint32_t size, uint32_t* kept) {
+  std::vector<uint32_t> free_blocks;
+  uint32_t cur = Rd32(base, start) & 0x0FFFFFFF;
+  while (cur < size) {
+    const uint32_t node = start + (cur << 4), to = Rd32(base, node) & 0x0FFFFFFF;
+    if (to <= cur || to > size) return false;
+    if (Rd32(base, node + 8)) free_blocks.push_back(cur);
+    cur = to;
+  }
+  uint32_t link = start + 8;
+  for (const uint32_t b : free_blocks) {
+    Wr32(base, link, b);
+    link = start + (b << 4) + 8;
+  }
+  Wr32(base, link, size);
+  *kept = uint32_t(free_blocks.size());
+  return true;
+}
+
+struct HeapDamage {
+  const char* what = nullptr;
+  uint32_t node = 0, next = 0, steps = 0, free_units = 0;  // (node: the list's block with the bad link, 0 none)
+};
+
+void TellHeapDamage(const uint8_t* base, const PPCContext& ctx, uint32_t heap, uint32_t p, uint32_t start, uint32_t end,
+                    const HeapDamage& d) {
+  static std::atomic<int> told{0};
+  const int n = ++told;
+  if (n > 8) {
+    if (n == 9) REXLOG_ERROR("[svr2011] heap free list: more damage - not told again this run");
+    return;
+  }
+  const uint32_t block = p - 16;
+  REXLOG_ERROR("[svr2011] heap free list: heap {}, freeing {:08X}: {} - the block stays in use (callers {})", heap, p, d.what,
+               HeapCallers(base, ctx));
+  REXLOG_ERROR("[svr2011] heap free list:   heap {:08X}-{:08X}, list head {}, {} free blocks ({} KB) walked before it stopped",
+               start, end, Rd32(base, start + 8), d.steps, d.free_units / 64);
+  REXLOG_ERROR("[svr2011] heap free list:   the block's header and start:{}", HeapWords(base, block, 12, start, end));
+  const uint32_t before = start + (Rd32(base, block + 4) << 4), after = start + ((Rd32(base, block) & 0x0FFFFFFF) << 4);
+  REXLOG_ERROR("[svr2011] heap free list:   the block before it {:08X}:{}", before, HeapWords(base, before, 12, start, end));
+  REXLOG_ERROR("[svr2011] heap free list:   the block after it {:08X}:{}", after, HeapWords(base, after, 12, start, end));
+  if (d.node) {
+    const uint32_t b4 = start + (Rd32(base, d.node + 4) << 4);
+    REXLOG_ERROR("[svr2011] heap free list:   the bad link: free block {:08X} (unit {}) says next {}:{}", d.node,
+                 (d.node - start) >> 4, d.next, HeapWords(base, d.node, 12, start, end));
+    REXLOG_ERROR("[svr2011] heap free list:   the 16 words before that block (a writer running on?):{}",
+                 HeapWords(base, d.node - 64, 16, start, end));
+    REXLOG_ERROR("[svr2011] heap free list:   the block before it by address {:08X} (what it holds says its owner):{}", b4,
+                 HeapWords(base, b4, 12, start, end));
+  }
+  svr2011::MatchBoxLog("a heap's free list was damaged");
+}
+}  // namespace
+
+REX_EXTERN(__imp__sub_8269AAD8);
+REX_HOOK_RAW(sub_8269AAD8) {
+  static const bool off = std::getenv("SVR2011_TEST_FREE_GUARD_OFF") != nullptr;
+  const uint32_t p = ctx.r3.u32;
+  const uint32_t table = p ? Rd32(base, kHeapTable) : 0;
+  if (!table || p < 0x10000) {
+    __imp__sub_8269AAD8(ctx, base);
+    return;
+  }
+  const uint32_t heap = base[p - 1];
+  const uint32_t entry = table + heap * kHeapEntrySize;
+  const uint32_t start = heap < kHeapCount ? Rd32(base, entry) : 0, end = heap < kHeapCount ? Rd32(base, entry + 4) : 0;
+  if (!start || p - 16 < start || p >= end) {  // (not one of these heaps' blocks: as the game)
+    __imp__sub_8269AAD8(ctx, base);
+    return;
+  }
+  const PPCContext saved = ctx;
+  ctx.r3.u64 = kHeapLocks + heap * kHeapLockSize;
+  REX_CALL_INDIRECT_FUNC(0x82D4753Cu);  // (RtlEnterCriticalSection: the game's own takes it again inside)
+  const uint32_t block = p - 16, self = (block - start) >> 4, size = (end - start) >> 4;
+
+  // Test aid: this free meets the damage.
+  static const struct TestDamage {
+    int heap = -1, at = 0;
+    std::string kind;
+  } test = [] {
+    TestDamage t;
+    if (const char* v = std::getenv("SVR2011_TEST_FREE_LIST")) {
+      char kind[16] = "loop";
+      if (std::sscanf(v, "%d,%d,%15s", &t.heap, &t.at, kind) >= 2) t.kind = kind;
+    }
+    return t;
+  }();
+  bool test_double = false;
+  if (test.heap == int(heap) || test.heap == 99) {  // (99: any heap)
+    static int count = 0;
+    if (++count == test.at) {
+      const uint32_t first = Rd32(base, start + 8);
+      REXLOG_WARN("[svr2011] heap free list: test - {} at free {} of heap {}", test.kind, count, heap);
+      if (test.kind == "double") test_double = true;
+      else if (test.kind == "junk") Wr32(base, block + 4, 0x03220B94);
+      else if (first < size) Wr32(base, start + (first << 4) + 8, first);
+    }
+  }
+
+  HeapDamage d;
+  const uint32_t to_next = Rd32(base, block) & 0x0FFFFFFF, to_before = Rd32(base, block + 4);
+  if (off) {
+  } else if (to_next > size || to_next <= self || to_before >= size || (self && to_before >= self)) {
+    d.what = "its header isn't a block's";
+  } else if (Rd32(base, block + 8) != 0) {
+    d.what = "it is free already (a second free)";
+  } else {
+    for (uint32_t cur = Rd32(base, start + 8); cur <= self;) {
+      const uint32_t node = start + (cur << 4), next = Rd32(base, node + 8);
+      if (next <= cur) {
+        d.what = "the free list has a bad link", d.node = node, d.next = next;
+        break;
+      }
+      const uint32_t to = Rd32(base, node) & 0x0FFFFFFF;
+      if (to > cur && to <= size) d.free_units += to - cur;
+      ++d.steps;
+      cur = next;
+    }
+  }
+  if (d.what) {
+    ctx = saved;
+    TellHeapDamage(base, ctx, heap, p, start, end, d);
+    if (d.node) {
+      uint32_t kept = 0;
+      if (RebuildFreeList(base, start, size, &kept)) {
+        REXLOG_ERROR("[svr2011] heap free list:   list made again from the address links: {} free blocks", kept);
+      } else {
+        Wr32(base, d.node + 8, size);
+        REXLOG_ERROR("[svr2011] heap free list:   the address links are bad too: the list ends at the bad link");
+      }
+    }
+  } else {
+    ctx = saved;
+    __imp__sub_8269AAD8(ctx, base);
+    if (test_double) {
+      ctx = saved;
+      sub_8269AAD8(ctx, base);
+    }
+  }
+  ctx.r3.u64 = kHeapLocks + heap * kHeapLockSize;
+  REX_CALL_INDIRECT_FUNC(0x82D4754Cu);  // (RtlLeaveCriticalSection)
+}

@@ -7,7 +7,9 @@
 // profile (+0x2DC, +0x348, +0x3B4: 108 bytes each, +0 = -1 when empty), saved with it in SaveData.dat.
 //
 // threads.pac in Mods\SuperstarOverlay holds the game's SSTL plus a record for each listed mod as
-// EDIT/SSTM, and the game's lookup of /EDIT/SSTL is pointed at it. A mod gets
+// EDIT/SSTM, and the game's lookup of /EDIT/SSTL is pointed at it. The game's SSTL is the installed DLCs' where
+// there are any (a DLC's pac\edit\edit_dlcNN.pac has the whole list plus its superstars - Vol. 3: 50-58): built
+// from the disc's alone, the DLC superstars were gone from Threads once a mod was listed (2.1.6 report). A mod gets
 // - the base's record under its own id when its model is its base's (the attire-1 models, byte for byte:
 //   an attire swap, a renamed copy);
 // - else one from its threads.txt (tools/threads_parts.py names its masks' channels with stock part
@@ -16,7 +18,10 @@
 //
 // A mod's slots are kept by its folder (Saves\.threads\<folder>.bin), not by the id it holds this run: put
 // into its profile as it is set up (never the base's slots), written when the game saves.
+#include "big_roster.h"
 #include "superstar_threads.h"
+#include "superstar_mods.h"
+#include "title_new.h"
 
 #include <algorithm>
 #include <chrono>
@@ -25,6 +30,7 @@
 #include <cstring>
 #include <map>
 #include <mutex>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -49,6 +55,7 @@ constexpr size_t kRecord = 484, kParts = 48, kAreaAt = 196, kViewAt = 244, kKind
 
 uint32_t g_alias_slash = 0, g_alias_bare = 0;  // guest "/EDIT/SSTM", "EDIT/SSTM"
 fs::path g_dir;                                // Saves\.threads
+fs::path g_dlc_root;                           // the installed DLC packages
 std::mutex g_mutex;
 std::vector<svr2011::ThreadsMod> g_mods;              // the listed mods
 std::map<std::string, std::vector<uint8_t>> g_saved;  // folder -> its 324 bytes as last saved / loaded
@@ -129,6 +136,58 @@ bool PartsRecord(const fs::path& file, const std::map<uint32_t, uint32_t>& codes
   return true;
 }
 
+uint32_t RecordId(const svrfmt::Bytes& list, size_t o) {
+  return uint32_t(list[o] | list[o + 1] << 8 | list[o + 2] << 16 | uint32_t(list[o + 3]) << 24);
+}
+
+// A DLC edit pac's EDIT/SSTL list (u16 count, records); false: none.
+bool ReadSstl(const fs::path& pac, svrfmt::Bytes& list) {
+  svrfmt::Bytes raw;
+  svrfmt::Epac edit;
+  if (!svrfmt::ReadFile(pac.string(), raw) || !svrfmt::EpacRead(raw, edit)) return false;
+  for (const auto& g : edit.groups)
+    for (const auto& x : g.entries) {
+      std::vector<svrfmt::PachEntry> kids;
+      if (g.type != "EDIT" || x.name != "SSTL" || !svrfmt::PachRead(svrfmt::Unpack(x.data), kids) || kids.empty())
+        continue;
+      list = svrfmt::Unpack(kids[0].data);
+      const uint32_t count = list.size() >= 2 ? uint32_t(list[0] | list[1] << 8) : 0;
+      return count && list.size() == 2 + count * kRecord;
+    }
+  return false;
+}
+
+// The installed DLCs' superstars added to the disc's list (`list`): each package's pac\edit\*.pac SSTL (fewest
+// records first), the records whose id the list lacks appended. Their files, for the log.
+std::string MergeDlcLists(svrfmt::Bytes& list) {
+  std::vector<std::pair<fs::path, svrfmt::Bytes>> lists;
+  std::error_code ec;
+  if (!g_dlc_root.empty() && fs::is_directory(g_dlc_root, ec))
+    for (const auto& pkg : fs::directory_iterator(g_dlc_root, ec)) {
+      std::error_code e2;
+      for (const auto& f : fs::directory_iterator(pkg.path() / "pac" / "edit", e2)) {
+        svrfmt::Bytes l;
+        if (f.is_regular_file(e2) && f.path().extension() == ".pac" && ReadSstl(f.path(), l))
+          lists.emplace_back(f.path(), std::move(l));
+      }
+    }
+  std::stable_sort(lists.begin(), lists.end(), [](const auto& a, const auto& b) { return a.second.size() < b.second.size(); });
+  std::string names;
+  // (the list keeps its records in their places - the game's own first, as the disc has them - and gets each DLC
+  // superstar it lacks after them: the DLCs' lists put theirs first, and with the disc's superstars moved down by
+  // them no Threads edit showed on anyone in the select screen, entrances or matches - 2.1.7 report a3e367)
+  std::set<uint32_t> has;
+  for (size_t o = 2; o < list.size(); o += kRecord) has.insert(RecordId(list, o));
+  for (const auto& [file, l] : lists) {
+    for (size_t o = 2; o < l.size(); o += kRecord)
+      if (has.insert(RecordId(l, o)).second) list.insert(list.end(), l.begin() + long(o), l.begin() + long(o + kRecord));
+    const uint32_t n = uint32_t((list.size() - 2) / kRecord);
+    list[0] = uint8_t(n), list[1] = uint8_t(n >> 8);
+    names += (names.empty() ? "" : ", ") + file.filename().string() + " (" + std::to_string((l.size() - 2) / kRecord) + ")";
+  }
+  return names;
+}
+
 std::string Dec(uint32_t v) {
   char b[16];
   std::snprintf(b, sizeof b, "%u", v);
@@ -140,6 +199,7 @@ std::string Dec(uint32_t v) {
 namespace svr2011 {
 
 void SetThreadsSaves(const fs::path& saves) { g_dir = saves / ".threads"; }
+void SetThreadsDlc(const fs::path& dlc_root) { g_dlc_root = dlc_root; }
 
 bool BuildThreadsOverlay(rex::memory::Memory* memory, const fs::path& game, const fs::path& overlay,
                          const std::vector<ThreadsMod>& mods) {
@@ -165,16 +225,20 @@ bool BuildThreadsOverlay(rex::memory::Memory* memory, const fs::path& game, cons
     return false;
   }
   svrfmt::Bytes list = svrfmt::Unpack(kids[0].data);
-  const uint32_t count = list.size() >= 2 ? uint32_t(list[0] | list[1] << 8) : 0;
+  uint32_t count = list.size() >= 2 ? uint32_t(list[0] | list[1] << 8) : 0;
   if (!count || list.size() != 2 + count * kRecord) {
     REXLOG_WARN("[svr2011] superstar threads: SSTL is {} bytes for {} records - mods not listed", list.size(), count);
     return false;
+  }
+  if (const std::string dlc = MergeDlcLists(list); !dlc.empty()) {
+    count = uint32_t(list[0] | list[1] << 8);
+    REXLOG_INFO("[svr2011] superstar threads: the DLCs' lists ({}) - {} superstars before the mods", dlc, count);
   }
   std::map<uint32_t, size_t> at;  // id -> record offset
   std::map<uint32_t, std::map<uint32_t, int>> uses;  // part name -> {its area/view/kind bytes -> how many parts}
   for (uint32_t i = 0; i < count; ++i) {
     const size_t o = 2 + i * kRecord;
-    at[uint32_t(list[o] | list[o + 1] << 8 | list[o + 2] << 16 | uint32_t(list[o + 3]) << 24)] = o;
+    at[RecordId(list, o)] = o;
     for (uint32_t k = 0; k < kParts; ++k) {
       const size_t n = o + 4 + k * 4;
       const uint32_t name = uint32_t(list[n] | list[n + 1] << 8 | list[n + 2] << 16 | uint32_t(list[n + 3]) << 24);
@@ -265,6 +329,25 @@ uint32_t ThreadsAlias(const char* name) {
   return slash ? g_alias_slash : g_alias_bare;
 }
 
+void LogThreadsSlots(const uint8_t* base) {
+  static const bool on = std::getenv("SVR2011_TEST_THREADS_SLOTS") != nullptr;
+  static auto last = std::chrono::steady_clock::time_point{};
+  if (!on || std::chrono::steady_clock::now() - last < std::chrono::seconds(10)) return;
+  last = std::chrono::steady_clock::now();
+  std::string s;
+  for (uint32_t id = 0; id < 512; ++id) {
+    const uint32_t si = svr2011::RosterIndex(base, id);
+    if (si >= 512) continue;
+    std::string names;
+    for (uint32_t k = 0; k < kSlots; ++k) {
+      const char* n = reinterpret_cast<const char*>(base + svr2011::RosterEntry(kProfiles, kProfileSize, si) + kSlotsAt + k * kSlotSize + 0x28);
+      if (n[0] >= 32 && n[0] < 127) names += (names.empty() ? "" : "|") + std::string(n, strnlen(n, 16));
+    }
+    if (!names.empty()) s += " [id " + Dec(id) + " profile " + Dec(si) + ": " + names + "]";
+  }
+  REXLOG_INFO("[svr2011] superstar threads: test - named slots:{}", s);
+}
+
 void ThreadsSlots(uint8_t* profile, const std::string& folder) {
   if (!profile || g_dir.empty()) return;
   std::lock_guard lock(g_mutex);
@@ -291,9 +374,9 @@ REX_HOOK_RAW(sub_827235D8) {
     std::lock_guard lock(g_mutex);
     std::error_code ec;
     for (const auto& m : g_mods) {
-      const uint32_t si = uint32_t(base[kIdToIndex + m.slot * 2] << 8 | base[kIdToIndex + m.slot * 2 + 1]);
+      const uint32_t si = svr2011::RosterIndex(base, m.slot);
       if (si >= 512) continue;
-      const uint8_t* s = base + kProfiles + si * kProfileSize + kSlotsAt;
+      const uint8_t* s = base + svr2011::RosterEntry(kProfiles, kProfileSize, si) + kSlotsAt;
       std::vector<uint8_t> now(s, s + kSlotsSize);
       auto& was = g_saved[m.folder];
       if (was == now) continue;
@@ -313,7 +396,28 @@ REX_HOOK_RAW(sub_827235D8) {
       REXLOG_INFO("[svr2011] superstar threads: {} - slots saved ({})", m.folder, IsEmpty(s) ? "all empty" : "edited");
     }
   }
+  svr2011::OnlineTempForSave(base, true);  // (the fetched mods of this run: not in the save)
+  svr2011::PerModSavesForSave(base, true);  // (per_mod_saves: the mods' data in their own files)
+  svr2011::NewTitlesBeforeSave(base);  // (cards on a new title: title_new.h)
   __imp__sub_827235D8(ctx, base);
+  // Test aid: SVR2011_TEST_SAVE_DUMP=<folder> - the records, profiles and the built save (guest memory) as files
+  if (const char* dir = std::getenv("SVR2011_TEST_SAVE_DUMP")) {
+    auto dump = [&](const char* name, uint32_t at, uint32_t size) {
+      if (FILE* f = std::fopen((std::string(dir) + "\\" + name).c_str(), "wb")) {
+        std::fwrite(base + at, 1, size, f);
+        std::fclose(f);
+      }
+    };
+    dump("records.bin", 0x82E407C0, 512 * 260);
+    dump("profiles.bin", kProfiles, 512 * kProfileSize);
+    dump("idtoindex.bin", kIdToIndex, 1024);
+    const uint32_t save = uint32_t(base[0x82E407B4] << 24 | base[0x82E407B5] << 16 | base[0x82E407B6] << 8 | base[0x82E407B7]);
+    if (save) dump("save.bin", save, 0x80000);
+    REXLOG_INFO("[svr2011] superstar threads: test - records, profiles and the save dumped to {}", dir);
+  }
+  svr2011::NewTitlesAfterSave(base);
+  svr2011::PerModSavesForSave(base, false);
+  svr2011::OnlineTempForSave(base, false);
 }
 
 // The edit screens' light (sub_8279EDE8 opens a colour screen: sub_82788310 -> sub_82787A20) is set on the

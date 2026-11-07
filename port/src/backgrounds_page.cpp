@@ -56,6 +56,7 @@
 
 #include "generated/default/svr2011_init.h"
 #include "graphics_page.h"
+#include "util.h"
 
 REXCVAR_DEFINE_STRING(menu_backgrounds_off, "", "UI",
                       "MY WWE -> OPTIONS -> BACKGROUNDS: the main menu pictures that are off (their numbers 1-12, "
@@ -111,10 +112,7 @@ uint32_t Le32(const uint8_t* p) { return uint32_t(p[0]) | uint32_t(p[1]) << 8 | 
 
 fs::path Folder() { return rex::filesystem::GetExecutableFolder() / "Mods" / "Backgrounds"; }
 
-std::string Upper(std::string t) {
-  for (char& c : t) c = char(std::toupper(static_cast<unsigned char>(c)));
-  return t;
-}
+using svr2011::Upper;
 
 std::vector<std::string> Lines(const fs::path& file) {
   std::vector<std::string> out;

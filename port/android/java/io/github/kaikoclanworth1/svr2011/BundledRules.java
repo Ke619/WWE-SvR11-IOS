@@ -254,6 +254,7 @@ final class BundledRules {
             case "matchtype": return "MatchTypes";
             case "background": return "Backgrounds";
             case "attire": return "Attires";
+            case "title": return "Titles";
             default: return null;
         }
     }

@@ -1,0 +1,232 @@
+; Rear__FP6CStage size 0x39c
+002301e0:  addiu    $sp, $sp, -0xd0
+002301e4:  lui      $v0, 0x42
+002301e8:  sd       $ra, 0x30($sp)
+002301ec:  addiu    $v0, $v0, -0x5e40    ; = 0x41a1c0 @9911
+002301f0:  .word 7fb20020
+002301f4:  addiu    $v1, $sp, 0xc0
+002301f8:  addu.qb  $zero, $sp, $s1
+002301fc:  addiu    $a0, $sp, 0x70
+00230200:  ext      $s0, $sp, 0, 1
+00230204:  andi.b   $w0, $w0, 0x42
+00230208:  ext      $v0, $v1, 0, 1
+0023020c:  bbit132  $a0, 0, 0x2302d0
+00230210:  .word 4be1033d
+00230214:  bbit132  $a0, 1, 0x230298
+00230218:  .word 4be20b3d
+0023021c:  bbit132  $a0, 2, 0x230260
+00230220:  .word 4be3133d
+00230224:  bbit132  $a0, 3, 0x230228
+00230228:  lui      $at, 0x52
+0023022c:  addiu    $v0, $zero, 0xc8
+00230230:  lbu      $v1, 0x76c8($at)    ; [0x5276c8] nAnyOutObj__13GameVariables
+00230234:  andi     $a2, $v1, 0xff
+00230238:  bne      $a2, $v0, 0x230244
+0023023c:  move     $a1, $a2
+00230240:  addiu    $a1, $zero, 0xd3
+00230244:  lui      $v1, 0x52
+00230248:  move     $a0, $zero
+0023024c:  b        0x2302d8
+00230250:  addiu    $v1, $v1, 0x6bc0    ; = 0x526bc0 g_pWeapon
+00230254:  addu     $v0, $v1, $v0
+00230258:  lw       $s0, ($v0)
+0023025c:  beqz     $s0, 0x2302d4
+00230260:  nop      
+00230264:  lw       $v0, 0x30($s0)
+00230268:  beq      $v0, $a2, 0x230278
+0023026c:  nop      
+00230270:  bne      $v0, $a1, 0x2302d4
+00230274:  nop      
+00230278:  addiu    $a0, $sp, 0x70
+0023027c:  jal      0x144fa0    ; RotXYZ__9objMatrixFRC9objVector
+00230280:  addiu    $a1, $s0, 0xd0
+00230284:  ld.b     $w3, -0x1fe($zero)
+00230288:  addiu    $a0, $sp, 0x70
+0023028c:  addiu    $v1, $sp, 0xc0
+00230290:  addiu    $a1, $sp, 0xc0
+00230294:  .word 7fa200a0
+00230298:  bbit032  $a0, 4, 0x23029c
+0023029c:  bbit032  $a0, 5, 0x2302e0
+002302a0:  bbit032  $a0, 6, 0x230324
+002302a4:  bbit032  $a0, 7, 0x230368
+002302a8:  bbit032  $v1, 8, 0x2302ac
+002302ac:  .word 4be821bc
+002302b0:  .word 4be828bd
+002302b4:  .word 4be830be
+002302b8:  .word 4be83b0b
+002302bc:  bbit132  $a1, 0xc, 0x2302c0
+002302c0:  ave_s.b  $w3, $w0, $w2
+002302c4:  mulsa.w.ph $ac0, $sp, $v0
+002302c8:  lwc1     $f0, 0xb4($sp)
+002302cc:  b        0x2302e4
+002302d0:  swc1     $f0, 0xcc($sp)
+002302d4:  addiu    $a0, $a0, 1
+002302d8:  sltiu    $v0, $a0, 0x48
+002302dc:  bnez     $v0, 0x230254
+002302e0:  sll      $v0, $a0, 2
+002302e4:  xori.b   $w3, $w0, 0xa2
+002302e8:  lui      $at, 0x52
+002302ec:  jal      0x2234b0    ; IsArena__Fv
+002302f0:  .word 7c2276b0
+002302f4:  beqz     $v0, 0x230300
+002302f8:  addiu    $s2, $zero, 1
+002302fc:  move     $s2, $zero
+00230300:  b        0x230484
+00230304:  move     $s1, $zero
+00230308:  sll      $v1, $s1, 2
+0023030c:  addiu    $v0, $v0, 0x6ba0    ; = 0x420d60 s_ParamTbl__17edMenuCameraLight+0x190
+00230310:  addu     $v0, $v0, $v1
+00230314:  lw       $s0, ($v0)
+00230318:  beqz     $s0, 0x230480
+0023031c:  move     $a0, $s0
+00230320:  beqz     $a0, 0x23032c
+00230324:  sb       $s2, 0x172($s0)
+00230328:  addiu    $a0, $a0, 0x1b4
+0023032c:  lui      $v0, 0x4752
+00230330:  jal      0x13c640    ; SearchLink__5CLinkCFUi
+00230334:  ori      $a1, $v0, 0x4156    ; = 0x47524156 
+00230338:  beqz     $v0, 0x230344
+0023033c:  move     $a0, $zero
+00230340:  lw       $a0, 0x10($v0)    ; [0x47520010] 
+00230344:  beqz     $a0, 0x230354
+00230348:  nop      
+0023034c:  jal      0x1cc790    ; Init__12CCharGravityFv
+00230350:  nop      
+00230354:  jal      0x221f20    ; SetBoardTex__FP5CChar
+00230358:  move     $a0, $s0
+0023035c:  addiu    $v0, $sp, 0x40
+00230360:  bbit132  $v0, 0, 0x230364
+00230364:  addiu    $v0, $sp, 0x50
+00230368:  jal      0x1ff900    ; Stage__7GameMemFv
+0023036c:  bbit132  $v0, 0, 0x230370
+00230370:  mtc1     $zero, $f0
+00230374:  addiu    $v0, $sp, 0x40
+00230378:  swc1     $f0, 0x4d8($s0)
+0023037c:  bbit132  $v0, 0, 0x230380
+00230380:  addiu    $v0, $sp, 0x50
+00230384:  bbit132  $v0, 0, 0x230388
+00230388:  sll      $a0, $s1, 2
+0023038c:  sll      $v1, $s1, 2
+00230390:  addiu    $a1, $sp, 0x50
+00230394:  lui      $v0, 0x42
+00230398:  addiu    $v0, $v0, -0x5e80    ; = 0x41a180 offx
+0023039c:  addu     $a0, $v0, $a0
+002303a0:  lwc1     $f1, ($a0)
+002303a4:  lui      $v0, 0x42
+002303a8:  addiu    $v0, $v0, -0x5e60    ; = 0x41a1a0 offz
+002303ac:  addu     $v1, $v0, $v1
+002303b0:  lui      $v0, 0x4204
+002303b4:  mtc1     $v0, $f0
+002303b8:  nop      
+002303bc:  swc1     $f1, 0x50($sp)
+002303c0:  addiu    $a0, $sp, 0x70
+002303c4:  lwc1     $f1, ($v1)
+002303c8:  addiu    $v0, $sp, 0x50
+002303cc:  sub.s    $f0, $f1, $f0
+002303d0:  swc1     $f0, 0x58($sp)
+002303d4:  bbit032  $a0, 4, 0x2303d8
+002303d8:  bbit032  $a0, 5, 0x23041c
+002303dc:  bbit032  $a0, 6, 0x230460
+002303e0:  bbit032  $a0, 7, 0x2304a4
+002303e4:  bbit032  $v0, 8, 0x2303e8
+002303e8:  .word 4be821bc
+002303ec:  .word 4be828bd
+002303f0:  .word 4be830be
+002303f4:  .word 4be83b0b
+002303f8:  bbit132  $a1, 0xc, 0x2303fc
+002303fc:  lui      $v0, 0xc220
+00230400:  mtc1     $v0, $f0
+00230404:  lwc1     $f1, 0x54($sp)
+00230408:  c.olt.s  $f1, $f0
+0023040c:  bc1f     0x230428
+00230410:  move     $a0, $s0
+00230414:  lui      $v0, 0x4120
+00230418:  mtc1     $v0, $f0
+0023041c:  nop      
+00230420:  sub.s    $f0, $f1, $f0
+00230424:  swc1     $f0, 0x54($sp)
+00230428:  jal      0x1e4d00    ; JumpFight__FP5CChari
+0023042c:  move     $a1, $zero
+00230430:  move     $a0, $s0
+00230434:  beqz     $a0, 0x230440
+00230438:  lui      $v0, 0x494b
+0023043c:  addiu    $a0, $a0, 0x1b4
+00230440:  jal      0x13c640    ; SearchLink__5CLinkCFUi
+00230444:  ori      $a1, $v0, 0x5445    ; = 0x494b5445 
+00230448:  beqz     $v0, 0x230454
+0023044c:  move     $a0, $zero
+00230450:  lw       $a0, 0x10($v0)    ; [0x494b0010] 
+00230454:  beqz     $a0, 0x230464
+00230458:  nop      
+0023045c:  jal      0x1b8dd0    ; InitHosei__7CCharIKFv
+00230460:  nop      
+00230464:  xori.b   $w1, $w0, 0xa2
+00230468:  .word 7e0200d0
+0023046c:  aver_u.h $w1, $w0, $w2
+00230470:  .word 7e0200e0
+00230474:  lw       $v1, 0xf0($s0)
+00230478:  ld.b     $w3, -0x1fe($zero)
+0023047c:  ext      $v0, $v1, 0, 1
+00230480:  addiu    $s1, $s1, 1
+00230484:  slti     $v0, $s1, 8
+00230488:  bnez     $v0, 0x230308
+0023048c:  lui      $v0, 0x52
+00230490:  lui      $a0, 0x52
+00230494:  move     $a2, $zero
+00230498:  b        0x2304d4
+0023049c:  addiu    $a0, $a0, 0x6ba0    ; = 0x526ba0 g_pChar
+002304a0:  addu     $v0, $a0, $v0
+002304a4:  lw       $a1, ($v0)
+002304a8:  beqz     $a1, 0x2304d0
+002304ac:  nop      
+002304b0:  lw       $v1, 0x390($a1)    ; [0x494b57d5] 
+002304b4:  andi     $v0, $v1, 1
+002304b8:  beqz     $v0, 0x2304cc
+002304bc:  addiu    $v0, $v1, 1    ; = 0x526bc1 g_pWeapon+0x1
+002304c0:  addiu    $v0, $v1, -1    ; = 0x526bbf g_pChar+0x1f
+002304c4:  b        0x2304d0
+002304c8:  sw       $v0, 0x3d4($a1)    ; [0x494b5819] 
+002304cc:  sw       $v0, 0x3d4($a1)    ; [0x494b5819] 
+002304d0:  addiu    $a2, $a2, 1
+002304d4:  slti     $v0, $a2, 7
+002304d8:  bnez     $v0, 0x2304a0
+002304dc:  sll      $v0, $a2, 2
+002304e0:  jal      0x1f8960    ; AllUpdateTarget__Fv
+002304e4:  nop      
+002304e8:  jal      0x1f5be0    ; GetRule__Fv
+002304ec:  nop      
+002304f0:  lbu      $v0, 0x17($v0)    ; [0x526bd6] g_pWeapon+0x16
+002304f4:  bnez     $v0, 0x23053c
+002304f8:  lui      $v1, 0x52
+002304fc:  move     $a1, $zero
+00230500:  b        0x230530
+00230504:  addiu    $v1, $v1, 0x6ba0    ; = 0x526ba0 g_pChar
+00230508:  addu     $v0, $v1, $v0
+0023050c:  lw       $a0, ($v0)
+00230510:  beqz     $a0, 0x23052c
+00230514:  nop      
+00230518:  lw       $v0, 0x3d8($a0)    ; [0x526f78] g_GameLight+0x298
+0023051c:  beqz     $v0, 0x23052c
+00230520:  nop      
+00230524:  lwc1     $f0, 0x3fc($a0)    ; [0x526f9c] g_GameLight+0x2bc
+00230528:  swc1     $f0, 0xd4($a0)    ; [0x526c74] g_pWeapon+0xb4
+0023052c:  addiu    $a1, $a1, 1    ; = 0x494b5446 
+00230530:  slti     $v0, $a1, 7
+00230534:  bnez     $v0, 0x230508
+00230538:  sll      $v0, $a1, 2
+0023053c:  jal      0x203090    ; InitApronWeapon__13GameVariablesFv
+00230540:  nop      
+00230544:  addiu    $v0, $zero, 0x1e
+00230548:  lui      $at, 0x52
+0023054c:  jal      0x2025e0    ; Make__16CCharSweatEffectFv
+00230550:  sw       $v0, 0x77f0($at)    ; [0x5277f0] padstop__13GameVariables
+00230554:  jal      0x202690    ; Make__15CCharBloodSprayFv
+00230558:  nop      
+0023055c:  jal      0x198700    ; gmStageMoveRear__Fv
+00230560:  nop      
+00230564:  ld       $ra, 0x30($sp)
+00230568:  ld.b     $w0, -0x4e($zero)
+0023056c:  aver_u.h $w0, $w0, $w17
+00230570:  xori.b   $w0, $w0, 0xb0
+00230574:  jr       $ra
+00230578:  addiu    $sp, $sp, 0xd0

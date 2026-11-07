@@ -23,6 +23,7 @@
 #include "frame_rate.h"
 #include "graphics_page.h"
 #include "keyboard_typing.h"
+#include "../modmaker/svrfmt/bytes.h"
 
 REXCVAR_DEFINE_INT32(match_camera, 0, "UI",
                      "The match camera: 0 NORMAL, 1 FAR, 2 CLOSE, 3 HIGH, 4 LOW, 5 RAMP (ring matches; BACK + R3 / F4 cycle it)");
@@ -32,18 +33,7 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
-uint32_t Rd32(const uint8_t* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; }
-float RdF(const uint8_t* p) {
-  const uint32_t v = Rd32(p);
-  float f;
-  std::memcpy(&f, &v, 4);
-  return f;
-}
-void WrF(uint8_t* p, float f) {
-  uint32_t v;
-  std::memcpy(&v, &f, 4);
-  p[0] = uint8_t(v >> 24), p[1] = uint8_t(v >> 16), p[2] = uint8_t(v >> 8), p[3] = uint8_t(v);
-}
+using svrfmt::Rd32, svrfmt::RdF, svrfmt::WrF;
 
 struct V3 {
   float x = 0, y = 0, z = 0;
@@ -72,6 +62,11 @@ Mode g_mode = Mode::kOff;
 bool g_capture = false;              // (F6 from off: take the game's view at the next draw)
 bool g_paused = false;               // F8
 std::atomic<bool> g_hide_ui{false};  // F7
+// The match's clock stood still a moment (not by F8): the game's own pause menu (START), a replay - its UI shows
+// and its keys are its own (FreeCamFrame). 2.1.8 reports 43e5cc / 176c9a: an F7 pressed before (in a menu, or a
+// match ago) hid every match's pause menu, and a flying camera kept the arrows / W A S D the menu moves with -
+// "the pause screen doesn't work", "couldn't exit the match".
+std::atomic<bool> g_clock_still{false};
 // The free camera, in the space of the game's view when it was taken (V0):
 // its eye and its axes (right, up, forward) there - so its view is
 // V0 * T(-eye) * [axes]. Up and the yaw: the taken view's up (level, as the
@@ -182,8 +177,10 @@ void Hotkey(uint8_t vk) {
         REXLOG_INFO("[svr2011] free camera: off");
       }
       break;
-    case 0x76:  // F7
+    case 0x76:  // F7 (in a match only: it is for pictures - and cleared when the match ends)
+      if (!InMatch()) break;
       g_hide_ui = !g_hide_ui;
+      Notice(g_hide_ui ? "UI hidden - F7 shows it (START shows the pause menu)" : "UI shown");
       REXLOG_INFO("[svr2011] free camera: UI {}", g_hide_ui ? "hidden" : "shown");
       break;
     case 0x77:  // F8
@@ -316,10 +313,34 @@ void FreeCamFrame(uint8_t* base) {
     hinted = true;
     ShowNotice("Free camera: F6   back: F5   hide UI: F7", 4.0f);
   }
+#else
+  (void)hinted;
+#endif
+  // Out of the match (its end, a quit): the free camera off and the UI shown - nothing carries into the next one.
+  static bool was_in = false;
+  const bool in = InMatch();
+  if (was_in && !in && (g_mode != Mode::kOff || g_capture || g_paused || g_hide_ui.load())) {
+    g_mode = Mode::kOff, g_capture = false, g_paused = false, g_hide_ui = false;
+    REXLOG_INFO("[svr2011] free camera: the match is over - off, UI shown");
+  }
+  was_in = in;
+  // The match's clock standing still for half a second, not by F8 (and past its first frames: the entrances
+  // count from 0): the game's pause menu or a replay - its UI shown (UiHidden), a flying camera kept where it is
+  // so the keys work the menu again (F6 flies it again).
+  static uint32_t last = 0;
+  static int still = 0;
+  const uint32_t clock = in ? Rd32(base + kMatchFrames) : 0;
+  still = in && clock > 60 && clock == last && !g_paused ? still + 1 : 0;
+  last = clock;
+  g_clock_still = still >= 30;
+  if (g_clock_still.load() && g_mode == Mode::kFlying) {
+    g_mode = Mode::kFixed;
+    Notice("Free camera kept here - the menu has the keys (F6 flies again, F5 back)");
+    REXLOG_INFO("[svr2011] free camera: kept - the match's clock stopped (a menu)");
+  }
+#if !defined(__ANDROID__)
   if (g_mode == Mode::kFlying && !g_hide_ui.load())
     ShowNotice("Free camera: W A S D  Q E  arrows  [ ]   F6 keep   F5 back   F7 hide UI", 0.5f);
-#else
-  (void)base, (void)hinted;
 #endif
   // (F8 holds the camera too: without world updates nothing builds the view - written here it isn't drawn.
   // Frame the shot, then F8.)
@@ -345,7 +366,10 @@ void FreeCamPad(uint32_t user, uint8_t* s) {
   g_lx += axis(s + 8), g_ly += axis(s + 10), g_rx += axis(s + 12), g_ry += axis(s + 14);
   g_lt += s[6] / 255.0f, g_rt += s[7] / 255.0f;
   g_lb = g_lb || (buttons & 0x0100), g_rb = g_rb || (buttons & 0x0200);
-  std::memset(s + 4, 0, 12);  // (the game: nothing pressed, the sticks centred)
+  // (the game: nothing pressed, the sticks centred - but START and BACK: the pause menu opens while the camera
+  // flies, and then it stops flying - FreeCamFrame; 2.1.8 report 176c9a "couldn't exit the match")
+  std::memset(s + 4, 0, 12);
+  s[5] = uint8_t(buttons & 0x30);
 }
 
 bool FreeCamPaused() { return g_paused; }
@@ -436,7 +460,7 @@ void MatchCameraAfter(uint8_t* base) {
   for (int i = 0; i < 3; ++i) WrF(base + g_saved.eye + 4 * i, g_saved.e[i]), WrF(base + g_saved.dir + 4 * i, g_saved.d[i]);
 }
 
-bool UiHidden() { return g_hide_ui.load(); }
+bool UiHidden() { return g_hide_ui.load() && !g_clock_still.load(); }
 
 bool FreeCamScriptKey(const char* name, int ms) {
   static const struct {

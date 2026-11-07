@@ -14,19 +14,19 @@ Mk from the 2008 AO (bruise mask R = 0, AO in G / B), costume pieces merged
 into the body, and the template's 0x28/0x32/0x50/0x64, cube map and blood
 overlays.
 """
-import argparse, io, math, os, struct, sys
+import argparse, io, os, struct, sys
 import numpy as np
 from PIL import Image
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, TOOLS)
 import ch_tool, svrfmt, jboy  # noqa: E402
+from w13_char import tex_bundle_read as tex_read, resize_rgba, dds_encode  # noqa: E402 (the same texture helpers)
 
 B = 8
 
 
-def unp(b):
-    return svrfmt.bpe_decode(b) if b[:4] == b'BPE ' else b
+unp = svrfmt.unbpe
 
 
 def u32(d, o): return struct.unpack_from('>I', d, o)[0]
@@ -67,16 +67,6 @@ def read08(d):
     return m
 
 
-def tex_read(b):
-    n = struct.unpack_from('<I', b, 0)[0]
-    out = []
-    for i in range(n):
-        r = b[16 + 32 * i:48 + 32 * i]
-        sz, off = struct.unpack_from('<II', r, 20)
-        out.append((r[:16].split(b'\0')[0].decode('latin-1'), b[off:off + sz]))
-    return out
-
-
 def tex_write(texs, head):
     n = len(texs)
     off = (16 + 32 * n + 15) & ~15
@@ -85,36 +75,6 @@ def tex_write(texs, head):
         recs += name.encode('latin-1')[:16].ljust(16, b'\0') + b'dds\0' + struct.pack('<II', len(dd), off + len(blobs)) + b'\0' * 4
         blobs += dd + b'\0' * (-len(dd) % 16)
     return (struct.pack('<I', n) + head[4:16] + recs).ljust(off, b'\0') + blobs
-
-
-def resize_rgba(img, size, method=None):
-    """resize without Pillow's premultiplied alpha: RGB and A each on their own (the colour sheets'
-    alpha is a specular level around 45 - premultiplied, the RGB of the smaller mips turns to specks)"""
-    method = Image.BOX if method is None else method
-    if img.mode != 'RGBA':
-        return img.resize(size, method)
-    rgb = img.convert('RGB').resize(size, method)
-    rgb.putalpha(img.getchannel('A').resize(size, method))
-    return rgb
-
-
-def dds_encode(img, fourcc):
-    w, h = img.size
-    mips = int(math.log2(max(w, h))) + 1
-    out = None
-    for m in range(mips):
-        im = img if m == 0 else resize_rgba(img, (max(1, w >> m), max(1, h >> m)))
-        b = io.BytesIO()
-        im.save(b, 'DDS', pixel_format=fourcc)
-        v = b.getvalue()
-        out = bytearray(v) if out is None else out + v[128:]
-    struct.pack_into('<I', out, 8, struct.unpack_from('<I', out, 8)[0] | 0x20000)
-    struct.pack_into('<I', out, 28, mips)
-    # (the linear size = the top level's bytes, as Yuke's sheets have it: PIL writes a pitch there, and the
-    # game reading it to step through the mips draws the smaller ones from the wrong place)
-    struct.pack_into('<I', out, 20, max(1, (w + 3) // 4) * max(1, (h + 3) // 4) * (8 if fourcc == 'DXT1' else 16))
-    struct.pack_into('<I', out, 108, struct.unpack_from('<I', out, 108)[0] | 0x400008)
-    return bytes(out)
 
 
 def mk_from_ao(ao_dds):
@@ -142,17 +102,58 @@ class Template:
         self.p_lash = self.lash.meshes[0]
         self.ttex = dict(tex_read(self.t[0xa]))
 
-    def nodes_at(self, body_jboy):
+    def leg_fit(self, body_jboy):
+        """{source node name: 4 x 4} that bends the source body's legs onto the template's, or {} when they already
+        match. 2007-2009 divas stand on 2011's diva skeleton (ch143) but with straight legs, ch143's 15 degrees
+        apart: with each node only moved onto the source joint (nodes_at), every leg bone's offset pointed 15
+        degrees (the foot 56) off its frame's +X - the game's IK turns the template's frames, so the knees and
+        ankles came out bent and twisted (report 30 Oct, Lita 2007). Each leg bone gets the turn that lays its
+        source segment on the template's, about the template's joint; nodes under a leg bone follow it."""
+        from w13_char import read13_nodes, world
+        src, tf = read13_nodes(body_jboy), read13_nodes(self.t[0])
+        Ws, Wt = world(src), world(tf)
+        S = {nd['name']: Ws[i][:3, 3] for i, nd in enumerate(src)}
+        T = {nd['name']: Wt[i][:3, 3] for i, nd in enumerate(tf)}
+        fit, worst = {}, 0.0
+        for side in ('l_', 'r_'):
+            chain = [side + n for n in ('momo', 'sune', 'ashi', 'tsumasaki')]
+            if any(n not in S or n not in T for n in chain):
+                continue
+            rot = None
+            for a, b in zip(chain, chain[1:] + [None]):
+                if b is not None:
+                    vs, vt = S[b] - S[a], T[b] - T[a]
+                    if np.linalg.norm(vs) < 1e-6 or np.linalg.norm(vt) < 1e-6:
+                        return {}
+                    rot = _turn(vs, vt)
+                    worst = max(worst, float(np.degrees(np.arccos(np.clip(np.dot(vs, vt) / np.linalg.norm(vs) / np.linalg.norm(vt), -1, 1)))))
+                M = np.eye(4)
+                M[:3, :3] = rot   # (the toe keeps the foot's turn)
+                M[:3, 3] = T[a] - rot @ S[a]
+                fit[a] = M
+        if worst < 3.0:   # (a body already on its template's legs: left as it is)
+            return {}
+        for i, nd in enumerate(src):   # (twist helpers, toes: their nearest leg bone's)
+            k = i
+            while k >= 0 and src[k]['name'] not in fit:
+                k = src[k]['parent']
+            if k >= 0 and nd['name'] not in fit:
+                fit[nd['name']] = fit[src[k]['name']]
+        return fit
+
+    def nodes_at(self, body_jboy, fit=None):
         """the template's node table with each node on the source body's joint of the same name (the template's
-        frames; a node the source lacks keeps its offset from its parent) - as w13_char.nodes_for. 2007-2009 divas
-        stand on 2011's diva skeleton but with straight legs (ch143's are 15 degrees apart): the knees and feet
-        would sit 1-2 units off the mesh."""
+        frames; a node the source lacks keeps its offset from its parent) - as w13_char.nodes_for. fit (leg_fit):
+        those joints moved by it first (the legs then sit on the template's own)."""
         from w13_char import read13_nodes, world
         src = read13_nodes(body_jboy)
         Ws = world(src)
         want = {}
         for i, nd in enumerate(src):
-            want.setdefault(nd['name'], Ws[i][:3, 3])
+            p = Ws[i][:3, 3]
+            if fit and nd['name'] in fit:
+                p = fit[nd['name']][:3, :3] @ p + fit[nd['name']][:3, 3]
+            want.setdefault(nd['name'], p)
         tf = read13_nodes(self.t[0])
         Wt = world(tf)
         nodes = [dict(nd) for nd in self.body.nodes]
@@ -167,6 +168,46 @@ class Template:
             else:
                 pos.append(Wt[j][:3, 3].copy())
         return nodes
+
+
+def _turn(a, b):
+    """the rotation taking direction a onto direction b (the shortest)"""
+    a, b = a / np.linalg.norm(a), b / np.linalg.norm(b)
+    v, c = np.cross(a, b), float(np.dot(a, b))
+    if np.linalg.norm(v) < 1e-9:
+        return np.eye(3) if c > 0 else -np.eye(3)
+    K = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
+    return np.eye(3) + K + K @ K * (1.0 / (1.0 + c))
+
+
+def repose(m8, fit):
+    """m8's vertices and normals moved by leg_fit's turns, each vertex by its weights' blend -> m8"""
+    if not fit:
+        return m8
+    names = [n['name'] for n in m8['nodes']]
+    for s8 in m8['meshes']:
+        vc, nw, w, pal = len(s8['verts']), s8['nw'], s8['wraw'], s8['palette']
+        out = []
+        for k, v in enumerate(s8['verts']):
+            P, N, tot = np.zeros(3), np.zeros(3), 0.0
+            p, n = np.array(v[:3]), np.array(v[3:6])
+            for j in range(nw):   # (vertex-major: a palette index byte, then the weight)
+                o = 8 * (nw * k + j)
+                pi, wt = w[o], struct.unpack_from('>f', w, o + 4)[0]
+                if pi == 255 or wt <= 0 or pi >= len(pal) or pal[pi] <= 0:
+                    continue
+                M = fit.get(names[pal[pi] - 1])
+                P += wt * (p if M is None else M[:3, :3] @ p + M[:3, 3])
+                N += wt * (n if M is None else M[:3, :3] @ n)
+                tot += wt
+            if tot <= 0:
+                out.append(v)
+                continue
+            P /= tot
+            N = N / (np.linalg.norm(N) or 1.0)
+            out.append((float(P[0]), float(P[1]), float(P[2]), float(N[0]), float(N[1]), float(N[2])) + tuple(v[6:]))
+        s8['verts'] = out
+    return m8
 
 
 # 2011's own skeletons a 2007-2010 body can be bound to: the men's (ch104, the converters' template) and the divas'
@@ -316,18 +357,20 @@ def attire(kids, tp, portrait, costume_ids, first_kids):
     color, normal = pick('color'), pick('normal') or pick('nomal')   # (2009 Maria's sheet is "12702nomal")
     ao = next((d for n, d in base.items() if n.lower().endswith('ao')), None) or pick('ao')
     cos = dict(tex_read(kids[0x27])) if 0x27 in kids else {}
-    cpick = lambda suffix: next((d for n, d in cos.items() if n.lower().endswith(suffix)), None)
+    # (the costume sheets' names: "_c" / "_n" / "ao" mostly; 2008 Rey Mysterio's are 2304_color / 2304_nomal / 2304_AO)
+    cpick = lambda *suffixes: next((d for s in suffixes for n, d in cos.items() if n.lower().endswith(s)), None)
     pieces = [cid for cid in costume_ids if cid in kids and kids[cid][:4] == b'JBOY'] if cos else []
     textures = ['color', 'normal', 'mk', 'noise', 'cubemap']
     SKIN = {'texDiffuse': 'color', 'texNormal': 'normal', 'texOcclusion': 'mk', 'texTilingMap': 'noise'}
     EYE = {'texDiffuse': 'color', 'texCubeRefction': 'cubemap', 'texRefctionReg': 'color', 'texOcclusion': 'mk'}
     atlas = bool(pieces)
     BOX = (0.8175, 0.0, 0.995, 0.62)   # (u0, v0, u1, v1) inside the free strip, small margins
-    parts = [(read08(kids[0]), lambda s: (tp.p_eye, EYE) if 'Reflect' in s['shader'] else (tp.p_skin, SKIN))]
+    legs = tp.leg_fit(kids[0])   # (a diva's straight legs onto the diva skeleton's: Template.leg_fit)
+    parts = [(repose(read08(kids[0]), legs), lambda s: (tp.p_eye, EYE) if 'Reflect' in s['shader'] else (tp.p_skin, SKIN))]
     for cid in pieces:
-        parts.append((remap_uvs(read08(kids[cid]), BOX[2] - BOX[0], BOX[3] - BOX[1], BOX[0], BOX[1]), lambda s: (tp.p_skin, SKIN)))
+        parts.append((remap_uvs(repose(read08(kids[cid]), legs), BOX[2] - BOX[0], BOX[3] - BOX[1], BOX[0], BOX[1]), lambda s: (tp.p_skin, SKIN)))
     fit = lambda m8: m8
-    nodes = tp.nodes_at(kids[0])
+    nodes = tp.nodes_at(kids[0], legs)
     out = {0: jboy.write(model(tp, tp.body, parts, textures, nodes))}
     if 0x2710 in kids:
         out[0x2710] = jboy.write(model(tp, tp.hair, [(fit(read08(kids[0x2710])), lambda s: (tp.p_hair, SKIN))], textures[:5], nodes))
@@ -338,11 +381,13 @@ def attire(kids, tp, portrait, costume_ids, first_kids):
             w, h = body.size
             x0, y0, x1, y1 = int(BOX[0] * w), int(BOX[1] * h), int(round(BOX[2] * w)), int(round(BOX[3] * h))
             im = body.copy()
-            im.paste(resize_rgba(piece, (x1 - x0, y1 - y0), Image.LANCZOS), (x0, y0))
+            if piece is not None:   # (a costume sheet that isn't there: the box keeps the body sheet's pixels)
+                im.paste(resize_rgba(piece, (x1 - x0, y1 - y0), Image.LANCZOS), (x0, y0))
             return im
-        color_d = dds_encode(paint(dds_img(color), dds_img(cpick('_c'))), 'DXT5')
-        normal_d = dds_encode(paint(dds_img(normal), dds_img(cpick('_n'))), 'DXT5')
-        ao_img = paint(dds_img(ao).convert('L'), dds_img(cpick('ao')).convert('L'))
+        piece = lambda d, mode='RGBA': dds_img(d).convert(mode) if d else None
+        color_d = dds_encode(paint(dds_img(color), piece(cpick('_c', 'color'))), 'DXT5')
+        normal_d = dds_encode(paint(dds_img(normal), piece(cpick('_n', 'normal', 'nomal'))), 'DXT5')
+        ao_img = paint(dds_img(ao).convert('L'), piece(cpick('ao'), 'L'))
         mk_d = dds_encode(Image.merge('RGBA', (Image.new('L', ao_img.size, 0), ao_img, ao_img, Image.new('L', ao_img.size, 255))), 'DXT5')
     else:
         color_d, normal_d, mk_d = color, normal, mk_from_ao(ao)

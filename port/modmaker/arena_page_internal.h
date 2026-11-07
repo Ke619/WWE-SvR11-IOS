@@ -23,6 +23,8 @@ struct Project {
   char name[96] = "";
   char author[64] = "";
   char version[16] = "1.0";
+  char city[64] = "";             // city=: the entrance title card's city (empty: the base arena's)
+  char crowd_area[64] = "";       // crowd_area=: crowd fighting's area beyond the barricade, "x0,z0,x1,z1" in stage x / z
   std::map<std::string, Image> vs;  // the VS screen: replaced textures of the slot's theme (or of its own theme)
   // its own VS screen theme (vs/theme.pac, tools/vs_port.py theme: VSTL / VSTI / VSTF), any disc's or 2011's;
   // empty: the slot's. The replaced textures are baked into it when the mod is made.
@@ -35,6 +37,7 @@ struct Project {
   svrfmt::Bytes opened_pac;
   int opened_edits = -1;
   Picture load;                     // the loading screen (1024 x 512), optional
+  Picture card;                     // the entrance title card's logo (card.dds), optional
   // backstage: an area of its own (arena_mods.cpp / match_types.cpp read these)
   bool own_area = false;
   char row[32] = "";                // row=<label>: its row in ONE ON ONE -> BACKSTAGE

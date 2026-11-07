@@ -30,23 +30,17 @@
 
 #include <rex/logging.h>
 #include <rex/ppc.h>
+#include "../modmaker/svrfmt/bytes.h"
 
 namespace svr2011 {
 namespace {
 
-uint32_t Rd32(const uint8_t* p) { return uint32_t(p[0]) << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
-float RdF(const uint8_t* p) {
-  const uint32_t v = Rd32(p);
-  float f;
-  std::memcpy(&f, &v, 4);
-  return f;
-}
+using svrfmt::Rd32, svrfmt::Rd16, svrfmt::RdF;
 bool Pointer(uint32_t a) { return a >= 0x40000000 && a < 0xC0000000 && !(a & 3); }
 
 constexpr uint32_t kPose = 1760, kParts = 1336, kMatchFrames = 0x82E3CD0C;
 constexpr uint32_t kPlayers = 3248, kPlayerSize = 832, kNewest = 3232;  // (motion players; the newest one's index)
 
-uint16_t Rd16(const uint8_t* p) { return uint16_t(p[0] << 8 | p[1]); }
 
 struct Config {
   bool on = false, all = false, camera = false;

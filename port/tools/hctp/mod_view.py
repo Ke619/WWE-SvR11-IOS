@@ -45,7 +45,8 @@ def main(moddir, out):
     for i in range(20):
         if d.get(i, b'')[:4] == b'JBOY':
             models.append((f'stage{i:02d}', from_jboy(jboy.read(d[i])), None))
-    (h, g, t), _, pk = G.find(moddir + '/gimmick.pac', b'GMGB', b'78H3')
+    entry = next((l.strip()[8:] for l in open(moddir + '/manifest.txt') if l.startswith('gimmick=')), '78H3')
+    (h, g, t), _, pk = G.find(moddir + '/gimmick.pac', b'GMGB', entry.encode())
     sub = {i: G.unpack(b) for i, b in f.pach_read(dict(f.pach_read(pk))[0])}
     W = struct.unpack(f'<{len(sub[2]) // 4}I', sub[2])
     objs = {}

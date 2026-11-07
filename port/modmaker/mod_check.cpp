@@ -206,6 +206,30 @@ std::function<void()> Reinstall(const fs::path& dir) {
 }
 
 // pack.txt without the lines whose animation file isn't in the folder (the game then plays the base's for those).
+// Moves on ids of 16000 and up (older ports): moves_port.py renumber moves them to free records below the banks'
+// last ids, in the mod itself (pack.txt, the follow-ups, the moves list, the version), so the ids stay put. The game
+// leaves such a move's body motion out and keeps the base's move instead (move_packs.cpp; report a745b2).
+std::function<void()> RenumberMoves(const fs::path& mod) {
+  return [mod] {
+    const fs::path game = fs::path(g_game);
+    Status("Moving " + PathStr(mod.filename()) + "'s moves to ids the game plays ...");
+    const bool started = RunToolJson(L"moves_port.py", {L"renumber", L"--mod", mod.wstring(), L"--pac11", (game / L"pac").wstring(),
+                                                         L"--mods", (game / L"Mods").wstring()},
+                                     [mod](int code, const std::string& out) {
+                                       size_t n = 0;
+                                       for (size_t at = out.find("\"new\":"); at != std::string::npos; at = out.find("\"new\":", at + 1)) ++n;
+                                       const bool kept = out.find("\"kept\": [{") != std::string::npos ||
+                                                         out.find("\"kept\":[{") != std::string::npos;
+                                       if (code != 0) Status("The moves couldn't be moved (see the log): nothing was changed.");
+                                       else Status(std::to_string(n) + " move" + (n == 1 ? " is" : "s are") + " on new ids" +
+                                                   (kept ? " - some had no free id left and stay off (see the log)" : "") +
+                                                   ". The game picks them up at its next start.");
+                                       FixChanged();
+                                     });
+    if (!started) Status("The move tool couldn't start (see the Mod Maker tools).");
+  };
+}
+
 std::function<void()> DropBrokenMoves(const fs::path& pack) {
   return [pack] {
     Bytes b;
@@ -234,6 +258,7 @@ std::function<void()> DropBrokenMoves(const fs::path& pack) {
 // What a manifest key is, for people ("the theme song", "outfit 2" ...).
 std::string Thing(const std::string& key) {
   if (key == "song") return "the theme song";
+  if (key == "victory_song") return "the victory track";
   if (key == "movie") return "the big screen video";
   if (key == "voice") return "the name recording";
   if (key == "menu_music") return "the menu music";
@@ -242,6 +267,7 @@ std::string Thing(const std::string& key) {
   const std::string what = key.substr(0, dot), id = dot == std::string::npos ? "" : key.substr(dot + 1);
   if (what == "video") return "the big screen video (" + id + ")";
   if (what == "theme") return "the theme song (" + id + ")";
+  if (what == "victory_theme") return "the victory track (" + id + ")";
   if (what == "sound") return "the sound \"" + id + "\"";
   if (what == "render" || what == "bust" || what == "icon") return "a select picture (" + id + ")";
   if (what == "arena") return "the arena (" + id + ")";
@@ -411,6 +437,7 @@ void CheckPackTxt(const fs::path& dir, const fs::path& mod, const std::string& w
   std::string line;
   int n = 0, missing = 0, bad = 0;
   std::string first_missing, fatal;
+  std::set<int> high_motion, own;  // (motion ids of 16000 and up / the moves the pack gives itself)
   auto is_hex = [](const std::string& s, size_t len) { return s.size() == len && std::all_of(s.begin(), s.end(), [](char c) { return std::isxdigit(uint8_t(c)); }); };
   while (std::getline(in, line)) {
     ++n;
@@ -424,16 +451,20 @@ void CheckPackTxt(const fs::path& dir, const fs::path& mod, const std::string& w
       if (t.size() < 8) { ++bad; continue; }
       if (!Exists(dir / fs::u8path(t[7]))) { if (!missing++) first_missing = t[7]; }
       if (!g_game.empty() && !Exists(pacdir / fs::u8path(t[1]))) fatal = t[1];
+      if (const int id = std::atoi(t[3].c_str()); id >= 16000) high_motion.insert(id);
     } else if (kind == "pacentry") {
       if (t.size() < 5 || t[3].size() > 8 || Ext(t[1]) != ".pac" || t[1].find("..") != std::string::npos) { ++bad; continue; }
       if (!Exists(dir / fs::u8path(t[4]))) { if (!missing++) first_missing = t[4]; }
       if (!g_game.empty() && !Exists(pacdir / fs::u8path(t[1]))) fatal = t[1];
     } else if (kind == "waze") {
       if (t.size() < 3 || !is_hex(t[2], 32)) ++bad;
+      else own.insert(std::atoi(t[1].c_str()));
     } else if (kind == "wazecopy") {
       if (t.size() < 3 || std::atoi(t[1].c_str()) == 0 || t[1] == t[2]) ++bad;
+      else own.insert(std::atoi(t[1].c_str()));
     } else if (kind == "wazename") {
       if (t.size() < 3) ++bad;
+      else own.insert(std::atoi(t[1].c_str()));
     } else if (kind == "exh") {
       if (t.size() < 3 || !is_hex(t[2], 72)) ++bad;
     } else if (kind == "evt") {
@@ -455,6 +486,20 @@ void CheckPackTxt(const fs::path& dir, const fs::path& mod, const std::string& w
                     .With("Remove the broken moves", DropBrokenMoves(dir), "the broken moves are taken out"));
   }
   if (bad) p.push_back(Warning(who + ": " + std::to_string(bad) + " line" + (bad == 1 ? " is" : "s are") + " damaged and skipped.").With(kOpen, OpenIt(mod)));
+  {  // (moves past 16000: installed mods only - the fix changes the mod in the game's Mods folder)
+    std::string ids;
+    int past = 0;
+    for (int id : high_motion)
+      if (own.count(id)) ids += (past++ ? ", " : "") + std::to_string(id);
+    std::error_code ec2;
+    const fs::path mods = fs::absolute(fs::path(g_game) / L"Mods", ec2), at = fs::absolute(mod, ec2);
+    if (past && !g_game.empty() && PathStr(at).rfind(PathStr(mods), 0) == 0)
+      p.push_back(Warning(who + ": " + std::to_string(past) + " move" + (past == 1 ? " is" : "s are") + " on an id past 16000 (" + ids +
+                              ") - the game can't play " + (past == 1 ? "it" : "them") + ", so the base's move is used instead.",
+                          "The fix moves them to free ids the game plays, in the mod itself (a copy of the old files is kept "
+                          "in the Mod Maker tools' work\\renumber_backup folder).")
+                      .With("Move them to ids the game plays", RenumberMoves(mod), "the moves are being moved"));
+  }
   uintmax_t size = 0;
   std::error_code ec;
   for (const auto& e : fs::recursive_directory_iterator(dir, ec))
@@ -468,7 +513,7 @@ void CheckSuperstar(const fs::path& dir, std::vector<Problem>& p) {
   const Manifest m = ReadManifest(dir);
   ManifestBasics(dir, m, "superstar", p);
   TrailingSpaces(dir, m, p);
-  UnknownKeys(dir, m, {"short", "base", "song", "music", "theme_gain", "theme_gain_auto", "movie", "voice", "call_gain", "loading", "style", "ratings", "call", "hometown", "announcer", "height", "pose",
+  UnknownKeys(dir, m, {"short", "base", "song", "victory_song", "victory_gain", "music", "theme_gain", "theme_gain_auto", "movie", "voice", "call_gain", "renumbered", "loading", "style", "ratings", "call", "hometown", "announcer", "height", "pose",
                        "entrance", "victory", "abilities", "moves", "pack", "game_look", "cae"},
               {"attire"}, p);
   const std::string name = Trim(m.Get("name"));
@@ -537,6 +582,7 @@ void CheckSuperstar(const fs::path& dir, std::vector<Problem>& p) {
   if (name.size() > 31)
     p.push_back(Warning(who + "'s name is too long: the game cuts it after 31 letters.").With("Cut it to 31 letters", Set(dir, "name", name.substr(0, 31))));
   SongCheck(dir, "song", m.Get("song"), p);
+  SongCheck(dir, "victory_song", m.Get("victory_song"), p);
   MovieCheck(dir, "movie", m.Get("movie"), true, p);
   if (const std::string v = Trim(m.Get("voice")); !v.empty() && !Exists(dir / fs::u8path(v)))
     p.push_back(Warning("The name recording is missing from the mod: the announcer won't say " + who + "'s name.").With("Leave it out", Set(dir, "voice", "")));
@@ -800,12 +846,14 @@ void CheckArenaPac(const fs::path& dir, const fs::path& f, std::vector<Problem>&
   if (!b.empty() && !std::memcmp(b.data(), "EPAC", 4) && a.LoadData(b)) {
     // (svrfmt/arena.h: over the game's own arenas' 3D detail needs 2.1.6; over kMaxArenaVertsNew it crashes)
     if (const ArenaGeometry g = GeometryOf(a); g.Over())
-      p.push_back(Error("The arena has more 3D detail than the game can load (" + std::to_string(g.verts) + " points; it "
-                        "takes up to " + std::to_string(kMaxArenaVertsNew) + "): the game crashes when the match loads.")
+      p.push_back(Error("The arena has more 3D detail than the game can load (" + std::to_string(g.verts) + " points, " +
+                        std::to_string(g.meshes) + " meshes; it takes up to " + std::to_string(kMaxArenaVertsNew) +
+                        " points and " + std::to_string(kMaxArenaMeshesNew) + " meshes): the game crashes in the match.")
                       .With("Turn it off", TurnOff(dir)).With(kOpen, OpenIt(dir)));
     else if (g.OverStock())
       p.push_back(Warning("The arena has more 3D detail than the game's own arenas (" + std::to_string(g.verts) +
-                          " points; theirs: up to " + std::to_string(kMaxArenaVerts) + ").",
+                          " points, " + std::to_string(g.meshes) + " meshes; theirs: up to " +
+                          std::to_string(kMaxArenaVerts) + " points, " + std::to_string(kMaxArenaMeshes) + " meshes).",
                           std::string("Version ") + kNeedsVersion + " or newer plays it; older ones crash loading it.")
                       .With(kOpen, OpenIt(dir)));
     int odd = 0;  // (pictures the game can't show: 2011's arenas use DXT1 / DXT3 / DXT5 and ARGB)
@@ -917,7 +965,7 @@ void CheckMedia(const fs::path& dir, std::vector<Problem>& p) {
     const std::string what = dot == std::string::npos ? k : k.substr(0, dot), id = dot == std::string::npos ? "" : k.substr(dot + 1);
     if (!id.empty() && std::isdigit(uint8_t(id[0])) && std::atoi(id.c_str()) < 50 && (what == "video" || what == "theme")) ++low;
     if (what == "video") MovieCheck(dir, k, v, true, p);
-    else if (what == "theme" || k == "menu_music" || what == "sound") SongCheck(dir, k, v, p);
+    else if (what == "theme" || what == "victory_theme" || k == "menu_music" || what == "sound") SongCheck(dir, k, v, p);
     else if (what == "render" || what == "bust" || what == "icon") {
       const int size = what == "render" ? 512 : what == "bust" ? 256 : 64;
       const std::string f = Trim(v);
@@ -957,6 +1005,36 @@ void CheckMatchType(const fs::path& dir, std::vector<Problem>& p) {
                     .With("Turn it off", TurnOff(dir)));
 }
 
+// A title mod (docs/TITLE_MODS.md): a known title key, something to replace, pictures named by a texture hash.
+constexpr const char* kTitleKeys[] = {"IC", "US", "WWE", "WHC", "WWE_TAG", "WORLD_TAG", "ECW", "DIVAS", "WOMENS",
+                                      "HARDCORE", "CRUISER", "MILLION", "WCW"};
+void CheckTitle(const fs::path& dir, std::vector<Problem>& p) {
+  const Manifest m = ReadManifest(dir);
+  if (Trim(m.Get("new")) == "1") {  // (a new title: title_new.cpp)
+    p.push_back(Warning("New titles aren't supported yet: the game leaves this mod out."));
+    return;
+  }
+  std::string key = Trim(m.Get("title"));
+  for (char& c : key) c = char(std::toupper(static_cast<unsigned char>(c)));
+  if (std::none_of(std::begin(kTitleKeys), std::end(kTitleKeys), [&](const char* k) { return key == k; }))
+    p.push_back(Error("Its title= isn't one of the game's titles (IC, US, WWE, WHC, WWE_TAG, WORLD_TAG, ECW, DIVAS, WOMENS, "
+                      "HARDCORE, CRUISER, MILLION, WCW): the game leaves it out.").With("Turn it off", TurnOff(dir)));
+  std::error_code ec;
+  int pictures = 0, unnamed = 0;
+  for (const auto& e : fs::recursive_directory_iterator(dir / "textures", ec)) {
+    if (!e.is_regular_file(ec)) continue;
+    const std::string ext = Lower(PathStr(e.path().extension())), stem = PathStr(e.path().stem());
+    if (ext != ".dds" && ext != ".png") continue;
+    const size_t u = stem.rfind('_');
+    const std::string h = u == std::string::npos ? stem : stem.substr(u + 1);
+    const bool hashed = h.size() == 16 && std::all_of(h.begin(), h.end(), [](char c) { return std::isxdigit(static_cast<unsigned char>(c)); });
+    (hashed ? pictures : unnamed) += 1;
+  }
+  if (unnamed) p.push_back(Warning(std::to_string(unnamed) + " of its pictures have no texture hash at the end of the name (<name>_<16 hex>): the game skips them.").With(kOpen, OpenIt(dir / "textures")));
+  if (Trim(m.Get("name")).empty() && !pictures && !Exists(dir / "pack.txt"))
+    p.push_back(Error("It changes nothing: no name=, no pictures in textures\\, no pack.txt.").With("Turn it off", TurnOff(dir)));
+}
+
 }  // namespace
 
 std::string KindOfType(const std::string& type) {
@@ -970,6 +1048,7 @@ std::string KindOfType(const std::string& type) {
   if (t == "media") return "Media";
   if (t == "background") return "Backgrounds";
   if (t == "matchtype") return "MatchTypes";
+  if (t == "title") return "Titles";
   return "";
 }
 
@@ -986,6 +1065,7 @@ std::vector<Problem> CheckModFolder(const std::string& kind, const fs::path& dir
   else if (kind == "Media") CheckMedia(dir, p);
   else if (kind == "Backgrounds") CheckBackgrounds(dir, p);
   else if (kind == "MatchTypes") CheckMatchType(dir, p);
+  else if (kind == "Titles") CheckTitle(dir, p);
   if (Exists(dir / "disabled"))
     p.push_back(Problem{false, "It's switched off: the game doesn't load it.", ""}.With("Switch it on", [dir] {
       std::error_code ec;
@@ -1027,11 +1107,30 @@ std::vector<Problem> CheckInstalledSet() {
   int signs = 0;
   for (const auto& d : on_dirs("Signs"))
     for (const auto& e : fs::directory_iterator(d, ec)) signs += e.is_regular_file(ec) && PathStr(e.path().extension()) == ".dds";
-  if (signs > 400) p.push_back(Warning(std::to_string(signs) + " crowd signs are on: the game holds 400, so some never show."));
+  // (400: the sign packs' ids, 6001-9991 - crowd_signs.cpp; not memory: the match load's heap (16 MB since 2.1.9)
+  // takes the whole bank's two copies even at 400 pack signs plus 4 for each of 137 superstars)
+  if (signs > 400) p.push_back(Warning(std::to_string(signs) + " crowd signs are on in sign packs: the game has room for 400 of them, so the rest never show."));
   int rows = 0, plain = 0;
   for (const auto& d : on_dirs("Backstage")) (ReadManifest(d).Has("row") ? rows : plain) += 1;
   if (rows > 8) p.push_back(Warning(std::to_string(rows) + " new backstage areas are on: the menu holds 8, so the rest don't show."));
   if (plain > 1) p.push_back(Warning(std::to_string(plain) + " backstage mods change the same area: only one of them plays."));
+  {  // (two title mods on one title: the first by folder name plays - title_mods.cpp)
+    std::map<std::string, std::vector<std::string>> by_title;
+    auto titles = on_dirs("Titles");
+    std::sort(titles.begin(), titles.end());
+    for (const auto& d : titles) {
+      std::string key = Trim(ReadManifest(d).Get("title"));
+      for (char& c : key) c = char(std::toupper(static_cast<unsigned char>(c)));
+      by_title[key].push_back(PathStr(d.filename()));
+    }
+    for (const auto& [key, folders] : by_title)
+      if (folders.size() > 1) {
+        std::string rest;
+        for (size_t i = 1; i < folders.size(); ++i) rest += (i > 1 ? ", " : "") + folders[i];
+        p.push_back(Warning(std::to_string(folders.size()) + " title mods replace the " + key + " title: " + folders[0] +
+                            " plays, the game leaves out " + rest + ".").With("See them", [] { GoTo(PageId::kInstalled); }));
+      }
+  }
   return p;
 }
 

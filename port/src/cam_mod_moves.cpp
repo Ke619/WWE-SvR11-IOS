@@ -7,6 +7,7 @@
 // move_packs.cpp's PatchWaze gives the packs' moves: svr2011::PackMove), +840 + list * 4 the
 // 26 lists CREATE A MOVE-SET's tabs show (counts at +944 + list * 2), filled by sub_82378A68 in
 // record order. A moveset keeps a u16 move id per slot (profile + 2 * slot, CAWs and superstars alike).
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -27,19 +28,18 @@
 #include "match_diag.h"
 #include "move_packs.h"
 #include "online_mods.h"
+#include "p2p.h"
+#include "text_guard.h"
 
 #include "generated/default/svr2011_init.h"
+#include "../modmaker/svrfmt/bytes.h"
 
 namespace {
 
 constexpr uint32_t kMoveTable = 0x82E3C214;
 constexpr uint32_t kRecordSize = 160;
 
-uint32_t Rd32(uint8_t* base, uint32_t a) {
-  return uint32_t(base[a]) << 24 | uint32_t(base[a + 1]) << 16 | uint32_t(base[a + 2]) << 8 | base[a + 3];
-}
-uint16_t Rd16(uint8_t* base, uint32_t a) { return uint16_t(base[a] << 8 | base[a + 1]); }
-void Wr16(uint8_t* base, uint32_t a, uint16_t v) { base[a] = uint8_t(v >> 8), base[a + 1] = uint8_t(v); }
+using svrfmt::Rd32, svrfmt::Rd16, svrfmt::Wr16;
 
 rex::memory::Memory* g_memory = nullptr;
 std::mutex g_mutex;
@@ -76,7 +76,8 @@ void InstallCamModMoves(rex::memory::Memory* memory) { g_memory = memory; }
 
 // CREATE A MOVE-SET's list rows (sub_82BA1AC8(page, tab, first row)): each of the 13 rows' text element
 // (*(*(page + 620) + 8) + ((row + *(page + 1112)) << 8)) keeps a pointer to its record's name at +216. A pack
-// move's row points to "MOD: <name>" instead (the record's own name - the match HUD's - stays as it is).
+// move's row points to "MOD: <name>" - unless the record's own name has it (move_packs.cpp names pack moves so
+// everywhere since 29 Oct, the match HUD too).
 REX_EXTERN(__imp__sub_82BA1AC8);
 REX_HOOK_RAW(sub_82BA1AC8) {
   const uint32_t page = ctx.r3.u32;
@@ -93,13 +94,16 @@ REX_HOOK_RAW(sub_82BA1AC8) {
     const uint32_t rec = name - 16;
     const uint16_t id = Rd16(base, rec + 0x90);
     if (!svr2011::PackMove(id)) continue;
+    // (the record's own name says it already - PatchWaze names pack moves "MOD: <name>": no "MOD: MOD: ")
+    if (!std::strncmp(reinterpret_cast<const char*>(base + name), "MOD: ", 5)) continue;
     uint32_t label = 0;
     {
       std::lock_guard lock(g_mutex);
       if (auto it = g_labels.find(id); it != g_labels.end()) {
         label = it->second;
       } else {
-        const std::string text = "MOD: " + std::string(reinterpret_cast<const char*>(base + name), strnlen(reinterpret_cast<const char*>(base + name), 63));
+        const std::string text = svr2011::CleanUtf8(
+            "MOD: " + std::string(reinterpret_cast<const char*>(base + name), strnlen(reinterpret_cast<const char*>(base + name), 63)), 68);
         label = g_memory->SystemHeapAlloc(uint32_t(text.size() + 1));
         if (label) std::memcpy(g_memory->TranslateVirtual<char*>(label), text.c_str(), text.size() + 1);
         g_labels[id] = label;
@@ -190,16 +194,47 @@ uint32_t MatchMove(uint8_t* base, uint32_t slot, uint32_t got) {
       REXLOG_INFO("[svr2011] cam mods: match asks slot {} (category {}) -> move {}", slot, kSlotCategory[slot], got & 0x7FFF);
     }
   }
+  // Test aid: SVR2011_TEST_SLOT_MOVE=<slot>[,<slot>...]:<id> - every person's move in those slots is that one, as if
+  // in the moveset (a pack's move started the game's own way - a CPU's finisher with SVR2011_TEST_MOMENTUM)
+  static const std::pair<std::vector<int>, int> slot_move = [] {
+    std::pair<std::vector<int>, int> r{{}, 0};
+    const char* v = std::getenv("SVR2011_TEST_SLOT_MOVE");
+    const char* colon = v ? std::strchr(v, ':') : nullptr;
+    if (!colon) return r;
+    r.second = std::atoi(colon + 1);
+    for (const char* p = v; p < colon; ++p)
+      if (p == v || p[-1] == ',') r.first.push_back(std::atoi(p));
+    return r;
+  }();
+  if (std::find(slot_move.first.begin(), slot_move.first.end(), int(slot)) != slot_move.first.end())
+    return (got & 0x8000) | uint32_t(slot_move.second);
   const auto& test = TestMissing();
   bool planted = false;
   if (test.first == int(slot) || (test.first == 999 && kSlotCategory[slot] < 128))
     got = (got & 0x8000) | uint32_t(test.second), planted = true;
+  // Test aid: SVR2011_TEST_HELD_MOVE=<slot>:<id> (or all:<id>): the match sees that id there, judged as a moveset's
+  // move would be (a save holding a move with no motion - NoMotionMove)
+  static const std::pair<int, int> held = [] {
+    const char* v = std::getenv("SVR2011_TEST_HELD_MOVE");
+    int s = -1, id = 0;
+    if (v && std::sscanf(v, "all:%d", &id) == 1) return std::make_pair(999, id);
+    if (v && std::sscanf(v, "%d:%d", &s, &id) == 2 && s >= 0 && s < 224) return std::make_pair(s, id);
+    return std::make_pair(-1, 0);
+  }();
+  if (!planted && (held.first == int(slot) || (held.first == 999 && kSlotCategory[slot] < 128)))
+    got = (got & 0x8000) | uint32_t(held.second);
   const uint32_t cat = kSlotCategory[slot];
   const uint16_t id = uint16_t(got & 0x7FFF);
   // (no move table in a match - 0x82E3C214 is a menu's: what the game loaded is asked, move_packs.cpp)
   // (online: a move from a pack not every player has - its category's default on every game: online_mods.h)
+  // (a networked match - P2PMatchLobby().in, the same on every peer: the rules every peer judges the same only -
+  // NoMotionMove and the missing / left-out pack motions depend on each player's own files, and lockstep peers must
+  // pick the same move. Asked last: it takes p2p's lock. Test aid SVR2011_TEST_ONLINE_MOVES=1: judged as networked)
+  static const bool test_online = [] { const char* v = std::getenv("SVR2011_TEST_ONLINE_MOVES"); return v && *v == '1'; }();
+  const auto networked = [] { return test_online || svr2011::P2PMatchLobby().in; };
   if (cat >= 128 || !id || CreatedFinisher(id) ||
-      !(planted || svr2011::MoveMissing(id) || !svr2011::OnlinePackMoveAllowed(id)))
+      !(planted || svr2011::MoveMissing(id, false) || (svr2011::MoveMissing(id, true) && !networked()) ||
+        !svr2011::OnlinePackMoveAllowed(id)))
     return got;
   const uint16_t def = svr2011::CategoryDefaultMove(int(cat));
   if (!def) {

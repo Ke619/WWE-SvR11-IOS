@@ -140,7 +140,8 @@ py tools/<kind>_port.py convert --game <id> --src <...> --item <key> --out <dir>
   --src <ISO or folder> [--cache <dir>]` reads the disc once (names and pictures, `progress` lines)
   and caches the list (default `%LOCALAPPDATA%/SvR2011/arena_lists/<game>_<key>/arenas.json` +
   `thumbs/bgNN.png`); `list` then answers from that cache (without a scan: names only, read once
-  and cached too). WWE 2K17 has no thumbnails (its menu pacs keep hashed names).
+  and cached too). WWE 2K17's menu pacs keep hashed entry names, but their texture bundles keep their
+  own: MatchHD.pac's arena select pictures `Ar<NN>` (256 x 128) are its thumbnails (27 Oct).
 - One arena file instead of a disc (`arena_port.py`, 15 Oct): `--src` may be a lone arena pac
   (a `bgNN.pac` as it is on the disc, any name; SvR 2007 - WWE 2K17, xcompressed or not).
   `py tools/arena_port.py detect --src <file.pac>` -> `{ok, file, game, game_name, sure, also: [games

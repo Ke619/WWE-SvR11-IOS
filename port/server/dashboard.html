@@ -42,6 +42,7 @@ a { color: var(--accent); }
 header { background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; }
 .top { max-width: 1180px; margin: 0 auto; padding: 12px 20px 0; display: flex; align-items: center; gap: 12px;
        flex-wrap: wrap; }
+body.anth nav.tabs { display: none; }  /* (the SvR Anthology page: its reports only) */
 .top h1 { font-size: 18px; margin: 0; white-space: nowrap; }
 .top .sub { color: var(--faint); font-size: 13px; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden;
             text-overflow: ellipsis; }
@@ -123,6 +124,8 @@ tr.match .modl { display: inline-block; margin: 2px 10px 2px 0; white-space: now
 .filter { background: var(--panel); border: 1px solid var(--line); color: var(--text); border-radius: 7px;
           padding: 5px 10px; font: inherit; font-size: 13px; min-width: 0; }
 input.filter { width: 220px; max-width: 100%; }
+.who { background: none; border: 0; padding: 0; font: inherit; color: var(--accent); cursor: pointer; text-align: left;
+  text-decoration: underline dotted; }
 
 /* tables */
 .scroll { max-height: 560px; overflow: auto; border: 1px solid var(--line); border-radius: 10px;
@@ -141,6 +144,13 @@ td.acts { text-align: right; white-space: nowrap; }
         border: 1px solid var(--line); color: var(--dim); background: var(--panel-2); vertical-align: 1px; }
 .kind.ranked { color: #fff; background: var(--accent); border-color: var(--accent); }
 .tag.bad { color: var(--bad); border-color: var(--bad-line); }
+.tag.place-online, .tag.place-boards { color: var(--accent); border-color: var(--accent); }
+.tag.place-cc, .tag.place-create { color: var(--text); border-color: var(--dim); }
+.tag.warn { color: var(--warn); border-color: var(--warn); }
+.node { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-top: 12px; }
+.node .what { font-weight: 600; }
+.node .facts { color: var(--dim); font-size: 12.5px; flex: 1 1 260px; }
+.node .acts { display: flex; gap: 8px; }
 .id { color: var(--faint); font-size: 11.5px; font-family: ui-monospace, Consolas, monospace; margin-left: 4px; }
 .empty { color: var(--faint); text-align: center; padding: 18px; }
 .err { color: var(--bad); }
@@ -167,6 +177,11 @@ td.acts { text-align: right; white-space: nowrap; }
 .set textarea { grid-column: 2 / 4; width: 100%; min-height: 120px; resize: vertical; }
 .set .wide { grid-column: 2 / 4; }
 .row { display: flex; gap: 8px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
+.names { display: grid; grid-template-columns: 2fr 1fr; gap: 14px; }
+.names textarea { width: 100%; min-height: 260px; resize: vertical; box-sizing: border-box;
+                  font: 13px/1.45 ui-monospace, Consolas, monospace; }
+.names label { display: block; font-weight: 600; margin-bottom: 4px; }
+.mark { background: var(--bad-bg); color: var(--bad); border-radius: 3px; padding: 0 2px; }
 .row .btn { margin-left: 0; }
 .viewer { position: fixed; inset: 0; background: rgba(0,0,0,.72); display: none; align-items: center;
           justify-content: center; z-index: 10; padding: 16px; }
@@ -185,6 +200,7 @@ td.acts { text-align: right; white-space: nowrap; }
   .tabs { padding: 0 6px; }
   .set { grid-template-columns: 1fr; }
   .set textarea, .set .wide { grid-column: auto; }
+  .names { grid-template-columns: 1fr; }
   .charts { grid-template-columns: 1fr; }
   .tile .v { font-size: 22px; }
   input.filter { width: 100%; }
@@ -195,19 +211,23 @@ td.acts { text-align: right; white-space: nowrap; }
 <body>
 <header>
   <div class="top">
-    <h1>SvR 2011 Online</h1>
+    <h1 id="title">SvR 2011 Online</h1>
     <span class="sub" id="since"></span>
     <button class="btn" id="theme" title="Colours: the system's, light or dark">Theme: auto</button>
     <button class="btn" id="signout" hidden>Sign out</button>
+    <button class="btn" id="anth" title="The reports from SvR Anthology (its launcher and phone app)"><span id="anth-l">SvR Anthology</span> <span class="count" id="n-anth"></span></button>
   </div>
   <nav class="tabs" role="tablist" aria-label="Dashboard">
     <button role="tab" id="tab-overview" aria-controls="p-overview">Overview</button>
     <button role="tab" id="tab-players" aria-controls="p-players">Players <span class="count" id="n-players"></span></button>
+    <button role="tab" id="tab-invites" aria-controls="p-invites">Invites <span class="count" id="n-invites"></span></button>
     <button role="tab" id="tab-ping" aria-controls="p-ping">Ping <span class="count live" id="n-ping"></span></button>
     <button role="tab" id="tab-matches" aria-controls="p-matches">Matches <span class="count live" id="n-matches"></span></button>
     <button role="tab" id="tab-cc" aria-controls="p-cc">Community Creations <span class="count" id="n-cc"></span></button>
     <button role="tab" id="tab-discovery" aria-controls="p-discovery">Discovery <span class="count" id="n-discovery"></span></button>
+    <button role="tab" id="tab-names" aria-controls="p-names">Names <span class="count" id="n-names"></span></button>
     <button role="tab" id="tab-reports" aria-controls="p-reports">Reports <span class="count" id="n-reports"></span></button>
+    <button role="tab" id="tab-suggestions" aria-controls="p-suggestions">Suggestions <span class="count" id="n-sug"></span></button>
     <button role="tab" id="tab-settings" aria-controls="p-settings">Settings</button>
     <button role="tab" id="tab-logs" aria-controls="p-logs">Logs</button>
   </nav>
@@ -236,6 +256,12 @@ td.acts { text-align: right; white-space: nowrap; }
         <div class="s" id="s-disk"></div></div>
     </div>
     <div class="card netline" id="s-net">Online matches (30 days): &ndash;</div>
+    <div class="card node" id="node" hidden>
+      <span class="what">Storage node</span> <span id="node-pill" class="tag">&hellip;</span>
+      <span class="facts" id="node-facts"></span>
+      <span class="acts"><button class="btn danger" id="node-stop">Stop</button>
+        <button class="btn primary" id="node-start">Start</button></span>
+    </div>
 
     <h2>History <span class="spacer"></span>
       <span class="seg" id="range" role="group" aria-label="History range">
@@ -265,14 +291,39 @@ td.acts { text-align: right; white-space: nowrap; }
 
     <h2>Accounts <span class="spacer"></span><input class="filter" id="f-acc" placeholder="Filter" aria-label="Filter accounts"></h2>
     <div class="scroll"><table>
-      <thead><tr><th>Name</th><th>Joined</th><th>Last seen</th><th class="num">Uploads</th><th class="num">Storage</th><th></th></tr></thead>
-      <tbody id="users"><tr><td colspan="6" class="empty">Loading&hellip;</td></tr></tbody>
+      <thead><tr><th>Name</th><th>Online access</th><th>Joined</th><th>Last seen</th><th class="num">Uploads</th><th class="num">Storage</th><th></th></tr></thead>
+      <tbody id="users"><tr><td colspan="7" class="empty">Loading&hellip;</td></tr></tbody>
+    </table></div>
+    <p class="note">Online access (once the account_checks setting is on): accounts from before 2.1.6 need the
+      re-activation code you make here - it shows once; give it to that player, it works for that account only. Activate
+      lets an account in without a code. Reset code: for a forgotten password - the player types it in the launcher's
+      Forgot password with a new one (once, for 24 hours; every session of the account ends).</p>
+  </section>
+
+  <section role="tabpanel" id="p-invites" aria-labelledby="tab-invites" tabindex="0" hidden>
+    <p class="note" id="checks-line"></p>
+    <h2>New sign-up codes</h2>
+    <p class="intro">One code per person: it works once, for one new account. Codes show only here, once - copy them
+      now (the server keeps only their hash).</p>
+    <p><input class="filter" id="inv-note" maxlength="80" placeholder="Who it's for (a name, a note)" aria-label="Who the codes are for">
+      <input class="filter" id="inv-count" type="number" min="1" max="50" value="1" style="width:5em" aria-label="How many codes">
+      <button class="btn" id="inv-make">Make codes</button></p>
+    <pre id="inv-new" hidden></pre>
+    <h2>Codes <span class="spacer"></span><input class="filter" id="f-inv" placeholder="Filter" aria-label="Filter codes"></h2>
+    <div class="scroll"><table>
+      <thead><tr><th>Kind</th><th>For</th><th>Made</th><th>Used by</th><th>State</th><th></th></tr></thead>
+      <tbody id="invites"><tr><td colspan="6" class="empty">Loading&hellip;</td></tr></tbody>
     </table></div>
   </section>
 
   <section role="tabpanel" id="p-ping" aria-labelledby="tab-ping" tabindex="0" hidden>
-    <h2>Online now <span class="spacer"></span><span class="note" id="ping-note"></span></h2>
-    <p class="intro">Now is what the player is in at this moment (from the session host's report). Each game sends its network report (the round trip to the other player, the path) when a match <b>ends</b>: a player's first match shows no ping until it's over. Relay now is how the game is on the relay at this moment.</p>
+    <h2>Online now <span class="spacer"></span><span class="note" id="ping-note"></span>
+      <select class="filter" id="f-place" aria-label="Where"><option value="">Everywhere</option>
+        <option value="match">In a match</option><option value="lobby">In a lobby</option>
+        <option value="online">Online menus / matchmaking</option><option value="cc">Community Creations</option>
+        <option value="boards">Leaderboards</option><option value="create">Creation suites</option>
+        <option value="offline">Offline menus / modes</option></select></h2>
+    <p class="intro">Now is where the player is at this moment: a session from its host's report, else the place their game reports (2.1.7 on; older games show "menus"). Each game sends its network report (the round trip to the other player, the path) when a match <b>ends</b>: a player's first match shows no ping until it's over. Relay now is how the game is on the relay at this moment.</p>
     <div class="scroll"><table>
       <thead><tr><th>Player</th><th>Now</th><th>Last match ping</th><th>Path</th><th>Match network</th><th>Relay now</th><th>NAT</th><th>Version</th><th>Last match</th></tr></thead>
       <tbody id="pings"><tr><td colspan="9" class="empty">Loading&hellip;</td></tr></tbody>
@@ -286,6 +337,13 @@ td.acts { text-align: right; white-space: nowrap; }
     <div class="scroll"><table>
       <thead><tr><th>Host</th><th>Kind</th><th>Players</th><th>Match</th><th>State</th><th>For</th><th>Session</th></tr></thead>
       <tbody id="live"><tr><td colspan="7" class="empty">Loading&hellip;</td></tr></tbody>
+    </table></div>
+
+    <h2>Relay now <span class="spacer"></span><span class="note" id="relay-note"></span></h2>
+    <p class="intro">Every game on the relay at this moment, busiest first. Every online game keeps the relay open to find sessions; packets a second counts what it tries to send one other game through it (a match: 60 and more). With the match network on p2p the relay passes a game only a few of those a second, whatever version it is: a busy one there is marked held back. Ban signs the account out and takes its games off the relay and the edge at once.</p>
+    <div class="scroll"><table>
+      <thead><tr><th>Player</th><th>Address</th><th>Link</th><th class="num">Packets/s</th><th>Version</th><th>For</th><th>Relay id</th><th></th></tr></thead>
+      <tbody id="relay-rows"><tr><td colspan="8" class="empty">Loading&hellip;</td></tr></tbody>
     </table></div>
 
     <h2>Leaderboards <span class="spacer"></span><select class="filter" id="lb-view" aria-label="Leaderboard"></select></h2>
@@ -318,14 +376,59 @@ td.acts { text-align: right; white-space: nowrap; }
     <div id="audit"></div>
   </section>
 
+  <section role="tabpanel" id="p-names" aria-labelledby="tab-names" tabindex="0" hidden>
+    <h2>Name filter <span class="spacer"></span><span class="note" id="nf-note"></span></h2>
+    <p class="intro">Checked on everything players put on the server: Community Creations titles, tags and comments,
+      Discovery mods' names / tags / descriptions, entrance song and movie names, and account names (at sign-up, and an
+      uploader's own name at each upload). A refused upload tells the player why ("That name isn't allowed on Community
+      Creations"); nothing already on the server is changed - see Flagged names below.</p>
+    <p><label class="note"><input type="checkbox" id="nf-on"> <b>Filter on</b> (off: nothing is refused; Flagged names
+      still lists what the list would catch)</label></p>
+    <div class="names">
+      <div><label for="nf-words">Words <span class="note" id="nf-count"></span></label>
+        <textarea class="filter" id="nf-words" spellcheck="false" aria-describedby="nf-help"></textarea>
+        <p class="note" id="nf-help">One per line. Under 5 letters: a whole word only (and "f a g" spelled out), so
+          "Scunthorpe" is fine; 5 or more: inside words too, and across words ("hit ler"). <b>=word</b> whole word
+          only, <b>*word</b> inside words too, <b>two words</b> a phrase, <b># ...</b> a note. Case, leetspeak (h1tl3r,
+          @, $), repeated letters, dots / spaces / underscores between letters and look-alike letters are read
+          through.</p></div>
+      <div><label for="nf-allow">Allow list</label>
+        <textarea class="filter" id="nf-allow" spellcheck="false"></textarea>
+        <p class="note">Words never flagged though a listed word is inside them (e.g. snigger). One per line.</p></div>
+    </div>
+    <div class="row"><button class="btn primary" id="nf-save">Save list</button><span class="note" id="nf-saved"></span></div>
+
+    <h2>Test a name</h2>
+    <p><input class="filter" id="nf-test" placeholder="Would this name pass?" aria-label="A name to test" style="width:320px">
+      <button class="btn" id="nf-try">Test</button> <span id="nf-result" role="status"></span></p>
+
+    <h2>Flagged names <span class="spacer"></span><button class="btn" id="nf-scan">Scan again</button></h2>
+    <p class="intro">What is on the server now that the saved list catches. Nothing is deleted on its own: decide each one
+      (Delete / Hide here are the same as on the Community Creations, Discovery and Players tabs).</p>
+    <div class="scroll"><table>
+      <thead><tr><th>What</th><th>Text</th><th>Matched</th><th>By</th><th></th></tr></thead>
+      <tbody id="nf-flagged"><tr><td colspan="5" class="empty">Open this tab to scan.</td></tr></tbody>
+    </table></div>
+  </section>
+
   <section role="tabpanel" id="p-reports" aria-labelledby="tab-reports" tabindex="0" hidden>
     <h2>Problem reports <span class="spacer"></span>
       <label class="note"><input type="checkbox" id="rp-open" checked> Hide done / duplicates</label>
       <input class="filter" id="f-rp" placeholder="Filter" aria-label="Filter reports"></h2>
     <div id="fixed" hidden></div>
-    <p class="intro">Sent from Report a problem (launcher, Mod Maker, game, Android). Grouped by signature: the app, version, problem and the first crash / error line in the logs. The files are in the storage node's reports folder.</p>
+    <p class="intro" id="rp-intro">Sent from Report a problem (launcher, Mod Maker, game, Android). Grouped by signature: the app, version, problem and the first crash / error line in the logs. The files are in the storage node's reports folder.</p>
     <p class="note" id="modstore"></p>
     <div id="reports"><span class="empty">Loading&hellip;</span></div>
+  </section>
+
+  <section role="tabpanel" id="p-suggestions" aria-labelledby="tab-suggestions" tabindex="0" hidden>
+    <h2>Suggestions <span class="spacer"></span>
+      <label class="note"><input type="checkbox" id="sg-open" checked> Hide answered</label>
+      <input class="filter" id="f-sg" placeholder="Filter" aria-label="Filter suggestions"></h2>
+    <p class="intro">Ideas sent from the launcher's Suggestions tab and Android's My suggestions. The player sees your answer
+      there: Sure (planned), No (not planned), or Done in a version - each with an optional short note.
+      (<code>reports.py mark &lt;id&gt; --planned / --not-planned / --fixed ... --version</code> does the same.)</p>
+    <div id="suggestions"><span class="empty">Loading&hellip;</span></div>
   </section>
 
   <section role="tabpanel" id="p-settings" aria-labelledby="tab-settings" tabindex="0" hidden>
@@ -405,7 +508,7 @@ td.acts { text-align: right; white-space: nowrap; }
 
   // ---- tabs (arrow keys / Home / End move between them; the last one is kept in this browser and the address)
   var tabs = Array.prototype.slice.call(document.querySelectorAll('[role=tab]'));
-  var current = null;
+  var current = null, anthMode = false;
   function tabName(t) { return t.id.replace('tab-', ''); }
   function show(name, focus) {
     var tab = el('tab-' + name) || tabs[0];
@@ -417,8 +520,9 @@ td.acts { text-align: right; white-space: nowrap; }
     });
     if (focus) tab.focus();
     current = tabName(tab);
-    store('svr-tab', current);
-    if (location.hash !== '#' + current) history.replaceState(null, '', '#' + current);
+    if (!anthMode) store('svr-tab', current);
+    var hash = anthMode ? 'anthology' : current;
+    if (location.hash !== '#' + hash) history.replaceState(null, '', '#' + hash);
     refresh(current);
   }
   tabs.forEach(function (t, i) {
@@ -433,7 +537,9 @@ td.acts { text-align: right; white-space: nowrap; }
   });
   window.addEventListener('hashchange', function () {
     var h = location.hash.slice(1);
-    if (h && h !== current && el('tab-' + h)) show(h);
+    if (h === 'anthology') { if (!anthMode) setAnth(true); return; }
+    if (anthMode) setAnth(false, h);
+    else if (h && h !== current && el('tab-' + h)) show(h);
   });
   document.addEventListener('click', function (e) {
     var g = e.target.closest('[data-go]');
@@ -441,13 +547,15 @@ td.acts { text-align: right; white-space: nowrap; }
   });
   // (what each tab loads when it's opened, and what keeps refreshing while it's open)
   function refresh(name) {
-    if (name === 'overview') { stats(); live(); }
+    if (name === 'overview') { stats(); live(); node(); }
     else if (name === 'players') loadUsers();
+    else if (name === 'invites') loadInvites();
     else if (name === 'ping') pings();
     else if (name === 'matches') { live(); leaderboard(); }
     else if (name === 'cc') loadUploads();
     else if (name === 'discovery') loadMods();
-    else if (name === 'reports') loadReports();
+    else if (name === 'names') { loadNames(); loadFlagged(); }
+    else if (name === 'reports' || name === 'suggestions') loadReports();
     else if (name === 'settings') { if (!settingsList.length) settings(); }
     else if (name === 'logs') log();
   }
@@ -504,6 +612,43 @@ td.acts { text-align: right; white-space: nowrap; }
       el('t-games').textContent = 'peak ' + max(col('games')) + ' · ' + sum(col('sessions')) + ' joined';
     }
   }
+  // ---- the storage node (the PC behind the VPS): up or not, Stop / Start (its watchdog starts it)
+  function node() {
+    return api('api/admin/storage').then(function (d) {
+      el('node').hidden = !d.node;
+      if (!d.node) return;
+      var i = d.info || {}, since = d.changed ? d.now - d.changed : 1e9, pill, cls;
+      if (d.up && d.wanted === 'stopped') pill = 'stopping…', cls = 'warn';
+      else if (d.up) pill = 'running', cls = 'on';
+      else if (d.wanted === 'stopped') pill = 'stopped', cls = '';
+      else if (since < 300) pill = 'starting… (its watchdog, within 2 min)', cls = 'warn';
+      else pill = 'not answering', cls = 'bad';
+      el('node-pill').className = 'tag ' + cls;
+      el('node-pill').textContent = pill;
+      var facts = [];
+      facts.push('last answered ' + ago(d.answered));
+      if (d.up) {
+        if (i.blobs != null) facts.push(i.blobs + ' files');
+        if (i.free_bytes != null) facts.push(bytes(i.free_bytes) + ' free of ' + bytes(i.total_bytes));
+        if (i.up_s != null) facts.push('up ' + dur(i.up_s));
+      }
+      facts.push(d.watchdog_polled ? 'watchdog asked ' + ago(d.watchdog_polled) : 'the watchdog hasn\'t asked yet');
+      el('node-facts').innerHTML = facts.join(' · ');
+      el('node-stop').disabled = d.wanted === 'stopped';
+      el('node-start').disabled = d.wanted !== 'stopped';
+    }).catch(function () {});
+  }
+  function nodeAction(action) {
+    el('node-stop').disabled = el('node-start').disabled = true;
+    return api('api/admin/storage', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                     body: JSON.stringify({action: action})}).then(node, node);
+  }
+  el('node-stop').addEventListener('click', function () {
+    if (!confirm('Stop the storage node? Community Creations and Discovery downloads and uploads stop until you press Start (it stays stopped after a restart of the PC too).')) return;
+    nodeAction('stop');
+  });
+  el('node-start').addEventListener('click', function () { nodeAction('start'); });
+
   function stats() {
     return api('api/admin/stats?range=' + range).then(function (d) {
       var n = d.now, p = d.players, s = d.storage;
@@ -533,7 +678,7 @@ td.acts { text-align: right; white-space: nowrap; }
         (t.all.relayed || 0).toLocaleString() + ' packets';
       var g = d.net || {matches: 0, path: {}, nat: {}, rtt: {}, steps: {}};
       function pct(o, k) { return g.matches ? Math.round((o[k] || 0) * 100 / g.matches) + '%' : '0%'; }
-      el('s-net').innerHTML = 'Online matches (30 days): <b>' + g.matches + '</b> reported · path: direct ' + pct(g.path, 'direct') +
+      el('s-net').innerHTML = 'Online matches (30 days): <b>' + g.matches + '</b> reported · path: direct ' + pct(g.path, 'direct') + ', IPv6 ' + pct(g.path, 'ipv6') +
         ', relay ' + pct(g.path, 'relay') + ', LAN ' + pct(g.path, 'lan') + ' · NAT: cone ' + pct(g.nat, 'cone') +
         ', symmetric ' + pct(g.nat, 'symmetric') + ', router-mapped ' + pct(g.nat, 'mapped') + ', unknown ' + pct(g.nat, 'unknown') +
         esc(Object.keys(g.steps).length ? ' (symmetric steps ' + Object.keys(g.steps).map(function (k) {
@@ -552,13 +697,76 @@ td.acts { text-align: right; white-space: nowrap; }
     el('users').innerHTML = rows.length ? rows.map(function (u) {
       return '<tr><td><button class="linkish" data-player="' + esc(u.name) + '">' + esc(u.name) + '</button>' +
         (u.online ? ' <span class="tag on">online</span>' : '') + (u.banned ? ' <span class="tag bad">banned</span>' : '') +
-        '</td><td>' + ago(u.created) + '</td><td>' + ago(u.last_seen) + '</td><td class="num">' + u.uploads +
+        '</td><td>' + access(u) + '</td><td>' + ago(u.created) + '</td><td>' + ago(u.last_seen) + '</td><td class="num">' + u.uploads +
         '</td><td class="num">' + bytes(u.storage) + '</td><td class="acts">' +
+        (u.activated ? '' : '<button class="btn" data-user="' + u.id + '" data-a="reactivation-code">Re-activation code</button>' +
+                            '<button class="btn" data-user="' + u.id + '" data-a="activate">Activate</button>') +
+        '<button class="btn" data-user="' + u.id + '" data-a="reset-code">Reset code</button>' +
         '<button class="btn" data-user="' + u.id + '" data-a="' + (u.banned ? 'unban' : 'ban') + '">' + (u.banned ? 'Unban' : 'Ban') + '</button>' +
         '<button class="btn" data-user="' + u.id + '" data-a="reset">Reset password</button>' +
         '<button class="btn danger" data-user="' + u.id + '" data-a="delete">Delete</button></td></tr>';
-    }).join('') : '<tr><td colspan="6" class="empty">No accounts.</td></tr>';
+    }).join('') : '<tr><td colspan="7" class="empty">No accounts.</td></tr>';
   }
+  // (online, once account_checks is on: an active account - its sign-up code, or its re-activation code, used)
+  function access(u) {
+    return u.activated ? '<span class="tag on">ok</span>' : '<span class="tag bad">needs its re-activation code</span>';
+  }
+  var KIND = {signup: 'Sign-up', reactivate: 'Re-activation', reset: 'Password reset'};
+  var invites = [];
+  function renderInvites() {
+    var f = el('f-inv').value.toLowerCase();
+    var rows = invites.filter(function (i) {
+      return !f || [i.note, i.account_name, i.used_by_name, i.kind].join(' ').toLowerCase().indexOf(f) >= 0;
+    });
+    el('invites').innerHTML = rows.length ? rows.map(function (i) {
+      var state = i.used_by ? '<span class="tag on">used ' + ago(i.used_at) + '</span>' :
+                  i.revoked ? '<span class="tag bad">revoked</span>' :
+                  i.expired ? '<span class="tag bad">expired</span>' : '<span class="tag">open</span>';
+      return '<tr><td>' + (KIND[i.kind] || esc(i.kind)) + '</td><td>' +
+        esc(i.kind !== 'signup' ? (i.account_name || '#' + i.account) : (i.note || '')) + '</td><td>' + ago(i.created) +
+        '</td><td>' + (i.used_by_name ? '<button class="linkish" data-player="' + esc(i.used_by_name) + '">' + esc(i.used_by_name) +
+        '</button>' : '') + '</td><td>' + state + '</td><td class="acts">' + (!i.used_by && !i.revoked && !i.expired ?
+        '<button class="btn danger" data-invite="' + i.id + '">Revoke</button>' : '') + '</td></tr>';
+    }).join('') : '<tr><td colspan="6" class="empty">No codes yet.</td></tr>';
+  }
+  function loadInvites() {
+    checksLine();
+    return api('api/admin/invites').then(function (d) {
+      invites = d.invites || [];
+      el('n-invites').textContent = invites.filter(function (i) { return !i.used_by && !i.revoked && !i.expired; }).length || '';
+      renderInvites();
+    }).catch(function () {});
+  }
+  // (the account_checks setting: what it does now, how many accounts on would keep off online)
+  function checksLine() {
+    return api('api/admin/checks').then(function (d) {
+      el('checks-line').innerHTML = (d.test_open ? '<b>A test server (--test-open-accounts): nobody is ever blocked.</b> ' : '') +
+        'Account checks: <b>' + esc(d.checks.toUpperCase()) + '</b> (Settings: account_checks) - ' +
+        (d.checks === 'on' ? 'new accounts need a sign-up code; ' + d.would_block + ' of ' + d.accounts +
+                             ' accounts are kept off online until their re-activation code.'
+                           : 'nobody is blocked; ' + d.would_block + ' of ' + d.accounts + ' accounts would be, if it were on ' +
+                             '(they need their re-activation code: make them below, on the Players tab).');
+      return d;
+    }).catch(function () {});
+  }
+  el('f-inv').addEventListener('input', renderInvites);
+  el('inv-make').addEventListener('click', function () {
+    var n = Math.max(1, Math.min(50, parseInt(el('inv-count').value, 10) || 1));
+    api('api/admin/invites', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                              body: JSON.stringify({note: el('inv-note').value, count: n})}).then(function (r) {
+      el('inv-new').hidden = false;
+      el('inv-new').textContent = 'New code' + (r.codes.length > 1 ? 's' : '') + (el('inv-note').value ? ' for ' + el('inv-note').value : '') +
+        ' (copy now - shown once):\n' + r.codes.map(function (c) { return c.code; }).join('\n');
+      loadInvites();
+    }).catch(function (e) { alert('Not made: ' + e.message); });
+  });
+  document.addEventListener('click', function (e) {
+    var b = e.target.closest('[data-invite]');
+    if (!b || !confirm('Revoke this code? It stops working at once.')) return;
+    b.disabled = true;
+    api('api/admin/invite/' + b.dataset.invite + '/revoke', {method: 'POST'}).then(loadInvites)
+      .catch(function (err) { alert(err.message); b.disabled = false; });
+  });
   function loadUsers() {
     return api('api/admin/users').then(function (d) { users = d; el('n-players').textContent = d.length; renderUsers(); }).catch(function () {});
   }
@@ -617,17 +825,42 @@ td.acts { text-align: right; white-space: nowrap; }
   }
 
   // ---- ping: who's online now and their last match's network report
+  // (a place token -> its filter group: the game's presence poll, 2.1.7 on)
+  function placeGroup(t) {
+    return !t ? '' : /^match_/.test(t) ? 'match' : /^lobby_/.test(t) ? 'lobby' :
+      t === 'matchmaking' || t === 'online_menu' ? 'online' : /^cc/.test(t) ? 'cc' : t === 'leaderboards' ? 'boards' :
+      /^create_|^paint_tool$|^threads$|^highlight_reel$/.test(t) ? 'create' : 'offline';
+  }
+  function playerGroup(p) {
+    var s = p.session;
+    if (s) return s.state === 'match' ? 'match' : 'lobby';
+    return placeGroup(p.place) || (p.online_mode ? 'online' : 'offline');
+  }
+  var pingData = null;
   function pings() {
-    return api('api/admin/pings').then(function (d) {
+    return api('api/admin/pings').then(function (d) { pingData = d; renderPings(); }).catch(function () {});
+  }
+  el('f-place').addEventListener('change', renderPings);
+  function renderPings() {
+    var d = pingData;
+    if (!d) return;
+    var want = el('f-place').value, names = d.place_names || {};
+    (function () {
       var withPing = d.players.filter(function (p) { return p.last; });
       var playing = d.players.filter(function (p) { return p.session && p.session.state === 'match'; });
       el('n-ping').textContent = d.players.length || '';
       el('ping-note').textContent = d.players.length + ' online · ' + playing.length + ' in a match now · ' +
         withPing.length + ' with a match report';
-      el('pings').innerHTML = d.players.length ? d.players.map(function (p) {
+      var shown = d.players.filter(function (p) { return !want || playerGroup(p) === want; });
+      el('pings').innerHTML = shown.length ? shown.map(function (p) {
         var l = p.last || {}, s = p.session, inMatch = s && s.state === 'match';
-        // (what they're in now: a match or a lobby, the path the host sees, for how long)
-        var nowCell = !s ? '<span class="note">menus</span>' :
+        // (what they're in now: a match or a lobby, the path the host sees, for how long; else the place
+        // their game reports - an older game: "menus")
+        var g = placeGroup(p.place);
+        var placeCell = !p.place ? '<span class="note">menus</span>' :
+          '<span class="tag place-' + g + (g === 'match' ? ' on' : '') + '" title="' + esc(p.place) + '">' +
+          esc(names[p.place] || p.place) + '</span>' + (p.kind ? ' ' + kindBadge(p.kind) : '');
+        var nowCell = !s ? placeCell :
           '<span class="tag' + (inMatch ? ' on' : '') + '" title="' + esc((s.rule_name || s.rule || '') + ' · host ' + s.host) + '">' +
           (inMatch ? 'in a match' : 'in a lobby') + '</span> ' + kindBadge(s.match_kind) + ' ' + esc(s.path === 'host' ? 'hosting' : s.path) +
           ' <span class="note">' + dur(d.now - s.since) + '</span>';
@@ -639,8 +872,9 @@ td.acts { text-align: right; white-space: nowrap; }
           '</td><td>' + esc(l.network || '') + '</td><td>' + (p.link ? '<span class="tag">' + esc(p.link) + '</span>' : '') +
           '</td><td>' + esc(l.nat || '') + '</td><td>' + esc(l.version || '') + '</td><td class="note">' +
           (p.last ? ago(l.at) : '') + '</td></tr>';
-      }).join('') : '<tr><td colspan="9" class="empty">Nobody online right now.</td></tr>';
-    }).catch(function () {});
+      }).join('') : '<tr><td colspan="9" class="empty">' + (d.players.length ? 'Nobody there right now.' :
+                                                            'Nobody online right now.') + '</td></tr>';
+    })();
   }
 
   // ---- matches: sessions now (the hosts' reports) + the leaderboards
@@ -664,8 +898,28 @@ td.acts { text-align: right; white-space: nowrap; }
         ' relay stream' + (d.relay.length === 1 ? '' : 's');
       el('live-note').textContent = n + ' session' + (n === 1 ? '' : 's') + ' reported · ' + d.relay.length + ' relay stream' +
         (d.relay.length === 1 ? '' : 's') + ' · ' + d.udp_games + ' UDP relay games · match network: ' + (d.match_network || 'auto');
-      liveData = d; renderLive();
+      liveData = d; renderLive(); renderRelay();
     }).catch(function () {});
+  }
+  function renderRelay() {
+    var d = liveData, rows = (d && d.relay_games) || [];
+    el('relay-note').textContent = rows.length + ' game' + (rows.length === 1 ? '' : 's') + ' · match network: ' +
+      (d.match_network || 'auto') + (d.match_network === 'p2p' ? ' (no match data through the relay)' : '');
+    el('relay-rows').innerHTML = rows.length ? rows.map(function (r) {
+      // (whose: an account name; a game whose ticket says no account - from before the server started, or an
+      // older edge - says so instead of "?")
+      var who = r.known ? '<button class="linkish" data-player="' + esc(r.name) + '">' + esc(r.name) + '</button>' +
+                (r.banned ? ' <span class="tag">banned</span>' : '') : '<span class="note">' + esc(r.name) + '</span>';
+      // (what it tries to send: on p2p, more than hellos and search answers = match data, held back by the relay)
+      var busy = d.match_network === 'p2p' && r.rate >= 5;
+      return '<tr><td>' + who + '</td><td>' + esc(r.ip || '') + (r.port ? ':' + r.port : '') + '</td><td><span class="tag">' +
+        esc(r.link) + '</span></td><td class="num">' + (busy ? '<b title="match data on p2p: the relay holds it back">' + r.rate +
+        ' held back</b>' : r.rate) +
+        '</td><td>' + (r.version ? esc(r.version) : '<span class="note">not known</span>') + '</td><td class="note">' +
+        dur(d.now - r.since) + '</td><td class="note">' + esc(r.id) + '</td><td>' + (r.account ?
+          '<button class="btn" data-user="' + r.account + '" data-a="' + (r.banned ? 'unban' : 'ban') + '">' +
+          (r.banned ? 'Unban' : 'Ban') + '</button>' : '') + '</td></tr>';
+    }).join('') : '<tr><td colspan="8" class="empty">Nobody on the relay right now.</td></tr>';
   }
   var liveData = null;
   function renderLive() {
@@ -675,8 +929,13 @@ td.acts { text-align: right; white-space: nowrap; }
     var shown = d.sessions.filter(function (v) { return !want || (v.match_kind || '?') === want; });
     el('live').innerHTML = shown.length ? shown.map(function (v) {
       var players = v.players.map(function (p) {
-        return '<button class="linkish" data-player="' + esc(p.name) + '">' + esc(p.name) + '</button>' +
-          (p.path ? ' <span class="tag' + (p.path === 'relay' ? '' : ' on') + '">' + esc(p.path) + '</span>' : '');
+        // ("?": the host has no name for it - an older game, or one whose first ping hasn't come; named from the
+        // relay's account for its id when the host sends it, 2.1.6 on - see Relay now)
+        var who = p.name === '?' ? '<span class="note" title="the host has no name for this player: a game before 2.1.0, or one ' +
+          'just joining">? (no name)</span>' : '<button class="linkish" data-player="' + esc(p.name) + '"' +
+          (p.named_by ? ' title="named from its relay account (the host had no name for it)"' : '') + '>' + esc(p.name) +
+          (p.named_by ? '*' : '') + '</button>';
+        return who + (p.path ? ' <span class="tag' + (p.path === 'relay' ? '' : ' on') + '">' + esc(p.path) + '</span>' : '');
       }).join(', ');
       return '<tr><td>' + esc(v.host) + (v.version ? ' <span class="tag">' + esc(v.version) + '</span>' : '') +
         (v.network ? ' <span class="tag">' + esc(v.network) + '</span>' : '') +
@@ -748,8 +1007,101 @@ td.acts { text-align: right; white-space: nowrap; }
     }).catch(function () {});
   }
 
+  // ---- the name filter: its list, a test, what is on the server now that it catches
+  var namesDirty = false;
+  function loadNames() {
+    if (namesDirty) return;  // (an unsaved edit: kept)
+    return api('api/admin/names').then(function (d) {
+      el('nf-on').checked = d.enabled;
+      el('nf-words').value = d.words.join('\n');
+      el('nf-allow').value = d.allow.join('\n');
+      el('nf-count').textContent = d.terms + ' word' + (d.terms === 1 ? '' : 's');
+      el('nf-note').innerHTML = d.enabled ? '<span class="tag on">on</span>' : '<span class="tag bad">off</span>';
+    }).catch(function () {});
+  }
+  ['nf-words', 'nf-allow'].forEach(function (id) {
+    el(id).addEventListener('input', function () { namesDirty = true; el('nf-saved').textContent = 'not saved'; });
+  });
+  function saveNames(body, done) {
+    return api('api/admin/names', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                   body: JSON.stringify(body)}).then(function (d) {
+      namesDirty = false;
+      el('nf-saved').textContent = 'saved - in use now';
+      loadNames(); loadFlagged();
+      if (done) done(d);
+    }).catch(function (e) { alert('Not saved: ' + e.message); loadNames(); });
+  }
+  el('nf-save').addEventListener('click', function () {
+    saveNames({words: el('nf-words').value.split('\n'), allow: el('nf-allow').value.split('\n')});
+  });
+  el('nf-on').addEventListener('change', function () {
+    var on = this.checked;
+    if (!on && !confirm('Turn the name filter off? Uploads with any name are let through until it is on again.')) {
+      this.checked = true; return;
+    }
+    saveNames({enabled: on});
+  });
+  function testName() {
+    var t = el('nf-test').value;
+    if (!t.trim()) { el('nf-result').textContent = ''; return; }
+    api('api/admin/names/test', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                 body: JSON.stringify({text: t})}).then(function (d) {
+      el('nf-result').innerHTML = (d.passes ? '<span class="tag on">passes</span>'
+                                            : '<span class="tag bad">refused</span> matched <b>' + esc(d.term) + '</b>') +
+        ' <span class="note">read as: ' + esc(d.readings.join(' / ')) + (namesDirty ? ' (the saved list)' : '') + '</span>';
+    }).catch(function (e) { el('nf-result').textContent = e.message; });
+  }
+  el('nf-try').addEventListener('click', testName);
+  el('nf-test').addEventListener('keydown', function (e) { if (e.key === 'Enter') testName(); });
+  var KINDS = {upload: 'Community Creations', mod: 'Discovery mod', entrance: 'Entrance', account: 'Account'};
+  function loadFlagged() {
+    el('nf-scan').disabled = true;
+    return api('api/admin/names/flagged').then(function (d) {
+      var rows = d.flagged;
+      el('n-names').textContent = rows.length || '';
+      el('nf-flagged').innerHTML = rows.length ? rows.map(function (r) {
+        var acts = '';
+        if (r.kind === 'upload' || (r.kind === 'entrance' && r.id)) {
+          acts = '<button class="btn" data-up="' + r.id + '" data-a="hide">Hide</button>' +
+                 '<button class="btn danger" data-up="' + r.id + '" data-a="delete">Delete</button>';
+        } else if (r.kind === 'mod') {
+          acts = '<button class="btn" data-mod="' + r.id + '" data-a="hide">Hide</button>' +
+                 '<button class="btn danger" data-mod="' + r.id + '" data-a="delete">Delete</button>';
+        } else if (r.kind === 'account') {
+          acts = '<button class="btn" data-user="' + r.id + '" data-a="' + (r.banned ? 'unban' : 'ban') + '">' +
+                 (r.banned ? 'Unban' : 'Ban') + '</button>' +
+                 '<button class="btn danger" data-user="' + r.id + '" data-a="delete">Delete</button>';
+        }
+        return '<tr><td>' + esc(KINDS[r.kind] || r.kind) + ' <span class="note">' + esc(r.field) + '</span>' +
+          (r.title && r.title !== r.text ? '<div class="note">' + esc(r.title) + '</div>' : '') +
+          '</td><td>' + esc(r.text) + '</td><td><span class="mark">' + esc(r.term) + '</span></td><td>' + esc(r.author || '') +
+          '</td><td class="acts">' + acts + '</td></tr>';
+      }).join('') : '<tr><td colspan="5" class="empty">Nothing on the server matches the list.</td></tr>';
+    }).catch(function (e) {
+      el('nf-flagged').innerHTML = '<tr><td colspan="5" class="empty">' + esc(e.message) + '</td></tr>';
+    }).finally(function () { el('nf-scan').disabled = false; });
+  }
+  el('nf-scan').addEventListener('click', loadFlagged);
+
   // ---- problem reports, grouped by signature (newest group first)
   var reportRows = [], reportError = '', modStore = null;
+  // (SvR Anthology's reports: the same store and renderers, on their own page - never among the port's)
+  var portRows = [], anthRows = [], portIntro = el('rp-intro').textContent;
+  function isAnth(r) { return r.app === 'anthology' || r.app === 'anthology-android'; }
+  function setAnth(on, back) {
+    anthMode = on;
+    document.body.classList.toggle('anth', on);
+    el('title').textContent = on ? 'SvR Anthology' : 'SvR 2011 Online';
+    el('anth-l').textContent = on ? 'Back to SvR 2011 Online' : 'SvR Anthology';
+    el('n-anth').hidden = on;
+    el('rp-intro').textContent = on ? 'Sent from Report a problem in the SvR Anthology launcher and phone app. Grouped by ' +
+      'signature, as the port\'s are. reports.py list --anthology lists them.' : portIntro;
+    el('modstore').hidden = on;
+    el('f-rp').value = '';
+    whoFilter = '';
+    reportRows = on ? anthRows : portRows;
+    show(on ? 'reports' : back && el('tab-' + back) ? back : store('svr-tab') || 'overview');
+  }
   // (a report's match: the match folder's summary, its zip, the mods with it, and the replay pack of both)
   function matchRow(r) {
     var m = r.match, mods = r.mods || [];
@@ -775,7 +1127,7 @@ td.acts { text-align: right; white-space: nowrap; }
       return '<span class="modl">' + (x.stored ? '<a href="api/admin/report-mod/' + x.hash + '?name=' + encodeURIComponent(x.id || x.name || 'mod') +
         '" title="' + esc(x.hash) + '">' + label + '</a>' : '<span title="not sent: ' + esc(x.hash) + '">' + label + ' <span class="tag">not sent</span></span>') + '</span>';
     }).join('');
-    return '<tr class="match"><td colspan="6">' + line.join('') +
+    return '<tr class="match"><td colspan="7">' + line.join('') +
       (mods.length ? '<div><b>Mods (' + mods.length + '):</b> ' + modList + '</div>' : '') +
       (acts ? '<div style="margin-top:6px">' + acts + '</div>' : '') + '</td></tr>';
   }
@@ -789,10 +1141,147 @@ td.acts { text-align: right; white-space: nowrap; }
       (share >= 1 ? '; new reports come without their mods' : '') : '');
   }
   function reportFile(r, name) { return 'api/admin/report/' + encodeURIComponent(r.id) + '/' + encodeURIComponent(name); }
+  // (open: not yet dealt with - new, being looked at, waiting for the player's answer, or answered)
+  function rpOpen(r) { return !r.status || r.status === 'looking' || r.status === 'needs_info' || r.status === 'replied'; }
+  function infoRow(r) {
+    if (!r.info) return '';
+    return '<tr class="sub"><td></td><td colspan="6"><b>' + (r.status === 'replied' ? 'Answered' : 'Asked') + ' (' +
+      esc(r.info.date || '') + '):</b> ' + esc(r.info.question || '') + (r.replies ? ' &middot; <a href="' +
+      reportFile(r, 'replies.jsonl') + '" target="_blank" rel="noopener">' + r.replies + ' answer' + (r.replies === 1 ? '' : 's') +
+      '</a> (pictures: reply&lt;n&gt;_&lt;k&gt; files of the report)' : '') + '</td></tr>';
+  }
+  // (the sender's changes - "Edit / add pictures" in their Reports tab: edits.jsonl, read when the row shows)
+  var editCache = {};
+  function editRow(r) {
+    if (!r.edits) return '';
+    return '<tr class="sub"><td></td><td colspan="6"><b>Edited ' + r.edits + ' time' + (r.edits === 1 ? '' : 's') +
+      ' (last ' + esc(r.edited || '') + '):</b> <span class="rp-edits" data-id="' + esc(r.id) + '" data-n="' + r.edits +
+      '">loading\u2026</span></td></tr>';
+  }
+  function editHtml(r, list) {
+    return list.map(function (e, n) {
+      var parts = [];
+      if (e.what) parts.push('<b>What happened +</b> ' + esc(e.what));
+      if (e.before) parts.push('<b>Before +</b> ' + esc(e.before));
+      if (e.contact) parts.push('<b>Contact:</b> ' + esc(e.contact));
+      var pics = (e.images || []).map(function (name) {
+        return '<a href="' + reportFile(r, name) + '" target="_blank" rel="noopener"><img class="thumb" loading="lazy" alt="' +
+          esc(name) + '" src="' + reportFile(r, name) + '" style="height:48px;max-width:96px;object-fit:cover;margin-right:4px;border-radius:3px"></a>';
+      }).join('');
+      return '<div style="margin-top:4px"><span class="note">' + (n + 1) + '. ' + esc(e.date || '') + '</span> ' +
+        parts.join(' &middot; ') + (pics ? '<div>' + pics + '</div>' : '') + '</div>';
+    }).join('');
+  }
+  function loadEdits() {
+    Array.prototype.forEach.call(document.querySelectorAll('.rp-edits'), function (box) {
+      var id = box.getAttribute('data-id'), key = id + '/' + box.getAttribute('data-n');
+      var r = reportRows.filter(function (x) { return x.id === id; })[0];
+      if (!r) return;
+      if (editCache[key]) { box.innerHTML = editHtml(r, editCache[key]); return; }
+      fetch(reportFile(r, 'edits.jsonl'), {credentials: 'same-origin'}).then(function (res) {
+        if (!res.ok) throw new Error(res.status);
+        return res.text();
+      }).then(function (text) {
+        var list = text.split('\n').filter(function (l) { return l.trim(); }).map(function (l) { return JSON.parse(l); });
+        editCache[key] = list;
+        box.innerHTML = editHtml(r, list);
+      }).catch(function () { box.textContent = 'could not read the changes'; });
+    });
+  }
+  // ---- suggestions (reports of kind "suggestion": reports.py) - answered Sure / No / Done in <version>
+  var sugRows = [];
+  var SG_ANSWER = {planned: 'Sure', not_planned: 'No, not planned', fixed: 'Done'};
+  // Who sent it: the online account, else the contact they wrote, else anonymous. A name lists that person's reports.
+  var whoFilter = '';
+  function isWho(r) { return !whoFilter || (r.who || '').toLowerCase() === whoFilter.toLowerCase(); }
+  function whoCell(r) {
+    var w = r.who || 'anonymous';
+    if (w === 'anonymous') return '<span class="note">anonymous</span>';
+    return '<button class="who" data-who="' + esc(w) + '" title="' + (r.account ? 'their online account' : 'the contact they wrote') +
+      ' - click to list what this person sent">' + esc(w) + '</button>' +
+      (r.account && r.contact && r.contact !== r.account ? '<br><span class="note">' + esc(r.contact) + '</span>' : '');
+  }
+  function whoBar() {
+    if (!whoFilter) return '';
+    var n = reportRows.filter(isWho).length, s = sugRows.filter(isWho).length;
+    return '<p class="note">Showing what <b>' + esc(whoFilter) + '</b> sent: ' + n + ' report' + (n === 1 ? '' : 's') + ', ' + s +
+      ' suggestion' + (s === 1 ? '' : 's') + '. <button class="btn" data-who="">Show everyone</button></p>';
+  }
+  function whoClick(e) {
+    var b = e.target.closest('[data-who]');
+    if (!b) return;
+    whoFilter = b.dataset.who;
+    renderFixed();
+    renderReports();
+    renderSuggestions();
+  }
+  el('p-reports').addEventListener('click', whoClick);
+  el('p-suggestions').addEventListener('click', whoClick);
+  function renderSuggestions() {
+    var f = el('f-sg').value.toLowerCase(), open = el('sg-open').checked;
+    var rows = sugRows.filter(function (r) {
+      return isWho(r) && (whoFilter || !open || !r.status) && (!f || [r.problem, r.what, r.who, r.app, r.version].join(' ').toLowerCase().indexOf(f) >= 0);
+    });
+    if (reportError) { el('suggestions').innerHTML = '<p class="empty">' + esc(reportError) + '</p>'; return; }
+    el('suggestions').innerHTML = whoBar() + (rows.length ? '<div class="scroll"><table><thead><tr><th>Received</th><th>Idea</th>' +
+      '<th>From</th><th>Pictures</th><th>Answer</th><th></th></tr></thead><tbody>' + rows.map(function (r) {
+        var x = r.fix || {}, pics = (r.images || []).map(function (n) {
+          return '<a href="' + reportFile(r, n) + '" target="_blank" rel="noopener"><img class="thumb" loading="lazy" alt="' + esc(n) +
+            '" src="' + reportFile(r, n) + '" style="height:48px;max-width:96px;object-fit:cover;margin-right:4px;border-radius:3px"></a>';
+        }).join('');
+        var answer = r.status ? '<span class="tag on">' + esc(SG_ANSWER[r.status] || r.status) +
+          (r.status === 'fixed' && x.version ? ' in ' + esc(x.version) : '') + '</span>' +
+          (x.note ? '<br><span class="note">' + esc(x.note) + '</span>' : '') : '<span class="note">not answered</span>';
+        return '<tr><td title="' + esc(r.received) + '">' + ago(r.received_at) + (r.count > 1 ? ' <span class="tag bad" title="the ' +
+          'same title sent before">' + r.count + '&times;</span>' : '') + '</td><td><strong>' + esc(r.problem) + '</strong><br>' +
+          esc(r.what || '') + '</td><td>' + whoCell(r) + ' <span class="note">' + esc(r.app || '') + ' ' +
+          esc(r.version || '') + '</span></td><td>' + pics + '</td><td>' + answer + '</td><td class="acts">' +
+          '<a class="btn" href="' + reportFile(r, 'report.json') + '" target="_blank" rel="noopener">Details</a>' +
+          '<button class="btn" data-sg="' + esc(r.id) + '" data-s="planned" title="the player sees: Sure (planned)">Sure…</button>' +
+          '<button class="btn" data-sg="' + esc(r.id) + '" data-s="not_planned" title="the player sees: No, not planned">No…</button>' +
+          '<button class="btn" data-sg="' + esc(r.id) + '" data-s="fixed" title="the player sees: Done in &lt;version&gt;">Done in…</button>' +
+          (r.status ? '<button class="btn" data-sg="' + esc(r.id) + '" data-s="">Reopen</button>' : '') +
+          '<button class="btn danger" data-sgdel="' + esc(r.id) + '">Delete</button></td></tr>';
+      }).join('') + '</tbody></table></div>' : '<p class="empty">No suggestions' + (open && sugRows.length ? ' left unanswered' : '') + '.</p>');
+  }
+  el('suggestions').addEventListener('click', function (e) {
+    var d = e.target.closest('[data-sgdel]');
+    if (d) {   // (asks in place: a second click within 5 s deletes)
+      if (!d.dataset.armed) {
+        d.dataset.armed = '1'; d.textContent = 'Delete for good?';
+        setTimeout(function () { if (d.isConnected && d.dataset.armed) { delete d.dataset.armed; d.textContent = 'Delete'; } }, 5000);
+        return;
+      }
+      d.disabled = true;
+      deleteReports([d.getAttribute('data-sgdel')]);
+      return;
+    }
+    var b = e.target.closest('[data-sg]');
+    if (!b) return;
+    var status = b.getAttribute('data-s'), body = {status: status};
+    if (status === 'fixed') {
+      var v = window.prompt('Done in which version? (the player sees "Done in <version>")');
+      if (!v || !v.trim()) return;
+      var n1 = window.prompt('A short note for the player (optional):', '');
+      if (n1 === null) return;
+      body.fix = {version: v.trim(), note: n1.trim()};
+    } else if (status) {
+      var n2 = window.prompt('A short note for the player (optional) - they see "' + SG_ANSWER[status] + '" and this:', '');
+      if (n2 === null) return;
+      body.fix = {note: n2.trim()};
+    }
+    b.disabled = true;
+    api('api/admin/report/' + encodeURIComponent(b.getAttribute('data-sg')) + '/mark', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+    }).then(loadReports).catch(function () { b.disabled = false; });
+  });
+  el('f-sg').addEventListener('input', renderSuggestions);
+  el('sg-open').addEventListener('change', renderSuggestions);
+
   function renderReports() {
     var f = el('f-rp').value.toLowerCase(), open = el('rp-open').checked;
     var rows = reportRows.filter(function (r) {
-      return (!open || !r.status) && (!f || [r.app, r.version, r.problem, r.what, r.signature, r.signature_line, r.platform]
+      return isWho(r) && (whoFilter || !open || rpOpen(r)) && (!f || [r.app, r.version, r.problem, r.what, r.who, r.signature, r.signature_line, r.platform]
         .join(' ').toLowerCase().indexOf(f) >= 0);
     });
     var groups = [], by = {};
@@ -802,33 +1291,42 @@ td.acts { text-align: right; white-space: nowrap; }
       g.rows.push(r);
     });
     if (reportError) { el('reports').innerHTML = '<p class="empty">' + esc(reportError) + '</p>'; return; }
-    el('reports').innerHTML = groups.length ? groups.map(function (g) {
+    el('reports').innerHTML = whoBar() + (groups.length ? groups.map(function (g) {
       var a = g.rows[0];
       return '<h3>' + esc(a.problem) + ' <span class="tag">' + esc(a.app) + ' ' + esc(a.version) + '</span> <span class="tag' +
         (a.count > 1 ? ' bad' : '') + '">' + a.count + ' report' + (a.count === 1 ? '' : 's') + '</span> <span class="id" title="signature">' +
         esc(g.sig) + '</span></h3>' + (a.signature_line ? '<p class="note"><code>' + esc(a.signature_line) + '</code></p>' : '') +
-        '<div class="scroll"><table><thead><tr><th>Received</th><th>Platform</th><th>Happens</th><th>What happened</th><th>Pictures</th><th></th></tr></thead><tbody>' +
+        '<div class="scroll"><table><thead><tr><th>Received</th><th>From</th><th>Platform</th><th>Happens</th><th>What happened</th><th>Pictures</th><th></th></tr></thead><tbody>' +
         g.rows.map(function (r) {
           var pics = (r.images || []).map(function (n) {
             return '<a href="' + reportFile(r, n) + '" target="_blank" rel="noopener"><img class="thumb" loading="lazy" alt="' + esc(n) +
               '" src="' + reportFile(r, n) + '" style="height:48px;max-width:96px;object-fit:cover;margin-right:4px;border-radius:3px"></a>';
           }).join('');
-          return '<tr><td title="' + esc(r.received) + '">' + ago(r.received_at) + (r.status ? ' <span class="tag on">' + esc(r.status) + '</span>' : '') +
-            '</td><td>' + esc(r.platform || '') + '</td><td>' + esc(r.happens || '') + '</td><td>' + esc(r.what || '') +
-            (r.account ? ' <span class="note">(' + esc(r.account) + ')</span>' : '') + '</td><td>' + pics + '</td><td class="acts">' +
+          return '<tr><td title="' + esc(r.received) + '">' + ago(r.received_at) + (r.status ? ' <span class="tag' +
+            (r.status === 'replied' ? ' bad' : ' on') + '">' + esc(r.status === 'needs_info' ? 'asked' : r.status) + '</span>' : '') +
+            (r.edits ? ' <span class="tag bad" title="the player changed it after sending - see the row below">edited</span>' : '') +
+            '</td><td>' + whoCell(r) + '</td><td>' + esc(r.platform || '') + '</td><td>' + esc(r.happens || '') + '</td><td>' + esc(r.what || '') +
+            (r.updater ? '<br><span class="note" title="the last result in logs/updater.log">Updater: ' + esc(r.updater) + '</span>' : '') +
+            '</td><td>' + pics + '</td><td class="acts">' +
             '<a class="btn" href="' + reportFile(r, 'report.json') + '" target="_blank" rel="noopener">Details</a>' +
             (r.zip_size ? '<a class="btn" href="' + reportFile(r, 'report.zip') + '">Zip ' + bytes(r.zip_size) + '</a>' : '') +
-            (r.status ? '<button class="btn" data-rp="' + esc(r.id) + '" data-s="">Reopen</button>' :
+            (rpOpen(r) ? (r.status !== 'looking' ? '<button class="btn" data-rp="' + esc(r.id) + '" data-s="looking" ' +
+              'title="the player sees: we\'re looking at it">Looking</button>' : '') +
+              '<button class="btn" data-rp="' + esc(r.id) + '" data-s="needs_info" title="ask the player a question: ' +
+              'their Reports tab shows it and they can answer">Ask\u2026</button>' +
               '<button class="btn" data-rp="' + esc(r.id) + '" data-s="done">Done</button>' +
-              '<button class="btn" data-rp="' + esc(r.id) + '" data-s="duplicate">Duplicate</button>') + '</td></tr>' + matchRow(r);
+              '<button class="btn" data-rp="' + esc(r.id) + '" data-s="duplicate">Duplicate</button>' : '') +
+            (r.status ? '<button class="btn" data-rp="' + esc(r.id) + '" data-s="">Reopen</button>' : '') +
+            '</td></tr>' + infoRow(r) + editRow(r) + matchRow(r);
         }).join('') + '</tbody></table></div>';
-    }).join('') : '<p class="empty">No reports' + (open && reportRows.length ? ' left open' : '') + '.</p>';
+    }).join('') : '<p class="empty">No reports' + (open && reportRows.length ? ' left open' : '') + '.</p>');
+    loadEdits();
   }
   // "Fixed while you were away": reports marked fixed (reports.py mark ... --fixed), newest fix first
   function fixedShown() {
     var f = el('f-rp').value.toLowerCase();
     return reportRows.filter(function (r) {
-      return r.status === 'fixed' && (!f || [r.app, r.version, r.problem, r.what, r.fix && r.fix.note, r.fix && r.fix.version]
+      return r.status === 'fixed' && isWho(r) && (!f || [r.app, r.version, r.problem, r.what, r.fix && r.fix.note, r.fix && r.fix.version]
         .join(' ').toLowerCase().indexOf(f) >= 0);
     }).sort(function (a, b) {
       return ((b.fix && b.fix.date) || '').localeCompare((a.fix && a.fix.date) || '') || b.received_at - a.received_at;
@@ -878,17 +1376,32 @@ td.acts { text-align: right; white-space: nowrap; }
   });
   function loadReports() {
     return api('api/admin/reports').then(function (d) {
-      reportRows = d.reports || []; reportError = ''; modStore = d.mod_store || null; renderModStore();
-      el('n-reports').textContent = reportRows.filter(function (r) { return !r.status; }).length || '';
+      var all = d.reports || [];
+      anthRows = all.filter(function (r) { return isAnth(r) && r.kind !== 'suggestion'; });
+      portRows = all.filter(function (r) { return !isAnth(r) && r.kind !== 'suggestion'; });
+      reportRows = anthMode ? anthRows : portRows;
+      sugRows = all.filter(function (r) { return !isAnth(r) && r.kind === 'suggestion'; });
+      reportError = ''; modStore = d.mod_store || null; renderModStore();
+      el('n-sug').textContent = sugRows.filter(function (r) { return !r.status; }).length || '';
+      if (current === 'suggestions') renderSuggestions();
+      function waiting(r) { return !r.status || r.status === 'replied'; }
+      el('n-reports').textContent = portRows.filter(waiting).length || '';
+      el('n-anth').textContent = anthRows.filter(waiting).length || '';
       if (current === 'reports') { renderFixed(); renderReports(); }
     }).catch(function (e) { reportError = 'The reports could not be loaded (' + e.message + ').'; if (current === 'reports') renderReports(); });
   }
   el('reports').addEventListener('click', function (e) {
     var b = e.target.closest('[data-rp]');
     if (!b) return;
+    var status = b.getAttribute('data-s'), body = {status: status};
+    if (status === 'needs_info') {  // (the question the player sees - plain words, they answer in their Reports tab)
+      var q = window.prompt('The question for the player (their Reports tab shows "We need more information: ..."):');
+      if (!q || !q.trim()) return;
+      body.fix = {question: q.trim()};
+    }
     b.disabled = true;
     api('api/admin/report/' + encodeURIComponent(b.getAttribute('data-rp')) + '/mark', {
-      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({status: b.getAttribute('data-s')})
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
     }).then(loadReports).catch(function () { b.disabled = false; });
   });
   el('f-rp').addEventListener('input', function () { renderFixed(); renderReports(); });
@@ -962,9 +1475,18 @@ td.acts { text-align: right; white-space: nowrap; }
     document.querySelectorAll('[data-set]').forEach(function (i) {
       body[i.dataset.set] = i.type === 'checkbox' ? i.checked : i.tagName === 'SELECT' || i.tagName === 'TEXTAREA' ? i.value : Number(i.value);
     });
-    api('api/admin/settings', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})
-      .then(function () { el('set-note').textContent = 'Saved ' + new Date().toLocaleTimeString(); settings(); })
-      .catch(function (e) { el('set-note').textContent = 'Not saved: ' + e.message; });
+    function save() {
+      api('api/admin/settings', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})
+        .then(function () { el('set-note').textContent = 'Saved ' + new Date().toLocaleTimeString(); settings(); })
+        .catch(function (e) { el('set-note').textContent = 'Not saved: ' + e.message; });
+    }
+    var was = (settingsList.filter(function (x) { return x.key === 'account_checks'; })[0] || {}).saved;
+    if (body.account_checks !== 'on' || was === 'on') return save();
+    api('api/admin/checks').then(function (d) {
+      if (confirm('Turn account checks ON? At once:\n- ' + d.would_block + ' of ' + d.accounts + ' accounts are kept off ' +
+                  'online until their re-activation code (make them on the Players tab first);\n- new accounts need ' +
+                  'a sign-up code, and 2.1.5 launchers are told to update to 2.1.6.')) save();
+    }).catch(function (e) { el('set-note').textContent = 'Not saved: ' + e.message; });
   });
   el('restart').addEventListener('click', function () {
     if (!confirm('Restart the online service? Players in the menus are back in seconds; matches in progress keep playing (P2P), relayed ones may drop.')) return;
@@ -1012,10 +1534,22 @@ td.acts { text-align: right; white-space: nowrap; }
     if (a === 'delete' && !confirm(what === 'user' ? 'Delete this account and everything it uploaded?' :
                                    what === 'mod' ? 'Delete this mod from Discovery?' : 'Delete this upload?')) return;
     if (a === 'reset' && !confirm('Give this account a new random password? Its sessions are signed out.')) return;
+    if (a === 'reactivation-code' && !confirm('Make a re-activation code for this account? It shows once; an older one ' +
+                                             'it had stops working.')) return;
+    if (a === 'activate' && !confirm('Let this account play online without a re-activation code?')) return;
+    if (a === 'reset-code' && !confirm('Make a password reset code for this account? It shows once, works once for 24 ' +
+                                      'hours (an older one stops working); the new password ends all its sessions.')) return;
+    var opts = {method: 'POST'};
     b.disabled = true;
-    api('api/admin/' + what + '/' + id + '/' + a, {method: 'POST'}).then(function (r) {
+    api('api/admin/' + what + '/' + id + '/' + a, opts).then(function (r) {
       if (r.password) prompt('New password (give it to the player):', r.password);
+      if (r.code) prompt(a === 'reset-code' ? 'Reset code (shown once - give it to the player: Forgot password in the ' +
+                                              'launcher, with a new password; 24 hours):'
+                                            : 'Re-activation code (shown once - give it to the player; it works for this ' +
+                                              'account only):', r.code);
       (what === 'user' ? loadUsers : what === 'mod' ? loadMods : loadUploads)();
+      if (current === 'names') loadFlagged();
+      if (current === 'matches') live();
     }).catch(function (err) { alert(err.message); b.disabled = false; });
   });
   el('f-up').addEventListener('input', renderUploads);
@@ -1033,8 +1567,10 @@ td.acts { text-align: right; white-space: nowrap; }
   }
 
   setTheme(store('svr-theme') || 'auto');
+  el('anth').addEventListener('click', function () { setAnth(!anthMode); });
   var first = location.hash.slice(1);
-  show(el('tab-' + first) ? first : store('svr-tab') || 'overview');
+  if (first === 'anthology') setAnth(true);
+  else show(el('tab-' + first) ? first : store('svr-tab') || 'overview');
   // (the counts on the tabs keep up; the open tab refreshes its own part)
   if (current !== 'ping') pings();
   if (current !== 'overview' && current !== 'matches') live();
@@ -1042,6 +1578,7 @@ td.acts { text-align: right; white-space: nowrap; }
   if (current !== 'discovery') loadMods();
   if (current !== 'reports') loadReports();
   setInterval(function () { if (current === 'overview') stats(); }, 5000);
+  setInterval(function () { if (current === 'overview') node(); }, 15000);
   setInterval(function () { if (current === 'overview' || current === 'matches') live(); }, 5000);
   setInterval(function () { if (current === 'ping') pings(); }, 10000);
   setInterval(function () { if (current !== 'ping') pings(); if (current !== 'overview' && current !== 'matches') live(); }, 30000);
@@ -1051,7 +1588,7 @@ td.acts { text-align: right; white-space: nowrap; }
     else if (current === 'matches') leaderboard();
     else if (current === 'cc') loadUploads();
     else if (current === 'discovery') loadMods();
-    else if (current === 'reports') loadReports();
+    else if (current === 'reports' || current === 'suggestions') loadReports();
   }, 30000);
 })();
 </script>

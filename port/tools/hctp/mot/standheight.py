@@ -2,8 +2,11 @@
 frames with both knees within 12 deg of straight and the lowest joint on the floor."""
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # (its own folder: the embeddable Python doesn't add it)
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))  # (tools\: ymks.py)
 import sys, numpy as np, ymks as Y, fk, hmot, s11mot
-B11 = r"C:\Users\Ranger\AppData\Local\Temp\claude\D--Xbox-Games-Ports-WWE-Smackdown-Vs-Raw-2011\dfe83e05-1f37-4854-b5ee-c656d2553e43\scratchpad\ymks\banks\m_MOT_BM01_1.bin"
+if len(sys.argv) != 2:
+    raise SystemExit('usage: standheight.py <2011 motion bank file>  (HCTP_UNPACKED, HCTP_CH_PAC, SVR11_PAC set)')
+B11 = sys.argv[1]
 K = 12 / 360 * 65536
 
 def collect(tracks, S, limit=150):
@@ -18,7 +21,7 @@ def collect(tracks, S, limit=150):
 
 nH, _ = fk.hctp_nodes()
 SH = fk.Skel(nH)
-T, ents = hmot.read_bank(open(r"D:/Xbox Games Ports/HCTP Extract/_unpacked/m/MOT_GAME/00000.bin", 'rb').read())
+T, ents = hmot.read_bank(open(os.path.join(fk.need_env('HCTP_UNPACKED', 'the unpacked HCTP disc'), 'm', 'MOT_GAME', '00000.bin'), 'rb').read())
 trH = [hmot.sample(e['data'], e['frames']) for e in ents if e['y'] == 0 and e['data'] and hmot.track_kind(e['data']) == 'char'][:150]
 n11 = fk.svr11_nodes()
 rH = {n['name']: n['r'] for n in nH}

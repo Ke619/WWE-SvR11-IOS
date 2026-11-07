@@ -15,4 +15,10 @@ namespace svr2011 {
 // `cached` tells whether it came from there.
 std::string PickGraphicsApi(const std::filesystem::path& cache_file, std::string* why, bool* cached);
 
+// The API "any" picked failed on this GPU and driver (the device lost in the native renderer's first minute - a
+// GeForce GT 710 on Direct3D 12): the cache is rewritten so the next start uses the next one (Vulkan when it can run,
+// else Direct3D 11). Returns its name for the message ("Vulkan" / "Direct3D 11"), empty when "any" wasn't used or
+// Direct3D 11 itself failed.
+std::string AvoidPickedGraphicsApi(const std::string& reason);
+
 }  // namespace svr2011

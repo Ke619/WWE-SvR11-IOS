@@ -134,12 +134,16 @@ std::string AdapterKey() {
                      uint64_t(umd.QuadPart), WindowsBuild());
 }
 
+std::filesystem::path g_cache_file;  // (PickGraphicsApi's - "any" was used)
+std::string g_cache_key, g_picked;
+
 }  // namespace
 
 std::string PickGraphicsApi(const std::filesystem::path& cache_file, std::string* why, bool* cached) {
   why->clear();
   *cached = false;
   const std::string key = AdapterKey();
+  g_cache_file = cache_file, g_cache_key = key;  // (and g_picked: for AvoidPickedGraphicsApi)
   if (!key.empty()) {
     std::ifstream in(cache_file);
     std::string k, api;
@@ -147,6 +151,7 @@ std::string PickGraphicsApi(const std::filesystem::path& cache_file, std::string
         (api == "d3d12" || api == "vulkan" || api == "d3d11")) {
       std::getline(in, *why);
       *cached = true;
+      g_picked = api;
       return api;
     }
   }
@@ -166,7 +171,25 @@ std::string PickGraphicsApi(const std::filesystem::path& cache_file, std::string
     std::filesystem::create_directories(cache_file.parent_path(), ec);
     std::ofstream(cache_file, std::ios::trunc) << key << '\n' << api << '\n' << *why << '\n';
   }
+  g_picked = api;
   return api;
+}
+
+std::string AvoidPickedGraphicsApi(const std::string& reason) {
+  if (g_cache_file.empty() || g_cache_key.empty() || (g_picked != "d3d12" && g_picked != "vulkan")) return {};
+  std::string next = "d3d11", why;
+  if (g_picked == "d3d12") {
+    why = fmt::format("Direct3D 12 failed on this GPU and driver ({})", reason);
+    if (const std::string vulkan = VulkanProblem(); vulkan.empty())
+      next = "vulkan";
+    else
+      why += fmt::format(", Vulkan not usable ({})", vulkan);
+  } else {
+    why = fmt::format("Vulkan failed on this GPU and driver ({})", reason);
+  }
+  std::ofstream(g_cache_file, std::ios::trunc) << g_cache_key << '\n' << next << '\n' << why << '\n';
+  g_picked = next;
+  return next == "vulkan" ? "Vulkan" : "Direct3D 11";
 }
 
 #else
@@ -176,6 +199,8 @@ std::string PickGraphicsApi(const std::filesystem::path&, std::string* why, bool
   *cached = false;
   return "vulkan";
 }
+
+std::string AvoidPickedGraphicsApi(const std::string&) { return {}; }
 
 #endif
 

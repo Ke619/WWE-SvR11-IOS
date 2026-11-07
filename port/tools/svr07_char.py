@@ -36,6 +36,7 @@ COLOR = (2048, 1024)
 NORMAL = (1024, 1024)
 MK = (512, 256)
 PAD = 4
+SHINE = 48   # (the normal sheet's alpha: bake)
 MISSING = '\0missing'   # (the box for meshes whose texture the pac doesn't carry)
 
 
@@ -77,10 +78,12 @@ def pack(sizes, W, H):
     raise RuntimeError('textures do not fit')
 
 
-def bake(kids):
+def bake(kids, legs=None):
     """-> ({child: m8 with sheet UVs}, color DDS, normal DDS, Mk DDS, notes)"""
     tex = {n.lower(): d for n, d in S8.tex_read(kids[0xa])}
     m8s = {k: S8.read08(kids[k]) for k in (0, 0x2710, 0x4e20) if k in kids and kids[k][:4] == b'JBOY'}
+    for m8 in m8s.values():   # (a diva's straight legs onto the diva skeleton's: svr08_char.Template.leg_fit)
+        S8.repose(m8, legs)
     diffuse_of, normal_of, missing = {}, {}, []
     for k, m8 in m8s.items():
         for i, s8 in enumerate(m8['meshes']):
@@ -101,7 +104,11 @@ def bake(kids):
         images[MISSING] = Image.new('RGBA', (8, 8), (128, 128, 128, 0))   # (sorted: a set's order follows the hash seed - the packed sheet changed every run)
     scale, boxes = pack({d: im.size for d, im in images.items()}, *COLOR)
     color = Image.new('RGBA', COLOR, (128, 128, 128, 255))
-    normal = Image.new('RGBA', NORMAL, (128, 128, 255, 255))
+    # (the normal sheet's alpha is the skin shaders' shine mask - SpecLev x normal.a. 2007's skin normal maps keep a
+    # mask (Kurt Angle's body 0-68), its gear / hands / knees ones are opaque, as was this sheet behind parts with no
+    # normal map: those shone at full SpecLev, a white glare on SvR 2007 wrestlers - report 20261101-162315. 48, the
+    # FBX import's "no normal map" shine, where there is no mask)
+    normal = Image.new('RGBA', NORMAL, (128, 128, 255, SHINE))
     sx, sy = NORMAL[0] / COLOR[0], NORMAL[1] / COLOR[1]
     for d, (x, y, w, h) in boxes.items():
         # (S8.resize_rgba, not Image.resize: Pillow premultiplies RGBA, so where a 2007 part's alpha is near 0 -
@@ -110,6 +117,8 @@ def bake(kids):
         if d in normal_of:
             nb = (int(x * sx), int(y * sy), max(1, int(w * sx)), max(1, int(h * sy)))
             nim = S8.resize_rgba(Image.open(io.BytesIO(tex[normal_of[d]])).convert('RGBA'), nb[2:], Image.LANCZOS)
+            if nim.getchannel('A').getextrema()[0] >= 250:   # (an opaque one: no mask of its own - 48)
+                nim.putalpha(SHINE)
             normal.paste(nim, nb[:2])
     for (k, i), d in diffuse_of.items():
         x, y, w, h = boxes[d]
@@ -126,11 +135,14 @@ def bake(kids):
 
 def attire(kids, tp, portrait):
     """one 2011 attire (PACH children) from a 2007 EMD entry's children"""
-    m8s, color_d, normal_d, mk_d, notes = bake(kids)
+    legs = tp.leg_fit(kids[0])
+    m8s, color_d, normal_d, mk_d, notes = bake(kids, legs)
+    if legs:
+        notes += "; legs bent onto the template skeleton's"
     textures = ['color', 'normal', 'mk', 'noise', 'cubemap']
     SKIN = {'texDiffuse': 'color', 'texNormal': 'normal', 'texOcclusion': 'mk', 'texTilingMap': 'noise'}
     EYE = {'texDiffuse': 'color', 'texCubeRefction': 'cubemap', 'texRefctionReg': 'color', 'texOcclusion': 'mk'}
-    nodes = tp.nodes_at(kids[0])   # (the template's nodes on the source's joints: svr08_char.Template.nodes_at)
+    nodes = tp.nodes_at(kids[0], legs)   # (the template's nodes on the source's joints: svr08_char.Template.nodes_at)
     out = {0: jboy.write(S8.model(tp, tp.body, [(m8s[0], lambda s: (tp.p_eye, EYE) if 'Reflect' in s['shader'] else (tp.p_skin, SKIN))],
                                   textures, nodes))}
     if 0x2710 in m8s:

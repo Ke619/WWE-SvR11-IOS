@@ -16,17 +16,25 @@
  *   Paint Tool the Paint Tool's logos (10 pages of 20): see them, export as PNG, import images.
  *
  * Command line (tests):  --capture <play|settings|install|dlc|saves|paint|mods> <file.bmp> [--paint-page <1-10>]
- *                          [--report-window <1|2>]  (Report a problem's window instead: questions / where to post)
+ *                          [--report-window <1|2>]  (Report a problem's window instead: the questions / as after a
+ *                          failed send)
+ *                          [--online-mods show | <share 0|1> <KB/s> <joiners> <mod MB> <session MB>]  (online: the
+ *                          Mod sharing fold open - as loaded, or those rows filled and saved first)
  *                        --paint-export <file.pt> <slot> <out.png>  /  --paint-import <file.pt> <slot> <image>
  *                          (slot 1-200: 1-20 page 1, 21-40 page 2, ...)
  *                        --install <image> <folder>   (no window; exit code)
  *                        --apk-package <game folder> <out folder>   (Create APK Package, no window)
  *                        --report <game folder> [description]   (Report a problem: the zip, no window)
  *                        --report-send <game folder> <answers file>   (Report a problem: zip + send to the server, no window)
+ *                        --reports-status <game folder> <server>   (the Reports tab's list and states, no window)
+ *                        --reports-reply <game folder> <server> <report id> <text> [<picture>...]   (an answer)
+ *                        --reports-edit <game folder> <server> <report id> <text> [<picture>...]   (a change)
  *                        --import-360 <360 save folder> <saves folder>   (Xbox 360 saves -> port saves)
  *                        --import-caw <saves folder> <file.cas>...   (Created Superstars + their logos)
+ *                        --clean-save <saves folder> <Mods\Superstars> [--with-off] [--apply]   (save cleaner)
  *                        --adb-install <game folder>   (Install to phone over USB, no window)
  *                        --setup-check <game folder>   (the Setup tab's rows, no window)
+ *                        --nat-check <game folder>   (the Online tab's connection check, no window)
  *                        --setup-install <game folder> <python|ffmpeg|all> --yes   (its downloads, no window)
  */
 #ifndef WIN32_LEAN_AND_MEAN
@@ -57,16 +65,23 @@
 #include <wchar.h>
 
 #include "apk_package.h"
+#include "report_urls.h"
 #include "mods_tab.h"
+#include "report_receipts.h"
+#include "reports_tab.h"
+#include "suggestions_tab.h"
 #include "music_tab.h"
 #include "texpacks_tab.h"
 #include "setup_tab.h"
+#include "nat_check.h"
 #include "discover_tab.h"
+#include "test_run.h"
 static void setup_go_install(void);
 static void setup_console_progress(int permille, const WCHAR *text);
 #include "roster_tab.h"
 #include "ui_theme.h"
 #include "report.h"
+#include "report_flow.h"
 #include "report_match.h"
 #include "report_send.h"
 #include "movie_maker.h"
@@ -74,8 +89,10 @@ static void setup_console_progress(int permille, const WCHAR *text);
 #include "unzip.h"
 #include "updater.h"
 #include "release_check.h"
+#include "update_log.h"
 #include "stfs.h"
 #include "caw_import.h"
+#include "save_cleaner.h"
 #include "verify.h"
 
 #include <winhttp.h>
@@ -113,19 +130,21 @@ static void setup_console_progress(int permille, const WCHAR *text);
 
 /* ── state ─────────────────────────────────────────────────────────────── */
 
-enum { TAB_PLAY, TAB_SETTINGS, TAB_ONLINE, TAB_INSTALL, TAB_DLC, TAB_SAVES, TAB_PAINT, TAB_MOVIES, TAB_ANDROID, TAB_MODS, TAB_MUSIC, TAB_ROSTER, TAB_TEXPACKS, TAB_SETUP, TAB_DISCOVER, TAB_TOOLS, TAB_COUNT };
+enum { TAB_PLAY, TAB_SETTINGS, TAB_ONLINE, TAB_INSTALL, TAB_DLC, TAB_SAVES, TAB_PAINT, TAB_MOVIES, TAB_ANDROID, TAB_MODS, TAB_MUSIC, TAB_ROSTER, TAB_TEXPACKS, TAB_SETUP, TAB_DISCOVER, TAB_TOOLS, TAB_REPORTS, TAB_SUGGESTIONS, TAB_COUNT };
 #define ID_MODS_BASE 900  /* the Mods tab's controls (mods_tab.c) */
 #define ID_MUSIC_BASE 950 /* the Music tab's (music_tab.c) */
 #define ID_ROSTER_BASE 1000 /* the Roster tab's (roster_tab.c) */
 #define ID_TEXPACKS_BASE 1100 /* the Texture packs tab's (texpacks_tab.c) */
 #define ID_SETUP_BASE 1200 /* the Setup tab's (setup_tab.c) */
 #define ID_DISCOVER_BASE 1300 /* Mods -> Discovery's (discover_tab.c) */
+#define ID_REPORTS_BASE 1400 /* the Reports tab's (reports_tab.c) */
+#define ID_SUGGEST_BASE 1450 /* the Suggestions tab's (suggestions_tab.c) */
 
 enum {
     ID_TAB = 100,
     /* play */
     ID_GAMEDIR, ID_GAMEDIR_CHANGE, ID_PLAY, ID_CLOSE_ON_PLAY, ID_PLAY_STATUS, ID_VERSION, ID_REPORT, ID_PLAYTIME,
-    ID_SKIP_INTROS, ID_SKIP_TRAINING, ID_PLAY_NOMODS, ID_PL_EXPORT, ID_PL_IMPORT, ID_PL_NOTICE,
+    ID_SKIP_INTROS, ID_SKIP_TRAINING, ID_FAST_LOADS, ID_PLAY_NOMODS, ID_PL_EXPORT, ID_PL_IMPORT, ID_PL_NOTICE,
     /* settings */
     ID_WINDOWED, ID_FULLSCREEN, ID_RESOLUTION, ID_VSYNC, ID_INPUT, ID_AUDIO, ID_MUTE, ID_SHOWFPS, ID_MSAA, ID_RENDERER, ID_LANGUAGE, ID_FRAMERATE, ID_MUSIC_OPEN, ID_DEFAULTS, ID_SAVE,
     ID_SETTINGS_STATUS, ID_PREPARE, ID_PRIORITY, ID_UNLOCK_ALL, ID_TEXTURES, ID_ARENA_LIGHT, ID_UPSCALE, ID_MATCH_CAMERA,
@@ -133,7 +152,11 @@ enum {
     /* online */
     ID_ON_ENABLE, ID_ON_NAME, ID_ON_SERVER, ID_ON_SERVER_KIND, ID_ON_SAVE, ID_ON_STATUS,
     ID_ON_PASSWORD, ID_ON_SIGNIN, ID_ON_REGISTER, ID_ON_SIGNOUT, ID_ON_ACCOUNT, ID_ON_SERVER_LABEL, ID_ON_PEERS, ID_ON_ROUTE,
-    ID_FR_LIST, ID_FR_NAME, ID_FR_ADD, ID_FR_REMOVE, ID_FR_STATUS,
+    ID_FR_LIST, ID_FR_NAME, ID_FR_ADD, ID_FR_REMOVE, ID_FR_STATUS, ID_FR_GROUP, ID_FR_INFO,
+    ID_ON_NAT_CHECK, ID_ON_NAT_GROUP, ID_ON_NAT_TEXT,
+    ID_ON_SHARE, ID_ON_MODS_FOLD, ID_ON_MODS_GROUP, ID_ON_UP_KBS, ID_ON_UP_PEERS, ID_ON_MOD_MB, ID_ON_MODS_MB,
+    ID_ON_MODS_L1, ID_ON_MODS_L2, ID_ON_MODS_L3, ID_ON_MODS_L4, ID_ON_MODS_INFO,
+    ID_ON_L_NAME, ID_ON_L_PASS, ID_ON_L_CODE, ID_ON_CODE, ID_ON_STEP, ID_ON_BACK, ID_ON_FORGOT, ID_ON_INFO,
     /* install */
     ID_IMAGE, ID_IMAGE_BROWSE, ID_TARGET, ID_TARGET_BROWSE, ID_FREE, ID_INSTALL, ID_CANCEL,
     ID_PROGRESS, ID_INSTALL_STATUS, ID_VERIFY, ID_VERIFY_REPAIR, ID_VERIFY_MARK, ID_VERIFY_STATUS,
@@ -142,8 +165,8 @@ enum {
     /* dlc */
     ID_DLC_DIR, ID_DLC_BROWSE, ID_DLC_INSTALL, ID_DLC_STATUS, ID_DLC_LIST,
     /* saves */
-    ID_SV_LIST, ID_SV_BACKUP, ID_SV_RESTORE, ID_SV_BACKUPS, ID_SV_EXPORT, ID_SV_IMPORT, ID_SV_DELETE, ID_SV_OPEN,
-    ID_SV_STATUS, ID_SV_FOLDER, ID_SV_CHANGE, ID_SV_DEFAULT, ID_SV_PRESET, ID_SV_PRESET_NEW, ID_SV_IMPORT360, ID_SV_IMPORTCAW,
+    ID_SV_LIST, ID_SV_BACKUP, ID_SV_RESTORE, ID_SV_BACKUPS, ID_SV_EXPORT, ID_SV_IMPORT, ID_SV_DELETE, ID_SV_OPEN, ID_SV_CLEAN,
+    ID_SV_STATUS, ID_SV_FOLDER, ID_SV_CHANGE, ID_SV_DEFAULT, ID_SV_PRESET, ID_SV_PRESET_NEW, ID_SV_IMPORT360, ID_SV_IMPORTCAW, ID_SV_PERMOD, ID_SV_BIGROSTER,
     /* paint tool */
     ID_PT_GRID, ID_PT_EXPORT, ID_PT_IMPORT, ID_PT_DELETE, ID_PT_EXPORTALL, ID_PT_REFRESH, ID_PT_STATUS,
     ID_PT_PREV, ID_PT_NEXT, ID_PT_PAGE,
@@ -164,11 +187,13 @@ enum {
 #define WM_APP_UPD_CHECKED (WM_APP + 7)  /* wParam 1 ok, lParam heap error text */
 #define WM_APP_UPD_PROGRESS (WM_APP + 8) /* wParam percent, lParam 1 = unpacking */
 #define WM_APP_UPD_REPAIR (WM_APP + 9)   /* the missing files fetched by themselves */
+#define UPLOG_DIR (s_game_dir[0] ? s_game_dir : s_launcher_dir)   /* (update_log.h: where the updater logs too) */
 #define UPDATER_EXE L"SvR2011 Updater.exe"   /* (launcher/updater_main.c: installs updates for the launcher) */
 #define WM_APP_APK      (WM_APP + 10)    /* wParam permille, or APK_OK / APK_FAILED; lParam heap WCHAR* or 0 */
 #define WM_APP_UPD_FINISHED (WM_APP + 13) /* wParam 1 ok, lParam heap error text */
 #define WM_APP_VERIFY   (WM_APP + 12)    /* wParam permille, or 1001: done (s_verify) */
 #define WM_APP_FRIENDS  (WM_APP + 11)    /* wParam HTTP status (0: no answer), lParam heap char* answer */
+#define WM_APP_NATCHECK (WM_APP + 16)    /* the connection check is done (s_nat_result) */
 #define WM_APP_SIZE     (WM_APP + 14)    /* the Play page's game size / file check is in (size_thread) */
 #define WM_APP_BUNDLED  (WM_APP + 15)    /* wParam n << 16 | total installing, or 0xFFFFFFFF: done (bundled_thread) */
 #define HERO_TIMER      0x5F02           /* the Play page's picture scrolling */
@@ -192,6 +217,13 @@ typedef struct { RECT r; int tab; } PlayLink;
 static PlayLink  s_play_links[8];
 static int       s_nplay_links;
 static void play_counts(void);
+/* default.xex of a game folder against the supported release (verify.h). */
+static int verify_xex_supported_in(const WCHAR *dir)
+{
+    WCHAR p[MAX_PATH];
+    swprintf_s(p, MAX_PATH, L"%s\\default.xex", dir);
+    return verify_xex_supported(p);
+}
 static void play_notice(void);
 /* The Play page's notice (play_notice): one line when something needs the player, its button's action. */
 enum { NOTICE_NONE, NOTICE_FOLDER, NOTICE_SETUP, NOTICE_FILES, NOTICE_UPDATE };
@@ -349,32 +381,14 @@ static int render_index(int max_scale, double res, int height)
 }
 
 static int S(int v) { return MulDiv(v, s_dpi, 96); }
+/* big_roster (Saves tab): the option's tooltip and the warning before it is turned on */
+#define BIG_ROSTER_WARNING L"Experimental - still being worked on. More mod superstars is not finished. Turning it on " \
+    L"may corrupt your save or even damage your game install. Back up your Saves folder first. This also turns on " \
+    L"per-mod save files. Turn it on anyway?"
+static int big_roster_confirm(const WCHAR *capture_file);
+static void saves_permod_lock(void);
 
 /* ── small helpers ─────────────────────────────────────────────────────── */
-
-static int file_exists(const WCHAR *p)
-{
-    DWORD a = GetFileAttributesW(p);
-    return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
-}
-
-static int dir_exists(const WCHAR *p)
-{
-    DWORD a = GetFileAttributesW(p);
-    return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
-}
-
-/* a\b into out (MAX_PATH); 0 when it would not fit. */
-static int join(WCHAR *out, const WCHAR *a, const WCHAR *b)
-{
-    size_t la = wcslen(a);
-    if (la + 1 + wcslen(b) >= MAX_PATH) {
-        out[0] = 0;
-        return 0;
-    }
-    swprintf_s(out, MAX_PATH, (la && a[la - 1] == L'\\') ? L"%s%s" : L"%s\\%s", a, b);
-    return 1;
-}
 
 static int mkdirs(const WCHAR *path)
 {
@@ -417,19 +431,6 @@ static int64_t file_size(const WCHAR *p)
     if (!GetFileAttributesExW(p, GetFileExInfoStandard, &a) || (a.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
         return -1;
     return (int64_t)(((uint64_t)a.nFileSizeHigh << 32) | a.nFileSizeLow);
-}
-
-static int same_dir(const WCHAR *a, const WCHAR *b)
-{
-    WCHAR fa[MAX_PATH], fb[MAX_PATH];
-    size_t n;
-    if (!GetFullPathNameW(a, MAX_PATH, fa, NULL) || !GetFullPathNameW(b, MAX_PATH, fb, NULL))
-        return 0;
-    n = wcslen(fa);
-    if (n > 3 && fa[n - 1] == L'\\') fa[n - 1] = 0;
-    n = wcslen(fb);
-    if (n > 3 && fb[n - 1] == L'\\') fb[n - 1] = 0;
-    return !_wcsicmp(fa, fb);
 }
 
 /* "1.2 GB" style. */
@@ -508,6 +509,20 @@ static int is_game_folder(const WCHAR *dir)
 {
     WCHAR a[MAX_PATH];
     return dir[0] && join(a, dir, L"default.xex") && file_exists(a);
+}
+
+/* The first file every install has that the game folder lacks, or NULL. default.xex alone isn't enough: a folder with
+   it and none of the disc's files could press Play (2.1.9 report 181cb0, Android). Install again keeps what is there. */
+static const WCHAR *install_missing(const WCHAR *dir)
+{
+    static const WCHAR *must[] = { L"plist360.arc", L"pac\\_startup.pac", L"pac\\m.pac", L"pac\\plist360.h",
+                                   L"sound\\System.pck" };
+    WCHAR a[MAX_PATH];
+    int i;
+    for (i = 0; i < (int)(sizeof must / sizeof must[0]); i++)
+        if (!join(a, dir, must[i]) || !file_exists(a))
+            return must[i];
+    return NULL;
 }
 
 static int has_program(const WCHAR *dir)
@@ -737,6 +752,32 @@ static int disc_check(Disc *d, const WCHAR *image, WCHAR *err, size_t errn)
                    tid, TITLE_ID);
         return 0;
     }
+    /* the release the port was made from (verify.h): another one's default.xex can't run */
+    if (!verify_xex_size_supported(x->size)) {
+        swprintf_s(err, errn, L"%s", VERIFY_OTHER_RELEASE);
+        return 0;
+    }
+    {
+        uint8_t *buf = (uint8_t *)malloc(4u << 20);
+        uint64_t at = 0, base = (uint64_t)x->sector * 2048;
+        uint32_t c = 0;
+        if (!buf) return 1;   /* (no memory to check it: the install goes on) */
+        while (at < x->size) {
+            const DWORD n = (DWORD)(x->size - at > (4u << 20) ? (4u << 20) : x->size - at);
+            if (!disc_read(d, base + at, buf, n)) {
+                free(buf);
+                swprintf_s(err, errn, L"The disc image's default.xex could not be read; the image may be incomplete.");
+                return 0;
+            }
+            c = verify_crc32(c, buf, n);
+            at += n;
+        }
+        free(buf);
+        if (!verify_xex_crc_supported(c)) {
+            swprintf_s(err, errn, L"%s", VERIFY_OTHER_RELEASE);
+            return 0;
+        }
+    }
     return 1;
 }
 
@@ -954,6 +995,7 @@ static DWORD WINAPI bundled_thread(LPVOID arg)
 }
 
 static void refresh_play(void);
+static void show_tab(int t);
 
 static void start_bundled(void)
 {
@@ -1417,6 +1459,7 @@ static int toml_get(const char *key, char *out, size_t n);
    (<game>\logs\svr2011_*.log, newest first). s_route_kind: 1 direct, 2 relay - direct failed, 3 relay - the
    server's choice, 0 none (no line shown). */
 static int s_route_kind;
+static int s_route_mapped;  /* (the last "router port mapping" line in the logs: 1 it opened the port, -1 not, 0 none) */
 static void online_route_show(void)
 {
     typedef struct { WCHAR name[MAX_PATH]; ULONGLONG t; } Log;
@@ -1424,8 +1467,9 @@ static void online_route_show(void)
     WCHAR pat[MAX_PATH], path[MAX_PATH], t[400];
     WIN32_FIND_DATAW fd;
     HANDLE h;
-    int n = 0, i, k;
+    int n = 0, i, k, mapping = 0;
     s_route_kind = 0;
+    s_route_mapped = 0;
     swprintf_s(pat, MAX_PATH, L"%s\\logs\\svr2011_*.log", s_game_dir);
     h = s_game_dir[0] ? FindFirstFileW(pat, &fd) : INVALID_HANDLE_VALUE;
     if (h != INVALID_HANDLE_VALUE) {
@@ -1441,7 +1485,7 @@ static void online_route_show(void)
     for (i = 0; i < n; i++)   /* (newest first) */
         for (k = i + 1; k < n; k++)
             if (logs[k].t > logs[i].t) { Log x = logs[i]; logs[i] = logs[k]; logs[k] = x; }
-    for (i = 0; i < n && i < 6 && !s_route_kind; i++) {
+    for (i = 0; i < n && i < 6 && (!s_route_kind || !mapping); i++) {
         FILE *f = NULL;
         char *buf;
         long size;
@@ -1458,7 +1502,14 @@ static void online_route_show(void)
                 const char *e = strchr(p, '\n'), *pl = strstr(p, " plays ");
                 if (pl && (!e || pl < e)) last = pl + 7;
             }
-            if (last)
+            if (!mapping)
+                for (p = buf; (p = strstr(p, "p2p: router port mapping")) != NULL; p++) {
+                    mapping = 1;
+                    /* (" UDP <port> -> ...": it opened; ": none", ": UPnP ... refused"; "removed" at the game's end) */
+                    if (!strncmp(p + 24, " UDP ", 5)) s_route_mapped = 1;
+                    else if (strncmp(p + 24, " removed", 8)) s_route_mapped = -1;
+                }
+            if (last && !s_route_kind)
                 s_route_kind = !strncmp(last, "direct", 6) ? 1 : strstr(last, "(set so)") && (!strchr(last, '\n') ||
                                strstr(last, "(set so)") < strchr(last, '\n')) ? 3 : 2;
             free(buf);
@@ -1575,24 +1626,91 @@ static void toml_quote_ctl(int id, int max, char *out, size_t n)
 static char s_online_token[128], s_online_xuid[32];
 static int s_tab_visible_online;  /* (the Online tab is showing) */
 
+/* The account box's modes: sign in, create an account (name, password, invite code), forgot password (the name,
+   the reset code the server owner made for it, a new password), signed in. Signed in, an account the server keeps
+   off online (2.1.6 with its account checks on, server.py signup.py) shows its step instead: the re-activation code
+   from the server owner (accounts from before 2.1.6). Codes only - no email. */
+enum { ON_SIGNIN, ON_SIGNUP, ON_FORGOT };
+static int s_on_mode;
+static int s_on_needs_code;   /* (signed in: the server's answer) */
+static int s_on_invite = -1;  /* (sign-up: the server needs an invite code 1, doesn't 0, didn't say -1) */
+static WCHAR s_on_note[300];  /* (the status line, kept across a re-layout) */
+/* A test run (--capture, SVR2011_CAPTURE_ONLINE, --sign-in / --register): no account request (sign-up, sign-in,
+   reset, re-activation, sign-out, the account's own GETs) goes to a server that isn't on this PC unless
+   SVR2011_ALLOW_LIVE=1. A test folder's svr2011.toml with its server under an [Online] header (the launcher reads
+   top-level keys only) fell back to the live server, and a scripted sign-up made a real account there (30 Oct). */
+static int s_test_run;
+
+static void on_place(int id, int x, int y, int w, int h);  /* (below: the layout's X0, as add()) */
+
 static void online_account_show(void)
 {
-    WCHAR name[64], text[160];
-    int signed_in = s_online_token[0] != 0;
+    static const int box[] = { ID_ON_L_NAME, ID_ON_NAME, ID_ON_L_PASS, ID_ON_PASSWORD, ID_ON_L_CODE, ID_ON_CODE,
+                               ID_ON_SIGNIN, ID_ON_REGISTER, ID_ON_SIGNOUT, ID_ON_STEP, ID_ON_BACK, ID_ON_FORGOT,
+                               ID_ON_INFO };
+    WCHAR name[64], text[300];
+    const WCHAR *info = L"";
+    const int signed_in = s_online_token[0] != 0;
+    int bx = 0;  /* (a button in the box's last row from this x: the status line takes two lines left of it) */
+    size_t i;
+    for (i = 0; i < sizeof box / sizeof box[0]; i++)
+        ShowWindow(ctl(box[i]), SW_HIDE);
     GetWindowTextW(ctl(ID_ON_NAME), name, 64);
-    if (signed_in)
-        swprintf_s(text, 160, L"Signed in as %s.", name);
-    else
-        wcscpy_s(text, 160, L"Not signed in. Sign in, or create an account with the name you want.");
-    set_text(ID_ON_ACCOUNT, text);
+    text[0] = 0;
+    if (signed_in && s_on_needs_code) {
+        set_text(ID_ON_L_CODE, L"Re-activation code");
+        on_place(ID_ON_L_CODE, 16, 144, 130, 20), on_place(ID_ON_CODE, 150, 140, 220, 24);
+        set_text(ID_ON_STEP, L"Re-activate");
+        on_place(ID_ON_STEP, 384, 139, 162, 26);
+        on_place(ID_ON_SIGNOUT, 384, 199, 162, 24), bx = 384;
+        swprintf_s(text, 300, L"Signed in as %s. Online needs the re-activation code the server owner made for your "
+                              L"account.", name);
+    } else if (signed_in) {
+        set_text(ID_ON_L_NAME, L"Name");
+        on_place(ID_ON_L_NAME, 16, 144, 130, 20), on_place(ID_ON_NAME, 150, 140, 220, 24);
+        on_place(ID_ON_SIGNOUT, 384, 139, 162, 26);
+        swprintf_s(text, 300, L"Signed in as %s.", name);
+        info = L"The name is what other players see. The same account works on any PC or phone.";
+    } else if (s_on_mode == ON_SIGNUP || s_on_mode == ON_FORGOT) {
+        const int signup = s_on_mode == ON_SIGNUP;
+        set_text(ID_ON_L_NAME, L"Name"), set_text(ID_ON_L_PASS, signup ? L"Password" : L"New password");
+        set_text(ID_ON_L_CODE, !signup ? L"Reset code" : s_on_invite < 0 ? L"Invite code*" : L"Invite code");
+        on_place(ID_ON_L_NAME, 16, 144, 60, 20), on_place(ID_ON_NAME, 80, 140, 160, 24);
+        if (!signup || s_on_invite != 0)  /* (no code box when the server says it needs none) */
+            on_place(ID_ON_L_CODE, 252, 144, 76, 20), on_place(ID_ON_CODE, 330, 140, 216, 24);
+        on_place(ID_ON_L_PASS, 16, 174, 90, 20), on_place(ID_ON_PASSWORD, 110, 170, 130, 24);
+        set_text(ID_ON_STEP, signup ? L"Create" : L"Set password");
+        on_place(ID_ON_STEP, 346, 199, 108, 24), on_place(ID_ON_BACK, 460, 199, 86, 24), bx = 346;
+        wcscpy_s(text, 300, !signup ? L"Ask the server owner for a reset code for your account (it works once, for 24 "
+                                      L"hours), then choose a new password."
+                            : s_on_invite == 0 ? L"Name: 3-15 characters (what players see); password: 8 or more."
+                            : s_on_invite == 1 ? L"An invite code from the server owner. Name: 3-15 characters (what "
+                                                 L"players see); password: 8 or more."
+                                               : L"*Only if the server asks for one: an invite code from the server "
+                                                 L"owner. Name: 3-15 characters (what players see); password: 8 or more.");
+    } else {
+        set_text(ID_ON_L_NAME, L"Name"), set_text(ID_ON_L_PASS, L"Password");
+        on_place(ID_ON_L_NAME, 16, 144, 130, 20), on_place(ID_ON_NAME, 150, 140, 220, 24);
+        on_place(ID_ON_L_PASS, 16, 174, 130, 20), on_place(ID_ON_PASSWORD, 150, 170, 220, 24);
+        on_place(ID_ON_SIGNIN, 384, 139, 162, 26), on_place(ID_ON_REGISTER, 384, 169, 162, 26);
+        on_place(ID_ON_FORGOT, 384, 199, 162, 24), bx = 384;
+        wcscpy_s(text, 300, L"Not signed in. Sign in, or create an account (some servers ask for an invite code). The same "
+                            L"account works on any PC or phone.");
+    }
+    if (bx) {
+        on_place(ID_ON_ACCOUNT, 16, 200, bx - 28, 38);
+    } else {
+        on_place(ID_ON_ACCOUNT, 16, 200, 530, 18);
+        on_place(ID_ON_INFO, 16, 219, 530, 18);
+    }
+    set_text(ID_ON_ACCOUNT, s_on_note[0] ? s_on_note : text);
+    set_text(ID_ON_INFO, info);
     EnableWindow(ctl(ID_ON_NAME), !signed_in);
     EnableWindow(ctl(ID_ON_PASSWORD), !signed_in);
     /* (an account is its server's: sign out to change the server) */
     EnableWindow(ctl(ID_ON_SERVER_KIND), !signed_in);
     EnableWindow(ctl(ID_ON_SERVER), !signed_in);
-    ShowWindow(ctl(ID_ON_SIGNIN), s_tab_visible_online && !signed_in ? SW_SHOW : SW_HIDE);
-    ShowWindow(ctl(ID_ON_REGISTER), s_tab_visible_online && !signed_in ? SW_SHOW : SW_HIDE);
-    ShowWindow(ctl(ID_ON_SIGNOUT), s_tab_visible_online && signed_in ? SW_SHOW : SW_HIDE);
+    InvalidateRect(s_wnd, NULL, TRUE);
 }
 
 /* The server: Default (ONLINE_DEFAULT_SERVER, its address not shown) or
@@ -1662,6 +1780,59 @@ static void json_copy(const char *text, const char *key, char *out, size_t n)
     out[k] = 0;
 }
 
+/* The test-run guard (s_test_run; test_run.h): a test run's write to a host that isn't this PC - logged
+   (launcher_test_guard.log beside the launcher); 1: refuse it. SVR2011_ALLOW_LIVE=1 lets it through. */
+int test_run_refuses(const WCHAR *host, const char *what)
+{
+    static const WCHAR *const local[] = { L"127.0.0.1", L"localhost", L"::1", L"[::1]" };
+    const char *allow = getenv("SVR2011_ALLOW_LIVE");
+    WCHAR log[MAX_PATH], *slash;
+    FILE *f = NULL;
+    size_t i;
+    if (!s_test_run || (allow && !strcmp(allow, "1")))
+        return 0;
+    for (i = 0; i < sizeof local / sizeof local[0]; i++)
+        if (!_wcsicmp(host, local[i]))
+            return 0;
+    if (GetModuleFileNameW(NULL, log, MAX_PATH) && (slash = wcsrchr(log, L'\\')) != NULL) {
+        wcscpy_s(slash + 1, MAX_PATH - (slash + 1 - log), L"launcher_test_guard.log");
+        if (!_wfopen_s(&f, log, L"a") && f) {
+            SYSTEMTIME t;
+            GetLocalTime(&t);
+            fwprintf(f, L"%04d-%02d-%02d %02d:%02d:%02d test run: %S to %s refused (not this PC; SVR2011_ALLOW_LIVE=1 "
+                        L"lets it through)\n", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, what, host);
+            fclose(f);
+        }
+    }
+    return 1;
+}
+
+/* The same for a server address (a URL, or host[:port]). */
+int test_run_refuses_url(const WCHAR *server, const char *what)
+{
+    WCHAR url[300], host[200];
+    URL_COMPONENTS uc;
+    swprintf_s(url, 300, wcsstr(server, L"://") ? L"%s" : L"http://%s", server);
+    memset(&uc, 0, sizeof uc);
+    uc.dwStructSize = sizeof uc;
+    uc.lpszHostName = host;
+    uc.dwHostNameLength = 200;
+    if (!WinHttpCrackUrl(url, 0, 0, &uc))
+        return s_test_run != 0;  /* (an address that can't be read: not this PC either) */
+    return test_run_refuses(host, what);
+}
+
+/* An account request (a body, or the account's token) in a test run, to a host off this PC: refused and answered
+   as the server's error, so the Online tab's status line shows it. Plain GETs (api/status) still go. */
+static int online_test_refused(const WCHAR *host, const char *path, int writes, char *out, size_t outn)
+{
+    if (!writes || !test_run_refuses(host, path))
+        return 0;
+    sprintf_s(out, outn, "{\"error\": \"Test run: an account request to %S was refused - not a server on this PC "
+              "(SVR2011_ALLOW_LIVE=1 lets it through).\"}", host);
+    return 403;
+}
+
 /* Sends a JSON body (POST; body NULL: a GET) to <server><path>; the
  * answer's body (UTF-8) in out. Returns the HTTP status, 0 if the server
  * didn't answer. */
@@ -1690,6 +1861,8 @@ static int online_request(const char *path, const char *body, const char *token,
     uc.dwUrlPathLength = 400;
     if (!WinHttpCrackUrl(url, 0, 0, &uc))
         return 0;
+    if ((status = online_test_refused(host, path, body || (token && token[0]), out, outn)) != 0)
+        return (int)status;
     session = WinHttpOpen(L"SvR2011 Launcher", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME,
                           WINHTTP_NO_PROXY_BYPASS, 0);
     if (session) {
@@ -1733,6 +1906,9 @@ static void discover_server(WCHAR *out, int n)
     }
 }
 
+/* The Reports tab's (reports_tab.c): the signed-in account's token ("" signed out). */
+static void reports_token(char *out, size_t n) { strcpy_s(out, n, s_online_token); }
+
 static void discover_account(char *token, size_t token_n, WCHAR *name, size_t name_n, long long *id)
 {
     strcpy_s(token, token_n, s_online_token);
@@ -1775,23 +1951,68 @@ static int settings_save(void);
 static void friends_enable(void);
 static void friends_fetch(const char *body);
 
-/* Sign in (register: create the account first) with the name and password typed. */
+static int json_true(const char *text, const char *key)
+{
+    const char *p = json_find(text, key);
+    return p && !strncmp(p, "true", 4);
+}
+
+/* The status line (kept until the mode changes: "" clears it). */
+static void online_note(const WCHAR *t)
+{
+    wcscpy_s(s_on_note, 300, t ? t : L"");
+    set_text(ID_ON_ACCOUNT, s_on_note);
+}
+
+/* The server's error (UTF-8 JSON) as the status line; "what" when it has none. */
+static void online_note_answer(int status, const char *answer, const WCHAR *what)
+{
+    char error[300];
+    WCHAR msg[300];
+    json_copy(answer, "error", error, sizeof error);
+    if (!error[0])
+        json_copy(answer, "message", error, sizeof error);
+    if (!status)
+        wcscpy_s(msg, 300, L"The server didn't answer. Check the address below and your connection.");
+    else if (error[0])
+        MultiByteToWideChar(CP_UTF8, 0, error, -1, msg, 300);
+    else if (what)
+        wcscpy_s(msg, 300, what);
+    else
+        swprintf_s(msg, 300, L"The server refused (HTTP %d). Is the address right?", status);
+    online_note(msg);
+}
+
+/* An account answer's step (api/login, api/account, ...): the account still needs its re-activation code. */
+static void online_steps_read(const char *answer)
+{
+    s_on_needs_code = json_true(answer, "needs_code");
+}
+
+/* Sign in (register: create the account - name, password, invite code) with what's typed. */
 static void online_sign_in(int register_account)
 {
-    WCHAR name[64], password[128], msg[300];
-    char qname[160], qpass[300], body[512], answer[2048], error[256], token[128], xuid[32], account[64];
+    WCHAR name[64], password[128], code[32];
+    char qname[160], qpass[300], qcode[80], body[700], answer[2048], token[128], xuid[32], account[64];
     HCURSOR old;
     int status;
     GetWindowTextW(ctl(ID_ON_NAME), name, 64);
     GetWindowTextW(ctl(ID_ON_PASSWORD), password, 128);
-    if (!name[0] || !password[0]) {
-        set_text(ID_ON_ACCOUNT, L"Type your account's name and password.");
+    GetWindowTextW(ctl(ID_ON_CODE), code, 32);
+    if (!name[0] || !password[0] || (register_account && s_on_invite == 1 && !code[0])) {
+        online_note(register_account ? L"Type a name and a password (and the invite code, if the server owner gave you one)."
+                                     : L"Type your account's name and password.");
         return;
     }
     json_quote(name, qname, sizeof qname);
     json_quote(password, qpass, sizeof qpass);
-    sprintf_s(body, sizeof body, "{\"name\": %s, \"password\": %s}", qname, qpass);
-    set_text(ID_ON_ACCOUNT, register_account ? L"Creating the account\x2026" : L"Signing in\x2026");
+    json_quote(code, qcode, sizeof qcode);
+    /* ("client": 2 - this launcher walks the account's step; older ones get a text to update) */
+    if (register_account)
+        sprintf_s(body, sizeof body, "{\"name\": %s, \"password\": %s, \"invite\": %s, \"client\": 2}", qname, qpass, qcode);
+    else
+        sprintf_s(body, sizeof body, "{\"name\": %s, \"password\": %s, \"client\": 2}", qname, qpass);
+    online_note(register_account ? L"Creating the account\x2026" : L"Signing in\x2026");
     old = SetCursor(LoadCursor(NULL, IDC_WAIT));
     status = online_post(register_account ? "/api/register" : "/api/login", body, NULL, answer, sizeof answer);
     SetCursor(old);
@@ -1799,14 +2020,7 @@ static void online_sign_in(int register_account)
     SecureZeroMemory(body, sizeof body);
     json_copy(answer, "token", token, sizeof token);
     if (status != 200 || !token[0]) {
-        json_copy(answer, "error", error, sizeof error);
-        if (!status)
-            swprintf_s(msg, 300, L"The server didn't answer. Check the address below and your connection.");
-        else if (error[0])
-            swprintf_s(msg, 300, L"%S", error);
-        else
-            swprintf_s(msg, 300, L"The server refused (HTTP %d). Is the address right?", status);
-        set_text(ID_ON_ACCOUNT, msg);
+        online_note_answer(status, answer, NULL);
         return;
     }
     json_copy(answer, "xuid", xuid, sizeof xuid);
@@ -1816,11 +2030,91 @@ static void online_sign_in(int register_account)
     MultiByteToWideChar(CP_UTF8, 0, account, -1, name, 64);
     set_text(ID_ON_NAME, name);
     set_text(ID_ON_PASSWORD, L"");
+    set_text(ID_ON_CODE, L"");
+    online_steps_read(answer);
+    s_on_mode = ON_SIGNIN;
+    online_note(register_account ? L"Account made: you can play online." : L"");
     CheckDlgButton(s_wnd, ID_ON_ENABLE, BST_CHECKED);
     online_account_show();
     settings_save();
     friends_enable();
     friends_fetch(NULL);
+}
+
+/* The signed-in account's step, from the server (api/account): when the Online tab opens. A token the server
+   ended (the password changed or was reset) signs out. */
+static void online_account_refresh(void)
+{
+    char answer[2048];
+    int status;
+    if (!s_online_token[0])
+        return;
+    status = online_request("/api/account", NULL, s_online_token, answer, sizeof answer);
+    if (status == 200) {
+        online_steps_read(answer);
+    } else if (status == 401) {
+        s_online_token[0] = s_online_xuid[0] = 0;
+        s_on_needs_code = 0;
+        settings_save();
+        online_note(L"Signed out: your password was changed or reset. Sign in again.");
+    }
+}
+
+/* The step button: create the account, set a new password with the reset code - or, signed in, the account's
+   re-activation code. */
+static void online_step(void)
+{
+    WCHAR name[64], code[32], password[128];
+    char qname[160], qcode[80], qpass[300], body[700], answer[2048];
+    HCURSOR old;
+    int status;
+    GetWindowTextW(ctl(ID_ON_NAME), name, 64);
+    GetWindowTextW(ctl(ID_ON_CODE), code, 32);
+    GetWindowTextW(ctl(ID_ON_PASSWORD), password, 128);
+    json_quote(name, qname, sizeof qname);
+    json_quote(code, qcode, sizeof qcode);
+    json_quote(password, qpass, sizeof qpass);
+    if (!s_online_token[0]) {
+        if (s_on_mode == ON_SIGNUP) {
+            online_sign_in(1);
+            return;
+        }
+        if (!name[0] || !code[0] || !password[0]) {
+            online_note(L"Type your account's name, the reset code and a new password.");
+            return;
+        }
+        sprintf_s(body, sizeof body, "{\"name\": %s, \"code\": %s, \"password\": %s}", qname, qcode, qpass);
+        old = SetCursor(LoadCursor(NULL, IDC_WAIT));
+        status = online_post("/api/password/reset", body, NULL, answer, sizeof answer);
+        SetCursor(old);
+        SecureZeroMemory(qpass, sizeof qpass);
+        SecureZeroMemory(body, sizeof body);
+        if (status == 200) {
+            s_on_mode = ON_SIGNIN;
+            set_text(ID_ON_PASSWORD, L"");
+            set_text(ID_ON_CODE, L"");
+            online_account_show();
+        }
+        online_note_answer(status, answer, NULL);
+        return;
+    }
+    if (!code[0]) {
+        online_note(L"Type the code.");
+        return;
+    }
+    sprintf_s(body, sizeof body, "{\"code\": %s}", qcode);
+    old = SetCursor(LoadCursor(NULL, IDC_WAIT));
+    status = online_post("/api/reactivate", body, s_online_token, answer, sizeof answer);
+    SetCursor(old);
+    if (status == 200) {
+        online_steps_read(answer);
+        set_text(ID_ON_CODE, L"");
+        online_note(s_on_needs_code ? L"" : L"Account re-activated: you can play online.");
+        online_account_show();
+        friends_fetch(NULL);
+    } else {
+        online_note_answer(status, answer, NULL);
+    }
 }
 
 static void online_sign_out(void)
@@ -1830,6 +2124,9 @@ static void online_sign_out(void)
         online_post("/api/logout", "{}", s_online_token, answer, sizeof answer);
     s_online_token[0] = 0;
     s_online_xuid[0] = 0;
+    s_on_needs_code = 0;
+    s_on_mode = ON_SIGNIN;
+    online_note(L"");
     online_account_show();
     settings_save();
     friends_enable();
@@ -1954,6 +2251,8 @@ static void friends_show(int http, char *answer)
                 label = L"In an online match", online++;
             else if (!wcscmp(status, L"online"))
                 label = L"Online", online++;
+            else if (!wcscmp(status, L"ingame"))
+                label = L"In the game";
             v = strstr(p, "\"mutual\"");
             if (v && v < close && strncmp(v + 8, ": false", 7) == 0 && wcscmp(label, L"Offline") == 0)
                 label = L"Offline (hasn't added you)";
@@ -2125,8 +2424,9 @@ static void settings_load(void)
     Lines l;
     int i, fullscreen = 0, vsync = 1, sdl = 0, sdl_audio = 0, mute = 0, fps = 1, perf = -1, w = 1280, h = 720, res = 0, in_section = 0;
     int msaa = 0, aa = 0, emulated = 0, api = 0, language = 1, online = 0, prepare = 1, frame_rate = 60;
-    int priority = 0, unlock_all = 1, textures = 0, skip_intros = 0, skip_training = 0, arena_light = 100;
+    int priority = 0, unlock_all = 1, textures = 0, skip_intros = 0, skip_training = 0, fast_loads = 0, arena_light = 100;
     int match_camera = 0;
+    int share = 1, up_kbs = 0, up_peers = 0, mod_mb = 0, mods_mb = 0;  /* (the game's online mod settings) */
     int exclusive = 0, max_scale = 4, scene_height = 0, upscale = 0, upscale_quality = 1;
     double render_scale = 1.0;
     char online_name[64] = "", online_server[128] = "", online_peers[256] = "";
@@ -2163,6 +2463,7 @@ static void settings_load(void)
             else if (!strcmp(key, "unlock_everything")) unlock_all = strcmp(val, "false") != 0;
             else if (!strcmp(key, "skip_intros")) skip_intros = !strcmp(val, "true");
             else if (!strcmp(key, "skip_training")) skip_training = !strcmp(val, "true");
+            else if (!strcmp(key, "fast_loads")) fast_loads = !strcmp(val, "true");
             else if (!strcmp(key, "arena_brightness")) arena_light = atoi(val);
             else if (!strcmp(key, "match_camera")) match_camera = atoi(val);
             else if (!strcmp(key, "native_texture_quality"))
@@ -2180,6 +2481,11 @@ static void settings_load(void)
             else if (!strcmp(key, "online_token")) strcpy_s(s_online_token, sizeof s_online_token, val);
             else if (!strcmp(key, "online_xuid")) strcpy_s(s_online_xuid, sizeof s_online_xuid, val);
             else if (!strcmp(key, "p2p_peers")) strcpy_s(online_peers, sizeof online_peers, val);
+            else if (!strcmp(key, "online_mod_upload")) share = strcmp(val, "false") != 0;
+            else if (!strcmp(key, "online_mod_upload_kbs")) up_kbs = atoi(val);
+            else if (!strcmp(key, "online_mod_upload_peers")) up_peers = atoi(val);
+            else if (!strcmp(key, "online_mod_max_mb")) mod_mb = atoi(val);
+            else if (!strcmp(key, "online_mods_max_mb")) mods_mb = atoi(val);
         }
         lines_free(&l);
     } else if (on_steam_deck()) {
@@ -2208,6 +2514,14 @@ static void settings_load(void)
     display_hint();
     (void)emulated;  /* (an old native_renderer = "off": saved as "main" next time) */
     online_show(online, online_name, online_server);
+    {   /* (the game's online mod settings: mod_transfer.cpp's defaults when missing) */
+        WCHAR n[16];
+        CheckDlgButton(s_wnd, ID_ON_SHARE, share ? BST_CHECKED : BST_UNCHECKED);
+        swprintf_s(n, 16, L"%d", up_kbs > 0 ? up_kbs : 4096), set_text(ID_ON_UP_KBS, n);
+        swprintf_s(n, 16, L"%d", up_peers > 0 ? up_peers : 2), set_text(ID_ON_UP_PEERS, n);
+        swprintf_s(n, 16, L"%d", mod_mb > 0 ? mod_mb : 300), set_text(ID_ON_MOD_MB, n);
+        swprintf_s(n, 16, L"%d", mods_mb > 0 && mods_mb != 1024 ? mods_mb : 4096), set_text(ID_ON_MODS_MB, n);  /* (1024: the old default) */
+    }
     {
         WCHAR w[256];
         MultiByteToWideChar(CP_UTF8, 0, online_peers, -1, w, 256);
@@ -2218,6 +2532,7 @@ static void settings_load(void)
     CheckDlgButton(s_wnd, ID_UNLOCK_ALL, unlock_all ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(s_wnd, ID_SKIP_INTROS, skip_intros ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(s_wnd, ID_SKIP_TRAINING, skip_training ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(s_wnd, ID_FAST_LOADS, fast_loads ? BST_CHECKED : BST_UNCHECKED);
     SendMessageW(ctl(ID_TEXTURES), CB_SETCURSEL, (WPARAM)textures, 0);
     /* (Off, then FSR 1 / FSR 2 / DLSS ultra quality .. performance: native_upscale_quality 0-3) */
     upscale_fill(upscale ? 1 + 4 * (upscale - 1) + (upscale_quality >= 0 && upscale_quality <= 3 ? upscale_quality : 1)
@@ -2234,7 +2549,7 @@ static void settings_load(void)
 
 static int settings_save(void)
 {
-    enum { NK = 38 };
+    enum { NK = 44 };
     static const char *keys[NK] = { "gpu_plugin", "input_backend", "resolution", "resolution_scale", "window_width",
                                     "window_height", "fullscreen", "vsync", "audio_mute", "audio_backend", "show_fps",
                                     "native_2x_msaa", "native_renderer", "gpu_backend", "user_language",
@@ -2243,7 +2558,9 @@ static int settings_save(void)
                                     "process_priority", "unlock_everything", "native_texture_quality",
                                     "skip_intros", "skip_training", "fullscreen_exclusive", "native_max_scale",
                                     "native_render_scale", "native_scene_height", "arena_brightness", "perf_overlay",
-                                    "native_upscale", "native_upscale_quality", "match_camera" };
+                                    "native_upscale", "native_upscale_quality", "match_camera",
+                                    "online_mod_upload", "online_mod_upload_kbs", "online_mod_upload_peers",
+                                    "online_mod_max_mb", "online_mods_max_mb", "fast_loads" };
     const int renderer = (int)SendMessageW(ctl(ID_RENDERER), CB_GETCURSEL, 0, 0);
     char vals[NK][160];
     int done[NK] = { 0 };
@@ -2310,6 +2627,7 @@ static int settings_save(void)
     strcpy_s(vals[25], 64, IsDlgButtonChecked(s_wnd, ID_UNLOCK_ALL) == BST_CHECKED ? "true" : "false");
     strcpy_s(vals[27], 64, IsDlgButtonChecked(s_wnd, ID_SKIP_INTROS) == BST_CHECKED ? "true" : "false");
     strcpy_s(vals[28], 64, IsDlgButtonChecked(s_wnd, ID_SKIP_TRAINING) == BST_CHECKED ? "true" : "false");
+    strcpy_s(vals[43], 64, IsDlgButtonChecked(s_wnd, ID_FAST_LOADS) == BST_CHECKED ? "true" : "false");
     {
         static const char *k_textures[3] = { "\"high\"", "\"medium\"", "\"low\"" };
         const int ti = (int)SendMessageW(ctl(ID_TEXTURES), CB_GETCURSEL, 0, 0);
@@ -2336,6 +2654,22 @@ static int settings_save(void)
         sprintf_s(vals[21], 64, "%d", k_frame_rates[fi >= 0 && fi < N_FRAME_RATES ? fi : 1]);
     }
     toml_quote_ctl(ID_ON_PEERS, 140, vals[22], sizeof vals[22]);
+    {   /* (the game's online mod settings, kept in its ranges) */
+        static const struct { int id, lo, hi, def; } k_mods[4] = {
+            { ID_ON_UP_KBS, 64, 65536, 4096 }, { ID_ON_UP_PEERS, 1, 8, 2 },
+            { ID_ON_MOD_MB, 1, 4096, 300 }, { ID_ON_MODS_MB, 1, 16384, 4096 } };
+        strcpy_s(vals[38], 64, IsDlgButtonChecked(s_wnd, ID_ON_SHARE) == BST_CHECKED ? "true" : "false");
+        for (k = 0; k < 4; k++) {
+            WCHAR n[16];
+            int v;
+            GetWindowTextW(ctl(k_mods[k].id), n, 16);
+            v = n[0] ? _wtoi(n) : k_mods[k].def;
+            v = v < k_mods[k].lo ? k_mods[k].lo : v > k_mods[k].hi ? k_mods[k].hi : v;
+            sprintf_s(vals[39 + k], 64, "%d", v);
+            swprintf_s(n, 16, L"%d", v);  /* (the field shows what's saved) */
+            set_text(k_mods[k].id, n);
+        }
+    }
 
     settings_path(p);
     if (!toml_read(p, &l))
@@ -2414,6 +2748,7 @@ static void settings_defaults(void)
     CheckDlgButton(s_wnd, ID_UNLOCK_ALL, BST_CHECKED);
     CheckDlgButton(s_wnd, ID_SKIP_INTROS, BST_UNCHECKED);
     CheckDlgButton(s_wnd, ID_SKIP_TRAINING, BST_UNCHECKED);
+    CheckDlgButton(s_wnd, ID_FAST_LOADS, BST_UNCHECKED);
     SendMessageW(ctl(ID_TEXTURES), CB_SETCURSEL, 0, 0);
     SendMessageW(ctl(ID_UPSCALE), CB_SETCURSEL, 0, 0);
     SendMessageW(ctl(ID_ARENA_LIGHT), CB_SETCURSEL, 5, 0);
@@ -2529,6 +2864,8 @@ static void refresh_play(void)
         t = L"The game folder does not exist. Choose another one, or install the game on the Install tab.";
     else if (!is_game_folder(s_game_dir))
         t = L"Game files not installed \x2014 use the Install tab.";
+    else if (install_missing(s_game_dir))
+        t = L"Your install isn't complete - install again";  /* (the status line's room; the start opens the Install tab) */
     else if (!has_program(s_game_dir))
         t = GAME_EXE L" is missing from the game folder \x2014 copy the port's program files into it, "
             L"or install again from the Install tab.";
@@ -2593,6 +2930,7 @@ static int shaders_ready(void)
                L"there (an antivirus may remove it), and start the launcher from that folder.\n\nStart the game "
                L"anyway?",
                dir, failed, where);
+    update_log(UPLOG_DIR, "launcher", L"Play: %s", m);
     return MessageBoxW(s_wnd, m, WINDOW_TITLE, MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES;
 }
 
@@ -2626,6 +2964,11 @@ static void play_with(int no_mods)
     }
     if (s_busy) {  /* (an install or repair is running: Play is disabled then - a click that got through says why) */
         set_text(ID_PLAY_STATUS, L"An install is running - Play when it's done.");
+        return;
+    }
+    if (is_game_folder(s_game_dir) && install_missing(s_game_dir)) {
+        refresh_play();
+        show_tab(TAB_INSTALL);
         return;
     }
     if (!is_game_folder(s_game_dir) || !has_program(s_game_dir)) {
@@ -2780,6 +3123,7 @@ static const struct { int tab; WCHAR icon; const WCHAR *name; } k_nav[] = {
     /* (below the line) */
     { TAB_ONLINE, 0xE774, L"Online" },      { TAB_MUSIC, 0xE8D6, L"Music" },
     { TAB_MOVIES, 0xE714, L"Movies" },      { TAB_PAINT, 0xE790, L"Paint Tool" },
+    { TAB_REPORTS, 0xED15, L"Reports" },    { TAB_SUGGESTIONS, 0xEA80, L"Suggestions" },
 };
 
 /* Mods, in three tabs: the installed mods (TAB_MODS), Discovery, Texture packs - a tab bar on top of each
@@ -2828,9 +3172,16 @@ static RECT nav_rect(int k)
 }
 
 /* A group box: a card the window draws on the page. */
-typedef struct { int tab, x, y, w, h; WCHAR title[64]; } Card;
+typedef struct { int tab, x, y, w, h, id; WCHAR title[64]; } Card;
 static Card s_cards[96];
 static int  s_ncards;
+/* The Online tab's folds: their cards and rows in the Friends card's place while open (1 Mod sharing, 2 Connection). */
+static int s_mods_fold;
+static int card_hidden(const Card *cd)
+{
+    return (cd->id == ID_FR_GROUP && s_mods_fold) || (cd->id == ID_ON_MODS_GROUP && s_mods_fold != 1) ||
+           (cd->id == ID_ON_NAT_GROUP && s_mods_fold != 2);
+}
 /* Push buttons, drawn by the window (rounded; red for the main actions). */
 typedef struct { HWND h; int primary; } Btn;
 static Btn  s_btns[256];
@@ -2840,6 +3191,7 @@ static HWND s_hover_btn;
 static int is_primary_id(int id)
 {
     return id == ID_PLAY || id == ID_INSTALL || id == ID_SAVE || id == ID_DLC_INSTALL || id == ID_ON_SIGNIN ||
+           id == ID_ON_STEP ||
            id == ID_MV_CREATE || id == ID_APK_CREATE || id == ID_ADB_INSTALL;
 }
 
@@ -2954,7 +3306,7 @@ static HWND add(int tab, const WCHAR *cls, const WCHAR *text, DWORD style, int x
     /* A group box becomes a card the window draws (the control is never shown). */
     if (button && kind == BS_GROUPBOX && tab >= 0 && s_ncards < (int)(sizeof s_cards / sizeof s_cards[0])) {
         Card *cd = &s_cards[s_ncards++];
-        cd->tab = tab; cd->x = x; cd->y = y; cd->w = w; cd->h = h;
+        cd->tab = tab; cd->x = x; cd->y = y; cd->w = w; cd->h = h; cd->id = id;
         wcsncpy_s(cd->title, 64, text ? text : L"", _TRUNCATE);
         return CreateWindowExW(0, cls, text, WS_CHILD | style, S(x + SB_W), S(y + DY), S(w), S(h), s_wnd,
                                (HMENU)(INT_PTR)id, s_inst, NULL);
@@ -3050,6 +3402,72 @@ static void pt_refresh(void);
 static void mv_refresh(void);
 static volatile LONG s_up_busy;
 
+/* The Online tab's connection check (nat_check.h), off the window's thread. */
+static NatCheck s_nat_result;
+static volatile LONG s_nat_busy;
+static HWND s_nat_notify;
+static int nat_check_port(void)
+{
+    char v[16] = "";
+    const int port = toml_get("p2p_port", v, sizeof v) && v[0] ? atoi(v) : 36000;
+    return port > 0 && port < 65536 ? port : 36000;
+}
+static void nat_check_do(void)
+{
+    char stun[128] = "";
+    WCHAR exe[MAX_PATH] = L"";
+    if (!toml_get("p2p_stun", stun, sizeof stun)) stun[0] = 0;
+    join(exe, s_game_dir, GAME_EXE);
+    nat_check_run(stun, nat_check_port(), exe, &s_nat_result);
+}
+static DWORD WINAPI nat_check_thread(void *unused)
+{
+    (void)unused;
+    nat_check_do();
+    PostMessageW(s_nat_notify, WM_APP_NATCHECK, 0, 0);
+    return 0;
+}
+static void nat_check_start(void)
+{
+    HANDLE t;
+    if (InterlockedCompareExchange(&s_nat_busy, 1, 0)) return;
+    set_text(ID_ON_NAT_TEXT, L"Checking your connection\x2026");
+    EnableWindow(ctl(ID_ON_NAT_CHECK), FALSE);
+    s_nat_notify = s_wnd;
+    t = CreateThread(NULL, 0, nat_check_thread, NULL, 0, NULL);
+    if (t) CloseHandle(t);
+    else {
+        InterlockedExchange(&s_nat_busy, 0);
+        EnableWindow(ctl(ID_ON_NAT_CHECK), TRUE);
+    }
+}
+static void nat_check_show(void)
+{
+    WCHAR t[1400];
+    online_route_show();  /* (s_route_mapped: from the logs, as they are now) */
+    nat_check_text(&s_nat_result, nat_check_port(), s_route_mapped, t, 1400);
+    set_text(ID_ON_NAT_TEXT, t);
+    EnableWindow(ctl(ID_ON_NAT_CHECK), TRUE);
+    InterlockedExchange(&s_nat_busy, 0);
+}
+
+static void online_mods_fold_apply(void)
+{
+    static const int friends[] = { ID_FR_LIST, ID_FR_NAME, ID_FR_ADD, ID_FR_REMOVE, ID_FR_INFO, ID_FR_STATUS };
+    static const int mods[] = { ID_ON_MODS_L1, ID_ON_UP_KBS, ID_ON_MODS_L2, ID_ON_UP_PEERS,
+                                ID_ON_MODS_L3, ID_ON_MOD_MB, ID_ON_MODS_L4, ID_ON_MODS_MB, ID_ON_MODS_INFO };
+    size_t i;
+    const int shown = s_cur_tab == TAB_ONLINE;
+    for (i = 0; i < sizeof friends / sizeof friends[0]; i++)
+        ShowWindow(ctl(friends[i]), shown && !s_mods_fold ? SW_SHOW : SW_HIDE);
+    for (i = 0; i < sizeof mods / sizeof mods[0]; i++)
+        ShowWindow(ctl(mods[i]), shown && s_mods_fold == 1 ? SW_SHOW : SW_HIDE);
+    ShowWindow(ctl(ID_ON_NAT_TEXT), shown && s_mods_fold == 2 ? SW_SHOW : SW_HIDE);
+    SetWindowTextW(ctl(ID_ON_NAT_CHECK), s_mods_fold == 2 ? L"Check again" : L"Connection \x25B8");
+    SetWindowTextW(ctl(ID_ON_MODS_FOLD), s_mods_fold ? L"Friends \x25B8" : L"Mod sharing \x25B8");
+    InvalidateRect(s_wnd, NULL, TRUE);  /* (the cards: drawn by the window) */
+}
+
 static void show_tab(int t)
 {
     int i, k;
@@ -3059,10 +3477,14 @@ static void show_tab(int t)
             ShowWindow(s_ctl[k][i], k == t ? SW_SHOW : SW_HIDE);
     s_tab_visible_online = t == TAB_ONLINE;
     if (t == TAB_ONLINE) {  /* (the controls the account/server state hides) */
+        static int refreshed;
         online_route_show();
+        if (!refreshed && s_online_token[0])  /* (once a start: the account's steps, from the server) */
+            refreshed = 1, online_account_refresh();
         online_account_show();
         online_server_show();
         friends_enable();
+        online_mods_fold_apply();
         friends_fetch(NULL);
         SetTimer(s_wnd, FRIENDS_TIMER, 20000, NULL);
     } else {
@@ -3092,6 +3514,10 @@ static void show_tab(int t)
         texpacks_show(s_game_dir);
     if (t == TAB_DISCOVER)
         discover_show(s_game_dir);
+    if (t == TAB_REPORTS)
+        reports_show(s_game_dir);
+    if (t == TAB_SUGGESTIONS)
+        suggestions_show(s_game_dir);
     if (t == TAB_SETUP || t == TAB_TOOLS)
         setup_show(s_game_dir, s_launcher_dir);
     if (t == TAB_PLAY && !s_up_busy)
@@ -3123,17 +3549,7 @@ static void up_setup(void);
 
 /* ── Report a problem: a recorded match and its mods (report_match.h) - shared by the window and --report-send ── */
 
-typedef struct {
-    ReportMatch match;       /* the match picked */
-    int has_match;
-    ReportMod mods[REPORT_MAX_MODS];  /* the mods it used */
-    int n_mods;
-    int checked;             /* the server said which it has */
-    uint64_t max_upload;     /* the server's limit for new mod bytes (0: not said) */
-    WCHAR check_why[200];    /* why the check didn't work, or the server's "no mods now" */
-    WCHAR match_zip[MAX_PATH];
-    WCHAR mod_zip[REPORT_MAX_MODS][MAX_PATH];
-} RepMatch;
+typedef ReportMatchSet RepMatch;   /* (report_flow.h) */
 
 static void rep_cli_progress(void *ctx, uint64_t sent, uint64_t total)
 {
@@ -3144,18 +3560,12 @@ static void rep_cli_progress(void *ctx, uint64_t sent, uint64_t total)
     last = pct;
 }
 
-#define REP_MOD_MAX (300ull << 20)   /* (the server's cap per mod and per report) */
+#define REP_MOD_MAX REPORT_MOD_MAX
 
 /* The mods the match used, hashed, and (online) which the server lacks. */
 static void rep_match_load(RepMatch *m, const WCHAR *server)
 {
-    int i;
-    m->n_mods = m->has_match ? report_match_mods(s_game_dir, m->match.dir, m->mods, REPORT_MAX_MODS) : 0;
-    m->checked = 0, m->max_upload = 0, m->check_why[0] = 0;
-    for (i = 0; i < m->n_mods; i++)
-        if (m->mods[i].size > REP_MOD_MAX) m->mods[i].send = 0;   /* (too big for the server) */
-    if (m->n_mods && server && server[0])
-        m->checked = report_mods_check(server, m->mods, m->n_mods, &m->max_upload, m->check_why, 200);
+    report_match_set_load(m, s_game_dir, server);
 }
 
 /* Bytes to send / already on the server (the tick on: the mods the server lacks, in the server's limit). */
@@ -3207,43 +3617,12 @@ static void rep_match_mods_text(const RepMatch *m, WCHAR *out, int n)
 /* The upload's match and mod parts into u: zips in <game>\Reports\.upload (rep_match_done deletes them). */
 static void rep_match_parts(RepMatch *m, int with_mods, ReportUpload *u, char *name_utf8, int name_n)
 {
-    WCHAR dir[MAX_PATH];
-    const uint64_t limit = m->max_upload ? m->max_upload : REP_MOD_MAX;
-    uint64_t total = 0;
-    int i;
-    if (!m->has_match) return;
-    swprintf_s(dir, MAX_PATH, L"%s\\Reports", s_game_dir);
-    CreateDirectoryW(dir, NULL);
-    wcscat_s(dir, MAX_PATH, L"\\.upload");
-    CreateDirectoryW(dir, NULL);
-    swprintf_s(m->match_zip, MAX_PATH, L"%s\\match.zip", dir);
-    if (report_zip_dir(m->match.dir, m->match_zip, "")) {
-        const WCHAR *name = wcsrchr(m->match.dir, L'\\');
-        WideCharToMultiByte(CP_UTF8, 0, name ? name + 1 : m->match.dir, -1, name_utf8, name_n, NULL, NULL);
-        u->match_zip = m->match_zip;
-        u->match_name = name_utf8;
-    }
-    u->mods = m->mods;
-    u->n_mods = m->n_mods;
-    for (i = 0; with_mods && i < m->n_mods; i++) {
-        ReportMod *d = &m->mods[i];
-        if (d->on_server || !d->hash[0] || !d->send || total + d->size > limit) continue;
-        swprintf_s(m->mod_zip[i], MAX_PATH, L"%s\\%S.zip", dir, d->hash);
-        if (report_zip_dir(d->folder, m->mod_zip[i], "")) {
-            u->mod_zips[i] = m->mod_zip[i];
-            total += d->size;
-        } else {
-            m->mod_zip[i][0] = 0;
-        }
-    }
+    report_match_set_parts(m, s_game_dir, with_mods, u, name_utf8, name_n);
 }
 
 static void rep_match_done(RepMatch *m)
 {
-    int i;
-    if (m->match_zip[0]) DeleteFileW(m->match_zip), m->match_zip[0] = 0;
-    for (i = 0; i < REPORT_MAX_MODS; i++)
-        if (m->mod_zip[i][0]) DeleteFileW(m->mod_zip[i]), m->mod_zip[i][0] = 0;
+    report_match_set_done(m);
 }
 
 /* What the result page / the CLI says about the match and mods after a send. */
@@ -3258,13 +3637,20 @@ static void rep_match_result_text(const RepMatch *m, const ReportResult *r, WCHA
 }
 
 #define X0 28
+
+/* The Online tab's account box: a control moved to x (from X0), y - as add() places it - and shown with its tab. */
+static void on_place(int id, int x, int y, int w, int h)
+{
+    MoveWindow(ctl(id), S(X0 + x + PAD + SB_W), S(y + DY), S(w), S(h), TRUE);
+    ShowWindow(ctl(id), s_tab_visible_online ? SW_SHOW : SW_HIDE);
+}
 /* Report a problem: a window asks what happened (kind, how often, what and
    what just before), then the zip (report.c) is made with that description in
    its report.txt, and the window says where to post it: a new thread in the
    Discord's bug-svr11 forum (the description is copied, ready to paste). */
 #define DISCORD_INVITE L"https://discord.com/invite/QhGSuDKHwk"
 #define DISCORD_FORUM L"bug-svr11"
-enum { REP_KIND = 300, REP_AGAIN, REP_WHAT, REP_BEFORE, REP_STATUS, REP_CREATE, REP_DISCORD, REP_SHOW, REP_COPY,
+enum { REP_KIND = 300, REP_AGAIN, REP_WHAT, REP_BEFORE, REP_STATUS,
        REP_CONTACT, REP_ADDPIC, REP_SUMMARY, REP_SEND, REP_COPYID, REP_MATCH, REP_MODS, REP_INCMODS, REP_PROGRESS, REP_INCSAVE,
        REP_PIC0 = 340, REP_DEL0 = 350 };
 #define WM_APP_REP_SENT (WM_APP + 70)   /* the report window's own: the send finished (s_rep_result) */
@@ -3280,11 +3666,8 @@ static WCHAR s_rep_pics[REPORT_MAX_IMAGES][MAX_PATH];  /* the pictures to send *
 static int s_rep_npics;
 static ReportResult s_rep_result;
 static char s_rep_problem[120], s_rep_happens[40], s_rep_what[4096], s_rep_before[4096], s_rep_contact[200];
-static const WCHAR *const k_rep_kinds[] = { L"The game crashed (closed by itself)", L"The game froze or hung",
-                                            L"Graphics look wrong", L"Sound or music", L"Controller or keyboard",
-                                            L"Online", L"Mods", L"Saves or created content", L"The launcher",
-                                            L"Something else" };
-static const WCHAR *const k_rep_again[] = { L"Every time", L"Sometimes", L"It happened once" };
+#define k_rep_kinds report_kinds    /* (report_flow.c: the game's own form asks the same) */
+#define k_rep_again report_happens
 static int s_rep_done;            /* 1: done, -1: closed */
 static int s_rep_page;            /* 1: the questions, 2: where to post */
 static WCHAR s_rep_zip[MAX_PATH];
@@ -3502,39 +3885,11 @@ static void rep_page1(HWND w)
     SendMessageW(c, PBM_SETRANGE, 0, MAKELPARAM(0, 100));
     ShowWindow(c, SW_HIDE);
     rep_add(w, L"Static", L"", SS_LEFT, 20, 640 + REP_DY, 180, 36, REP_STATUS, NULL);
-    rep_add(w, L"Button", L"Send report", BS_DEFPUSHBUTTON | WS_TABSTOP, 200, 636 + REP_DY, 110, 32, REP_SEND, NULL);
-    rep_add(w, L"Button", L"Save zip", WS_TABSTOP, 318, 636 + REP_DY, 92, 32, REP_CREATE, NULL);
+    rep_add(w, L"Button", L"Send report", BS_DEFPUSHBUTTON | WS_TABSTOP, 300, 636 + REP_DY, 110, 32, REP_SEND, NULL);
     rep_add(w, L"Button", L"Cancel", WS_TABSTOP, 420, 636 + REP_DY, 80, 32, IDCANCEL, NULL);
     rep_pics_show(w);
     rep_match_pick(w);
     SetFocus(GetDlgItem(w, REP_WHAT));
-}
-
-/* Page 2: the report is ready - where to post it. */
-static void rep_page2(HWND w)
-{
-    WCHAR t[MAX_PATH + 1024];
-    s_rep_page = 2;
-    rep_clear(w);
-    rep_add(w, L"Static", L"Your report is ready", 0, 20, 14, 480, 30, 0, s_big);
-    swprintf_s(t, MAX_PATH + 1024,
-               L"%s\n\n"
-               L"Now post it on our Discord so we can help:\n\n"
-               L"1.  Open the Discord (button below) and go to the  " DISCORD_FORUM L"  forum.\n\n"
-               L"2.  Start a NEW post (a thread of your own) with a short title, e.g. "
-               L"\"Crash when opening Create A Moveset\".\n\n"
-               L"3.  Paste your description (it is already copied) and attach the report file: "
-               L"\"Show the file\" opens its folder - drag the zip into Discord.\n\n"
-               L"One problem per thread, please, and not in the other channels: the forum is where we keep track of "
-               L"them.",
-               s_rep_zip);
-    rep_add(w, L"Static", t, SS_LEFT | SS_NOPREFIX, 20, 52, 480, 290, 0, NULL);
-    rep_add(w, L"Button", L"Open Discord", BS_DEFPUSHBUTTON | WS_TABSTOP, 20, 360, 120, 32, REP_DISCORD, NULL);
-    rep_add(w, L"Button", L"Show the file", WS_TABSTOP, 148, 360, 120, 32, REP_SHOW, NULL);
-    rep_add(w, L"Button", L"Copy description", WS_TABSTOP, 276, 360, 136, 32, REP_COPY, NULL);
-    rep_add(w, L"Button", L"Close", WS_TABSTOP, 420, 360, 80, 32, IDCANCEL, NULL);
-    rep_add(w, L"Static", L"", SS_LEFT, 20, 404, 480, 20, REP_STATUS, NULL);
-    SetFocus(GetDlgItem(w, REP_DISCORD));
 }
 
 /* The description from page 1 (s_rep_text, and UTF-8 for report.txt); 0 if "What happened?" is empty. */
@@ -3590,8 +3945,12 @@ static DWORD WINAPI rep_send_thread(LPVOID p)
     int i;
     WideCharToMultiByte(CP_UTF8, 0, PORT_VERSION, -1, ver, sizeof ver, NULL, NULL);
     report_signature(s_game_dir, sig, sizeof sig);
-    json = report_json("launcher", ver, s_rep_problem, s_rep_happens, s_rep_what, s_rep_before,
-                       s_rep_contact, sig);
+    {
+        char upd[600];
+        update_log_last(UPLOG_DIR, upd, sizeof upd);
+        json = report_json("launcher", ver, s_rep_problem, s_rep_happens, s_rep_what, s_rep_before,
+                           s_rep_contact, sig, upd);
+    }
     ZeroMemory(&u, sizeof u);
     u.json = json;
     u.zip = s_rep_zip;
@@ -3600,22 +3959,56 @@ static DWORD WINAPI rep_send_thread(LPVOID p)
     rep_match_parts(&s_rep_rm, s_rep_with_mods, &u, match_name, sizeof match_name);
     u.progress = rep_win_progress;
     u.ctx = w;
-    report_send(s_rep_server, &u, &s_rep_result);
+    if (test_run_refuses_url(s_rep_server, "/api/reports")) {  /* (a test run: never a server off this PC) */
+        ZeroMemory(&s_rep_result, sizeof s_rep_result);
+        wcscpy_s(s_rep_result.why, 300, L"Test run: a report to a server not on this PC was refused (SVR2011_ALLOW_LIVE=1 lets it through).");
+    } else if (report_send(s_rep_server, &u, &s_rep_result) && s_rep_result.secret[0]) {
+        receipt_add(s_game_dir, "launcher", s_rep_result.id, s_rep_result.secret, s_rep_problem, s_rep_what);
+    }
     rep_match_done(&s_rep_rm);
     free(json);
     PostMessageW(w, WM_APP_REP_SENT, 0, 0);
     return 0;
 }
 
-/* Page 3: sent (the id, how often seen before), or not (why, and the zip kept for Discord). */
+/* The status line: its own small place left of the buttons, or (wide: a send failed - the server's reason can be
+   long) the summary's full-width place above them, the summary hidden. */
+static void rep_status_wide(HWND w, int wide)
+{
+    SetWindowPos(GetDlgItem(w, REP_STATUS), NULL, S(20), S(wide ? 594 + REP_DY : 640 + REP_DY), S(wide ? 480 : 180),
+                 S(wide ? 40 : 36), SWP_NOZORDER | SWP_NOACTIVATE);
+    ShowWindow(GetDlgItem(w, REP_SUMMARY), wide ? SW_HIDE : SW_SHOW);
+}
+
+/* The questions page after a send that failed: as it was, with the reason and Send as "Try again" (reports are
+   only sent - nothing is saved for posting elsewhere). */
+static void rep_not_sent(HWND w, const WCHAR *why)
+{
+    WCHAR t[600];
+    s_rep_page = 1;
+    EnableWindow(GetDlgItem(w, REP_SEND), TRUE);
+    EnableWindow(GetDlgItem(w, REP_MATCH), TRUE);
+    EnableWindow(GetDlgItem(w, REP_INCMODS), s_rep_rm.n_mods > 0);
+    ShowWindow(GetDlgItem(w, REP_PROGRESS), SW_HIDE);
+    rep_status_wide(w, 1);
+    SetDlgItemTextW(w, REP_SEND, L"Try again");
+    swprintf_s(t, 600, L"Not sent: %s Check you're online, then try again.", why);
+    SetDlgItemTextW(w, REP_STATUS, t);
+    SetFocus(GetDlgItem(w, REP_SEND));
+}
+
+/* Page 3: sent (the id, how often seen before), or not (rep_not_sent). */
 static void rep_page3(HWND w)
 {
-    WCHAR t[MAX_PATH + 1200], id[64];
-    const int ok = s_rep_result.id[0] != 0;
-    s_rep_page = ok ? 3 : 2;
+    WCHAR t[1200], id[64];
+    if (!s_rep_result.id[0]) {
+        rep_not_sent(w, s_rep_result.why[0] ? s_rep_result.why : L"no answer from the server.");
+        return;
+    }
+    s_rep_page = 3;
     rep_clear(w);
     MultiByteToWideChar(CP_UTF8, 0, s_rep_result.id, -1, id, 64);
-    if (ok) {
+    {
         WCHAR seen[600] = L"";
         if (s_rep_result.seen_before > 0)
             swprintf_s(seen, 600, L"\n\nThis problem was already reported %d time%s - yours adds to it, thank you.",
@@ -3625,46 +4018,30 @@ static void rep_page3(HWND w)
             rep_match_result_text(&s_rep_rm, &s_rep_result, mm, 400);
             if (mm[0]) swprintf_s(seen + wcslen(seen), 600 - wcslen(seen), L"\n\n%.150s", mm);
         }
-        swprintf_s(t, MAX_PATH + 1200,
+        swprintf_s(t, 1200,
                    L"Your report reached us.\n\nReport id:  %s%s\n\nIf you post about it on our Discord (" DISCORD_FORUM
-                   L" forum), give this id. A copy of the report is also kept here:\n%s",
-                   id, seen, s_rep_zip);
-        rep_add(w, L"Static", L"Report sent", 0, 20, 14, 480, 30, 0, s_big);
-        rep_add(w, L"Static", t, SS_LEFT | SS_NOPREFIX, 20, 52, 480, 290, 0, NULL);
-        rep_add(w, L"Button", L"Copy the id", BS_DEFPUSHBUTTON | WS_TABSTOP, 20, 360, 120, 32, REP_COPYID, NULL);
-        rep_add(w, L"Button", L"Show the file", WS_TABSTOP, 148, 360, 120, 32, REP_SHOW, NULL);
-        rep_add(w, L"Button", L"Close", WS_TABSTOP, 420, 360, 80, 32, IDCANCEL, NULL);
-        rep_add(w, L"Static", L"", SS_LEFT, 20, 404, 480, 20, REP_STATUS, NULL);
-        SetFocus(GetDlgItem(w, IDCANCEL));
-        return;
+                   L" forum), give this id.",
+                   id, seen);
     }
-    rep_page2(w);   /* (where to post it, the zip saved) */
-    swprintf_s(t, MAX_PATH + 1200, L"Not sent: %s Your report is saved - post it on Discord instead:", s_rep_result.why);
-    SetDlgItemTextW(w, REP_STATUS, t);
+    rep_add(w, L"Static", L"Report sent", 0, 20, 14, 480, 30, 0, s_big);
+    rep_add(w, L"Static", t, SS_LEFT | SS_NOPREFIX, 20, 52, 480, 290, 0, NULL);
+    rep_add(w, L"Button", L"Copy the id", BS_DEFPUSHBUTTON | WS_TABSTOP, 20, 360, 120, 32, REP_COPYID, NULL);
+    rep_add(w, L"Button", L"Close", WS_TABSTOP, 420, 360, 80, 32, IDCANCEL, NULL);
+    rep_add(w, L"Static", L"", SS_LEFT, 20, 404, 480, 20, REP_STATUS, NULL);
+    SetFocus(GetDlgItem(w, IDCANCEL));
+}
+
+/* The window closes: the report's zip goes (sent reports aren't kept for posting - the Discord gets no zips). */
+static void rep_drop_zip(void)
+{
+    if (s_rep_zip[0]) DeleteFileW(s_rep_zip);
+    s_rep_zip[0] = 0;
 }
 
 static LRESULT CALLBACK rep_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
 {
     if (m == WM_COMMAND) {
         switch (LOWORD(wp)) {
-        case REP_CREATE: {
-            static char utf8[8192];
-            int logs = 0, crashes = 0;
-            if (!rep_describe(w, utf8, sizeof utf8)) {
-                SetDlgItemTextW(w, REP_STATUS, L"Please say what happened first.");
-                SetFocus(GetDlgItem(w, REP_WHAT));
-                return 0;
-            }
-            if (!report_make_match(s_game_dir, PORT_VERSION, utf8, s_rep_rm.has_match ? s_rep_rm.match.dir : NULL,
-                                   IsDlgButtonChecked(w, REP_INCSAVE) == BST_CHECKED, s_rep_zip, MAX_PATH, &logs,
-                                   &crashes)) {
-                SetDlgItemTextW(w, REP_STATUS, L"The report could not be written (is the game folder read-only?).");
-                return 0;
-            }
-            rep_copy(w);
-            rep_page2(w);
-            return 0;
-        }
         case REP_SEND: {
             static char utf8[8192];
             int logs = 0, crashes = 0;
@@ -3678,17 +4055,23 @@ static LRESULT CALLBACK rep_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
                 SetFocus(GetDlgItem(w, REP_WHAT));
                 return 0;
             }
-            /* (the match goes as its own part: not in the zip) */
+            if (report_text_has_url(s_rep_what) || report_text_has_url(s_rep_before) || report_text_has_url(s_rep_contact)) {
+                SetDlgItemTextW(w, REP_STATUS, REPORT_NO_URLS_W);
+                SetFocus(GetDlgItem(w, report_text_has_url(s_rep_what) ? REP_WHAT
+                                       : report_text_has_url(s_rep_before) ? REP_BEFORE : REP_CONTACT));
+                return 0;
+            }
+            /* (the match goes as its own part: not in the zip; a try again makes it again) */
+            rep_drop_zip();
             if (!report_make_match(s_game_dir, PORT_VERSION, utf8, NULL, IsDlgButtonChecked(w, REP_INCSAVE) == BST_CHECKED,
                                    s_rep_zip, MAX_PATH, &logs, &crashes)) {
                 SetDlgItemTextW(w, REP_STATUS, L"The report could not be written (is the game folder read-only?).");
                 return 0;
             }
-            rep_copy(w);
             online_server_text(s_rep_server, 260);
+            rep_status_wide(w, 0);
             SetDlgItemTextW(w, REP_STATUS, L"Sending\x2026");
             EnableWindow(GetDlgItem(w, REP_SEND), FALSE);
-            EnableWindow(GetDlgItem(w, REP_CREATE), FALSE);
             EnableWindow(GetDlgItem(w, REP_MATCH), FALSE);
             EnableWindow(GetDlgItem(w, REP_INCMODS), FALSE);
             ShowWindow(GetDlgItem(w, REP_SUMMARY), SW_HIDE);
@@ -3718,20 +4101,8 @@ static LRESULT CALLBACK rep_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             SetDlgItemTextW(w, REP_STATUS, L"Report id copied.");
             return 0;
         }
-        case REP_DISCORD:
-            ShellExecuteW(w, L"open", DISCORD_INVITE, NULL, NULL, SW_SHOWNORMAL);
-            return 0;
-        case REP_SHOW: {
-            WCHAR args[MAX_PATH + 32];
-            swprintf_s(args, MAX_PATH + 32, L"/select,\"%s\"", s_rep_zip);
-            ShellExecuteW(w, L"open", L"explorer.exe", args, NULL, SW_SHOWNORMAL);
-            return 0;
-        }
-        case REP_COPY:
-            rep_copy(w);
-            SetDlgItemTextW(w, REP_STATUS, L"Description copied - paste it into your Discord post.");
-            return 0;
         case IDCANCEL:
+            rep_drop_zip();
             s_rep_done = -1;
             DestroyWindow(w);
             return 0;
@@ -3773,12 +4144,12 @@ static LRESULT CALLBACK rep_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         return 0;
     }
     if (m == WM_CTLCOLORSTATIC && GetDlgCtrlID((HWND)lp) == REP_STATUS) {
-        SetTextColor((HDC)wp, s_rep_page == 1 || (s_rep_page == 2 && s_rep_result.why[0]) ? RGB(190, 30, 45)
-                                                                                 : RGB(30, 120, 60));
+        SetTextColor((HDC)wp, s_rep_page == 1 ? RGB(190, 30, 45) : RGB(30, 120, 60));
         SetBkMode((HDC)wp, TRANSPARENT);
         return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
     }
     if (m == WM_CLOSE) {
+        rep_drop_zip();
         s_rep_done = -1;
         DestroyWindow(w);
         return 0;
@@ -3819,13 +4190,8 @@ static void report_window(int page, const WCHAR *capture_file)
     if (!w)
         return;
     s_rep_done = 0;
-    if (page == 2) {
-        if (!s_rep_zip[0])
-            swprintf_s(s_rep_zip, MAX_PATH, L"%s\\Reports\\SvR2011-report-20261006-120000.zip", s_game_dir);
-        rep_page2(w);
-    } else {
-        rep_page1(w);
-    }
+    rep_page1(w);
+    if (page == 2) rep_not_sent(w, L"the server didn't answer (a sample).");
     if (capture_file) {
         int k;
         ShowWindow(w, SW_SHOWNOACTIVATE);
@@ -3843,7 +4209,7 @@ static void report_window(int page, const WCHAR *capture_file)
     }
     EnableWindow(s_wnd, FALSE);
     ShowWindow(w, SW_SHOW);
-    SetFocus(GetDlgItem(w, page == 2 ? REP_DISCORD : REP_WHAT));
+    SetFocus(GetDlgItem(w, page == 2 ? REP_SEND : REP_WHAT));
     while (!s_rep_done) {
         if (GetMessageW(&msg, NULL, 0, 0) <= 0) {
             quit = 1;
@@ -3877,13 +4243,121 @@ static void report_problem(void)
     report_window(1, NULL);
 }
 
+/* While big_roster is on, per-mod saves are on too (the indices from 242 up are in no table SaveData.dat holds):
+   ticked and greyed out, its label says why. */
+static void saves_permod_lock(void)
+{
+    const int big = IsDlgButtonChecked(s_wnd, ID_SV_BIGROSTER) == BST_CHECKED;
+    if (big) CheckDlgButton(s_wnd, ID_SV_PERMOD, BST_CHECKED);
+    EnableWindow(ctl(ID_SV_PERMOD), !big);
+    SetWindowTextW(ctl(ID_SV_PERMOD), big ? L"Experimental: each mod's save data in its own file - on: big roster needs it"
+                                          : L"Experimental: each superstar mod's save data in its own file (Saves\\.mods)");
+}
+
+/* big_roster's warning: a window of its own (so --capture can draw it), Turn on / Cancel (the default). Returns 1
+   for Turn on. capture_file: drawn off-screen, saved as a BMP and closed (--capture saves <file> --big-roster-warning). */
+static int s_br_done;
+static LRESULT CALLBACK br_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
+{
+    if (m == WM_COMMAND && (LOWORD(wp) == IDOK || LOWORD(wp) == IDCANCEL)) {
+        s_br_done = LOWORD(wp) == IDOK ? 1 : -1;
+        DestroyWindow(w);
+        return 0;
+    }
+    if (m == WM_CLOSE) {
+        s_br_done = -1;
+        DestroyWindow(w);
+        return 0;
+    }
+    return DefWindowProcW(w, m, wp, lp);
+}
+static int big_roster_confirm(const WCHAR *capture_file)
+{
+    static int registered;
+    WNDCLASSW wc;
+    RECT r = { 0, 0, 0, 0 }, pr;
+    HWND w, c;
+    MSG msg;
+    int quit = 0, k;
+    if (!registered) {
+        ZeroMemory(&wc, sizeof wc);
+        wc.lpfnWndProc = br_proc;
+        wc.hInstance = s_inst;
+        wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+        wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+        wc.hIcon = s_icon;
+        wc.lpszClassName = L"SvR2011BigRoster";
+        RegisterClassW(&wc);
+        registered = 1;
+    }
+    r.right = S(460);
+    r.bottom = S(170);
+    AdjustWindowRectEx(&r, WS_CAPTION | WS_SYSMENU, FALSE, WS_EX_DLGMODALFRAME);
+    GetWindowRect(s_wnd, &pr);
+    w = CreateWindowExW(WS_EX_DLGMODALFRAME, L"SvR2011BigRoster", L"\xD83E\xDDEA Experimental",
+                        WS_POPUP | WS_CAPTION | WS_SYSMENU,
+                        capture_file ? -8000 : pr.left + (pr.right - pr.left - (r.right - r.left)) / 2,
+                        capture_file ? -8000 : pr.top + (pr.bottom - pr.top - (r.bottom - r.top)) / 2,
+                        r.right - r.left, r.bottom - r.top, s_wnd, NULL, s_inst, NULL);
+    if (!w)
+        return 0;
+    c = CreateWindowExW(0, L"Static", NULL, WS_CHILD | WS_VISIBLE | SS_ICON, S(16), S(18), S(32), S(32), w, NULL,
+                        s_inst, NULL);
+    if (c) SendMessageW(c, STM_SETICON, (WPARAM)LoadIconW(NULL, IDI_WARNING), 0);
+    c = CreateWindowExW(0, L"Static", BIG_ROSTER_WARNING, WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOPREFIX, S(62), S(16),
+                        S(384), S(96), w, NULL, s_inst, NULL);
+    if (c) SendMessageW(c, WM_SETFONT, (WPARAM)s_font, TRUE);
+    c = CreateWindowExW(0, L"Button", L"Turn on", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, S(246),
+                        S(124), S(100), S(30), w, (HMENU)(INT_PTR)IDOK, s_inst, NULL);
+    if (c) SendMessageW(c, WM_SETFONT, (WPARAM)s_font, TRUE);
+    c = CreateWindowExW(0, L"Button", L"Cancel", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, S(354),
+                        S(124), S(92), S(30), w, (HMENU)(INT_PTR)IDCANCEL, s_inst, NULL);
+    if (c) SendMessageW(c, WM_SETFONT, (WPARAM)s_font, TRUE);
+    s_br_done = 0;
+    if (capture_file) {
+        ShowWindow(w, SW_SHOWNOACTIVATE);
+        UpdateWindow(w);
+        for (k = 0; k < 20; k++) {
+            while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+            Sleep(15);
+        }
+        capture_wnd(w, capture_file);
+        DestroyWindow(w);
+        return 0;
+    }
+    EnableWindow(s_wnd, FALSE);
+    ShowWindow(w, SW_SHOW);
+    SetFocus(GetDlgItem(w, IDCANCEL));
+    while (!s_br_done) {
+        if (GetMessageW(&msg, NULL, 0, 0) <= 0) {
+            quit = 1;
+            break;
+        }
+        if (!IsDialogMessageW(w, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+    EnableWindow(s_wnd, TRUE);
+    SetForegroundWindow(s_wnd);
+    if (quit) {
+        if (IsWindow(w))
+            DestroyWindow(w);
+        PostQuitMessage(0);
+    }
+    return s_br_done == 1;
+}
+
 static void build_ui(void)
 {
     TCITEMW ti;
     HWND h;
     WCHAR v[64];
     int i;
-    static const WCHAR *names[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Install", L"DLC", L"Saves", L"Paint Tool", L"Movies", L"Android Install", L"Mods", L"Music", L"Roster", L"Texture packs", L"Setup", L"Discovery", L"Tools" };
+    static const WCHAR *names[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Install", L"DLC", L"Saves", L"Paint Tool", L"Movies", L"Android Install", L"Mods", L"Music", L"Roster", L"Texture packs", L"Setup", L"Discovery", L"Tools", L"Reports", L"Suggestions" };
 
     /* The tabs (never shown: the sidebar picks them; --capture and show_tab
        still use its selection). */
@@ -3910,6 +4384,9 @@ static void build_ui(void)
     add(TAB_PLAY, L"Button", L"Skip intros", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 160, 300, 104, 20, ID_SKIP_INTROS);
     add(TAB_PLAY, L"Button", L"Skip practice ring", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 270, 300, 130, 20,
         ID_SKIP_TRAINING);
+    /* (fast_loads.cpp: the Start Screen's loading screens at four updates a frame) */
+    add(TAB_PLAY, L"Button", L"Faster loading screens (animations speed up)", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 406,
+        300, 300, 20, ID_FAST_LOADS);
     add(TAB_PLAY, L"Button", L"", BS_PUSHBUTTON | WS_TABSTOP, X0 + 724 - 16 - 160, 472, 160, 28, ID_PL_NOTICE);
     add(TAB_PLAY, L"Static", L"", SS_LEFT | SS_NOPREFIX | SS_ENDELLIPSIS, X0 + 48, 559, 236, 20, ID_PLAY_STATUS);
     add(-1, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0 + 16, 82, 300, 22, ID_PLAYTIME);
@@ -4023,27 +4500,39 @@ static void build_ui(void)
 
     /* Online */
     /* the last online match's connection (online_route_show: the game's log) */
-    add(TAB_ONLINE, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0, 16, 560, 34, ID_ON_ROUTE);
+    add(TAB_ONLINE, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0, 16, 440, 34, ID_ON_ROUTE);
+    add(TAB_ONLINE, L"Button", L"Connection \x25B8", BS_PUSHBUTTON | WS_TABSTOP, X0 + 452, 16, 108, 26, ID_ON_NAT_CHECK);
     add(TAB_ONLINE, L"Static", L"Community Creations and online matches (Player Match, Royal Rumble) through a "
                                L"Community Creations server - the original servers closed in 2014.",
         SS_LEFT, X0, 54, 560, 36, 0);
-    add(TAB_ONLINE, L"Button", L"Play online", BS_AUTOCHECKBOX | WS_TABSTOP, X0, 92, 400, 22, ID_ON_ENABLE);
+    add(TAB_ONLINE, L"Button", L"Play online", BS_AUTOCHECKBOX | WS_TABSTOP, X0, 92, 150, 22, ID_ON_ENABLE);
+    /* (the game's online_mod_upload: mod_transfer.cpp - the host sends its gameplay mods to joiners who lack them) */
+    add(TAB_ONLINE, L"Button", L"Share my mods with players who join me", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 160, 92,
+        290, 22, ID_ON_SHARE);
+    add(TAB_ONLINE, L"Button", L"Mod sharing \x25B8", BS_PUSHBUTTON | WS_TABSTOP, X0 + 452, 90, 108, 26,
+        ID_ON_MODS_FOLD);
     add(TAB_ONLINE, L"Button", L"Your account", BS_GROUPBOX, X0, 118, 560, 124, 0);
-    add(TAB_ONLINE, L"Static", L"Name", SS_LEFT, X0 + 16, 144, 130, 20, 0);
+    /* (the account box's fields and buttons: placed by online_account_show, for its mode) */
+    add(TAB_ONLINE, L"Static", L"Name", SS_LEFT, X0 + 16, 144, 130, 20, ID_ON_L_NAME);
     h = add(TAB_ONLINE, L"Edit", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, X0 + 150, 140, 220, 24, ID_ON_NAME);
     SendMessageW(h, EM_LIMITTEXT, 15, 0);
-    add(TAB_ONLINE, L"Static", L"Password", SS_LEFT, X0 + 16, 174, 130, 20, 0);
+    add(TAB_ONLINE, L"Static", L"Password", SS_LEFT, X0 + 16, 174, 130, 20, ID_ON_L_PASS);
     h = add(TAB_ONLINE, L"Edit", L"", ES_AUTOHSCROLL | ES_PASSWORD | WS_BORDER | WS_TABSTOP, X0 + 150, 170, 220, 24,
             ID_ON_PASSWORD);
     SendMessageW(h, EM_LIMITTEXT, 100, 0);
+    add(TAB_ONLINE, L"Static", L"Code", SS_LEFT, X0 + 16, 174, 130, 20, ID_ON_L_CODE);
+    h = add(TAB_ONLINE, L"Edit", L"", ES_AUTOHSCROLL | ES_UPPERCASE | WS_BORDER | WS_TABSTOP, X0 + 150, 170, 220, 24,
+            ID_ON_CODE);
+    SendMessageW(h, EM_LIMITTEXT, 20, 0);
     add(TAB_ONLINE, L"Button", L"Sign in", BS_PUSHBUTTON | WS_TABSTOP, X0 + 384, 139, 162, 26, ID_ON_SIGNIN);
-    add(TAB_ONLINE, L"Button", L"Create account", BS_PUSHBUTTON | WS_TABSTOP, X0 + 384, 169, 162, 26,
+    add(TAB_ONLINE, L"Button", L"Create account\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 384, 169, 162, 26,
         ID_ON_REGISTER);
     add(TAB_ONLINE, L"Button", L"Sign out", BS_PUSHBUTTON | WS_TABSTOP, X0 + 384, 139, 162, 26, ID_ON_SIGNOUT);
+    add(TAB_ONLINE, L"Button", L"", BS_PUSHBUTTON | WS_TABSTOP, X0 + 384, 139, 162, 26, ID_ON_STEP);
+    add(TAB_ONLINE, L"Button", L"Back", BS_PUSHBUTTON | WS_TABSTOP, X0 + 384, 169, 162, 26, ID_ON_BACK);
+    add(TAB_ONLINE, L"Button", L"Forgot password?", BS_PUSHBUTTON | WS_TABSTOP, X0 + 384, 199, 162, 24, ID_ON_FORGOT);
     add(TAB_ONLINE, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0 + 16, 200, 530, 18, ID_ON_ACCOUNT);
-    add(TAB_ONLINE, L"Static", L"The name (3-15 characters) is what other players see. The same account works on any "
-                               L"PC or phone.",
-        SS_LEFT, X0 + 16, 219, 530, 18, 0);
+    add(TAB_ONLINE, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0 + 16, 219, 530, 18, ID_ON_INFO);
     add(TAB_ONLINE, L"Button", L"Server", BS_GROUPBOX, X0, 248, 560, 74, 0);
     h = add(TAB_ONLINE, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 16, 270, 120, 200,
             ID_ON_SERVER_KIND);
@@ -4052,7 +4541,7 @@ static void build_ui(void)
     SendMessageW(h, CB_SETCURSEL, 0, 0);
     add(TAB_ONLINE, L"Edit", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, X0 + 150, 270, 396, 24, ID_ON_SERVER);
     add(TAB_ONLINE, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0 + 150, 298, 396, 20, ID_ON_SERVER_LABEL);
-    add(TAB_ONLINE, L"Button", L"Friends", BS_GROUPBOX, X0, 328, 560, 202, 0);
+    add(TAB_ONLINE, L"Button", L"Friends", BS_GROUPBOX, X0, 328, 560, 202, ID_FR_GROUP);
     {
         static const WCHAR *const names[] = { L"Player", L"Status" };
         static const int widths[] = { 150, 196 };
@@ -4066,7 +4555,26 @@ static void build_ui(void)
     add(TAB_ONLINE, L"Button", L"Add", BS_PUSHBUTTON | WS_TABSTOP, X0 + 380, 380, 80, 26, ID_FR_ADD);
     add(TAB_ONLINE, L"Button", L"Remove", BS_PUSHBUTTON | WS_TABSTOP, X0 + 466, 380, 80, 26, ID_FR_REMOVE);
     add(TAB_ONLINE, L"Static", L"Online: in the game's ONLINE menus. Friends' matches show in the game's searches.",
-        SS_LEFT | SS_NOPREFIX, X0 + 380, 414, 166, 60, 0);
+        SS_LEFT | SS_NOPREFIX, X0 + 380, 414, 166, 60, ID_FR_INFO);
+    /* Mod sharing (the fold: in the Friends box's place while open) - the game's online mod settings */
+    add(TAB_ONLINE, L"Button", L"Your connection", BS_GROUPBOX, X0, 328, 560, 202, ID_ON_NAT_GROUP);
+    add(TAB_ONLINE, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0 + 16, 352, 530, 142, ID_ON_NAT_TEXT);
+    add(TAB_ONLINE, L"Button", L"Mods in online sessions", BS_GROUPBOX, X0, 328, 560, 202, ID_ON_MODS_GROUP);
+    add(TAB_ONLINE, L"Static", L"Upload speed (KB/s, all joiners)", SS_LEFT, X0 + 16, 354, 250, 20, ID_ON_MODS_L1);
+    h = add(TAB_ONLINE, L"Edit", L"", ES_NUMBER | WS_BORDER | WS_TABSTOP, X0 + 280, 350, 90, 24, ID_ON_UP_KBS);
+    SendMessageW(h, EM_LIMITTEXT, 5, 0);
+    add(TAB_ONLINE, L"Static", L"Joiners downloading at once", SS_LEFT, X0 + 16, 380, 250, 20, ID_ON_MODS_L2);
+    h = add(TAB_ONLINE, L"Edit", L"", ES_NUMBER | WS_BORDER | WS_TABSTOP, X0 + 280, 376, 90, 24, ID_ON_UP_PEERS);
+    SendMessageW(h, EM_LIMITTEXT, 1, 0);
+    add(TAB_ONLINE, L"Static", L"Largest mod to download (MB)", SS_LEFT, X0 + 16, 406, 250, 20, ID_ON_MODS_L3);
+    h = add(TAB_ONLINE, L"Edit", L"", ES_NUMBER | WS_BORDER | WS_TABSTOP, X0 + 280, 402, 90, 24, ID_ON_MOD_MB);
+    SendMessageW(h, EM_LIMITTEXT, 4, 0);
+    add(TAB_ONLINE, L"Static", L"Most to download for one session (MB)", SS_LEFT, X0 + 16, 432, 260, 20, ID_ON_MODS_L4);
+    h = add(TAB_ONLINE, L"Edit", L"", ES_NUMBER | WS_BORDER | WS_TABSTOP, X0 + 280, 428, 90, 24, ID_ON_MODS_MB);
+    SendMessageW(h, EM_LIMITTEXT, 5, 0);
+    add(TAB_ONLINE, L"Static", L"Mods you lack come straight from the host's game (never the server or the relay), into "
+                               L"UserData\\OnlineMods - removed when you leave online or close the game.",
+        SS_LEFT | SS_NOPREFIX, X0 + 16, 458, 530, 36, ID_ON_MODS_INFO);
     add(TAB_ONLINE, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0 + 16, 478, 530, 18, ID_FR_STATUS);
     add(TAB_ONLINE, L"Static", L"Addresses", SS_LEFT, X0 + 16, 502, 90, 20, 0);
     h = add(TAB_ONLINE, L"Edit", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, X0 + 110, 498, 436, 24, ID_ON_PEERS);
@@ -4161,7 +4669,9 @@ static void build_ui(void)
     add(TAB_SAVES, L"Button", L"Import Superstar\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 290, 312, 130, 30,
         ID_SV_IMPORTCAW);
     add(TAB_SAVES, L"Button", L"Delete selected", BS_PUSHBUTTON | WS_TABSTOP, X0 + 430, 312, 130, 30, ID_SV_DELETE);
-    add(TAB_SAVES, L"Static", L"", SS_LEFT | SS_NOPREFIX | SS_PATHELLIPSIS, X0, 350, 560, 36, ID_SV_STATUS);
+    add(TAB_SAVES, L"Button", L"Clean save of unused mods\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0, 350, 200, 30,
+        ID_SV_CLEAN);
+    add(TAB_SAVES, L"Static", L"", SS_LEFT | SS_NOPREFIX | SS_PATHELLIPSIS, X0 + 210, 350, 350, 36, ID_SV_STATUS);
     add(TAB_SAVES, L"Static", L"Save preset:", SS_LEFT, X0, 400, 84, 20, 0);
     add(TAB_SAVES, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 88, 396, 212, 240, ID_SV_PRESET);
     add(TAB_SAVES, L"Button", L"New\x2026", BS_PUSHBUTTON | WS_TABSTOP, X0 + 310, 394, 110, 30, ID_SV_PRESET_NEW);
@@ -4174,6 +4684,27 @@ static void build_ui(void)
                               L"switch between them here, or bring your Xbox 360 save over into one. The game and "
                               L"this tab use the folder set here (saved in " GAME_TOML L").",
         SS_LEFT, X0, 472, 560, 52, 0);
+    /* per_mod_saves (experimental): the game's own key, written at once (the game reads it at its next start) */
+    add(TAB_SAVES, L"Button", L"Experimental: each superstar mod's save data in its own file (Saves\\.mods)",
+        BS_AUTOCHECKBOX | WS_TABSTOP, X0, 528, 560, 22, ID_SV_PERMOD);
+    /* big_roster (experimental): the same; turning it on asks first (big_roster_confirm) */
+    {
+        HWND c = add(TAB_SAVES, L"Button", L"\xD83E\xDDEA Experimental: more superstar mods at once (big roster)",
+                     BS_AUTOCHECKBOX | WS_TABSTOP, X0, 554, 560, 22, ID_SV_BIGROSTER);
+        HWND tt = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL, WS_POPUP | TTS_ALWAYSTIP, CW_USEDEFAULT,
+                                  CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, s_wnd, NULL, s_inst, NULL);
+        if (c && tt) {
+            TTTOOLINFOW ti;
+            ZeroMemory(&ti, sizeof ti);
+            ti.cbSize = sizeof ti;
+            ti.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+            ti.hwnd = s_wnd;
+            ti.uId = (UINT_PTR)c;
+            ti.lpszText = (WCHAR *)BIG_ROSTER_WARNING;
+            SendMessageW(tt, TTM_SETMAXTIPWIDTH, 0, S(420));
+            SendMessageW(tt, TTM_ADDTOOLW, 0, (LPARAM)&ti);
+        }
+    }
 
     /* Paint Tool */
     add(TAB_PAINT, L"Static", L"The Paint Tool's logos: 10 pages of 20 (CREATE A SUPERSTAR > PAINT TOOL in the game; "
@@ -4215,6 +4746,10 @@ static void build_ui(void)
     /* Texture packs (texpacks_tab.c) */
     texpacks_build(s_wnd, add, TAB_TEXPACKS, ID_TEXPACKS_BASE, toml_get, toml_set);
     discover_build(s_wnd, add, TAB_DISCOVER, ID_DISCOVER_BASE, discover_server, discover_account);
+    receipts_set_guard(test_run_refuses_url);   /* (a test run: never a server off this PC) */
+    reports_build(s_wnd, add, TAB_REPORTS, ID_REPORTS_BASE, discover_server, reports_token);
+    suggestions_build(s_wnd, add, TAB_SUGGESTIONS, ID_SUGGEST_BASE, discover_server, reports_token, test_run_refuses_url,
+                      PORT_VERSION);
     discover_set_ini(s_launcher_ini);
     /* Setup: what's needed, found or missing; the Mod Maker's tools (setup_tab.c) */
     setup_build(s_wnd, add, TAB_SETUP, TAB_TOOLS, ID_SETUP_BASE, setup_go_install);
@@ -4967,6 +5502,83 @@ static void saves_clear(const WCHAR *saves)
     FindClose(f);
 }
 
+/* "Clean save of unused mods...": what the save keeps for superstar mods that aren't installed or are turned off
+ * (save_cleaner.c), shown, then - after a backup of the whole Saves folder - taken out. */
+static void saves_clean(void)
+{
+    static ScItem items[SC_MAX];
+    static WCHAR t[16384];
+    WCHAR saves[MAX_PATH], mods[MAX_PATH], err[600] = L"", before[MAX_PATH];
+    int n, i, gone = 0, off = 0, with_off = 0, at = 0, shown = 0;
+    if (saves_locked() || !saves_dir(saves) || !join(mods, s_game_dir, L"Mods\\Superstars"))
+        return;
+    if ((n = save_clean_scan(saves, mods, items, err, 600)) < 0) {
+        MessageBoxW(s_wnd, err, WINDOW_TITLE, MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    for (i = 0; i < n; i++)
+        items[i].off ? off++ : gone++;
+    if (!n) {
+        MessageBoxW(s_wnd, L"The save has nothing of mods that aren't installed or are turned off.", WINDOW_TITLE,
+                    MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    if (off) {
+        at = swprintf_s(t, 16384, L"%d of these mods are installed but turned off:\n", off);
+        for (i = 0; i < n && at < 15000; i++)
+            if (items[i].off && shown++ < 25)
+                at += swprintf_s(t + at, 16384 - at, L"  %s\n", items[i].name);
+        if (shown > 25)
+            at += swprintf_s(t + at, 16384 - at, L"  ... and %d more\n", shown - 25);
+        swprintf_s(t + at, 16384 - at, L"\nTake their data out of the save too? (No: only the mods that aren't "
+                                       L"installed.)");
+        switch (MessageBoxW(s_wnd, t, WINDOW_TITLE, MB_YESNOCANCEL | MB_ICONQUESTION)) {
+        case IDYES: with_off = 1; break;
+        case IDNO: break;
+        default: return;
+        }
+        if (!gone && !with_off)
+            return;
+    }
+    at = swprintf_s(t, 16384, L"This removes data for mods that aren't installed or are turned off. If you turn them "
+                              L"back on, their edits are gone. A backup is made first.\n\nTaken out:\n");
+    shown = 0;
+    for (i = 0; i < n && at < 15000; i++) {
+        const ScItem *m = &items[i];
+        WCHAR what[160] = L"";
+        if (m->off && !with_off)
+            continue;
+        if (shown++ >= 30)
+            continue;
+        if (m->profile) wcscat_s(what, 160, L"superstar, moves, entrance, Threads");
+        if (m->universe) wcscat_s(what, 160, what[0] ? L", Universe" : L"Universe");
+        if (m->mod_save) wcscat_s(what, 160, what[0] ? L", its mod save" : L"its mod save");
+        if (m->refs) wcscat_s(what, 160, what[0] ? L", teams / titles / Universe cards" : L"teams / titles / Universe cards");
+        if (!what[0]) wcscat_s(what, 160, L"a note of it");
+        at += swprintf_s(t + at, 16384 - at, L"  %s%s%s%s (%s)\n", m->name,
+                         m->folder[0] && _wcsicmp(m->folder, m->name) ? L" - " : L"",
+                         m->folder[0] && _wcsicmp(m->folder, m->name) ? m->folder : L"",
+                         m->off ? L", turned off" : L"", what);
+    }
+    if (shown > 30)
+        at += swprintf_s(t + at, 16384 - at, L"  ... and %d more\n", shown - 30);
+    swprintf_s(t + at, 16384 - at, L"\n%d mod%s. The game's own superstars, your Created Superstars and the mods "
+                                   L"that are on stay as they are.", shown, shown == 1 ? L"" : L"s");
+    if (MessageBoxW(s_wnd, t, WINDOW_TITLE, MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2) != IDOK)
+        return;
+    if (!saves_backup_to(L" (before cleaning)", before)) {
+        saves_status(L"Could not back up the saves; nothing was cleaned.");
+        return;
+    }
+    if ((n = save_clean_apply(saves, items, n, with_off, err, 600)) < 0) {
+        saves_status(L"Not cleaned: %s Your saves are backed up in %s.", err, before);
+        return;
+    }
+    saves_refresh();
+    saves_status(L"Took out %d mod%s' data. Backup: %s (Restore backup\x2026 puts it back).", n, n == 1 ? L"" : L"s",
+                 before);
+}
+
 static void saves_restore(void)
 {
     WCHAR base[MAX_PATH], pick[MAX_PATH], saves[MAX_PATH], before[MAX_PATH], pat[MAX_PATH], from[MAX_PATH],
@@ -5358,6 +5970,14 @@ static void saves_folder_show(void)
         wcscpy_s(t, MAX_PATH + 64, L"Saves folder: (install the game first)");
     set_text(ID_SV_FOLDER, t);
     EnableWindow(ctl(ID_SV_DEFAULT), s[0] != 0);
+    {
+        char v[16];
+        CheckDlgButton(s_wnd, ID_SV_PERMOD, toml_get("per_mod_saves", v, sizeof v) && !strcmp(v, "true") ? BST_CHECKED
+                                                                                                           : BST_UNCHECKED);
+        CheckDlgButton(s_wnd, ID_SV_BIGROSTER,
+                       toml_get("big_roster", v, sizeof v) && !strcmp(v, "true") ? BST_CHECKED : BST_UNCHECKED);
+        saves_permod_lock();
+    }
     presets_fill();
 }
 
@@ -7532,6 +8152,7 @@ static void up_status(const WCHAR *fmt, ...)
     vswprintf_s(buf, 600, fmt, ap);
     va_end(ap);
     set_text(ID_UP_STATUS, buf);
+    update_log(UPLOG_DIR, "launcher", L"%s", buf);   /* (the update row's messages: Report a problem has them) */
 }
 
 static DWORD WINAPI up_check_thread(LPVOID arg)
@@ -7553,48 +8174,6 @@ static void up_check(int automatic)
     up_status(L"Checking for updates\x2026");
     EnableWindow(ctl(ID_UP_BUTTON), FALSE);
     CloseHandle(CreateThread(NULL, 0, up_check_thread, NULL, 0, NULL));
-}
-
-/* Copies the folder `from` into `to` with everything in it (files replaced). */
-static int copy_tree(const WCHAR *from, const WCHAR *to)
-{
-    WCHAR pat[MAX_PATH], src[MAX_PATH], dst[MAX_PATH];
-    WIN32_FIND_DATAW fd;
-    HANDLE h;
-    int ok = 1;
-    CreateDirectoryW(to, NULL);
-    if (!join(pat, from, L"*") || (h = FindFirstFileW(pat, &fd)) == INVALID_HANDLE_VALUE)
-        return 0;
-    do {
-        if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..") || !join(src, from, fd.cFileName) ||
-            !join(dst, to, fd.cFileName))
-            continue;
-        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
-            ok = copy_tree(src, dst) && ok;
-        else if (!CopyFileW(src, dst, FALSE))
-            ok = 0;
-    } while (FindNextFileW(h, &fd));
-    FindClose(h);
-    return ok;
-}
-
-/* Copies the folders of `from` (Bundled Mods, native_shaders, pad_icons,
- * Android...) into `to`. */
-static int up_copy_folders(const WCHAR *from, const WCHAR *to)
-{
-    WCHAR pat[MAX_PATH], src[MAX_PATH], dst[MAX_PATH];
-    WIN32_FIND_DATAW fd;
-    HANDLE h;
-    int ok = 1;
-    if (!join(pat, from, L"*") || (h = FindFirstFileW(pat, &fd)) == INVALID_HANDLE_VALUE)
-        return 0;
-    do {
-        if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && wcscmp(fd.cFileName, L".") &&
-            wcscmp(fd.cFileName, L"..") && join(src, from, fd.cFileName) && join(dst, to, fd.cFileName))
-            ok = copy_tree(src, dst) && ok;
-    } while (FindNextFileW(h, &fd));
-    FindClose(h);
-    return ok;
 }
 
 /* ── finishing an update an older launcher made ───────────────────────────
@@ -7623,9 +8202,9 @@ static int up_finish_run(HWND notify, WCHAR *err, size_t errn)
         swprintf_s(err, errn, L"Could not unpack the release.");
         goto done;
     }
-    ok = up_copy_folders(files, s_game_dir);
+    ok = copy_folders(files, s_game_dir);
     if (!same_dir(s_game_dir, s_launcher_dir))
-        up_copy_folders(files, s_launcher_dir);
+        copy_folders(files, s_launcher_dir);
     if (!ok)
         swprintf_s(err, errn, L"Some files could not be copied. Is the game running?");
 done:
@@ -7708,6 +8287,8 @@ static int up_run_updater(const WCHAR *version, int repair)
         up_status(L"Could not start %s.", UPDATER_EXE);
         return 0;
     }
+    update_log(UPLOG_DIR, "launcher", L"started the updater: %s%s%s", repair ? L"repair" : L"update",
+               version ? L" to " : L"", version ? version : L"");
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
     save_launcher_ini();
@@ -7887,7 +8468,7 @@ static int card_at(HWND c)
     MapWindowPoints(NULL, s_wnd, (POINT *)&r, 2);
     for (i = 0; i < s_ncards; i++) {
         const Card *cd = &s_cards[i];
-        if (cd->tab != s_cur_tab)
+        if (cd->tab != s_cur_tab || card_hidden(cd))
             continue;
         if (r.left >= S(cd->x + SB_W) && r.top >= S(cd->y + DY) && r.right <= S(cd->x + cd->w + SB_W) + 1 &&
             r.bottom <= S(cd->y + cd->h + DY) + 1)
@@ -8140,6 +8721,9 @@ static void play_notice(void)
     if (!s_game_dir[0] || !is_game_folder(s_game_dir)) {
         wcscpy_s(s_notice, 220, L"No game in this folder: choose the game's folder, or install it (Setup).");
         s_notice_action = NOTICE_FOLDER; button = L"Choose folder\x2026";
+    } else if (verify_xex_supported_in(s_game_dir) == 0) {
+        wcscpy_s(s_notice, 220, L"Another release of the game (e.g. the Japanese disc): the port can't run it.");
+        s_notice_action = NOTICE_SETUP; button = L"Open Setup";
     } else if (!has_program(s_game_dir)) {
         wcscpy_s(s_notice, 220, GAME_EXE L" is missing from the game folder (antivirus, or an unfinished install).");
         s_notice_action = NOTICE_FILES; button = L"Open Setup";
@@ -8405,7 +8989,7 @@ static void paint_window(HDC dc)
     static const WCHAR *const titles[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Setup", L"Setup",
                                                     L"Saves", L"Paint Tool", L"Movies", L"Setup", L"Mods",
                                                     L"Music", L"Roster: sort categories", L"Mods",
-                                                    L"Setup", L"Mods", L"Setup" };
+                                                    L"Setup", L"Mods", L"Setup", L"Reports", L"Suggestions" };
     RECT cl, r;
     HBRUSH sb = CreateSolidBrush(C_SIDEBAR);
     HGDIOBJ old;
@@ -8520,7 +9104,7 @@ static void paint_window(HDC dc)
         for (i = 0; i < s_ncards; i++) {
             const Card *cd = &s_cards[i];
             RECT c;
-            if (cd->tab != s_cur_tab || (cd->title[0] == 1 && !s_notice[0]))
+            if (cd->tab != s_cur_tab || card_hidden(cd) || (cd->title[0] == 1 && !s_notice[0]))
                 continue;
             c.left = S(cd->x + SB_W); c.top = S(cd->y + DY); c.right = S(cd->x + cd->w + SB_W);
             c.bottom = S(cd->y + cd->h + DY);
@@ -8558,7 +9142,8 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
                 set_text(ID_FR_NAME, name);
             }
         }
-        if (n->idFrom != ID_TAB && n->idFrom != ID_FR_LIST && !texpacks_notify(n) && !discover_notify(n)) {
+        if (n->idFrom != ID_TAB && n->idFrom != ID_FR_LIST && !texpacks_notify(n) && !discover_notify(n) && !reports_notify(n) &&
+            !suggestions_notify(n)) {
             const int r = mods_notify(n);
             if (r == 2 || r == 3) return r == 2;  /* (renaming a background: mods_tab.c) */
         }
@@ -8567,6 +9152,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
     case WM_COMMAND:
         if (mv_command(LOWORD(wp), HIWORD(wp)) || up_command(LOWORD(wp), HIWORD(wp)) ||
             mods_command(LOWORD(wp), HIWORD(wp)) || music_command(LOWORD(wp), HIWORD(wp)) ||
+            reports_command(LOWORD(wp), HIWORD(wp)) || suggestions_command(LOWORD(wp), HIWORD(wp)) ||
             roster_command(LOWORD(wp), HIWORD(wp)) || texpacks_command(LOWORD(wp), HIWORD(wp)) ||
             discover_command(LOWORD(wp), HIWORD(wp)) ||
             setup_command(LOWORD(wp), HIWORD(wp)))
@@ -8647,13 +9233,23 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         case ID_DEFAULTS:
             settings_defaults();
             break;
-        case ID_ON_ENABLE:
+        case ID_ON_MODS_FOLD:
+            s_mods_fold = !s_mods_fold;
+            online_mods_fold_apply();
+            break;
+        case ID_ON_NAT_CHECK:
+            s_mods_fold = 2;
+            online_mods_fold_apply();
+            nat_check_start();
+            break;
+        case ID_ON_ENABLE: case ID_ON_SHARE:
             if (HIWORD(wp) == BN_CLICKED) {
                 s_settings_dirty = 1;
                 set_text(ID_ON_STATUS, L"");
             }
             break;
         case ID_ON_NAME: case ID_ON_SERVER: case ID_ON_PEERS:
+        case ID_ON_UP_KBS: case ID_ON_UP_PEERS: case ID_ON_MOD_MB: case ID_ON_MODS_MB:
             if (HIWORD(wp) == EN_CHANGE) {
                 s_settings_dirty = 1;
                 set_text(ID_ON_STATUS, L"");
@@ -8669,8 +9265,38 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         case ID_ON_SIGNIN:
             online_sign_in(0);
             break;
-        case ID_ON_REGISTER:
-            online_sign_in(1);
+        case ID_ON_REGISTER:  /* (the sign-up form: first the server's word on invite codes) */
+            {
+                char st[512];
+                const char *k;
+                HCURSOR old = SetCursor(LoadCursor(NULL, IDC_WAIT));
+                s_on_invite = -1;  /* (an older server, or no answer: the box shown, sent as typed) */
+                if (online_request("/api/status", NULL, NULL, st, sizeof st) == 200 &&
+                        (k = strstr(st, "\"invite_needed\"")) != NULL) {
+                    k += strlen("\"invite_needed\"");
+                    while (*k == ' ' || *k == ':') k++;
+                    s_on_invite = !strncmp(k, "true", 4) ? 1 : !strncmp(k, "false", 5) ? 0 : -1;
+                }
+                SetCursor(old);
+                if (s_on_invite == 0)
+                    set_text(ID_ON_CODE, L"");  /* (hidden: nothing typed earlier goes with the sign-up) */
+            }
+            s_on_mode = ON_SIGNUP;
+            online_note(L"");
+            online_account_show();
+            break;
+        case ID_ON_FORGOT:
+            s_on_mode = ON_FORGOT;
+            online_note(L"");
+            online_account_show();
+            break;
+        case ID_ON_BACK:
+            s_on_mode = ON_SIGNIN;
+            online_note(L"");
+            online_account_show();
+            break;
+        case ID_ON_STEP:
+            online_step();
             break;
         case ID_ON_SIGNOUT:
             online_sign_out();
@@ -8745,9 +9371,42 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         case ID_SV_EXPORT:   saves_export();       break;
         case ID_SV_IMPORT:   saves_import();       break;
         case ID_SV_DELETE:   saves_delete();       break;
+        case ID_SV_CLEAN:    saves_clean();        break;
         case ID_SV_OPEN:     saves_open();         break;
         case ID_SV_CHANGE:   saves_change_folder(); break;
         case ID_SV_DEFAULT:  saves_set_folder(NULL); break;
+        case ID_SV_PERMOD: {
+            const int on = IsDlgButtonChecked(s_wnd, ID_SV_PERMOD) == BST_CHECKED;
+            if (!toml_set("per_mod_saves", on ? "true" : "false")) {
+                CheckDlgButton(s_wnd, ID_SV_PERMOD, on ? BST_UNCHECKED : BST_CHECKED);
+                saves_status(L"Couldn't write the setting (" GAME_TOML L").");
+            } else {
+                saves_status(on ? L"Per-mod save files: on at the game's next start. Your saves are backed up first; "
+                                  L"the next save moves the mods' data into Saves\\.mods."
+                                : L"Per-mod save files: off at the game's next start. The mods' data goes back into "
+                                  L"the main save at its next save; their files are kept.");
+            }
+            break;
+        }
+        case ID_SV_BIGROSTER: {
+            const int on = IsDlgButtonChecked(s_wnd, ID_SV_BIGROSTER) == BST_CHECKED;
+            if (on && !big_roster_confirm(NULL)) {  /* (ticked on: on only with Turn on) */
+                CheckDlgButton(s_wnd, ID_SV_BIGROSTER, BST_UNCHECKED);
+                saves_status(L"More superstar mods at once: left off.");
+                break;
+            }
+            if (!toml_set("big_roster", on ? "true" : "false") || (on && !toml_set("per_mod_saves", "true"))) {
+                CheckDlgButton(s_wnd, ID_SV_BIGROSTER, on ? BST_UNCHECKED : BST_CHECKED);
+                saves_status(L"Couldn't write the setting (" GAME_TOML L").");
+            } else {
+                saves_status(on ? L"More superstar mods at once: on at the game's next start (experimental), with "
+                                  L"per-mod save files."
+                                : L"More superstar mods at once: off at the game's next start (per-mod save files "
+                                  L"stay on until you untick them).");
+            }
+            saves_permod_lock();
+            break;
+        }
         case ID_SV_PRESET_NEW: presets_new();    break;
         case ID_SV_IMPORT360:  saves_import_360(); break;
         case ID_SV_IMPORTCAW:  saves_import_caw(); break;
@@ -8791,6 +9450,9 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         } else {
             SendMessageW(ctl(ID_PROGRESS), PBM_SETPOS, wp, 0);
         }
+        return 0;
+    case WM_APP_NATCHECK:
+        nat_check_show();
         return 0;
     case WM_APP_FRIENDS:
         friends_show((int)wp, (char *)lp);
@@ -8920,6 +9582,12 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         break;
     case WM_APP_DISCOVER:
         discover_message(m, wp, lp);
+        return 0;
+    case WM_APP_REPORTS:
+        reports_message(m, wp, lp);
+        return 0;
+    case WM_APP_SUGGESTIONS:
+        suggestions_message(m, wp, lp);
         return 0;
     case WM_LBUTTONDOWN: {
         const POINT pt = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
@@ -9113,7 +9781,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     int capture_bundled = 0;  /* (--bundled-start: the start's bundled install too - timed, a shot while it runs) */
     const ULONGLONG t_start = GetTickCount64();
     ULONGLONG t_shown = 0;
-    const WCHAR *capture_music = NULL, *const *capture_tag = NULL;
+    const WCHAR *capture_music = NULL, *const *capture_tag = NULL, *const *capture_mods = NULL;
+    int capture_mods_show = 0;
+    int capture_nat = 0;
     WCHAR **argv = CommandLineToArgvW(GetCommandLineW(), &argc), *slash, *capture_file = NULL, **capture_account = NULL;
     (void)prev; (void)cmd;
 
@@ -9131,6 +9801,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         updated = 1;
     if (argv && argc >= 2 && !wcscmp(argv[1], L"--repair-failed"))   /* (restarted by a repair that failed) */
         s_repair_failed = 1;
+    if (updated || s_repair_failed)
+        update_log(UPLOG_DIR, "launcher", L"started again by the updater (%s), version %s",
+                   updated ? L"updated" : L"the repair failed", PORT_VERSION);
     {   /* the launcher an update replaced, and other program files it couldn't delete then (<name>.old) */
         WCHAR old[MAX_PATH + 8], pat[MAX_PATH], f[MAX_PATH];
         WIN32_FIND_DATAW fd;
@@ -9258,6 +9931,17 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
             wprintf(L"%s: %s - %s\n", rows[k].name, state[rows[k].state], rows[k].detail);
         return 0;
     }
+    if (argv && argc >= 3 && !wcscmp(argv[1], L"--nat-check")) {   /* <game folder>: the Online tab's connection check */
+        WCHAR t[1400];
+        console_setup();
+        wcscpy_s(s_game_dir, MAX_PATH, argv[2]);
+        nat_check_do();
+        online_route_show();
+        nat_check_text(&s_nat_result, nat_check_port(), s_route_mapped, t, 1400);
+        wprintf(L"kind=%d step=%d shared=%d v6=%d fw=%d mapped=%d\n%s\n", s_nat_result.kind, s_nat_result.step,
+                s_nat_result.shared, s_nat_result.v6, s_nat_result.fw, s_route_mapped, t);
+        return 0;
+    }
     if (argv && argc >= 4 && !wcscmp(argv[1], L"--setup-install")) {   /* <game folder> <python|ffmpeg|all> --yes */
         WCHAR err[600] = L"", list[1024];
         unsigned long long total;
@@ -9333,6 +10017,15 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         /* (a test aid: never the live server by default - server= must be given; 26 Oct a BOM hid it and a test
            report went live) */
         if (!server[0]) { wprintf(L"not sent: no server= line in %s (give the test server)\n", argv[3]); return 1; }
+        s_test_run = 1;
+        {
+            WCHAR ws[300];
+            MultiByteToWideChar(CP_UTF8, 0, server, -1, ws, 300);
+            if (test_run_refuses_url(ws, "/api/reports")) {
+                wprintf(L"not sent: %s is not a server on this PC (SVR2011_ALLOW_LIVE=1 lets it through)\n", ws);
+                return 1;
+            }
+        }
         wcscpy_s(s_game_dir, MAX_PATH, argv[2]);
         MultiByteToWideChar(CP_UTF8, 0, server, -1, wserver, 300);
         ZeroMemory(&rm, sizeof rm);
@@ -9363,7 +10056,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         }
         WideCharToMultiByte(CP_UTF8, 0, PORT_VERSION, -1, ver, sizeof ver, NULL, NULL);
         report_signature(argv[2], sig, sizeof sig);
-        json = report_json("launcher", ver, problem, happens, what, before, contact, sig);
+        {
+            char upd[600];
+            update_log_last(argv[2], upd, sizeof upd);
+            json = report_json("launcher", ver, problem, happens, what, before, contact, sig, upd);
+        }
         ZeroMemory(&u, sizeof u);
         u.json = json;
         u.zip = zip;
@@ -9377,11 +10074,56 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         i = report_send(wserver, &u, &r);
         rep_match_done(&rm);
         free(json);
+        if (i && r.secret[0] && receipt_add(argv[2], "launcher", r.id, r.secret, problem, what))
+            wprintf(L"receipt kept: %s\\UserData\\reports.json\n", argv[2]);
         if (i) wprintf(L"sent %S seen_before %d (zip %s)\n", r.id, r.seen_before, zip);
         else wprintf(L"not sent: %s (HTTP %d; the zip is kept: %s)\n", r.why, r.status, zip);
         rep_match_result_text(&rm, &r, line16, 600);
         if (line16[0]) wprintf(L"%s\n", line16);
         return i ? 0 : 1;
+    }
+    /* --reports-status <game folder> <server> / --reports-reply <game folder> <server> <id> <text> [<picture>...]:
+       the Reports tab's asks (report_receipts.h), no window (tests: a server on this PC only). */
+    if (argv && argc >= 4 && (!wcscmp(argv[1], L"--reports-status") ||
+                              ((!wcscmp(argv[1], L"--reports-reply") || !wcscmp(argv[1], L"--reports-edit")) && argc >= 6))) {
+        static ReportReceipt items[RECEIPTS_MAX];
+        WCHAR why[300], badge[60], line[1400];
+        int n, i, ok;
+        console_setup();
+        s_test_run = 1;
+        receipts_set_guard(test_run_refuses_url);
+        n = receipts_load(argv[2], items, RECEIPTS_MAX);
+        if (!wcscmp(argv[1], L"--reports-reply") || !wcscmp(argv[1], L"--reports-edit")) {
+            const int edit = !wcscmp(argv[1], L"--reports-edit");
+            char id[40], text[8192];
+            const WCHAR *pics[RECEIPT_MAX_EDIT_IMAGES];
+            int k = 0, pictures = -1;
+            WideCharToMultiByte(CP_UTF8, 0, argv[4], -1, id, sizeof id, NULL, NULL);
+            WideCharToMultiByte(CP_UTF8, 0, argv[5], -1, text, sizeof text, NULL, NULL);
+            for (i = 6; i < argc && k < (edit ? RECEIPT_MAX_EDIT_IMAGES : RECEIPT_MAX_IMAGES); i++) pics[k++] = argv[i];
+            for (i = 0; i < n && strcmp(items[i].id, id); i++)
+                ;
+            if (i == n) { wprintf(L"not sent: no receipt for %s\n", argv[4]); return 1; }
+            if (edit) {
+                ok = receipt_edit(argv[3], NULL, &items[i], text, pics, k, &pictures, why, 300);
+                if (ok) wprintf(L"change saved (%d pictures now)\n", pictures);
+                else wprintf(L"not saved: %s\n", why);
+                return ok ? 0 : 1;
+            }
+            ok = receipt_reply(argv[3], NULL, &items[i], text, pics, k, why, 300);
+            wprintf(ok ? L"answer sent\n" : L"not sent: %s\n", why);
+            return ok ? 0 : 1;
+        }
+        ok = receipts_status(argv[3], NULL, items, &n, RECEIPTS_MAX, why, 300);
+        if (!ok) { wprintf(L"not asked: %s\n", why); return 1; }
+        wprintf(L"%d report(s)\n", n);
+        for (i = 0; i < n; i++) {
+            receipt_state_text(&items[i], badge, 60, line, 1400);
+            if (receipt_wants_pictures(&items[i])) wcscpy_s(badge, 60, L"Add your pictures");
+            wprintf(L"%S  %S  %S  [%s]  %s  (edits %d, pictures %d)\n", items[i].id, items[i].app, items[i].date, badge,
+                    line, items[i].edits, items[i].pictures);
+        }
+        return 0;
     }
     if (argv && argc >= 4 && !wcscmp(argv[1], L"--import-360")) {   /* <360 save folder> <saves folder> */
         int skipped = 0, n;
@@ -9389,6 +10131,32 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         n = stfs_import_saves(argv[2], argv[3], &skipped);
         wprintf(L"imported %d, unreadable %d\n", n, skipped);
         return n ? 0 : 1;
+    }
+    if (argv && argc >= 4 && !wcscmp(argv[1], L"--clean-save")) {   /* <saves> <Mods\Superstars> [--with-off] [--apply] */
+        static ScItem items[SC_MAX];
+        WCHAR err[600] = L"";
+        int i, n, with_off = 0, apply = 0;
+        console_setup();
+        for (i = 4; i < argc; i++)
+            with_off |= !wcscmp(argv[i], L"--with-off"), apply |= !wcscmp(argv[i], L"--apply");
+        if ((n = save_clean_scan(argv[2], argv[3], items, err, 600)) < 0) {
+            wprintf(L"failed: %s\n", err);
+            return 1;
+        }
+        for (i = 0; i < n; i++)
+            wprintf(L"id %d\t%s\t%s\t%s%s%s%s%s refs %d\n", items[i].id, items[i].name,
+                    items[i].folder[0] ? items[i].folder : L"-", items[i].off ? L"off " : L"",
+                    items[i].profile ? L"profile " : L"", items[i].universe ? L"universe " : L"",
+                    items[i].mark ? L"mark " : L"", items[i].mod_save ? L"mod_save" : L"", items[i].refs);
+        wprintf(L"%d mods\n", n);
+        if (!apply)
+            return 0;
+        n = save_clean_apply(argv[2], items, n, with_off, err, 600);
+        if (n < 0)
+            wprintf(L"failed: %s\n", err);
+        else
+            wprintf(L"cleaned %d\n", n);
+        return n < 0;
     }
     if (argv && argc >= 4 && !wcscmp(argv[1], L"--import-caw")) {   /* <saves folder> <file.cas>... */
         static WCHAR list[32768];
@@ -9535,7 +10303,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         return 0;
     }
     if (argv && argc >= 4 && !wcscmp(argv[1], L"--capture")) {
-        static const WCHAR *names[TAB_COUNT] = { L"play", L"settings", L"online", L"install", L"dlc", L"saves", L"paint", L"movies", L"android", L"mods", L"music", L"roster", L"texpacks", L"setup", L"discover", L"tools" };
+        static const WCHAR *names[TAB_COUNT] = { L"play", L"settings", L"online", L"install", L"dlc", L"saves", L"paint", L"movies", L"android", L"mods", L"music", L"roster", L"texpacks", L"setup", L"discover", L"tools", L"reports", L"suggestions" };
         int i;
         const WCHAR *p = argv[2];
         /* A comma list: each tab is shown in turn (after 300 ms), the last captured. */
@@ -9551,6 +10319,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         if (capture_seq_n)
             capture_tab = capture_seq[0];
         capture_file = argv[3];
+        s_test_run = 1;  /* (no account request to a server off this PC: online_test_refused) */
         /* ... --verify: Verify game files first (the Install tab's mark). */
         if (argc >= 5 && !wcscmp(argv[4], L"--verify"))
             capture_verify = 1;
@@ -9567,9 +10336,21 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         /* ... --roster-tag <id> <SMACKDOWN|RAW|NPC|MODS|DEFAULT>: the Roster tab tags it. */
         if (argc >= 7 && !wcscmp(argv[4], L"--roster-tag"))
             capture_tag = argv + 5;
+        /* ... --online-mods <share 0|1> <kbs> <peers> <mod MB> <session MB>: the Online tab's Mod sharing rows
+           filled and saved (svr2011.toml), then the fold captured open. */
+        if (argc >= 10 && !wcscmp(argv[4], L"--online-mods"))
+            capture_mods = argv + 5;
+        if (argc >= 6 && !wcscmp(argv[4], L"--online-mods") && !wcscmp(argv[5], L"show"))  /* (only the fold, as loaded) */
+            capture_mods_show = 1;
+        /* ... --nat-check: the connection check run, its fold captured open. */
+        if (argc >= 5 && !wcscmp(argv[4], L"--nat-check"))
+            capture_nat = 1;
         /* ... --report-window <1|2>: Report a problem's window (questions / where to post) is captured instead. */
         if (argc >= 6 && !wcscmp(argv[4], L"--report-window"))
             capture_report = _wtoi(argv[5]);
+        /* ... --big-roster-warning: the big roster's Turn on / Cancel warning is captured instead. */
+        if (argc >= 5 && !wcscmp(argv[4], L"--big-roster-warning"))
+            capture_report = -1;
         /* ... --bundled-start: the start's bundled-mod install runs as without --capture (after the window shows,
            on a worker); <file>.during.png is taken while it runs, <file>.times.txt says when the window showed and
            when the install was done (ms from the start), and the capture waits for it (2 minutes at most). */
@@ -9626,12 +10407,35 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         music_add_files(s_game_dir, &capture_music, 1);
     if (capture_tag)
         roster_tag(s_game_dir, _wtoi(capture_tag[0]), capture_tag[1]);
+    if (capture_mods) {
+        CheckDlgButton(s_wnd, ID_ON_SHARE, _wtoi(capture_mods[0]) ? BST_CHECKED : BST_UNCHECKED);
+        set_text(ID_ON_UP_KBS, capture_mods[1]), set_text(ID_ON_UP_PEERS, capture_mods[2]);
+        set_text(ID_ON_MOD_MB, capture_mods[3]), set_text(ID_ON_MODS_MB, capture_mods[4]);
+        settings_save();
+        s_mods_fold = 1;
+    }
+    if (capture_mods_show)
+        s_mods_fold = 1;
+    if (capture_nat) {  /* (as its button does: the thread, its message; waiting here for the picture) */
+        const ULONGLONG t0 = GetTickCount64();
+        s_mods_fold = 2;
+        SendMessageW(s_wnd, WM_COMMAND, MAKEWPARAM(ID_ON_NAT_CHECK, BN_CLICKED), (LPARAM)ctl(ID_ON_NAT_CHECK));
+        while (s_nat_busy && GetTickCount64() - t0 < 20000) {
+            MSG m;
+            while (PeekMessageW(&m, NULL, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&m);
+                DispatchMessageW(&m);
+            }
+            Sleep(10);
+        }
+    }
     /* The first start (launcher.ini SetupShown): the Setup tab, what's found and what's missing. */
     if (capture_tab < 0 && !GetPrivateProfileIntW(L"Launcher", L"SetupShown", 0, s_launcher_ini)) {
         WritePrivateProfileStringW(L"Launcher", L"SetupShown", L"1", s_launcher_ini);
         capture_tab = TAB_SETUP;
     }
-    show_tab(capture_tab >= 0 ? capture_tab : (is_game_folder(s_game_dir) ? TAB_PLAY : TAB_INSTALL));
+    show_tab(capture_tab >= 0 ? capture_tab
+                             : (is_game_folder(s_game_dir) && !install_missing(s_game_dir) ? TAB_PLAY : TAB_INSTALL));
     if (capture_file) {
         /* Drawn off-screen, never activated (tests run beside the user's work). */
         SetWindowPos(s_wnd, NULL, -8000, -8000, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
@@ -9666,6 +10470,28 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         set_text(ID_ON_NAME, capture_account[1]);
         set_text(ID_ON_PASSWORD, capture_account[2]);
         online_sign_in(capture_account[0][2] == L'r');
+    }
+    {   /* (tests, with --capture online) SVR2011_CAPTURE_ONLINE=<step>;<step>...: the account box's fields and
+           buttons - name=, password=, code= (typed), click=register|forgot|back|step|signin */
+        const char *v = capture_file ? getenv("SVR2011_CAPTURE_ONLINE") : NULL;
+        WCHAR w[1024], *ctx = NULL, *t;
+        if (v && *v) {
+            MultiByteToWideChar(CP_UTF8, 0, v, -1, w, 1024);
+            for (t = wcstok_s(w, L";", &ctx); t; t = wcstok_s(NULL, L";", &ctx)) {
+                static const struct { const WCHAR *k; int id; } fields[] = {
+                    { L"name=", ID_ON_NAME }, { L"password=", ID_ON_PASSWORD }, { L"code=", ID_ON_CODE } };
+                static const struct { const WCHAR *k; int id; } clicks[] = {
+                    { L"click=register", ID_ON_REGISTER }, { L"click=forgot", ID_ON_FORGOT }, { L"click=back", ID_ON_BACK },
+                    { L"click=step", ID_ON_STEP }, { L"click=signin", ID_ON_SIGNIN } };
+                size_t i;
+                for (i = 0; i < sizeof fields / sizeof fields[0]; i++)
+                    if (!wcsncmp(t, fields[i].k, wcslen(fields[i].k)))
+                        set_text(fields[i].id, t + wcslen(fields[i].k));
+                for (i = 0; i < sizeof clicks / sizeof clicks[0]; i++)
+                    if (!wcscmp(t, clicks[i].k))
+                        SendMessageW(s_wnd, WM_COMMAND, MAKEWPARAM(clicks[i].id, BN_CLICKED), (LPARAM)ctl(clicks[i].id));
+            }
+        }
     }
     if (capture_file) {
         MSG pm;
@@ -9709,11 +10535,64 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
             }
             /* (the Online tab: until the Friends list is in, 5 s at most) */
             while (GetTickCount64() - t0 < 400 || (s_fr_busy && GetTickCount64() - t0 < 5000) ||
-                   (s_cur_tab == TAB_DISCOVER && GetTickCount64() - t0 < 4000))   /* (its list and pictures) */
+                   (s_cur_tab == TAB_DISCOVER && GetTickCount64() - t0 < 4000) ||   /* (its list and pictures) */
+                   (s_cur_tab == TAB_REPORTS && reports_test_state(NULL, NULL, 0) && GetTickCount64() - t0 < 10000) ||
+                   (s_cur_tab == TAB_SUGGESTIONS && suggestions_test_state(NULL, NULL, 0) && GetTickCount64() - t0 < 10000))
                 while (PeekMessageW(&pm, NULL, 0, 0, PM_REMOVE)) {
                     TranslateMessage(&pm);
                     DispatchMessageW(&pm);
                 }
+        }
+        if (s_cur_tab == TAB_REPORTS) {
+            /* Reports: the list and the status line in <file>.reports.txt; SVR2011_REPORTS_PICK=<row> selects one
+               (its line, the answer box) before the shot */
+            WCHAR log[MAX_PATH], line[400];
+            FILE *f = NULL;
+            int n = 0;
+            const char *pick = getenv("SVR2011_REPORTS_PICK");
+            if (pick) reports_test_pick(atoi(pick));
+            if (pick && getenv("SVR2011_REPORTS_EDIT")) reports_test_edit();   /* (its change box open) */
+            reports_test_state(&n, line, 400);
+            swprintf_s(log, MAX_PATH, L"%s.reports.txt", capture_file);
+            if (!_wfopen_s(&f, log, L"w, ccs=UTF-8") && f) {
+                fwprintf(f, L"reports: %d\nstatus: %s\n", n, line);
+                reports_test_dump(f);
+                fclose(f);
+            }
+        }
+        if (s_cur_tab == TAB_SUGGESTIONS) {
+            /* Suggestions: SVR2011_SUGGEST_SEND=<title>|<text>[|<picture>] sends one as the Send button does (its
+               answer waited for, 15 s at most), SVR2011_SUGGEST_PICK=<row> selects one; the list and the status line
+               in <file>.suggestions.txt */
+            WCHAR log[MAX_PATH], line[400];
+            FILE *f = NULL;
+            int n = 0;
+            const char *send = getenv("SVR2011_SUGGEST_SEND"), *pick = getenv("SVR2011_SUGGEST_PICK");
+            if (send) {
+                char buf[2000], *text, *pic;
+                WCHAR wpic[MAX_PATH] = L"";
+                ULONGLONG t1;
+                strcpy_s(buf, sizeof buf, send);
+                if ((text = strchr(buf, '|')) != NULL) *text++ = 0;
+                if (text && (pic = strchr(text, '|')) != NULL) {
+                    *pic++ = 0;
+                    MultiByteToWideChar(CP_UTF8, 0, pic, -1, wpic, MAX_PATH);
+                }
+                suggestions_test_send(buf, text ? text : "", wpic);
+                for (t1 = GetTickCount64(); suggestions_test_state(NULL, NULL, 0) && GetTickCount64() - t1 < 15000;)
+                    while (PeekMessageW(&pm, NULL, 0, 0, PM_REMOVE)) {
+                        TranslateMessage(&pm);
+                        DispatchMessageW(&pm);
+                    }
+            }
+            if (pick) suggestions_test_pick(atoi(pick));
+            suggestions_test_state(&n, line, 400);
+            swprintf_s(log, MAX_PATH, L"%s.suggestions.txt", capture_file);
+            if (!_wfopen_s(&f, log, L"w, ccs=UTF-8") && f) {
+                fwprintf(f, L"suggestions: %d\nstatus: %s\n", n, line);
+                suggestions_test_dump(f);
+                fclose(f);
+            }
         }
         if (s_cur_tab == TAB_DISCOVER) {
             /* Discovery: a download running (SVR2011_DISCOVER_DOWNLOAD) is waited for (15 minutes at most), its
@@ -9797,7 +10676,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
                 fclose(f);
             }
         }
-        if (capture_report)
+        if (capture_report < 0)
+            big_roster_confirm(capture_file);
+        else if (capture_report)
             report_window(capture_report, capture_file);
         else
             capture(capture_file);

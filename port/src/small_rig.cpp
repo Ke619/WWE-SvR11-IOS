@@ -37,6 +37,7 @@
 
 #include "generated/default/svr2011_init.h"
 #include "superstar_mods.h"
+#include "../modmaker/svrfmt/bytes.h"
 
 REXCVAR_DEFINE_BOOL(small_rig_retarget, true, "Gameplay",
                     "Fit the standard motions to Hornswoggle's small skeleton (no floating, bent limbs)");
@@ -47,18 +48,7 @@ constexpr uint32_t kRoot = 1760 + 64, kIk = 1760 + 208;
 constexpr uint32_t kRoster = 0x82EDEA88, kHornswoggle = 195;
 constexpr float kLeg = 0.419f, kArm = 0.512f;  // (his limb lengths / the standard rig's)
 
-uint32_t Rd32(const uint8_t* p) { return uint32_t(p[0]) << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
-float RdF(const uint8_t* p) {
-  const uint32_t v = Rd32(p);
-  float f;
-  std::memcpy(&f, &v, 4);
-  return f;
-}
-void WrF(uint8_t* p, float f) {
-  uint32_t v;
-  std::memcpy(&v, &f, 4);
-  p[0] = uint8_t(v >> 24), p[1] = uint8_t(v >> 16), p[2] = uint8_t(v >> 8), p[3] = uint8_t(v);
-}
+using svrfmt::Rd32, svrfmt::RdF, svrfmt::WrF;
 bool Pointer(uint32_t a) { return a >= 0x40000000 && a < 0xC0000000 && !(a & 3); }
 
 struct Known {

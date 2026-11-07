@@ -1,6 +1,6 @@
 // WWE SmackDown vs. Raw 2011 - "Report a problem" on the phone (as the PC
-// launcher's, launcher/report.c): one zip in the Download folder with the
-// newest game logs, crash reports and svr2011.toml (the account's token and
+// launcher's, launcher/report.c): the zip ReportSend sends (made in the app's
+// cache, gone once sent - reports are sent, not saved) with the newest game logs, crash reports and svr2011.toml (the account's token and
 // password removed), plus report.txt (app version, phone, Android version),
 // saves_check.txt (the Created Superstar saves' checksums, not the saves) and
 // mods_text.txt (the superstar mods' text files) - port/docs/PROBLEM_REPORTS.md.
@@ -8,7 +8,6 @@
 package io.github.kaikoclanworth1.svr2011;
 
 import android.os.Build;
-import android.os.Environment;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -29,20 +28,12 @@ final class ProblemReport {
         int logs, crashes;
     }
 
-    // Makes the zip; throws if it can't be written.
-    static Result make(File gameFolder, String appVersion) throws IOException {
-        return make(gameFolder, appVersion, null);
-    }
-
-    // ... with the player's description (ReportForm) at the top of report.txt.
-    static Result make(File gameFolder, String appVersion, String description) throws IOException {
-        return make(gameFolder, appVersion, description, false);
-    }
-
-    // ... and (withSave: the form's "Include my main save" tick) the main save as save/ (addMainSave).
-    static Result make(File gameFolder, String appVersion, String description, boolean withSave) throws IOException {
+    // Makes the zip in `dir`, the player's description (ReportForm) at the top of
+    // report.txt and (withSave: the form's "Include my main save" tick) the main
+    // save as save/ (addMainSave); throws if it can't be written.
+    static Result make(File dir, File gameFolder, String appVersion, String description, boolean withSave)
+            throws IOException {
         String stamp = new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date());
-        File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
         dir.mkdirs();
         Result r = new Result();
         r.zip = new File(dir, "SvR2011-report-" + stamp + ".zip");
@@ -54,6 +45,7 @@ final class ProblemReport {
                 + "chip: " + (Build.VERSION.SDK_INT >= 31 ? Build.SOC_MANUFACTURER + " " + Build.SOC_MODEL : "?") + "\n"
                 + "GPU: " + (GpuInfo.known().isEmpty() ? "?" : GpuInfo.known()) + "\n"
                 + "made: " + stamp + "\n"
+                + lastExits()
                 + "contents: the newest game logs (logs/), crash reports (crashes/) and svr2011.toml "
                 + "(account token and password removed)" + (withSave ? ", the main save (save/: SaveData.dat - "
                 + "no Created Superstars or Paint Tool)" : "") + "; IP addresses blanked (x.x.x.x)\n";
@@ -79,6 +71,56 @@ final class ProblemReport {
             if (withSave) addMainSave(zip, gameFolder);
         }
         return r;
+    }
+
+    // The app's context (LauncherActivity / GameActivity onCreate): lastExits reads the system's record with it.
+    static volatile android.content.Context ctx;
+
+    // How the app's last runs ended, as Android recorded them (API 30+): a low-memory kill, a crash, the player
+    // closing it, an ANR - the game's own log just stops in all of these (2.1.9 reports b7f723 and ff18a1). One
+    // line each, newest first: "last exit: <time> <reason> (status, description), memory <pss> / <rss> MB".
+    static String lastExits() {
+        android.content.Context c = ctx;
+        if (c == null || Build.VERSION.SDK_INT < 30) return "";
+        StringBuilder out = new StringBuilder();
+        try {
+            android.app.ActivityManager am = c.getSystemService(android.app.ActivityManager.class);
+            SimpleDateFormat when = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US);
+            for (android.app.ApplicationExitInfo e : am.getHistoricalProcessExitReasons(null, 0, 3)) {
+                String desc = e.getDescription() == null ? "" : e.getDescription().replace('\n', ' ').trim();
+                if (desc.length() > 160) desc = desc.substring(0, 160);
+                out.append("last exit: ").append(when.format(new Date(e.getTimestamp()))).append(' ')
+                    .append(exitReason(e.getReason())).append(" (status ").append(e.getStatus())
+                    .append(desc.isEmpty() ? "" : ", " + desc).append("), memory ")
+                    .append(e.getPss() / 1024).append(" / ").append(e.getRss() / 1024).append(" MB\n");
+            }
+        } catch (Throwable t) {
+            out.append("last exit: (not read: ").append(t.getClass().getSimpleName()).append(")\n");
+        }
+        return out.toString();
+    }
+
+    // (ApplicationExitInfo.REASON_*)
+    static String exitReason(int r) {
+        switch (r) {
+            case 1: return "exit-self";
+            case 2: return "signaled";
+            case 3: return "low-memory";
+            case 4: return "crash (Java)";
+            case 5: return "crash (native)";
+            case 6: return "ANR (not responding)";
+            case 7: return "initialization-failure";
+            case 8: return "permission-change";
+            case 9: return "excessive-resource-use";
+            case 10: return "user-requested";
+            case 11: return "user-stopped";
+            case 12: return "dependency-died";
+            case 13: return "other";
+            case 14: return "freezer";
+            case 15: return "package-state-change";
+            case 16: return "package-updated";
+            default: return "unknown (" + r + ")";
+        }
     }
 
     // The player's main save, as the PC launcher's (launcher/report.c main_save): save/SaveData.dat (story, Universe

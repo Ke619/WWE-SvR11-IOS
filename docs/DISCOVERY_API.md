@@ -103,6 +103,8 @@ A change answers `{"ok": true, "mod": <row with description>}`.
 
 The dashboard can still hide, show or delete any mod. A hidden mod stays hidden when its owner edits or updates it.
 
+An admin can store a new version of any mod (the 30 Oct bulk .bik -> .mp4 movie shrink): the same `PUT /api/mods/{id}/file` with the storage node's key (`X-Storage-Key`, a core with a node only) instead of a Bearer token, or `PUT /api/admin/mods/{id}/file` from the dashboard. The checks are the owner's (a new version, the file checked, `needs` from its manifest) without the quota. The owner, author, id and downloads stay; `updated` becomes now, so players see UPDATE. An optional `why` part goes in the log. The key route goes through the `/svr/api/mods/{id}/file` nginx location, which takes big bodies; `/svr-admin/` takes 1 MB.
+
 ## Server log lines
 
 ```
@@ -110,7 +112,8 @@ discovery: mod 12 "Name" 1.0 (12345 bytes, arena) from Player
 discovery: mod 12 updated by its owner (info): description, name
 discovery: mod 12 updated by its owner (pictures)
 discovery: mod 12 updated by its owner (pictures): picture 2
-discovery: mod 12 updated by its owner (file) 1.0 -> 1.1 (23456 bytes, arena)
+discovery: mod 12 updated by its owner (file) 1.0 -> 1.1 (12345 -> 23456 bytes, arena)
+discovery: mod 12 updated by admin (movie shrink) (file) 1.1 -> 1.1.1 (23456 -> 3456 bytes, arena)
 discovery: update of mod 12 from Player refused: <why>
 discovery: mod 12 deleted by its owner Player
 ```

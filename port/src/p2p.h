@@ -44,6 +44,8 @@ std::optional<std::string> P2PFetch(uint8_t kind, const std::string& key, std::c
 // else joined) as an XSESSION_INFO (60 bytes: id, host XNADDR, key) and its
 // slots; false when there's none.
 bool P2PSessionInfo(uint8_t* out, uint32_t* slots = nullptr);
+// The match session this game is in: 0 none, 1 it hosts it, 2 it joined it (the presence poll's place).
+int P2PSessionRole();
 // An invited game, before the game joins: reaches the session's host (directly
 // or through the relay) so its packets get through; true if it still has it.
 bool P2PReachHost(const uint8_t* info);
@@ -80,6 +82,12 @@ std::optional<uint32_t> PortRules();
 // "relay" (every peer through the relay) or "p2p" (match traffic direct only). A session this game
 // hosts from then on carries it (property 0x1000F004); joiners follow the host's.
 void P2PSetServerNetwork(const std::string& mode);
+// The server's netcode (its netcode setting, from the presence poll): "lockstep", "lockstep_vclock" or
+// "rollback" (unknown: lockstep). A match session this game hosts from then on carries it (property 0x1000F005);
+// joiners follow the host's (a host without it: lockstep).
+void P2PSetServerNetcode(const std::string& mode);
+// This match session's netcode: 0 lockstep, 1 rollback, 2 lockstep_vclock; 0 outside a match session.
+int P2PNetcode();
 // The match kind the game set for its online sessions (XUserSetContext
 // X_CONTEXT_GAME_TYPE, set as the player enters RANKED MATCH / PLAYER MATCH,
 // before CREATE SESSION): true Ranked, false Player Match; nullopt: not set yet.
@@ -108,6 +116,16 @@ P2PRelayPathInfo P2PRelayPath();
 using P2PModHandler = void (*)(const uint8_t* data, size_t size);
 void SetP2PModHandler(P2PModHandler handler);
 void P2PSendMods(const std::vector<uint8_t>& payload);
+
+// Mod files (mod_transfer.cpp): kModXfer messages to one peer (a peer = its MAC as a number), over a DIRECT
+// link only - false when there's none (the relay never carries files: the user's rule). The handler gets the
+// sender. The session this game joined: its host (0: none) and id; or the one it hosts.
+using P2PModXferHandler = void (*)(uint64_t peer, const uint8_t* data, size_t size);
+void SetP2PModXferHandler(P2PModXferHandler handler);
+bool P2PSendModXfer(uint64_t peer, const std::vector<uint8_t>& payload);
+bool P2PPeerDirect(uint64_t peer);
+uint64_t P2PSessionHost(uint64_t* session = nullptr);
+bool P2PHosting(uint64_t* session = nullptr);
 // Lobby chat longer than the game's 64 bytes (online_chat.cpp): the same, a
 // message kind of its own.
 using P2PChatHandler = void (*)(const uint8_t* data, size_t size);

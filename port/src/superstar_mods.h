@@ -22,14 +22,39 @@ void InstallSuperstarMods(rex::memory::Memory* memory, rex::filesystem::VirtualF
 // Attire mods that replace an attire a stock superstar's own pac has: a move
 // pack each (Mods/SuperstarOverlay/attirepacks/<folder>: "pacentry
 // ch\chNNN.pac EMD <entry> <file>"), merged by InstallMovePacks into an overlay
-// copy of the game's pac. Called by InstallMovePacks before it lists the packs.
-void PrepareAttirePacks(const std::filesystem::path& game);
+// copy of the game's pac. Called by InstallMovePacks before it lists the packs. dlc_root: the installed DLC
+// packages (their pac\ch\ch<id>_dlcNN.pac: the DLC superstars' attires and DLC attires of disc superstars count
+// as the superstar's own; an attire mod replacing one of those is mounted as a guest pac, LoadAttireMods).
+void PrepareAttirePacks(const std::filesystem::path& game, const std::filesystem::path& dlc_root);
 // Before the Custom Movies folder is mounted (its device lists the files
 // once): the mods' entrance movies are copied into it.
 void CopySuperstarMovies(const std::filesystem::path& movies);
-// The installed mods' character ids (the select screen's EXTRA list).
-std::vector<uint32_t> SuperstarModIds();
+// The installed mods' character ids (the select screen's EXTRA list); with_online false: without the ones
+// fetched from a session's host for this run (WWE Universe, Road to WrestleMania, Mystery Opponent).
+std::vector<uint32_t> SuperstarModIds(bool with_online = true);
+// A mod fetched from a session's host for this run (OnlineMods): never kept in saves (superstar_threads.cpp).
+bool IsOnlineTempSuperstar(uint32_t id);
+// The saves folder (its SaveData.dat: what a fetched mod's id is put back to in every save built).
+void SetSuperstarModsSaves(const std::filesystem::path& saves);
+// The save being built (superstar_threads.cpp's sub_827235D8 hook): saving true puts back the fetched mods' ids as
+// the save had them, false (after the build) the mods again.
+void OnlineTempForSave(uint8_t* base, bool saving);
+// Per-mod save files (per_mod_saves): around the save writer - the mods' bytes to Saves\.mods\<folder>.dat and
+// their slots' stubs into the save (saving), then back.
+void PerModSavesForSave(uint8_t* base, bool saving);
+// After a save is loaded: the save's teams / titles / Universe cards that name a mod get its id back (refs.bin).
+void PerModSavesLoaded(uint8_t* base);
 bool IsSuperstarMod(uint32_t id);
+// The installed mods' entrance numbers (manifest entrance= and attire<N>_entrance=, without the fetched ones): the
+// CREATE AN ENTRANCE rows "MOD: <name>" (cae_mod_motions.cpp). base: the manifest's base superstar - a mod on a game
+// entrance keeps its base's scene parts (10000 + 1000k + base: Jeff Hardy's are Matt Hardy's 10112...).
+struct SuperstarModEntrance {
+  uint32_t id;
+  std::string name;
+  std::vector<int> numbers;
+  uint32_t base = 0;
+};
+std::vector<SuperstarModEntrance> SuperstarModEntrances();
 // A mod's folder in Mods/Superstars ("" for no mod).
 std::string SuperstarModFolder(uint32_t id);
 // A mod's loading picture file (manifest loading=, else its load.dds; "" for none).
@@ -42,11 +67,20 @@ void SuperstarModHandovers(uint8_t* base);
 void CheckModProfiles(uint8_t* base);
 // A mod's base character id (its manifest's base=), else 0.
 uint32_t SuperstarModBase(uint32_t id);
+// The id of the installed mod in folder (Mods/Superstars/<folder>; not a fetched one), else 0.
+uint32_t SuperstarModIdOf(const std::string& folder);
+// The saves folder SetSuperstarModsSaves was given ("" before).
+std::filesystem::path SuperstarModsSavesDir();
 // The game's text for string id (menu_hooks.cpp's lookup): a mod's attire
 // names, else 0.
 uint32_t SuperstarModString(uint32_t id);
 // Another pac in Mods/SuperstarOverlay to mount with the mods' (media mods);
 // before InstallSuperstarMods.
 void AddOverlayMount(const std::string& file);
+
+// CREATE AN ENTRANCE: a superstar picked / his entrance scene asked for / the menu's load came first: the back-out's log line.
+void CaePicked(uint32_t id);
+void CaeSceneAsked();
+void CaeMenuLoads();
 
 }  // namespace svr2011

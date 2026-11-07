@@ -144,6 +144,19 @@ def name13to11(n):
     return n  # face bones share names
 
 
+def cloth_root(nodes, i):
+    """A physics chain that doesn't hang from the head - cloth, as Rikishi 2K17's tassels on the thighs: the bone it
+    hangs from, so its vertices stay with that. name13to11 takes every kami_ for hair and the head's: skinned between
+    his hips and his head, the tassels stretched into long strands. Any other bone: itself. (The tie, kami_b15: as
+    name13to11 has it.)"""
+    if not nodes[i]['name'].startswith('kami_') or nodes[i]['name'].startswith('kami_b15'):
+        return i
+    k = i
+    while k >= 0 and nodes[k]['name'].startswith('kami_'):
+        k = nodes[k]['parent']
+    return k if k >= 0 and nodes[k]['name'] != 'Bip Head' else i
+
+
 # bones whose WWE '13 position sets the 2011 node's (one per node)
 PRIMARY = {'Bip Pelvis', 'Bip Spine', 'Bip Spine1', 'Bip Neck', 'Neck_x', 'Bip Head', 'd_kuchi_t'}
 
@@ -226,7 +239,7 @@ def hair_chains(m13):
         while '%s_%02d' % (root, k) in names:
             chain.append(names['%s_%02d' % (root, k)])
             k += 1
-        if len(chain) >= 3:
+        if len(chain) >= 3 and cloth_root(m13['nodes'], chain[0]) == chain[0]:
             out[root] = chain
     return out
 
@@ -414,7 +427,7 @@ class Conv:
         # 13 -> 11 index map (walking up the parents when a bone has no 2011 node)
         nmap = {}
         for i, nd in enumerate(n13):
-            k = i
+            k = cloth_root(n13, i)
             while True:
                 n11 = name13to11(n13[k]['name'])
                 if n11 in self.tindex:
@@ -525,7 +538,7 @@ class Conv:
                 if i in chain_idx:
                     sub_map[i] = chain_idx[i]
                     continue
-                k = i
+                k = cloth_root(m13['nodes'], i)
                 while k >= 0:
                     nm = m13['nodes'][k]['name']
                     if nm in body_names:
@@ -553,12 +566,15 @@ class Conv:
         # opaque ones first; one that doesn't fit is left out: Hogan's feather boa, 21 pages, after the T-shirt)
         import model_budget
         extra = sorted(extra_models(kids13), key=lambda i: any(is_trans(s) for s in read13(kids13[i])['meshes']))
-        self.extra, self.extra_left = [], []
+        self.extra, self.extra_left, self.props_left = [], [], []
         if extra:
             merged = jboy.read(out[0])
             others = sum(model_budget.attire_pages({k: out[k]})[0] for k in (0x2710, 0x4e20) if k in out)
             for i in extra:
                 m13 = read13(kids13[i])
+                if any(p in m13['name'].lower() for p in MOVE_PROPS):
+                    self.props_left.append((i, m13['name']))
+                    continue
                 sub = _sub_map(m13, body13, nodes, nmap)
                 pm = self.model(m13, self.body, nodes, sub, origin, tex_body,
                                 lambda s: (self.p_hair, SKIN) if is_trans(s) else kind(s))
@@ -735,6 +751,9 @@ def is_trans(s13):
 
 
 EXTRA_MODELS = range(0x10, 0x100)   # (JBOY children past the textures: 2K14 Hogan's 04 T_shirt = 0x1d)
+# (extra models the source shows only in its own moves - Mankind '13's Mr. Socko, "sockko", child 0x1c, his Mandible
+# Claw's: in the body 2011 draws it all match, so it is left out)
+MOVE_PROPS = ('sock',)
 
 
 def extra_models(kids13):
@@ -753,7 +772,7 @@ def _sub_map(m13, body13, nodes, nmap):
     idx11 = {nd['name']: j for j, nd in enumerate(nodes)}
     out = {}
     for i in range(len(m13['nodes'])):
-        k = i
+        k = cloth_root(m13['nodes'], i)
         while k >= 0:
             nm = m13['nodes'][k]['name']
             if nm in body_names:
@@ -816,6 +835,10 @@ def convert(src, out, tmpl, portrait=None):
                 print('  extra model %#x %s: in the body' % (i, nm))
             for i, nm in conv.extra_left:
                 print('  extra model %#x %s: LEFT OUT (over the 192-page vertex memory)' % (i, nm))
+            for i, nm in conv.props_left:
+                print('  extra model %#x %s: LEFT OUT (a prop of its moves: 2011 would show it all match)' % (i, nm))
+            convert.extras.extend('%s: %s left out (a prop its moves show - 2011 would draw it all match)' %
+                                  (name.decode('latin1').strip('\x00 '), nm) for i, nm in conv.props_left)
             convert.extras.extend('%s: %s left out (vertex memory)' % (name.decode('latin1').strip('\x00 '), nm)
                                   for i, nm in conv.extra_left)
             if name.rstrip(b'\0 ').endswith(b'4'):

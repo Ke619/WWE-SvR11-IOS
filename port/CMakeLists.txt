@@ -113,6 +113,7 @@ set(SVR2011_SOURCES
     src/story_mods.cpp
     src/title_belts.cpp
     src/text_guard.cpp
+    src/menu_touch.cpp
     src/big_roster.cpp
     src/post_effects.cpp
     src/replays.cpp

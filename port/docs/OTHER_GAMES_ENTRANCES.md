@@ -454,3 +454,13 @@ left / 15-29 right; docs/HAND_POSES.md), the first with the event block `40 05 0
 | WWE '12 - 2K17 | the Biped finger bones retargeted onto 2011's 30 finger joints: `tools/finger_retarget.py` (hand-frame chain, fixed ch246 -> ch104 hand alignment, `bind * Rz Ry Rx` as the library, solved parent first on the quantised chain); vs 2011's own 107 Kane / 101 Austin: fist / open agree 97-99% of frames, median 1 degree. Bind tables are WWE '13's (assumed for '12 / 2K14-2K17) |
 
 The Mod Maker's future entrance preview reads y2/y3 the same way (ModMakerUIRework).
+
+## The global object (lights and effects)
+
+Tracks x 10..14 go with slot 0, 60..64 with slot 5, 110..114 with slot 10; y 52..59 are moving lights, y 50 holds op 137. WWE 2K14 conversions now
+use the entrance's own tracks (`wwe13_entrance.global_track`), not a stock donor's. A donor changes the look of the whole entrance: with Triple H 102's, Goldberg
+361 goes nearly black. The other games keep the donor until they are played (`OWN_GLOBAL_GAMES`).
+
+Record: u8 hold (that many skipped frames follow; at most 0x5f), 3 f32 LE position, 3 s16 LE angles, 3 u16 LE colour. Position = source x 100, from y 50 x 10;
+colour = the source's second channel x 4096; angles: zyx, 2011's matrix = the source's x `GLOBAL_AXES`. Source events: 87 starts (nothing in 2011), 88 / 256 end (op 1, 00), 208 = op 137.
+Checked against the entrances 2K14 and 2011 share, tracks of equal length only: position exact to the 90th percentile, angles within 115 / 65536; other differences look re-authored.

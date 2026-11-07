@@ -407,6 +407,93 @@ def global_donor(stock, obj13, prefer=None):
     return best
 
 
+# ---- the global object: an entrance's own lights and effects. In the source each track has a transform (position,
+# rotation) and a colour (the second channel's position, 0-1 and over). 2011's record: a u8 hold, 3 f32
+# LE position, 3 s16 LE angles, 3 u16 LE colour x 4096. Fitted and checked against the entrances 2K14 and 2011 share:
+# position x 100, from y 50 x 10; angles: 2011's zyx = the source's zyx x GLOBAL_AXES; the source's event 87 starts
+# a track (no event in 2011), 88 and 256 end it (op 1, 00), 208 is op 137 (as on any object).
+GLOBAL_AXES = ((0, 0, 1), (-1, 0, 0), (0, -1, 0))
+OWN_GLOBAL_GAMES = {'wwe2k14'}  # (the others keep a stock donor until they are played)
+
+
+def _key_at(keys, t):
+    """linear between (time, values) keys"""
+    if t <= keys[0][0]:
+        return keys[0][1]
+    for (a, va), (b, vb) in zip(keys, keys[1:]):
+        if t <= b:
+            f = (t - a) / (b - a) if b > a else 0.0
+            return tuple(x + (y - x) * f for x, y in zip(va, vb))
+    return keys[-1][1]
+
+
+def _euler_zyx(v):
+    """(x, y, z) radians -> matrix Rz Ry Rx"""
+    cx, sx, cy, sy, cz, sz = math.cos(v[0]), math.sin(v[0]), math.cos(v[1]), math.sin(v[1]), math.cos(v[2]), math.sin(v[2])
+    return ((cz * cy, cz * sy * sx - sz * cx, cz * sy * cx + sz * sx),
+            (sz * cy, sz * sy * sx + cz * cx, sz * sy * cx - cz * sx),
+            (-sy, cy * sx, cy * cx))
+
+
+def global_pose(pos, rot, colour, y):
+    """the 24 bytes of a 2011 global record after its skip byte"""
+    M = _euler_zyx(rot)
+    R = [[sum(M[i][k] * GLOBAL_AXES[k][j] for k in range(3)) for j in range(3)] for i in range(3)]
+    b = math.asin(max(-1.0, min(1.0, -R[2][0])))
+    x, z = math.atan2(R[2][1], R[2][2]), math.atan2(R[1][0], R[0][0])
+    ang = [((int(round(v * 32768 / math.pi)) + 32768) & 0xffff) - 32768 for v in (x, b, z)]
+    scale = 10.0 if y >= 50 else 100.0
+    col = [max(0, min(0xffff, int(c * 4096 + 0.5))) for c in colour]
+    return struct.pack('<3f3h3H', *[float(q) * scale for q in pos], *ang, *col)
+
+
+def global_track(leaf, off, y):
+    """a global object's source block -> (2011 stream bytes, frames) or None if it isn't a transform + colour"""
+    m = Y.decode(leaf, y=off, sample=False)
+    tr = list(m['tracks'].values())
+    if len(tr) < 2 or 'pos' not in tr[0]['parts'] or 'pos' not in tr[1]['parts']:
+        return None
+    nf = (m['frames'] - 1) // 2 + 1
+    pos, colour = tr[0]['parts']['pos'], tr[1]['parts']['pos']
+    rot = tr[0]['parts'].get('rot8') or [(0, (0.0, 0.0, 0.0))]
+    events = collections.defaultdict(list)
+    for e in block_events(leaf, off):
+        f = min(e['frame'] // 2, nf - 1)
+        for c in e['commands']:
+            if c['id'] in (88, 256):
+                events[f].append(bytes([1, 0]))
+            elif c['id'] == 208:
+                events[f].append(bytes([137]) + bytes.fromhex(c['data'])[:4])
+    moves = any(len(k) > 1 and any(v != k[0][1] for _, v in k[1:]) for k in (pos, rot, colour))
+    keys = list(range(nf)) if moves else sorted(set(range(0, nf, 0x5f)) | {nf - 1} | set(events))
+    # a record's first byte: it holds for that many frames, then that many skipped frames (a skip is up to 0x5f)
+    items, prev = [], -1
+    for f in keys:
+        hold = f - prev - 1
+        t = f * 2
+        pose = bytes([hold]) + global_pose(_key_at(pos, t), _key_at(rot, t), _key_at(colour, t), y)
+        r = ymks.join_record(b''.join(events.get(f, [])), pose)
+        items.append(('rec', r, len(r) > 0x9f))
+        if hold:
+            items.append(('skip', hold))
+        prev = f
+    return ymks.build_stream(ymks.Stream(items)), nf
+
+
+def own_global(leaf, index):
+    """an entrance's own global tracks as bank entries, [] if they can't be read"""
+    out = []
+    try:
+        for x, y, off in blocks(leaf):
+            t = global_track(leaf, off, y)
+            if t is None:
+                return []
+            out.append(dict(y=y, x=x, id=25000 + index, frames=t[1], rt=S.RT_2011, data=t[0], share=False, tail_off=None))
+    except (ValueError, KeyError, IndexError, struct.error, ZeroDivisionError):
+        return []
+    return out
+
+
 # ============================================================================ events
 
 def _vals(d, n):
@@ -728,7 +815,7 @@ def convert(evp13, evz13, number, game_pac=None, name=None, bind='rest', progres
     stock, props11 = stock_2011(game_pac)
     rep = dict(notes=[], warnings=[], dropped=[], dropped_events=collections.Counter())
     e, src_num, nm = convert_evp(evp13, number, stock, props11, name, rep)
-    return convert_tracks(e, evz13, src_num, nm, stock, rep, bind, progress, ik=GAMES[game]['ik'])
+    return convert_tracks(e, evz13, src_num, nm, stock, rep, bind, progress, ik=GAMES[game]['ik'], own_lights=game in OWN_GLOBAL_GAMES)
 
 
 def convert_evp(evp13, number, stock, props11, name, rep):
@@ -812,7 +899,7 @@ def place_extras(e, tracked, stock, rep):
                             % ', '.join(map(str, hidden)))
 
 
-def convert_tracks(e, evz13, src_num, nm, stock, rep, bind='rest', progress=None, ik=True):
+def convert_tracks(e, evz13, src_num, nm, stock, rep, bind='rest', progress=None, ik=True, own_lights=False):
     leaves = leaves_of(evz13)
     RT = WR.Retarget(bind, ik=ik)
     FT = FR.Retarget()
@@ -902,6 +989,11 @@ def convert_tracks(e, evz13, src_num, nm, stock, rep, bind='rest', progress=None
     # ---- global objects: a stock donor's tracks
     for i, o in enumerate(e['objs']):
         if kind(o) != 'global':
+            continue
+        mine = own_global(leaves[i], i) if own_lights and i in leaves else []
+        if mine:
+            rep['notes'].append('object %d: the entrance\'s own global object tracks (%d)' % (i, len(mine)))
+            ents += mine
             continue
         don = global_donor(stock, o, prefer=src_num if src_num in stock and
                            evp_name(stock[src_num][0]).lower().replace(' ', '') == nm.lower().replace(' ', '') else None)

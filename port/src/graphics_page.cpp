@@ -11,6 +11,7 @@
 #include "frame_rate.h"
 #include "free_cam.h"
 #include "graphics_page.h"
+#include "platform.h"
 #include "cpu_difficulty.h"
 #include "display_modes.h"
 #include "arena_lights.h"
@@ -116,7 +117,7 @@ enum Row {
   kFrameRate, kFullSpeed,                                        // DISPLAY
   kCpuPriority,                                                  // DISPLAY (PC, last)
   kTextureQuality,                                               // GRAPHICS
-  kCrowd, kShadows,                                              // ADV. GRAPHICS
+  kPreset, kCrowd, kShadows,                                     // ADV. GRAPHICS
   kFastStart,                                                    // DISPLAY (last)
   kPing,                                                         // DISPLAY
   kRouterPort,                                                   // DISPLAY
@@ -131,6 +132,44 @@ enum Row {
 };
 // FRAME RATE (frame_rate.h): the choices.
 constexpr int kFrameRates[] = {30, 60};
+
+// ADV. GRAPHICS -> CROWD DENSITY.
+constexpr const char* kLevelNames[] = {"LOW", "MED", "HIGH"};
+constexpr const char* kCrowdValues[] = {"off", "medium", "on"};
+
+// ADV. GRAPHICS -> PRESET: sets these rows, all in one go. The page shows the one that matches them, else CUSTOM.
+// Which device: only the presets that fit it are offered.
+enum PresetDevice { kPresetAndroid, kPresetSwitch, kPresetDeck, kPresetPc };
+struct Preset {
+  const char* name;
+  PresetDevice device;
+  int crowd;           // (0 LOW, 1 MED, 2 HIGH)
+  bool shadows;
+  bool effects;        // (EFFECT DETAIL HIGH)
+  int textures;        // (kTextureQualities)
+  int scale;           // (kScales)
+  int aa;              // (1 off, 2-4)
+  int frame_rate;      // (kFrameRates: 0 for 30, 1 for 60)
+};
+constexpr int kScale360 = 1, kScale720 = 3, kScale1080 = 5, kScale1440 = 6;
+constexpr Preset kPresets[] = {
+    {"MALI", kPresetAndroid, 0, false, false, 2, kScale360, 1, 0},
+    {"SNAPDRAGON", kPresetAndroid, 2, true, false, 0, kScale720, 1, 1},
+    {"SWITCH", kPresetSwitch, 2, true, false, 2, kScale720, 1, 0},
+    {"STEAM DECK", kPresetDeck, 2, true, false, 0, kScale720, 1, 1},
+    {"LOW END PC", kPresetPc, 1, true, false, 1, kScale720, 1, 1},
+    {"MEDIUM END PC", kPresetPc, 2, true, false, 0, kScale1080, 1, 1},
+    {"HIGH END PC", kPresetPc, 2, true, true, 0, kScale1440, 2, 1},
+};
+bool PresetFits(const Preset& p) {
+#if defined(__SWITCH__)
+  return p.device == kPresetSwitch;
+#elif defined(__ANDROID__)
+  return p.device == kPresetAndroid;
+#else
+  return p.device == kPresetPc || (p.device == kPresetDeck && svr2011::IsSteamDeck());
+#endif
+}
 constexpr int kNumFrameRates = 2;
 enum Tab { kDisplayTab, kGraphicsTab, kAdvancedTab, kCpuTab, kTabs };
 const char* kTabNames[kTabs] = {"DISPLAY", "GRAPHICS", "ADV. GRAPHICS", "CPU"};
@@ -143,7 +182,7 @@ const std::vector<Row> kTabRowsAll[kTabs] = {{kResolution, kDisplay, kFrameRate,
                                               kReplays, kCpuPriority, kFastStart, kCawLimits},
 #endif
                                              {kRenderScale, kAntiAliasing, kUpscaling, kTextureQuality, kArenaBrightness, kMatFix, kVsStyle, kWide, kCutsceneFps},
-                                             {kCrowd, kShadows, kEffects, kDof, kMotionBlur, kSoft, kPrepare},
+                                             {kPreset, kCrowd, kShadows, kEffects, kDof, kMotionBlur, kSoft, kPrepare},
                                              {kCpuPreset, kCpuReversal, kCpuRates, kCpuDamage, kCpuPin, kCpuMomentum}};
 // SHADOWS: only with the renderer's native_shadows setting.
 bool HasShadows() {
@@ -475,8 +514,10 @@ class GraphicsPage final : public rex::ui::ImGuiDialog {
   bool caw_no_limits_ = true;  // CAW LIMITS: OFF (the port's) / STOCK (caw_limits.cpp)
   int fast_start_ = 0;  // FAST START (fast_start.h): bit 0 skip_intros, bit 1 skip_training
   bool prepare_ = true;  // the known pipelines built ahead in the menus
-  bool crowd_ = true, crowd_at_start_ = true;  // arena_crowd (read when the game starts)
+  int crowd_ = 2, crowd_at_start_ = 2;  // arena_crowd: 0 LOW, 1 MED, 2 HIGH (read when the game starts)
   bool shadows_ = true;  // native_shadows
+  const Preset* CurrentPreset() const;
+  void ApplyPreset(const Preset& p);
   bool mat_fix_ = true;  // native_mat_fix
   int vs_style_ = 0;      // vs_style: 0 2011's, k the k-th installed style (vs_styles.h)
   int language_ = 0;    // kLanguages index (saved; applies at the next start)
@@ -611,7 +652,11 @@ void GraphicsPage::Load() {
   prepare_ = rex::cvar::Query<bool>("native_prepare_pipelines");
   {
     const std::string c = rex::cvar::Query<std::string>("arena_crowd");
-    crowd_ = c == "on" || (c != "off" && rex::cvar::GetFlagByName("mali_alpha") != "true");
+    crowd_ = c == "on"       ? 2
+             : c == "medium" ? 1
+             : c == "off"    ? 0
+             : rex::cvar::GetFlagByName("mali_alpha") == "true" ? 0
+                                                                : 2;
     static const bool at_start = crowd_;
     crowd_at_start_ = at_start;
   }
@@ -641,6 +686,30 @@ void GraphicsPage::Load() {
     if (kFrameRates[i] == TargetFrameRate()) frame_rate_ = i;
 }
 
+const Preset* GraphicsPage::CurrentPreset() const {
+  for (const Preset& p : kPresets) {
+    if (PresetFits(p) && crowd_ == p.crowd && shadows_ == p.shadows && effects_ == p.effects && textures_ == p.textures &&
+        scale_ == p.scale && aa_ == p.aa && frame_rate_ == p.frame_rate && upscale_ == 0)
+      return &p;
+  }
+  return nullptr;
+}
+
+// Each row through Change, as if the player had moved it: the same saving and the same cvars.
+void GraphicsPage::ApplyPreset(const Preset& p) {
+  const auto to = [this](Row row, const auto& value, const auto& want) {
+    for (int i = 0; i < 32 && value() != want; ++i) Change(row, 1);
+  };
+  to(kUpscaling, [&] { return upscale_; }, 0);
+  to(kAntiAliasing, [&] { return aa_; }, p.aa);
+  to(kRenderScale, [&] { return scale_; }, p.scale);
+  to(kTextureQuality, [&] { return textures_; }, p.textures);
+  to(kEffects, [&] { return effects_; }, p.effects);
+  to(kFrameRate, [&] { return frame_rate_; }, p.frame_rate);
+  to(kCrowd, [&] { return crowd_; }, p.crowd);
+  if (HasShadows()) to(kShadows, [&] { return shadows_; }, p.shadows);
+}
+
 void GraphicsPage::Change(int row, int dir) {
   switch (row) {
     case kRenderScale: {
@@ -656,10 +725,23 @@ void GraphicsPage::Change(int row, int dir) {
       break;
     }
     case kCrowd:  // (the arenas' crowd-less copies are chosen when the game starts: crowd_off.h)
-      crowd_ = !crowd_;
-      rex::cvar::SetFlagByName("arena_crowd", crowd_ ? "on" : "off");
-      SaveSetting("arena_crowd", crowd_ ? "\"on\"" : "\"off\"");
+      crowd_ = (crowd_ + dir + 3) % 3;
+      rex::cvar::SetFlagByName("arena_crowd", kCrowdValues[crowd_]);
+      SaveSetting("arena_crowd", std::string("\"") + kCrowdValues[crowd_] + "\"");
       break;
+    case kPreset: {
+      const int n = int(std::size(kPresets));
+      int at = -1;  // (CUSTOM: the first one next)
+      for (int i = 0; i < n; ++i)
+        if (&kPresets[i] == CurrentPreset()) at = i;
+      if (at < 0 && dir < 0) at = 0;
+      for (int step = 0; step < n; ++step) {
+        at = (at + dir + n) % n;
+        if (PresetFits(kPresets[at])) break;
+      }
+      if (PresetFits(kPresets[at])) ApplyPreset(kPresets[at]);
+      break;
+    }
     case kShadows:
       shadows_ = !shadows_;
       rex::cvar::SetFlagByName("native_shadows", shadows_ ? "true" : "false");
@@ -1539,7 +1621,11 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
                                              "DLSS PERFORMANCE (EXPERIMENTAL)"};
         return kNames[std::clamp(upscale_, 0, 12)];
       }
-      case kCrowd: return crowd_ ? "ON" : "OFF";
+      case kPreset: {
+        const Preset* p = CurrentPreset();
+        return p ? p->name : "CUSTOM";
+      }
+      case kCrowd: return kLevelNames[crowd_];
       case kShadows: return shadows_ ? "ON" : "OFF";
       case kEffects: return effects_ ? "HIGH" : "NORMAL";
       case kCutsceneFps: return fps60_ ? "60 FPS" : "30 FPS (ORIGINAL)";
@@ -1584,7 +1670,8 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
       case kAntiAliasing: return "ANTI-ALIASING";
       case kUpscaling: return "UPSCALING";
       case kEffects: return "EFFECT DETAIL";
-      case kCrowd: return "CROWD";
+      case kPreset: return "PRESET";
+      case kCrowd: return "CROWD DENSITY";
       case kShadows: return "SHADOWS";
       case kCutsceneFps: return "ENTRANCE FRAME RATE";
     }
@@ -1647,9 +1734,12 @@ void GraphicsPage::OnDraw(ImGuiIO& io) {
         return "The game's picture size. AUTO fills the screen; lower is faster (360P / 480P: softer, for weak "
                "devices; 1080P: sharp on a 1080p screen, lighter than AUTO's 1440P). ANTI-ALIASING draws it bigger.";
       case kCrowd:
-        return crowd_ == crowd_at_start_ ? "The people in the seats. OFF: empty seats - faster on weak PCs and phones."
+        return crowd_ == crowd_at_start_ ? "The people in the seats. LOW: empty seats. MED: about half. HIGH: everyone."
                                          : "Takes effect the next time the game starts.";
       case kShadows: return "The wrestlers', ring's and arena's shadows. OFF: faster.";
+      case kPreset:
+        return "Sets resolution, upscaling, anti-aliasing, textures, effect detail, crowd, shadows and frame rate "
+               "together. Changing one of them afterwards shows CUSTOM. A new crowd level applies at the next start.";
       case kAntiAliasing:
         return upscale_ ? "Off while UPSCALING is on: FSR / DLSS draw the picture smaller and smooth its edges "
                           "themselves. Set UPSCALING to OFF to use this."

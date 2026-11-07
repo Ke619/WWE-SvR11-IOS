@@ -37,16 +37,22 @@
 #include <string>
 #include <vector>
 
+#include <fmt/format.h>
 #include <rex/filesystem.h>
+#include <rex/hook.h>
 #include <rex/logging.h>
+#include <rex/memory.h>
 #include <rex/system/xmemory.h>
 
 #include "../modmaker/svrfmt/pac.h"
+#include "generated/default/svr2011_init.h"
 #include "superstar_mods.h"
 
 namespace fs = std::filesystem;
 
 namespace {
+
+std::map<uint64_t, uint32_t> g_row_source;  // (category << 32 | a mod part's texture number -> the texture its .rec names)
 
 constexpr size_t kHead = 12, kRec = 60;
 
@@ -306,18 +312,9 @@ void InstallCawParts(rex::memory::Memory* memory) {
             svrfmt::ReadFile((p.folder / (p.stem + ".t.pach")).string(), t) && svrfmt::IsPach(t) &&
             svrfmt::ReadFile((p.folder / (p.stem + ".thumb.dds")).string(), dds) && dds.size() > 128) {
           rec = r;
+          g_row_source[uint64_t(c) << 32 | uint32_t(x.texture)] = uint32_t(r[14]) | uint32_t(r[15]) << 8;
           Wr16(&rec[12], uint32_t(x.model));
           Wr16(&rec[14], uint32_t(x.texture));
-          if (const char* v = std::getenv("SVR2011_TEST_CAWPARTS_STOCKM")) Wr16(&rec[12], uint32_t(std::atoi(v)));  // (experiment)
-          if (const char* v = std::getenv("SVR2011_TEST_CAWPARTS_STOCKT")) Wr16(&rec[14], uint32_t(std::atoi(v)));  // (experiment)
-          if (const char* v = std::getenv("SVR2011_TEST_CAWPARTS_TEXAS")) {  // (experiment: our texture under a stock index)
-            char sn[8];
-            std::snprintf(sn, sizeof sn, "T%03X", std::atoi(v));
-            Wr16(&rec[14], uint32_t(std::atoi(v)));
-            const char* to = std::getenv("SVR2011_TEST_CAWPARTS_TEXAS_TO");  // (e.g. /ED18/T005: a stock entry)
-            g_part_alias[std::string(ed) + "/" + sn] = to ? std::make_pair(Guest(to), Guest(to + 1))
-                                                          : std::make_pair(Guest(std::string("/") + pgroup + "/" + tn), Guest(std::string(pgroup) + "/" + tn));
-          }
           rec[23] = uint8_t(x.gender);
           Wr16(&rec[32], ++item);
           rec[36] = 1;
@@ -420,3 +417,48 @@ int CawPartsFirstRecord(int category) {
 std::vector<std::string> CawPartsListing() { return g_listing; }
 
 }  // namespace svr2011
+
+// A part's settings (default colours, its layer...) are a second table, one per category: 28-byte rows by the record's
+// texture number, sub_828DDC98 / sub_828DDCC8, built when the editor loads, as long as the stock textures. A mod part's
+// number is past its end, and the next category's row made it draw wrong or not at all. It gets a row of its own, a copy
+// of the row of the texture its .rec names at +14 (its template).
+REX_EXTERN(__imp__sub_828DDC98);
+REX_EXTERN(__imp__sub_828DDCC8);
+
+namespace {
+
+uint32_t CawRow(uint8_t* base, uint32_t self, uint32_t cat, uint32_t index) {
+  const uint32_t at = self + (cat + 139) * 8;
+  const uint32_t count = uint32_t(base[at]) << 8 | base[at + 1];
+  const uint32_t table = uint32_t(base[at + 4]) << 24 | uint32_t(base[at + 5]) << 16 | uint32_t(base[at + 6]) << 8 | base[at + 7];
+  if (!table || index < count) return 0;
+  static std::map<uint64_t, uint32_t> rows;
+  const uint64_t key = uint64_t(cat) << 32 | index;
+  static std::mutex m;
+  std::lock_guard lock(m);
+  auto it = rows.find(key);
+  if (it != rows.end()) return it->second;
+  const auto src = g_row_source.find(key);
+  const uint32_t from = src != g_row_source.end() && src->second < count ? src->second : 0;
+  const uint32_t row = g_memory ? g_memory->SystemHeapAlloc(28) : 0;
+  if (!row) return 0;
+  std::memcpy(base + row, base + table + from * 28, 28);
+  rows[key] = row;
+  REXLOG_INFO("[svr2011] CAW parts: category {} texture {}: a row of its own, from texture {}", cat, index, from);
+  return row;
+}
+
+}  // namespace
+
+REX_HOOK_RAW(sub_828DDC98) {
+  const uint32_t self = ctx.r3.u32, index = ctx.r4.u32;
+  __imp__sub_828DDC98(ctx, base);
+  const uint32_t cat = uint32_t(base[self + 1640]) << 24 | uint32_t(base[self + 1641]) << 16 | uint32_t(base[self + 1642]) << 8 | base[self + 1643];
+  if (const uint32_t row = CawRow(base, self, cat, index)) ctx.r3.u64 = row;
+}
+
+REX_HOOK_RAW(sub_828DDCC8) {
+  const uint32_t self = ctx.r3.u32, cat = ctx.r4.u32, index = ctx.r5.u32;
+  __imp__sub_828DDCC8(ctx, base);
+  if (const uint32_t row = CawRow(base, self, cat, index)) ctx.r3.u64 = row;
+}

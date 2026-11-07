@@ -29,6 +29,7 @@
 #include "keyboard_typing.h"
 #include "menu_touch.h"
 #include "native/native_renderer.h"
+#include "p2p.h"
 #include "script_input.h"
 
 namespace {
@@ -296,6 +297,7 @@ bool MenuTouchTap(float fx, float fy, MenuTouchPress press) {
   if (fx < 0 || fx > 1 || fy < 0 || fy > 1) return false;
   g_shot_again = true;
   if (GuestPagesHoldInput() || GameKeyboardOpen()) return false;
+  if (P2POnlineMode()) return false;  // (first version: online screens may be synced by input; steer with the pad)
   uint32_t group = 0, cursor = 0;
   if (!ScriptMenuState(&group, &cursor)) return false;
   const float x = fx * 640, y = fy * 360;

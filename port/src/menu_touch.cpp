@@ -120,7 +120,7 @@ void ShotAid() {
 // looks at the ones seen in the last moments).
 using Clock = std::chrono::steady_clock;
 struct Drawn {
-  uint32_t element = 0;
+  uint32_t element = 0, id = 0;
   float x = 0, y = 0;
   Clock::time_point seen, moved;
   char text[48] = {};
@@ -144,7 +144,7 @@ void NoteText(const uint8_t* base, uint32_t layout, uint32_t element) {
   std::lock_guard lock(g_drawn_mutex);
   Drawn& d = g_drawn[(element >> 8 ^ layout >> 6) & (kSlots - 1)];
   if (d.element != element || std::fabs(d.x - x) > 0.5f || std::fabs(d.y - y) > 0.5f) d.moved = now;
-  d.element = element, d.x = x, d.y = y, d.seen = now;
+  d.element = element, d.id = Rd32(base + desc), d.x = x, d.y = y, d.seen = now;
   // (as ScriptMenuRow's labels: control codes, such as MY WWE's logo, are left out)
   size_t n = 0;
   for (uint32_t k = 0; k < 48 && n + 1 < sizeof(d.text); ++k) {
@@ -309,18 +309,43 @@ bool MenuTouchTap(float fx, float fy, MenuTouchPress press) {
     for (const Drawn& d : g_drawn)
       if (d.element && d.text[0] && now - d.seen < kRecent && now - d.moved > kSettled) drawn.push_back(d);
   }
-  // The nearest row of this menu under the finger: rows are 18 apart, and text elsewhere isn't one of its labels.
-  int best = -1;
-  float best_d = 11;
-  std::string label;
+  // The nearest row of this menu under the finger: rows are 18 apart, and text elsewhere isn't one of its labels. A row's
+  // bar is as wide as its column, whatever its text (MY is short): the column is the labels with one element id, the
+  // preview column beside it has another. (Text runs about 8 a letter here.)
+  struct Row {
+    const Drawn* d;
+    int row;
+  };
+  struct Column {
+    uint32_t id;
+    float lo, hi;
+  };
+  std::vector<Row> rows;
+  std::vector<Column> columns;
   for (const Drawn& d : drawn) {
-    const float width = float(std::strlen(d.text)) * 10;
-    if (x < d.x - 16 || x > d.x + width + 16) continue;
-    const float distance = std::fabs(y - (d.y + 8));
-    if (distance >= best_d) continue;
     const int row = ScriptMenuRow(group, d.text, nullptr);
     if (row < 0) continue;
-    best = row, best_d = distance, label = d.text;
+    rows.push_back({&d, row});
+    const float right = d.x + float(std::strlen(d.text)) * 8;
+    auto it = std::find_if(columns.begin(), columns.end(), [&](const Column& c) { return c.id == d.id; });
+    if (it == columns.end()) {
+      columns.push_back({d.id, d.x, right});
+    } else {
+      it->lo = std::min(it->lo, d.x), it->hi = std::max(it->hi, right);
+    }
+  }
+  int best = -1;
+  float best_d = 11, best_gap = 0;
+  std::string label;
+  for (const Row& r : rows) {
+    const auto column = std::find_if(columns.begin(), columns.end(), [&](const Column& c) { return c.id == r.d->id; });
+    if (x < column->lo - 16 || x > column->hi + 16) continue;
+    const float distance = std::fabs(y - (r.d->y + 8));
+    // (rows side by side: the one whose text is nearest the finger)
+    const float gap = std::max({r.d->x - x, x - (r.d->x + float(std::strlen(r.d->text)) * 8), 0.0f});
+    const bool same_line = best >= 0 && std::fabs(distance - best_d) < 2;
+    if (same_line ? gap >= best_gap : distance >= best_d) continue;
+    best = r.row, best_d = distance, best_gap = gap, label = r.d->text;
   }
   if (best < 0) return false;
   REXLOG_INFO("[svr2011] menu touch: tap {:.0f},{:.0f} -> group {:X} row {} ({}), cursor was {}", x, y, group, best, label, cursor);

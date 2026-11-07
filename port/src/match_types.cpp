@@ -46,6 +46,7 @@
 
 #include "arena_mods.h"
 #include "match_hud.h"
+#include "online_chat.h"
 #include "online_rules.h"
 #include "p2p.h"
 #include "script_input.h"
@@ -1937,7 +1938,7 @@ REX_HOOK_RAW(sub_8224EF28) {
 void LogMatch(PPCContext& ctx, uint8_t* base, uint32_t rule) {
   constexpr uint32_t kLive = 0x82E3DE00, kChars = 0x82E3CC50, kRoster = 0x82EDEA88;
   const auto saved = ctx;
-  std::string people;
+  std::string people, setup;  // (setup: person : superstar id - online_chat.h OnlineMatchSetup)
   svr2011::ClearMatchPeople();  // (a frozen match's report: match_diag.h)
   for (uint32_t i = 0; i < 10; ++i) {
     const uint32_t ch = Rd32(base + kChars + i * 4);
@@ -1965,6 +1966,7 @@ void LogMatch(PPCContext& ctx, uint8_t* base, uint32_t rule) {
     sub_82573EC8(ctx, base);
     const uint32_t info = ctx.r3.u32;
     svr2011::NoteMatchPerson(i, superstar, name.empty() ? "?" : name);
+    setup += fmt::format(" {}:{}", id, superstar);
     people += fmt::format("{}{} (person {}, team {})", people.empty() ? "" : ", ", name.empty() ? "?" : name, id,
                           info ? base[info + 13] : 255);
   }
@@ -1975,6 +1977,7 @@ void LogMatch(PPCContext& ctx, uint8_t* base, uint32_t rule) {
   if (line == last) return;
   last = line;
   REXLOG_INFO("[svr2011] match: {}", line);
+  svr2011::OnlineMatchSetup(fmt::format("rule {:02X}, arena {},{}", rule, Rd32(base + kLive + 64), setup));
 }
 
 REX_EXTERN(__imp__sub_822AD738);

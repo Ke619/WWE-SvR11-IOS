@@ -18,6 +18,7 @@
 
 #include "generated/default/svr2011_init.h"
 #include "online.h"
+#include "online_overlay.h"
 #include "online_rules.h"
 #include "p2p.h"
 
@@ -26,6 +27,7 @@ namespace svr2011 {
 namespace {
 
 constexpr uint32_t kTag = 0x43485431;   // "CHT1"
+constexpr uint32_t kSetupTag = 0x4D535431;  // "MST1": a match's setup (OnlineMatchSetup)
 constexpr uint32_t kChatPtr = 0x82EDE92C;  // -> the lobby's chat box (sub_828A7B38(chat, line))
 constexpr size_t kLineChars = 40;          // a chat box line, wrapped (characters)
 constexpr size_t kMaxBytes = kChatMax * 4;  // (UTF-8)
@@ -122,7 +124,53 @@ void SetCursor(PPCContext& ctx, uint8_t* base, uint32_t field, uint32_t cursor) 
   sub_8272E568(c, base);
 }
 
+// -- the match-start setup check (OnlineMatchSetup) --
+struct Setup {
+  uint64_t session = 0;
+  std::string text;
+  Clock::time_point at{};
+};
+std::mutex g_setup_mutex;
+Setup g_my_setup;
+std::map<uint64_t, Setup> g_their_setup;  // by online id
+std::map<uint64_t, std::string> g_setup_told;  // (each pair once: theirs at the last comparison)
+
+// Mine against theirs, when both are this session's and from one match (90 s apart at most). Under the lock.
+void CompareSetups(uint64_t from) {
+  const auto it = g_their_setup.find(from);
+  if (it == g_their_setup.end() || g_my_setup.text.empty() || it->second.session != g_my_setup.session) return;
+  const auto gap = it->second.at > g_my_setup.at ? it->second.at - g_my_setup.at : g_my_setup.at - it->second.at;
+  if (gap > std::chrono::seconds(90)) return;
+  const std::string key = g_my_setup.text + "|" + it->second.text;
+  if (g_setup_told[from] == key) return;
+  g_setup_told[from] = key;
+  if (it->second.text == g_my_setup.text) {
+    REXLOG_INFO("online: match setup the same as player {:016X}'s", from);
+    return;
+  }
+  REXLOG_WARN("online: match setup differs from player {:016X}'s - this game: {}; theirs: {}", from, g_my_setup.text,
+              it->second.text);
+  OnlineOverlayNotice("THE TWO GAMES HAVE DIFFERENT MATCH SETUPS",
+                      "THIS MATCH MAY NOT PLAY THE SAME ON BOTH - SEND A REPORT AFTER IT", 20);
+}
+
+void OnSetup(const uint8_t* p, size_t n) {
+  if (n < 22) return;
+  const uint64_t from = uint64_t(Be32(p + 4)) << 32 | Be32(p + 8);
+  const uint64_t session = uint64_t(Be32(p + 12)) << 32 | Be32(p + 16);
+  const size_t len = size_t(p[20]) << 8 | p[21];
+  if (22 + len > n || len > 600 || !from || from == MyXuid()) return;
+  const P2PLobby lobby = P2PMatchLobby();
+  if (!lobby.in || session != lobby.session ||
+      std::find(lobby.members.begin(), lobby.members.end(), from) == lobby.members.end())
+    return;
+  std::lock_guard lock(g_setup_mutex);
+  g_their_setup[from] = {session, std::string(reinterpret_cast<const char*>(p + 22), len), Clock::now()};
+  CompareSetups(from);
+}
+
 void OnChat(const uint8_t* p, size_t n) {
+  if (n >= 4 && Be32(p) == kSetupTag) return OnSetup(p, n);
   if (n < 19 || Be32(p) != kTag) return;
   const uint64_t from = uint64_t(Be32(p + 4)) << 32 | Be32(p + 8);
   const uint32_t id = Be32(p + 12);
@@ -188,6 +236,31 @@ std::optional<std::string> OnlineChatSend(const std::string& whole) {
   P2PSendChat(payload);  // (twice: one lost, the other shows; the same id isn't shown again)
   REXLOG_INFO("online chat: sent {} characters", Chars(text));
   return text.substr(0, Prefix(text, SIZE_MAX, 63));
+}
+
+void OnlineMatchSetup(const std::string& setup) {
+  const P2PLobby lobby = P2PMatchLobby();
+  if (!lobby.in || !rex::cvar::Query<bool>("online_enabled")) return;
+  std::string text = setup.substr(0, 600);
+  // (test aid: SVR2011_TEST_SETUP_SKEW=1 - this game's setup told as another one: the difference's notice)
+  if (const char* v = std::getenv("SVR2011_TEST_SETUP_SKEW"); v && *v == '1') text += " (test)";
+  {
+    std::lock_guard lock(g_setup_mutex);
+    g_my_setup = {lobby.session, text, Clock::now()};
+    for (const auto& [from, theirs] : g_their_setup) CompareSetups(from);
+  }
+  std::vector<uint8_t> b;
+  Put32(b, kSetupTag), Put64(b, MyXuid()), Put64(b, lobby.session);
+  b.push_back(uint8_t(text.size() >> 8)), b.push_back(uint8_t(text.size()));
+  b.insert(b.end(), text.begin(), text.end());
+  REXLOG_INFO("online: match setup sent - {}", text);
+  // (now and twice more: a packet can be lost, and the other game may still be loading)
+  std::thread([b] {
+    for (int i = 0; i < 3; ++i) {
+      P2PSendChat(b);
+      std::this_thread::sleep_for(std::chrono::seconds(4));
+    }
+  }).detach();
 }
 
 bool OnlineChatFromPort(uint64_t sender) {

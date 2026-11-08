@@ -22,6 +22,9 @@ Fixes marked "potential" couldn't be fully proven here, so please report it if t
 - **DLC packages from other games** in the porters: arenas, props, trons and moves (388 DLC-only moves listed - potential, only a few tested).
 - **WWE 2K14 entrances** keep their own lights and effects (potential improvement).
 
+## 📝 Reports
+- **Reports and suggestions now need a signed-in online account and your Discord name** (we answer there; only we see it). The launcher, the app, the Mod Maker and the in-game REPORT A PROBLEM all ask for it and remember it. Older versions are told to update.
+
 ## 🌐 Online
 - **DLC is compared by its name**: two players with the same DLC no longer refuse each other (potential fix). A missing DLC is still refused.
 - **Match setup check**: at the start of an online match, the two games compare who is in it, the rule and the arena. A difference is shown on screen and logged so it can be tracked down; the match still goes on.
@@ -30,6 +33,9 @@ Fixes marked "potential" couldn't be fully proven here, so please report it if t
 - **Crash as the next match loads** - potential fix.
 - **Crash when a wrestler's model memory is full** - potential fix.
 - **Black screen before an entrance** (a triple threat with mods, before the 3rd entrance): a motion that never ends is now cut short, so the game goes on - potential fix.
+- **Crash in a lock-up** with some ported superstars (Jeff Hardy '09 and others) - potential fix.
+- **Frame rate falling for good** on phones short of memory (the game asked for a big file over and over) - potential fix; the file itself may still not load.
+- **Crash at the start of a match** when a superstar's data was broken - potential fix.
 - **Create an Entrance backing out** for some superstar mods (Kane '06 and others): a mod whose saved entrance is empty now opens with its own entrance - potential fix.
 - **Pin count in slow motion at 30 fps and below** - potential fix (below 30 fps it's still slower, by design).
 - **Universe card**: picking a slot no longer replaces a mod with the list's first entry.

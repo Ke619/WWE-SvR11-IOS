@@ -1,6 +1,7 @@
 /* WWE SmackDown vs. Raw 2011 - Report a problem: a recorded match and the mods it used (report_match.h). */
 
 #include "report_match.h"
+#include "report_send.h"
 
 #include <bcrypt.h>
 #include <share.h>
@@ -467,7 +468,7 @@ int report_mods_check(const WCHAR *server, ReportMod *mods, int n, uint64_t *max
 {
     char *body, *answer = NULL;
     size_t at = 0, cap = 256 + (size_t)n * 700, total = 0, acap = 0;
-    WCHAR url[1000], host[256], upath[900];
+    WCHAR url[1000], host[256], upath[900], headers[600];
     URL_COMPONENTS uc;
     HINTERNET ses = NULL, con = NULL, req = NULL;
     DWORD status = 0, sz = sizeof status, got = 0;
@@ -504,8 +505,12 @@ int report_mods_check(const WCHAR *server, ReportMod *mods, int n, uint64_t *max
             req = WinHttpOpenRequest(con, L"POST", upath, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
                                      uc.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0);
     }
-    if (req && WinHttpSendRequest(req, L"Content-Type: application/json; charset=utf-8\r\n", (DWORD)-1L, body,
-                                  (DWORD)at, (DWORD)at, 0) &&
+    {   /* (2.2.1: the sign-in - the server asks a signed-out sender for no mods: its report would be refused) */
+        const char *token = report_auth();
+        swprintf_s(headers, 600, L"Content-Type: application/json; charset=utf-8\r\n%s%S%s",
+                   token[0] ? L"Authorization: Bearer " : L"", token, token[0] ? L"\r\n" : L"");
+    }
+    if (req && WinHttpSendRequest(req, headers, (DWORD)-1L, body, (DWORD)at, (DWORD)at, 0) &&
         WinHttpReceiveResponse(req, NULL)) {
         WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX,
                             &status, &sz, WINHTTP_NO_HEADER_INDEX);

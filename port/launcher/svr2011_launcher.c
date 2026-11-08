@@ -3652,7 +3652,7 @@ static void on_place(int id, int x, int y, int w, int h)
 #define DISCORD_FORUM L"bug-svr11"
 enum { REP_KIND = 300, REP_AGAIN, REP_WHAT, REP_BEFORE, REP_STATUS,
        REP_CONTACT, REP_ADDPIC, REP_SUMMARY, REP_SEND, REP_COPYID, REP_MATCH, REP_MODS, REP_INCMODS, REP_PROGRESS, REP_INCSAVE,
-       REP_PIC0 = 340, REP_DEL0 = 350 };
+       REP_SIGNIN, REP_PIC0 = 340, REP_DEL0 = 350 };
 #define WM_APP_REP_SENT (WM_APP + 70)   /* the report window's own: the send finished (s_rep_result) */
 #define WM_APP_REP_MODS (WM_APP + 71)   /* ... the picked match's mods are hashed and checked (lParam: a RepMatch) */
 #define WM_APP_REP_PROGRESS (WM_APP + 72)   /* ... the upload: wParam percent, lParam MB sent x10 */
@@ -3855,9 +3855,14 @@ static void rep_page1(HWND w)
     c = rep_add(w, L"Edit", L"", ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL | WS_TABSTOP, 20, 316, 480,
                 70, REP_BEFORE, NULL);
     SendMessageW(c, EM_LIMITTEXT, 1500, 0);
-    rep_add(w, L"Static", L"Your Discord name (optional - so we can ask you):", SS_NOPREFIX, 20, 398, 290, 20, 0, NULL);
-    c = rep_add(w, L"Edit", L"", ES_AUTOHSCROLL | WS_TABSTOP, 310, 394, 190, 24, REP_CONTACT, NULL);
-    SendMessageW(c, EM_LIMITTEXT, 60, 0);
+    rep_add(w, L"Static", L"Your Discord name (needed - only we see it):", SS_NOPREFIX, 20, 398, 290,
+            20, 0, NULL);
+    {
+        WCHAR saved[80];
+        report_discord_load(s_game_dir, saved, 80);   /* (the last one sent from any form here) */
+        c = rep_add(w, L"Edit", saved, ES_AUTOHSCROLL | ES_LOWERCASE | WS_TABSTOP, 310, 394, 190, 24, REP_CONTACT, NULL);
+    }
+    SendMessageW(c, EM_LIMITTEXT, 32, 0);
     /* the match (the game's recordings, logs\matches: report_match.h) - the newest picked - and its mods */
     rep_add(w, L"Static", L"Match:", 0, 20, 432, 60, 20, 0, NULL);
     c = rep_add(w, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, 84, 428, 416, 300, REP_MATCH, NULL);
@@ -3887,6 +3892,11 @@ static void rep_page1(HWND w)
     rep_add(w, L"Static", L"", SS_LEFT, 20, 640 + REP_DY, 180, 36, REP_STATUS, NULL);
     rep_add(w, L"Button", L"Send report", BS_DEFPUSHBUTTON | WS_TABSTOP, 300, 636 + REP_DY, 110, 32, REP_SEND, NULL);
     rep_add(w, L"Button", L"Cancel", WS_TABSTOP, 420, 636 + REP_DY, 80, 32, IDCANCEL, NULL);
+    /* (2.2.1: reports come from a signed-in online account - signed out, a Sign in button to the Online tab) */
+    c = rep_add(w, L"Button", L"Sign in\x2026", WS_TABSTOP, 200, 636 + REP_DY, 90, 32, REP_SIGNIN, NULL);
+    report_auth_set(s_online_token);   /* (the mods check asks with it) */
+    if (s_online_token[0]) ShowWindow(c, SW_HIDE);
+    else SetDlgItemTextW(w, REP_STATUS, L"Sign in or create an account to send a report.");
     rep_pics_show(w);
     rep_match_pick(w);
     SetFocus(GetDlgItem(w, REP_WHAT));
@@ -3924,6 +3934,25 @@ static int rep_describe(HWND w, char *utf8, int n)
     return 1;
 }
 
+/* The Online tab, to sign in or make an account (the report window closes: its answers are lost - it says so
+   before). */
+/* The Online tab with the account box in focus (the Suggestions tab's Sign in). */
+static void go_sign_in(void)
+{
+    show_tab(TAB_ONLINE);
+    SetFocus(ctl(ID_ON_NAME));
+}
+
+static void rep_drop_zip(void);
+static void rep_go_sign_in(HWND w)
+{
+    rep_drop_zip();
+    s_rep_done = -1;
+    DestroyWindow(w);
+    show_tab(TAB_ONLINE);
+    SetFocus(ctl(ID_ON_NAME));
+}
+
 /* The send (a worker: it can take a while on a slow line): report.json from the answers, the zip, the pictures,
    to the configured online server. The window gets WM_APP_REP_SENT. */
 static WCHAR s_rep_server[260];
@@ -3959,11 +3988,13 @@ static DWORD WINAPI rep_send_thread(LPVOID p)
     rep_match_parts(&s_rep_rm, s_rep_with_mods, &u, match_name, sizeof match_name);
     u.progress = rep_win_progress;
     u.ctx = w;
+    u.token = s_online_token;   /* (2.2.1: the account it's from) */
     if (test_run_refuses_url(s_rep_server, "/api/reports")) {  /* (a test run: never a server off this PC) */
         ZeroMemory(&s_rep_result, sizeof s_rep_result);
         wcscpy_s(s_rep_result.why, 300, L"Test run: a report to a server not on this PC was refused (SVR2011_ALLOW_LIVE=1 lets it through).");
     } else if (report_send(s_rep_server, &u, &s_rep_result) && s_rep_result.secret[0]) {
         receipt_add(s_game_dir, "launcher", s_rep_result.id, s_rep_result.secret, s_rep_problem, s_rep_what);
+        report_discord_save(s_game_dir, s_rep_contact);
     }
     rep_match_done(&s_rep_rm);
     free(json);
@@ -3992,8 +4023,15 @@ static void rep_not_sent(HWND w, const WCHAR *why)
     ShowWindow(GetDlgItem(w, REP_PROGRESS), SW_HIDE);
     rep_status_wide(w, 1);
     SetDlgItemTextW(w, REP_SEND, L"Try again");
-    swprintf_s(t, 600, L"Not sent: %s Check you're online, then try again.", why);
+    if (s_rep_result.code[0])   /* (the server's account / Discord refusal: its words say what to do) */
+        swprintf_s(t, 600, L"Not sent: %s", why);
+    else
+        swprintf_s(t, 600, L"Not sent: %s Check you're online, then try again.", why);
     SetDlgItemTextW(w, REP_STATUS, t);
+    if (report_needs_sign_in(&s_rep_result)) {   /* (signed out, or the session ended: sign in again) */
+        s_online_token[0] = 0;
+        ShowWindow(GetDlgItem(w, REP_SIGNIN), SW_SHOW);
+    }
     SetFocus(GetDlgItem(w, REP_SEND));
 }
 
@@ -4055,10 +4093,27 @@ static LRESULT CALLBACK rep_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
                 SetFocus(GetDlgItem(w, REP_WHAT));
                 return 0;
             }
-            if (report_text_has_url(s_rep_what) || report_text_has_url(s_rep_before) || report_text_has_url(s_rep_contact)) {
+            if (report_text_has_url(s_rep_what) || report_text_has_url(s_rep_before)) {
                 SetDlgItemTextW(w, REP_STATUS, REPORT_NO_URLS_W);
-                SetFocus(GetDlgItem(w, report_text_has_url(s_rep_what) ? REP_WHAT
-                                       : report_text_has_url(s_rep_before) ? REP_BEFORE : REP_CONTACT));
+                SetFocus(GetDlgItem(w, report_text_has_url(s_rep_what) ? REP_WHAT : REP_BEFORE));
+                return 0;
+            }
+            {   /* (2.2.1: the Discord name - the server's rule - and a sign-in) */
+                WCHAR contact[64], why[200];
+                GetDlgItemTextW(w, REP_CONTACT, contact, 64);
+                if (!report_discord_check(contact, s_rep_contact, sizeof s_rep_contact, why, 200)) {
+                    rep_status_wide(w, 1);
+                    SetDlgItemTextW(w, REP_STATUS, why);
+                    SetFocus(GetDlgItem(w, REP_CONTACT));
+                    return 0;
+                }
+            }
+            if (!s_online_token[0]) {
+                rep_status_wide(w, 1);
+                SetDlgItemTextW(w, REP_STATUS, L"Sign in first: reports come from an online account. Sign in (or "
+                                               L"Create account) on the Online tab - this window closes.");
+                ShowWindow(GetDlgItem(w, REP_SIGNIN), SW_SHOW);
+                SetFocus(GetDlgItem(w, REP_SIGNIN));
                 return 0;
             }
             /* (the match goes as its own part: not in the zip; a try again makes it again) */
@@ -4083,6 +4138,9 @@ static LRESULT CALLBACK rep_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             }
             return 0;
         }
+        case REP_SIGNIN:
+            rep_go_sign_in(w);
+            return 0;
         case REP_ADDPIC:
             rep_pics_pick(w);
             return 0;
@@ -4748,6 +4806,7 @@ static void build_ui(void)
     discover_build(s_wnd, add, TAB_DISCOVER, ID_DISCOVER_BASE, discover_server, discover_account);
     receipts_set_guard(test_run_refuses_url);   /* (a test run: never a server off this PC) */
     reports_build(s_wnd, add, TAB_REPORTS, ID_REPORTS_BASE, discover_server, reports_token);
+    suggestions_set_sign_in(go_sign_in);   /* (2.2.1: signed out, its Sign in button opens the Online tab) */
     suggestions_build(s_wnd, add, TAB_SUGGESTIONS, ID_SUGGEST_BASE, discover_server, reports_token, test_run_refuses_url,
                       PORT_VERSION);
     discover_set_ini(s_launcher_ini);
@@ -9981,7 +10040,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
        progress, "sent <id> seen_before <n>" or "not sent: <why>", what happened to the match and mods, and the zip. */
     if (argv && argc >= 4 && !wcscmp(argv[1], L"--report-send")) {
         static char what[4096], line[4096], problem[120] = "Something else", happens[40] = "Every time", before[4096],
-                    contact[200], server[300], sig[400], ver[40], desc[16384];
+                    contact[200], server[300], sig[400], ver[40], desc[16384], token[200], discord[80];
         WCHAR zip[MAX_PATH], wserver[300], pics[REPORT_MAX_IMAGES][MAX_PATH], summary[300];
         ReportUpload u;
         ReportResult r;
@@ -10007,6 +10066,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
             else if (!strcmp(line, "what")) strcpy_s(what, sizeof what, v);
             else if (!strcmp(line, "before")) strcpy_s(before, sizeof before, v);
             else if (!strcmp(line, "contact")) strcpy_s(contact, sizeof contact, v);
+            else if (!strcmp(line, "token")) strcpy_s(token, sizeof token, v);   /* (a test account's; else the toml's) */
             else if (!strcmp(line, "image") && npics < REPORT_MAX_IMAGES)
                 MultiByteToWideChar(CP_UTF8, 0, v, -1, pics[npics++], MAX_PATH);
             else if (!strcmp(line, "match")) MultiByteToWideChar(CP_UTF8, 0, v, -1, wmatch, MAX_PATH);
@@ -10028,6 +10088,21 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         }
         wcscpy_s(s_game_dir, MAX_PATH, argv[2]);
         MultiByteToWideChar(CP_UTF8, 0, server, -1, wserver, 300);
+        {   /* (2.2.1: the Discord name as the window checks it; token= or the game folder's saved sign-in) */
+            WCHAR wc[200], why[200];
+            MultiByteToWideChar(CP_UTF8, 0, contact, -1, wc, 200);
+            if (!report_discord_check(wc, discord, sizeof discord, why, 200) && !getenv("SVR2011_REPORT_ANY_CONTACT")) {
+                wprintf(L"not sent: %s\n", why);
+                return 1;
+            }
+            if (discord[0]) strcpy_s(contact, sizeof contact, discord);
+            if (!token[0]) {
+                settings_load();
+                strcpy_s(token, sizeof token, s_online_token);
+            }
+            report_auth_set(token);
+            wprintf(L"signed in: %s\n", token[0] ? L"yes" : L"no");
+        }
         ZeroMemory(&rm, sizeof rm);
         if (!_wcsicmp(wmatch, L"latest")) {
             static ReportMatch list[REPORT_MAX_MATCHES];
@@ -10068,6 +10143,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         u.n_images = npics;
         rep_match_parts(&rm, with_mods, &u, match_name, sizeof match_name);
         u.progress = rep_cli_progress;
+        u.token = token;
         if (with_save) u.save_bytes = report_main_save_size(argv[2]);
         report_send_summary(&u, summary, 300);
         wprintf(L"%s\n", summary);

@@ -9,7 +9,10 @@
    report.json then also has "match": "<folder name>" and "mods": [{hash, name, type, id, version, size, sent}].
    The answer: {"ok":true, "id", "signature", "seen_before":N, "match", "mods_stored", "mods_refused"} or
    {"ok":false, "error"}. Sent streamed (a few hundred MB with mods): Content-Length first, the parts in chunks;
-   refused with mods attached (413, or any refusal) it is sent again without them. No account token is sent.
+   refused with mods attached (413, or any refusal but the account ones) it is sent again without them.
+   2.2.1 on: the saved online sign-in goes as "Authorization: Bearer <token>" (token: never in the report, its zip
+   or a log), and "contact" is the player's Discord name - the server (reports_need_account) refuses a report
+   without both: "code" sign_in_needed (401), discord_needed (400), update_needed (426), account_banned (403).
    Plain C and WinHTTP only: the launcher and the Mod Maker build the same file. */
 #pragma once
 
@@ -37,6 +40,7 @@ typedef struct {
     void (*progress)(void *ctx, uint64_t sent, uint64_t total);   /* (called from the sending thread) */
     uint64_t save_bytes;                           /* the zip holds the main save (its size: the Sends line), 0 not */
     void *ctx;
+    const char *token;                             /* the saved online sign-in (online_token), or NULL / "" */
 } ReportUpload;
 
 typedef struct {
@@ -50,7 +54,28 @@ typedef struct {
     int mods_stored;         /* ... and kept by the server */
     int mods_dropped;        /* 1: refused with the mods, sent again without them */
     WCHAR mods_why[300];     /* why mods weren't kept (the server's words), "" if all were */
+    char code[32];           /* the server's refusal code ("sign_in_needed", "discord_needed", ...), "" if none */
 } ReportResult;
+
+/* A Discord name as the server takes it (reports.discord_name): 2-32 characters, lowercase letters, digits, "_"
+   and ".", no two dots in a row, no "@", no links - capitals are made lower case. 1 with the name in out (UTF-8),
+   else 0 with why. */
+int report_discord_check(const WCHAR *text, char *out, int n, WCHAR *why, int why_n);
+
+/* The Discord name the forms remember (<game>\UserData\report_discord.txt, UTF-8, one line): every PC form - the
+   launcher's reports and suggestions, the Mod Maker's, the game's own - fills it in from here and saves it on a
+   send. "" if none. */
+void report_discord_load(const WCHAR *game_dir, WCHAR *out, int n);
+void report_discord_save(const WCHAR *game_dir, const char *name);
+
+/* The saved online sign-in for the sends that don't carry their own (ReportUpload.token NULL) and the mods
+   check (report_mods_check): the launcher's s_online_token, the game's / Mod Maker's online_token. NULL or ""
+   = signed out. Kept as a copy; never written anywhere. */
+void report_auth_set(const char *token);
+const char *report_auth(void);
+
+/* 1 when the refusal means the sign-in is missing or ended (show "sign in" - the launcher's Online tab). */
+int report_needs_sign_in(const ReportResult *r);
 
 /* The "report" part (malloc'd, the caller frees). Every text is JSON-escaped; NULL is "". updater: the updates'
    log's last result (update_log_last: an update's / a repair's end). */

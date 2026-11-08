@@ -20,7 +20,7 @@
 #include "report_send.h"
 
 enum { S_INTRO, S_NEW, S_TITLE_L, S_TITLE, S_TEXT_L, S_TEXT, S_PICS, S_PICS_L, S_SEND, S_MINE, S_LIST, S_EMPTY,
-       S_DETAIL, S_REFRESH, S_STATUS, S_COUNT };
+       S_DETAIL, S_REFRESH, S_STATUS, S_DISC_L, S_DISC, S_SIGNIN, S_COUNT };
 enum { SUG_MAX_PICS = 3 };
 
 static HWND s_wnd, s_c[S_COUNT];
@@ -34,6 +34,18 @@ static ReportReceipt s_items[RECEIPTS_MAX];
 static int s_n, s_busy;
 static WCHAR s_pics[SUG_MAX_PICS][MAX_PATH];
 static int s_npics;
+static void (*s_sign_in)(void);
+
+void suggestions_set_sign_in(void (*go)(void)) { s_sign_in = go; }
+
+/* The Sign in button: shown while signed out (2.2.1: an idea comes from an online account). */
+static int signed_in(void)
+{
+    char token[200] = "";
+    if (s_token) s_token(token, sizeof token);
+    ShowWindow(s_c[S_SIGNIN], token[0] ? SW_HIDE : SW_SHOW);
+    return token[0] != 0;
+}
 
 /* The status thread's answer (WM_APP_SUGGESTIONS, wp 1). */
 typedef struct {
@@ -45,7 +57,7 @@ typedef struct {
 /* The send thread's (wp 2). */
 typedef struct {
     WCHAR game[MAX_PATH], server[300];
-    char title[400], text[8192];
+    char title[400], text[8192], discord[80], token[200];
     WCHAR pics[SUG_MAX_PICS][MAX_PATH];
     int npics, ok;
     ReportResult r;
@@ -167,13 +179,14 @@ static DWORD WINAPI send_thread(void *arg)
     ReportUpload u;
     char *json, *full = NULL;
     int i;
-    json = report_json("launcher", s_version, j->title, "", j->text, "", "", "", "");
+    json = report_json("launcher", s_version, j->title, "", j->text, "", j->discord, "", "");
     if (json && json[0] == '{' && (full = (char *)malloc(strlen(json) + 32)) != NULL)
         sprintf_s(full, strlen(json) + 32, "{\"kind\":\"suggestion\",%s", json + 1);
     ZeroMemory(&u, sizeof u);
     u.json = full;
     for (i = 0; i < j->npics; i++) u.images[i] = j->pics[i];
     u.n_images = j->npics;
+    u.token = j->token;   /* (2.2.1: the account it's from) */
     if (!full) {
         wcscpy_s(j->r.why, 300, L"Not enough memory.");
     } else if (s_refuses && s_refuses(j->server, "/api/reports")) {
@@ -182,6 +195,7 @@ static DWORD WINAPI send_thread(void *arg)
     } else if (report_send(j->server, &u, &j->r) && j->r.secret[0]) {
         j->ok = 1;
         receipt_add_file(j->game, RECEIPTS_SUGGESTIONS, "launcher", j->r.id, j->r.secret, j->title, j->text);
+        report_discord_save(j->game, j->discord);
     }
     free(full);
     free(json);
@@ -210,6 +224,23 @@ static void send_idea(void)
         free(j);
         status(SUGGEST_NO_URLS_W);
         return;
+    }
+    {   /* (2.2.1: the Discord name - the server's rule - and a sign-in) */
+        WCHAR disc[64], why[200];
+        GetWindowTextW(s_c[S_DISC], disc, 64);
+        if (!report_discord_check(disc, j->discord, sizeof j->discord, why, 200)) {
+            free(j);
+            status(why);
+            SetFocus(s_c[S_DISC]);
+            return;
+        }
+        if (s_token) s_token(j->token, sizeof j->token);
+        if (!j->token[0]) {
+            free(j);
+            signed_in();
+            status(L"Sign in first: ideas come from an online account (Sign in, or Create account, on the Online tab).");
+            return;
+        }
     }
     memcpy(j->pics, s_pics, sizeof s_pics);
     j->npics = s_npics;
@@ -273,8 +304,12 @@ void suggestions_build(HWND wnd, mods_add_fn add, int tab, int id_base, reports_
     SendMessageW(s_c[S_TITLE], EM_LIMITTEXT, 110, 0);
     C(S_TEXT_L, L"Static", L"Your idea - what it would do, and where:", SS_LEFT | SS_NOPREFIX, 42, 104, 532, 20);
     C(S_TEXT, L"Edit", L"", ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL | WS_BORDER | WS_TABSTOP, 42,
-      124, 532, 80);
+      124, 532, 50);
     SendMessageW(s_c[S_TEXT], EM_LIMITTEXT, 3000, 0);
+    C(S_DISC_L, L"Static", L"Your Discord name:", SS_LEFT | SS_NOPREFIX, 42, 186, 130, 20);
+    C(S_DISC, L"Edit", L"", ES_AUTOHSCROLL | ES_LOWERCASE | WS_BORDER | WS_TABSTOP, 176, 182, 190, 24);
+    SendMessageW(s_c[S_DISC], EM_LIMITTEXT, 32, 0);
+    C(S_SIGNIN, L"Button", L"Sign in\x2026", BS_PUSHBUTTON | WS_TABSTOP, 374, 180, 90, 28);
     C(S_PICS, L"Button", L"Add a picture\x2026", BS_PUSHBUTTON | WS_TABSTOP, 42, 214, 130, 28);
     C(S_PICS_L, L"Static", L"", SS_LEFT | SS_NOPREFIX | SS_PATHELLIPSIS, 180, 220, 260, 20);
     C(S_SEND, L"Button", L"Send idea", BS_DEFPUSHBUTTON | WS_TABSTOP, 454, 212, 120, 32);
@@ -303,6 +338,15 @@ void suggestions_build(HWND wnd, mods_add_fn add, int tab, int id_base, reports_
 void suggestions_show(const WCHAR *game_dir)
 {
     wcscpy_s(s_game, MAX_PATH, game_dir ? game_dir : L"");
+    {   /* (the Discord name sent last from any form here, unless one is being typed; the sign-in state) */
+        WCHAR saved[80], now[80];
+        GetWindowTextW(s_c[S_DISC], now, 80);
+        if (!now[0]) {
+            report_discord_load(s_game, saved, 80);
+            SetWindowTextW(s_c[S_DISC], saved);
+        }
+        signed_in();
+    }
     if (!s_busy) {
         s_n = receipts_load_file(s_game, RECEIPTS_SUGGESTIONS, s_items, RECEIPTS_MAX);
         fill();
@@ -321,6 +365,9 @@ int suggestions_command(int id, int code)
         s_n = receipts_load_file(s_game, RECEIPTS_SUGGESTIONS, s_items, RECEIPTS_MAX);
         fill();
         ask();
+    } else if (k == S_SIGNIN) {
+        if (s_sign_in) s_sign_in();
+        return 1;
     } else if (k == S_SEND) {
         send_idea();
     } else if (k == S_PICS) {
@@ -385,6 +432,7 @@ int suggestions_message(UINT m, WPARAM wp, LPARAM lp)
             WCHAR t[400];
             swprintf_s(t, 400, L"Not sent: %s", j->r.why[0] ? j->r.why : L"no answer from the server - check you're online.");
             status(t);
+            if (report_needs_sign_in(&j->r)) ShowWindow(s_c[S_SIGNIN], SW_SHOW);
         }
         free(j);
     }
@@ -405,6 +453,14 @@ void suggestions_test_send(const char *title, const char *text, const WCHAR *pic
     MultiByteToWideChar(CP_UTF8, 0, text ? text : "", -1, x, 4000);
     SetWindowTextW(s_c[S_TITLE], t);
     SetWindowTextW(s_c[S_TEXT], x);
+    {   /* (tests: SVR2011_SUGGEST_DISCORD - the Discord field as typed) */
+        const char *d = getenv("SVR2011_SUGGEST_DISCORD");
+        if (d) {
+            WCHAR w[80];
+            MultiByteToWideChar(CP_UTF8, 0, d, -1, w, 80);
+            SetWindowTextW(s_c[S_DISC], w);
+        }
+    }
     s_npics = 0;
     if (picture && picture[0]) wcscpy_s(s_pics[s_npics++], MAX_PATH, picture);
     pics_text();

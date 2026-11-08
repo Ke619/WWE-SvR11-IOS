@@ -24,7 +24,8 @@ typedef struct {
     char problem[120], happens[40], what[6000], before[6000], contact[200];
 } ReportAnswers;
 
-/* What's wrong with the answers before Send (the launcher's words), or NULL when they can go. */
+/* What's wrong with the answers before Send (the launcher's words), or NULL when they can go. 2.2.1: the contact
+   is the player's Discord name and needed (report_discord_check). */
 const WCHAR *report_flow_check(const ReportAnswers *a);
 
 /* report.txt's top: the version, the answers. */
@@ -74,6 +75,7 @@ typedef struct {
     int (*guard)(const WCHAR *server, ReportResult *r);
     void (*progress)(void *ctx, uint64_t sent, uint64_t total);
     void *ctx;
+    const char *token;           /* the saved online sign-in (2.2.1: needed - report_send.h), NULL / "" signed out */
 } ReportFlow;
 int report_flow_send(const ReportFlow *f, ReportResult *r);
 

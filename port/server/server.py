@@ -2057,13 +2057,14 @@ class Service:
         that account_checks keep off online may still report."""
         if older_release(meta.get("version"), REPORTS_ACCOUNT_SINCE):
             return 426, "update_needed", REPORTS_OLD_CLIENT
+        where = "the app's Online page" if meta.get("platform") == "android" else "the launcher's Online tab"
         if not request.headers.get("Authorization", "").startswith("Bearer "):
-            return 401, "sign_in_needed", ("Sign in to an online account to send %s: the launcher's Online tab "
-                                           "(Sign in or Create account)." %
-                                           ("a suggestion" if meta["kind"] == "suggestion" else "a report"))
+            return 401, "sign_in_needed", ("Sign in to an online account to send %s: %s (Sign in or Create "
+                                           "account)." % ("a suggestion" if meta["kind"] == "suggestion" else
+                                                          "a report", where))
         # (a banned account ends here too: banning deletes its sessions, from_token knows none - it isn't told why)
         if not self.raw_account(request):
-            return 401, "sign_in_needed", "Your online sign-in has ended - sign in again on the launcher's Online tab."
+            return 401, "sign_in_needed", "Your online sign-in has ended - sign in again on %s." % where
         meta["contact"], why = reports.discord_name(meta.get("contact"))
         if why:
             return 400, "discord_needed", why

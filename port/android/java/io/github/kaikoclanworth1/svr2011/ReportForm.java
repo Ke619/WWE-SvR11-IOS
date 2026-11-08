@@ -98,8 +98,14 @@ final class ReportForm {
         v.addView(what);
         label(a, v, "What were you doing just before? (menu or mode, match type, superstars, mods)");
         v.addView(before);
-        label(a, v, "Your Discord name (optional - so we can ask you)");
+        label(a, v, "Your Discord name (needed - we answer there; only we see it)");
+        contact.setText(ReportSend.discordLoad(game));
         v.addView(contact);
+        if (a.settings().getString("online_token", "").isEmpty()) {   // (2.2.1: reports come from an online account)
+            TextView signIn = a.text("Not signed in: sign in (or create an account) on the Online page first - reports "
+                + "come from an online account.", 14, LauncherActivity.kRed);
+            v.addView(signIn);
+        }
         // the match (the newest one picked, as on the PC) and its mods
         st.matches = ReportSend.matches(game);
         List<String> labels = new ArrayList<>();
@@ -250,11 +256,28 @@ final class ReportForm {
             ans.happens = kAgain[again.getSelectedItemPosition()];
             ans.what = happened;
             ans.before = before.getText().toString().trim();
-            ans.contact = contact.getText().toString().trim();
-            if (ReportSend.hasUrl(ans.what) || ReportSend.hasUrl(ans.before) || ReportSend.hasUrl(ans.contact)) {
+            if (ReportSend.hasUrl(ans.what) || ReportSend.hasUrl(ans.before)) {
                 status.setText(ReportSend.kNoUrls);
                 status.setVisibility(View.VISIBLE);
-                (ReportSend.hasUrl(ans.what) ? what : ReportSend.hasUrl(ans.before) ? before : contact).requestFocus();
+                (ReportSend.hasUrl(ans.what) ? what : before).requestFocus();
+                return;
+            }
+            String[] name = new String[1];
+            String bad = ReportSend.discordWhy(contact.getText().toString(), name);
+            if (bad != null) {
+                status.setText(bad);
+                status.setVisibility(View.VISIBLE);
+                contact.requestFocus();
+                return;
+            }
+            ans.contact = name[0];
+            ReportSend.authToken = a.settings().getString("online_token", "");
+            if (ReportSend.authToken.isEmpty()) {
+                status.setText("Sign in first: the Online page (Sign in or Create account) - then send.");
+                status.setVisibility(View.VISIBLE);
+                d.dismiss();
+                a.goOnline();
+                a.status("Sign in (or create an account), then send your report.");
                 return;
             }
             boolean save = withSave.isChecked(), mods = withMods.isChecked() && withMods.isEnabled();
@@ -292,7 +315,8 @@ final class ReportForm {
                 d.getButton(AlertDialog.BUTTON_POSITIVE).setText("Try again");
                 match.setEnabled(true);
                 status.setTextColor(LauncherActivity.kRed);
-                status.setText("Not sent: " + r.why + " Check you're online, then try again.");
+                status.setText("Not sent: " + r.why + (r.code.isEmpty() ? " Check you're online, then try again." : ""));
+                if (ReportSend.needsSignIn(r)) a.status("Sign in again on the Online page, then try again.");
                 refresh[0].run();
             });
         }));
@@ -404,6 +428,7 @@ final class ReportForm {
             // (its receipt: the reports list asks the server with it - Receipts, the PC's UserData/reports.json)
             if (got.ok && !got.secret.isEmpty())
                 Receipts.add(game, ans.app, got.id, got.secret, ans.problem, ans.what, picturesLater);
+            if (got.ok) ReportSend.discordSave(game, ans.contact);
             return got;
         } finally {
             if (u.zip != null) u.zip.delete();
@@ -540,6 +565,7 @@ final class ReportForm {
                     else if (k.equals("what")) ans.what = v;
                     else if (k.equals("before")) ans.before = v;
                     else if (k.equals("contact")) ans.contact = v;
+                    else if (k.equals("token")) ReportSend.authToken = v;   // (a test account's sign-in)
                     else if (k.equals("image") && pics.size() < ReportSend.kMaxImages) pics.add(new File(v));
                     else if (k.equals("match")) matchArg = v;
                     else if (k.equals("mods")) mods = !v.equals("0");
@@ -550,6 +576,14 @@ final class ReportForm {
             }
             if (out.length() == 0 && server.isEmpty())
                 out.append("not sent: no server= line in ").append(answers).append(" (give the test server)\n");
+            if (out.length() == 0) {   // (2.2.1: the Discord name as the form checks it; else the saved sign-in)
+                String[] name = new String[1];
+                String bad = ReportSend.discordWhy(ans.contact, name);
+                if (bad != null) out.append("not sent: ").append(bad).append('\n');
+                else ans.contact = name[0];
+                if (ReportSend.authToken.isEmpty()) ReportSend.authToken = a.settings().getString("online_token", "");
+                if (bad == null) out.append("signed in: ").append(ReportSend.authToken.isEmpty() ? "no" : "yes").append('\n');
+            }
             if (out.length() == 0) {
                 File match = null;
                 if (matchArg.equals("latest")) {

@@ -84,6 +84,25 @@ constexpr const char* kKindText[] = {"The game crashed (closed by itself)", "The
 constexpr const char* kHappensText[] = {"Every time", "Sometimes", "It happened once"};
 constexpr const char* kNeedWhat = "Please say what happened first.";  // (report_flow_check's words)
 
+// 2.2.1: the Discord name (the contact) is needed - the server's rule (reports.discord_name, report_send.c
+// report_discord_check): 2-32 characters, lowercase letters, digits, "_" and ".", no two dots in a row. Capitals are
+// made lower case. "" with the name in *out, else why.
+std::string DiscordWhy(const std::string& text, std::string* out) {
+  std::string s;
+  for (char c : text) s += char(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
+  while (!s.empty() && s.front() == ' ') s.erase(s.begin());
+  while (!s.empty() && s.back() == ' ') s.pop_back();
+  if (s.empty()) return "Add your Discord name - we answer there.";
+  if (s.find('@') != std::string::npos) return "Write your Discord name without the @.";
+  if (s.find('/') != std::string::npos || s.find(':') != std::string::npos) return "Write your Discord name, not a link.";
+  bool ok = s.size() >= 2 && s.size() <= 32 && s.find("..") == std::string::npos;
+  for (char c : s) ok = ok && ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '.');
+  if (!ok) return "That isn't a Discord name: 2-32 characters - lowercase letters, digits, _ and . (no spaces).";
+  *out = s;
+  return {};
+}
+std::string SavedDiscordName();  // (the last one sent from a form here - below, per platform)
+
 rex::ui::ImGuiDrawer* g_imgui = nullptr;
 rex::ui::ImmediateDrawer* g_drawer = nullptr;
 rex::ui::Window* g_window = nullptr;
@@ -215,6 +234,7 @@ struct Sent {
   bool done = false, ok = false;
   std::string id, why;
   int seen_before = 0;
+  bool account = false;  // (refused for the sign-in or the Discord name: the reason says what to do)
 };
 std::mutex g_sent_mutex;
 Sent g_sent;
@@ -263,12 +283,22 @@ Sent SendNow(const Send& s) {
   if (!picture.empty()) f.images[0] = picture.c_str(), f.n_images = 1;
   f.pictures_later = s.pictures_later;
   f.progress = Progress;
+  // (2.2.1: the launcher's saved sign-in, as leaderboards.cpp and p2p.cpp use it)
+  static std::string token;
+  token = rex::cvar::Query<std::string>("online_token");
+  f.token = token.c_str();
   static ReportResult r;
   out.ok = report_flow_send(&f, &r) != 0;
   out.id = r.id;
   out.seen_before = r.seen_before;
   out.why = r.why[0] ? Narrow(r.why) : "no answer from the server.";
+  out.account = r.code[0] != 0;  // (the server's account / Discord refusal: its words say what to do)
   return out;
+}
+std::string SavedDiscordName() {
+  WCHAR w[80];
+  report_discord_load(g_game_dir.wstring().c_str(), w, 80);
+  return Narrow(w);
 }
 #elif defined(__ANDROID__)
 // The app's class (from the activity's class loader: FindClass on a native thread sees only the system's).
@@ -344,8 +374,29 @@ Sent SendNow(const Send& s) {
     if (t2 != std::string::npos) out.seen_before = std::atoi(r.c_str() + t2 + 1);
   } else {
     out.why = t1 == std::string::npos ? "no answer from the server." : r.substr(t1 + 1);
+    out.account = r.rfind("account\t", 0) == 0;  // ("account\t<why>": the server's sign-in / Discord refusal)
   }
   return out;
+}
+// The Discord name the app remembers (GameReport.discordName(): its settings, as its own report form keeps it).
+std::string SavedDiscordName() {
+  JNIEnv* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+  jclass cls = env ? GameReportClass(env) : nullptr;
+  jmethodID m = cls ? env->GetStaticMethodID(cls, "discordName", "()Ljava/lang/String;") : nullptr;
+  if (!m) {
+    if (env && env->ExceptionCheck()) env->ExceptionClear();
+    return {};
+  }
+  auto res = static_cast<jstring>(env->CallStaticObjectMethod(cls, m));
+  if (env->ExceptionCheck()) env->ExceptionClear(), res = nullptr;
+  std::string name;
+  if (res) {
+    const char* c = env->GetStringUTFChars(res, nullptr);
+    name = c ? c : "";
+    if (c) env->ReleaseStringUTFChars(res, c);
+    env->DeleteLocalRef(res);
+  }
+  return name;
 }
 #else
 Sent SendNow(const Send&) {
@@ -353,6 +404,7 @@ Sent SendNow(const Send&) {
   out.why = "Reports can't be sent from this build.";
   return out;
 }
+std::string SavedDiscordName() { return {}; }
 #endif
 
 void StartSend(Send s) {
@@ -524,6 +576,7 @@ std::string NewestMatch() {
 void ReportPage::Open() {
   from_pause_ = g_from_pause.load();
   a_ = {};
+  a_.contact = SavedDiscordName();  // (2.2.1: needed - the one sent last, ready)
   sel_ = 0;
   picture_ = kScreenshot;
   with_mods_ = with_save_ = true;
@@ -593,10 +646,17 @@ void ReportPage::SendIt() {
   }
   // (the server's rule too: no web addresses)
   const bool url_what = report_text_has_url(a_.what.c_str()), url_before = report_text_has_url(a_.before.c_str());
-  if (url_what || url_before || report_text_has_url(a_.contact.c_str())) {
+  if (url_what || url_before) {
     status_ = REPORT_NO_URLS, status_bad_ = true;
-    sel_ = url_what ? kWhat : url_before ? kBefore : kContact;
+    sel_ = url_what ? kWhat : kBefore;
     return;
+  }
+  if (std::string name, why = DiscordWhy(a_.contact, &name); !why.empty()) {
+    status_ = why, status_bad_ = true;
+    sel_ = kContact;
+    return;
+  } else {
+    a_.contact = name;
   }
   Send s;
   s.answers = a_;
@@ -625,6 +685,7 @@ void ReportPage::KeyPress(int r, int c) {
   if (r < 4) {
     char ch = kKeys[r][c];
     if (shift_ && ch >= 'a' && ch <= 'z') ch = char(ch - 'a' + 'A');
+    if (shift_ && ch == '\'') ch = '_';  // (Discord names have _)
     io.AddInputCharacter(uint32_t(uint8_t(ch)));
     return;
   }
@@ -707,6 +768,7 @@ bool ReportPage::DrawEditor(ImGuiIO& io, ImDrawList* dl, float s, const std::fun
       if (r < 4) {
         char ch = kKeys[r][c];
         if (shift_ && ch >= 'a' && ch <= 'z') ch = char(ch - 'a' + 'A');
+        if (shift_ && ch == '\'') ch = '_';
         k[0] = ch, k[1] = 0;
       } else {
         std::snprintf(k, sizeof k, "%s", c == 0 ? (shift_ ? "SHIFT ON" : "SHIFT") : c == 3 ? "SPACE" : c == 6 ? "DELETE" : "DONE");
@@ -760,7 +822,7 @@ void ReportPage::OnDraw(ImGuiIO& io) {
     if (g_sent.done) {
       sent_ = g_sent;
       state_ = sent_.ok ? State::kSent : State::kForm;
-      status_ = sent_.ok ? "" : "Not sent: " + sent_.why + " Check you're online, then try again.";
+      status_ = sent_.ok ? "" : "Not sent: " + sent_.why + (sent_.account ? "" : " Check you're online, then try again.");
       status_bad_ = !sent_.ok;
     }
   }
@@ -913,8 +975,8 @@ void ReportPage::OnDraw(ImGuiIO& io) {
         if (a_.before.empty()) vc = kGrey;
         break;
       case kContact:
-        value = a_.contact.empty() ? "(optional)" : cut(a_.contact);
-        if (a_.contact.empty()) vc = kGrey;
+        value = a_.contact.empty() ? "(needed - A to type)" : cut(a_.contact);
+        if (a_.contact.empty()) vc = kGold;
         break;
       case kPicture:
         value = picture_ == kScreenshot ? (shot_.rgb.empty() ? "SCREENSHOT (none yet)" : "SCREENSHOT")

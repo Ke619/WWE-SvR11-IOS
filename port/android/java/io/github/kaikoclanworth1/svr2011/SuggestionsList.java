@@ -123,6 +123,15 @@ final class SuggestionsList {
         text.setHint("Your idea - what it would do, and where");
         text.setFilters(new android.text.InputFilter[] {new android.text.InputFilter.LengthFilter(3000)});
         v.addView(text);
+        EditText discord = new EditText(a);   // (2.2.1: needed - the contact, only we see it)
+        discord.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        discord.setTextColor(LauncherActivity.kText);
+        discord.setHint("Your Discord name (needed - only we see it)");
+        discord.setText(ReportSend.discordLoad(InstallActivity.gameFolder()));
+        v.addView(discord);
+        if (a.settings().getString("online_token", "").isEmpty())
+            v.addView(a.text("Not signed in: sign in (or create an account) on the Online page first - ideas come "
+                + "from an online account.", 14, LauncherActivity.kRed));
         TextView picsLine = a.text("", 13, LauncherActivity.kDim);
         v.addView(picsLine);
         Button addPics = a.button("Add a picture…", LauncherActivity.kBackground);
@@ -189,8 +198,24 @@ final class SuggestionsList {
                 error.setVisibility(View.VISIBLE);
                 return;
             }
+            String[] name = new String[1];
+            String bad = ReportSend.discordWhy(discord.getText().toString(), name);
+            if (bad != null) {
+                error.setText(bad);
+                error.setVisibility(View.VISIBLE);
+                discord.requestFocus();
+                return;
+            }
+            ReportSend.authToken = a.settings().getString("online_token", "");
+            if (ReportSend.authToken.isEmpty()) {
+                d.dismiss();
+                a.goOnline();
+                a.status("Sign in (or create an account), then send your idea.");
+                return;
+            }
             ReportSend.Answers ans = new ReportSend.Answers();
             ans.kind = "suggestion";
+            ans.contact = name[0];
             ans.version = a.versionName();
             ans.os = android.os.Build.VERSION.RELEASE + " (API " + android.os.Build.VERSION.SDK_INT + "), "
                 + android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL;
@@ -208,6 +233,7 @@ final class SuggestionsList {
                 got[0] = ReportSend.send(server, u);
                 if (got[0].ok && !got[0].secret.isEmpty())
                     Receipts.add(Receipts.kSuggestions, game, ans.app, got[0].id, got[0].secret, t, w, false);
+                if (got[0].ok) ReportSend.discordSave(game, ans.contact);
             }, () -> {
                 if (got[0].ok) {
                     d.dismiss();

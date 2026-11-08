@@ -201,6 +201,14 @@ public class GameActivity extends SDLActivity {
     @Override
     protected org.libsdl.app.SDLSurface createSDLSurface(android.content.Context context) {
         org.libsdl.app.SDLSurface surface = super.createSDLSurface(context);
+        // (test aid: SVR2011_TEST_SURFACE=480x216 - a surface smaller than the screen, as a phone's game downscaling
+        // makes it: report e69c2e)
+        String fixed = Os.getenv("SVR2011_TEST_SURFACE");
+        if (fixed != null && fixed.matches("\\d+x\\d+")) {
+            String[] wh = fixed.split("x");
+            surface.getHolder().setFixedSize(Integer.parseInt(wh[0]), Integer.parseInt(wh[1]));
+            Log.i("SvR2011", "test: surface fixed at " + fixed);
+        }
         surface.getHolder().addCallback(new android.view.SurfaceHolder.Callback() {
             @Override public void surfaceCreated(android.view.SurfaceHolder holder) { Sixty(holder); }
             @Override public void surfaceChanged(android.view.SurfaceHolder holder, int f, int w, int h) { Sixty(holder); }

@@ -1822,3 +1822,20 @@ REX_HOOK_RAW(sub_82242C98) {
                 g_extra_update ? " (extra update)" : "");
   __imp__sub_82242C98(ctx, base);
 }
+
+// The component lookup sub_8269DFB0(root, tag): walks root's tree (+20 first child, +16 next, +4 tag). Report 945792
+// (PC 2.2.0, a Championship Scramble of five mods, match start): sub_825F6E08 asked each person's 'CPRO' with a root
+// of 05056F13 - no object's (every root is 4-byte aligned) - and read past it: a crash. A root that isn't aligned is
+// "not found" here, as for no root, which its callers already handle, and a line names the caller.
+REX_EXTERN(__imp__sub_8269DFB0);
+REX_HOOK_RAW(sub_8269DFB0) {
+  if (ctx.r3.u32 & 3) {
+    static std::atomic<int> told{0};
+    if (const int n = ++told; n <= 10 || n % 1000 == 0)
+      REXLOG_WARN("[svr2011] component lookup: root {:08X} isn't an object's (tag {:08X}, caller {:08X}) - not found "
+                  "({} times)", ctx.r3.u32, ctx.r4.u32, uint32_t(ctx.lr), n);
+    ctx.r3.u64 = 0;
+    return;
+  }
+  __imp__sub_8269DFB0(ctx, base);
+}

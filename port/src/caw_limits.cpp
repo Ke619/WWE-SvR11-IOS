@@ -27,6 +27,7 @@
 // stops at kMaxLayers layers a block (50 T-shirts still crashed the draw).
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <mutex>
@@ -123,6 +124,15 @@ std::unordered_map<uint32_t, uint32_t> g_fallback;  // guest pointer -> size
 uint32_t g_fallback_bytes = 0;
 uint32_t g_fallback_logged = 0;  // (the last 16 MB step logged: "fallback in use N MB / cap")
 std::atomic<uint32_t> g_fallback_blocks{0};  // (every game free asks: no lock while there are none)
+// (the system heap had no room for a block: its size, alignment and kind - [cpu] - and when. A bigger or equal one
+// isn't asked for again until a fallback block is given back or a second has gone by; report bd538a, Android: a 22 MB
+// file the loader's retry loop asked for thousands of times a second, three log lines each, the frame rate down)
+struct NoRoom {
+  uint32_t size = 0, align = 0;
+  std::chrono::steady_clock::time_point at, told;
+  uint64_t refused = 0;
+};
+NoRoom g_no_room[2];
 }  // namespace
 
 namespace svr2011 {
@@ -177,13 +187,36 @@ uint32_t FallbackBlock(uint32_t size, bool cpu, uint32_t align) {
                   g_fallback_bytes / 1048576.0, kFallbackMax >> 20, size);
     return 0;
   }
-  const uint32_t ptr = g_memory->SystemHeapAlloc(size, align ? align : cpu ? 0x10 : 0x1000,
-                                                 cpu ? rex::memory::kSystemHeapVirtual : rex::memory::kSystemHeapPhysical);
-  if (!ptr) {
-    REXLOG_WARN("[svr2011] fallback in use {:.1f} MB / cap {} MB - the system heap has no {} bytes",
-                g_fallback_bytes / 1048576.0, kFallbackMax >> 20, size);
+  const uint32_t want = align ? align : cpu ? 0x10 : 0x1000;
+  NoRoom& nr = g_no_room[cpu ? 1 : 0];
+  const auto now = std::chrono::steady_clock::now();
+  if (nr.size && size >= nr.size && want >= nr.align && now - nr.at < std::chrono::seconds(1)) {
+    if (++nr.refused; now - nr.told >= std::chrono::seconds(10)) {  // (one line in 10 s)
+      nr.told = now;
+      REXLOG_WARN("[svr2011] fallback: still no room for {} bytes - asked {} times since, not tried again until a "
+                  "block is given back or a second has gone by", nr.size, nr.refused);
+    }
     return 0;
   }
+  // (test aid SVR2011_TEST_FALLBACK_NO_ROOM=<bytes>: a block that big or bigger finds no room, as on that phone)
+  static const uint32_t test_no_room = [] {
+    const char* v = std::getenv("SVR2011_TEST_FALLBACK_NO_ROOM");
+    return v ? uint32_t(std::strtoul(v, nullptr, 0)) : 0u;
+  }();
+  const uint32_t ptr = test_no_room && size >= test_no_room
+                           ? 0
+                           : g_memory->SystemHeapAlloc(size, want, cpu ? rex::memory::kSystemHeapVirtual
+                                                                       : rex::memory::kSystemHeapPhysical);
+  if (!ptr) {
+    static int told = 0;
+    if (told++ < 10 || told % 100 == 0)
+      REXLOG_WARN("[svr2011] fallback in use {:.1f} MB / cap {} MB - the system heap has no {} bytes ({} times)",
+                  g_fallback_bytes / 1048576.0, kFallbackMax >> 20, size, told);
+    if (!nr.size || size < nr.size || nr.size == size) nr.size = size, nr.align = want;
+    nr.at = now;
+    return 0;
+  }
+  if (nr.size && size >= nr.size) nr = NoRoom{};  // (room again)
   g_fallback[ptr] = size;
   g_fallback_bytes += size;
   g_fallback_blocks = uint32_t(g_fallback.size());
@@ -233,6 +266,7 @@ bool CawHeapFree(uint32_t ptr) {
   if ((g_fallback_bytes >> 24) + 1 < g_fallback_logged)  // (16 MB down: the next climb logged again)
     g_fallback_logged = (g_fallback_bytes >> 24) + 1;
   g_memory->SystemHeapFree(ptr);
+  g_no_room[0] = g_no_room[1] = NoRoom{};  // (room may be back: the next ask tries)
   if (g_fallback.empty()) {  // (a game that takes fallback memory gives it all back: logged a few times)
     static int told = 0;
     if (told++ < 5) REXLOG_INFO("[svr2011] fallback in use 0 MB / cap {} MB - every block given back", kFallbackMax >> 20);

@@ -280,6 +280,39 @@ void DumpGuestThreads(uint8_t* base) {
 }
 std::atomic<int64_t> g_dbg_since{0};
 
+// The motion fast-forward, sub_8239A6B0(obj) (its own code): while the object's +1316 is set it steps the motion -
+// vtable[21](obj, 0) - until a step returns non-zero (the motion at its end), puts its time (+272) back, clears
+// +1316 and runs one real step, vtable[21](obj, 1). A motion that never reaches its end kept that loop going for
+// ever: the logic thread at a full core and a black screen (report be776c: a Universe triple threat, before the
+// 3rd entrance). The steps are capped here - past the cap the rest of that motion is skipped, as if it had ended,
+// and a line names it (its id +260, x +264, y +268). Test aids: SVR2011_TEST_FF_CAP=<steps> (0: no cap, the
+// game's own loop), SVR2011_TEST_FF_LOG=1 (a line for every fast-forward).
+constexpr uint32_t kFfCap = 20000;  // (normal ones: 1 or 2 steps in entrances and matches, 8 Nov tests)
+std::atomic<uint32_t> g_ff_obj{0}, g_ff_key{0}, g_ff_steps{0};
+
+uint32_t FfCap() {
+  static const uint32_t cap = [] {
+    const char* v = std::getenv("SVR2011_TEST_FF_CAP");
+    return v ? uint32_t(std::strtoul(v, nullptr, 10)) : kFfCap;
+  }();
+  return cap;
+}
+
+uint32_t MotionKey(uint8_t* base, uint32_t obj) {
+  return (G32(base, obj + 260) & 0xFFFF) << 16 | (G32(base, obj + 264) & 0xFF) << 8 | (G32(base, obj + 268) & 0xFF);
+}
+
+std::string MotionText(uint32_t key) {
+  return fmt::format("{} x {} y {}", key >> 16, (key >> 8) & 0xFF, key & 0xFF);
+}
+
+void MotionStep(PPCContext& ctx, uint8_t* base, uint32_t obj, uint32_t r4) {  // obj->vtable[21](obj, r4)
+  ctx.r3.u64 = obj;
+  ctx.r4.u64 = r4;
+  ctx.ctr.u64 = G32(base, G32(base, obj) + 84);
+  REX_CALL_INDIRECT_FUNC(ctx.ctr.u32);
+}
+
 // obj->vtable[slot](obj, r4, r5)
 void Virt(PPCContext& ctx, uint8_t* base, uint32_t obj, int slot, uint32_t r4 = 0, uint32_t r5 = 0) {
   g_dbg_obj = obj;
@@ -544,6 +577,44 @@ void TestMatchTime(uint8_t* base) {
 
 void svr2011::HwWatchOn(uint8_t* base, uint32_t guest) { HwWatchAt(base, guest); }
 
+REX_EXTERN(__imp__sub_8239A6B0);
+REX_HOOK_RAW(sub_8239A6B0) {
+  const uint32_t obj = ctx.r3.u32;
+  if (!G32(base, obj + 1316)) {  // (no fast-forward: one step, the game's own)
+    __imp__sub_8239A6B0(ctx, base);
+    return;
+  }
+  const uint32_t time = G32(base, obj + 272), key = MotionKey(base, obj), cap = FfCap();
+  g_ff_key = key, g_ff_steps = 0, g_ff_obj = obj;
+  const auto t0 = Clock::now();
+  uint32_t steps = 0;
+  bool capped = false;
+  for (;;) {
+    MotionStep(ctx, base, obj, 0);
+    g_ff_steps = ++steps;
+    if (ctx.r3.u32) break;
+    if (cap && steps >= cap) {
+      capped = true;
+      break;
+    }
+  }
+  g_ff_obj = 0;
+  P32(base, obj + 272, time);
+  P32(base, obj + 1316, 0);
+  const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t0).count();
+  static const bool log = std::getenv("SVR2011_TEST_FF_LOG") != nullptr;
+  static uint32_t calls = 0, most = 0;  // (the test line: each new most steps, with the fast-forwards so far)
+  ++calls;
+  if (capped)
+    REXLOG_WARN("[svr2011] motion fast-forward: object {:08X} motion {} (now {}) not at its end after {} steps ({} ms)"
+                " - the rest of it skipped", obj, MotionText(key), MotionText(MotionKey(base, obj)), steps, ms);
+  else if (log && steps > most)
+    REXLOG_INFO("[svr2011] motion fast-forward: object {:08X} motion {} (now {}): {} steps ({} ms) - the most so far,"
+                " fast-forward {}", obj, MotionText(key), MotionText(MotionKey(base, obj)), steps, ms, calls);
+  if (steps > most) most = steps;
+  MotionStep(ctx, base, obj, 1);
+}
+
 // The world update, once a frame of the game's loop: how many 60 Hz ticks
 // this frame runs (at least one).
 REX_EXTERN(__imp__sub_8269D768);
@@ -773,6 +844,10 @@ REX_HOOK_RAW(sub_8269C728) {
                       "function {:08X}; jobs{}",
                       std::chrono::duration_cast<std::chrono::seconds>(Clock::now() - since).count(),
                       g_dbg_pass.load(), g_dbg_obj.load(), g_dbg_fn.load(), jobs);
+          if (const uint32_t ff = g_ff_obj.load())
+            REXLOG_WARN("frame rate: in a motion fast-forward - object {:08X} motion {} (now {}), {} steps so far", ff,
+                        MotionText(g_ff_key.load()), g_base ? MotionText(MotionKey(g_base, ff)) : std::string("?"),
+                        g_ff_steps.load());
           static int64_t dumped_for = -1;  // (once per stuck update)
           if (dumped_for != g_dbg_since.load() && g_base) {
             dumped_for = g_dbg_since.load();

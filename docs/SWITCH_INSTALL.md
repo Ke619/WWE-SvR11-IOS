@@ -8,16 +8,17 @@ Your console must already be able to install and run NSP files that don't come f
 
 ## What you need
 
-- The PC version of this port, already set up from your own copy of the game.
+- The PC version of this port, version 2.2.1 or later, already set up from your own copy of the game.
 - DBI on the console, to install the NSP.
 - About 6 GB free on the SD card, plus anything you add. Our card is 64 GB, formatted FAT32.
 
 ## Make the SD card from the PC launcher
 
 1. Connect the SD card to your PC. We used Hekate's USB mode, which shows the card as a drive.
-2. In the launcher, open **Setup → Switch**.
-3. Tick anything you want to add: your saves, mods, or music and custom movies.
-4. Click **Make Switch files**, then choose the top of the SD card. You can also choose a folder and copy its contents to the top of the card later.
+2. In the launcher, sign in on the **Online** tab if you want to send reports from the console. Your sign-in goes to the card with the game.
+3. Open **Setup → Switch**.
+4. Tick anything you want to add: your saves, mods, or music and custom movies.
+5. Click **Make Switch files**, then choose the top of the SD card. You can also choose a folder and copy its contents to the top of the card later.
 
 The card then has:
 
@@ -54,7 +55,7 @@ The first start builds shaders, so it takes longer than later ones. Later loads 
 
 ## How it runs
 
-Measured at the 60 fps setting, in handheld:
+Measured at the 60 fps setting, in handheld, on a test build before 2.2.1:
 
 | Scene | Frame rate |
 |---|---|
@@ -71,6 +72,8 @@ Delete the old copy from the console, then install the new NSP with DBI. To get 
 ## Report a problem
 
 Use **MY WWE → OPTIONS → REPORT A PROBLEM**, or **REPORT A PROBLEM** in the pause menu during a match. The console needs an internet connection.
+
+Reports need an online sign-in and your Discord name. Sign in on the PC launcher's **Online** tab, then run **Setup → Switch** again to bring the sign-in to the card. The report page asks for your Discord name.
 
 A report sends what you type, a screenshot if you choose, the game's logs and crash notes, your settings without any account details, and your main save and recorded match if you choose. IP addresses in the logs are blanked. Mods aren't sent.
 

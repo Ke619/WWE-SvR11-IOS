@@ -6500,7 +6500,7 @@ index 9eeb902..1352d33 100644
      provider->ui_samplers_ = UISamplers::Create(provider->vulkan_device_.get());
      if (!provider->ui_samplers_) {
 diff --git a/src/ui/window_sdl.cpp b/src/ui/window_sdl.cpp
-index 2251429..9145077 100644
+index 2251429..8ae96d6 100644
 --- a/src/ui/window_sdl.cpp
 +++ b/src/ui/window_sdl.cpp
 @@ -15,6 +15,7 @@
@@ -6583,7 +6583,24 @@ index 2251429..9145077 100644
  
    // Actualize state for the common Window code. Listener dispatch is handled
    // by Window::Open after OpenImpl returns; these only record initial state.
-@@ -291,10 +325,27 @@ uint32_t WindowSDL::GetLatestDpiImpl() const {
+@@ -288,13 +322,44 @@ uint32_t WindowSDL::GetLatestDpiImpl() const {
+   if (scale <= 0.0f) {
+     return GetMediumDpi();
+   }
++#if REX_PLATFORM_ANDROID
++  // [svr2011] A surface the system scales down for a game (Android Game Mode, a phone maker's game tools: 0.3 to 0.9
++  // of the screen) keeps the screen's display scale, so the overlay came out a third of its size in units and its
++  // buttons and text far too big (report e69c2e: 480 x 216 pixels at scale 2 = 240 x 108). A phone on its side is
++  // 360 or more units tall: below 320 the scale follows the surface. (Test: SVR2011_TEST_NO_SCALE_FLOOR=1 off.)
++  static const bool floor_off = [] {
++    const char* v = std::getenv("SVR2011_TEST_NO_SCALE_FLOOR");
++    return v && *v == '1';
++  }();
++  const uint32_t short_side = std::min(GetActualPhysicalWidth(), GetActualPhysicalHeight());
++  if (!floor_off && short_side && float(short_side) / scale < 320.0f) {
++    scale = float(short_side) / 360.0f;
++  }
++#endif
    return uint32_t(scale * float(GetMediumDpi()) + 0.5f);
  }
  
@@ -6611,7 +6628,7 @@ index 2251429..9145077 100644
    SDL_SetWindowFullscreen(sdl_window_, IsFullscreen());
  }
  
-@@ -369,6 +420,9 @@ void WindowSDL::FocusImpl() {
+@@ -369,6 +434,9 @@ void WindowSDL::FocusImpl() {
    if (!sdl_window_) {
      return;
    }
@@ -6621,7 +6638,7 @@ index 2251429..9145077 100644
    SDL_RaiseWindow(sdl_window_);
  }
  
-@@ -398,6 +452,17 @@ std::unique_ptr<Surface> WindowSDL::CreateSurfaceImpl(Surface::TypeFlags allowed
+@@ -398,6 +466,17 @@ std::unique_ptr<Surface> WindowSDL::CreateSurfaceImpl(Surface::TypeFlags allowed
        SDL_Metal_DestroyView(metal_view);
      }
    }
@@ -6639,7 +6656,7 @@ index 2251429..9145077 100644
  #else
    SDL_PropertiesID props = SDL_GetWindowProperties(sdl_window_);
    if (allowed_types & Surface::kTypeFlag_WaylandSurface) {
-@@ -549,6 +614,14 @@ void WindowSDL::HandleTextInputEvent(SDL_Event& event) {
+@@ -549,6 +628,14 @@ void WindowSDL::HandleTextInputEvent(SDL_Event& event) {
  }
  
  void WindowSDL::HandleMouseEvent(SDL_Event& event) {
@@ -6654,7 +6671,7 @@ index 2251429..9145077 100644
    // SDL3 reports float window coordinates; listeners expect physical pixels.
    float density = GetPixelDensity();
    WindowDestructionReceiver destruction_receiver(this);
-@@ -588,4 +661,59 @@ void WindowSDL::HandleMouseEvent(SDL_Event& event) {
+@@ -588,4 +675,59 @@ void WindowSDL::HandleMouseEvent(SDL_Event& event) {
    }
  }
  

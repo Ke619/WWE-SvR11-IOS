@@ -10712,7 +10712,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
                 }
             }
             t0 = GetTickCount64();
-            while (GetTickCount64() - t0 < 600)   /* (the answer's install, the page again) */
+            /* (SVR2011_DISCOVER_RATE / _COMMENT / _COMMENTS: the page, then its rating / comments and their
+               answers - 8 s) */
+            while (GetTickCount64() - t0 < (getenv("SVR2011_DISCOVER_RATE") || getenv("SVR2011_DISCOVER_COMMENT") ||
+                                            getenv("SVR2011_DISCOVER_COMMENTS") ? 8000u : 600u))
                 while (PeekMessageW(&pm, NULL, 0, 0, PM_REMOVE)) {
                     TranslateMessage(&pm);
                     DispatchMessageW(&pm);

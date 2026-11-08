@@ -159,6 +159,26 @@ def has_url(text):
     return False
 
 
+# A Discord name (2.2.1 on, reports_need_account: every report and suggestion needs one - kept as the private
+# contact): Discord's username rules - 2-32 characters, lowercase letters, digits, "_" and ".", no two dots in a row.
+_DISCORD = re.compile(r"[a-z0-9_.]{2,32}")
+
+
+def discord_name(text):
+    """(the name as kept, "") or ("", why it's refused). Capitals are taken as lower case (Discord's names are)."""
+    name = str(text or "").strip().lower()
+    if not name:
+        return "", "Add your Discord name - we answer there."
+    if "@" in name:
+        return "", "Write your Discord name without the @."
+    if has_url(name) or "/" in name or ":" in name:
+        return "", "Write your Discord name, not a link."
+    if not _DISCORD.fullmatch(name) or ".." in name:
+        return "", ("That isn't a Discord name: 2-32 characters - lowercase letters, digits, _ and . (no spaces, "
+                    "no two dots in a row).")
+    return name, ""
+
+
 def url_refusal(kind="report"):
     """What a player sees when their text has a web address in it."""
     return "Please dont add urls to " + ("suggestions" if kind == "suggestion" else "bug reports")

@@ -1199,7 +1199,8 @@ td.acts { text-align: right; white-space: nowrap; }
     if (w === 'anonymous') return '<span class="note">anonymous</span>';
     return '<button class="who" data-who="' + esc(w) + '" title="' + (r.account ? 'their online account' : 'the contact they wrote') +
       ' - click to list what this person sent">' + esc(w) + '</button>' +
-      (r.account && r.contact && r.contact !== r.account ? '<br><span class="note">' + esc(r.contact) + '</span>' : '');
+      // (2.2.1 on: the account and its Discord name - the contact; private: only here and on the report page)
+      (r.account && r.contact && r.contact !== r.account ? ' <span class="note">(Discord: ' + esc(r.contact) + ')</span>' : '');
   }
   function whoBar() {
     if (!whoFilter) return '';

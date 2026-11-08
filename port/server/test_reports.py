@@ -67,15 +67,16 @@ def multipart(parts):
     return body.getvalue(), "multipart/form-data; boundary=" + boundary
 
 
-def post(url, meta, zip_bytes=None, images=(), ip=None, raw_parts=None):
+def post(url, meta, zip_bytes=None, images=(), ip=None, raw_parts=None, token=None):
     parts = raw_parts if raw_parts is not None else (
         [("report", json.dumps(meta).encode(), "application/json")] +
         ([("zip", zip_bytes, "application/zip")] if zip_bytes is not None else []) +
         [("image%d" % n, img, "image/png") for n, img in enumerate(images)])
     body, ctype = multipart(parts)
     r = urllib.request.Request(url + "/api/reports", data=body, method="POST",
-                               headers={"Content-Type": ctype, "X-Forwarded-For": ip or "10.9.%d.%d" % (
-                                   secrets.randbelow(250), secrets.randbelow(250))})
+                               headers=dict({"Content-Type": ctype, "X-Forwarded-For": ip or "10.9.%d.%d" % (
+                                   secrets.randbelow(250), secrets.randbelow(250))},
+                                   **({"Authorization": "Bearer " + token} if token else {})))
     try:
         with urllib.request.urlopen(r, timeout=120) as f:
             return f.status, json.loads(f.read())
@@ -382,6 +383,61 @@ def anthology(url, node_data):
     check("anthology: list --anthology has only them", a["id"] in only and b["id"] in only and c["id"] not in only)
 
 
+def set_setting(url, key, value):
+    st, d = post_json(url, "/api/admin/settings", {key: value})
+    assert st == 200 and d.get("ok"), ("settings", key, st, d)
+
+
+def accounts(url, node_data):
+    """reports_need_account (2.2.1): a signed-in account and a Discord name; older clients told to update. The
+    server under test needs --test-open-accounts (a private one on 127.0.0.1)."""
+    set_setting(url, "reports_need_account", "on")
+    name, password = "rep" + secrets.token_hex(4), "pw-" + secrets.token_hex(6)
+    st, d = post_json(url, "/api/register", {"name": name, "password": password})
+    token = d.get("token", "")
+    check("a test account (%s, %d)" % (name, st), st == 200 and token)
+    ip = lambda: "198.51.100.%d" % secrets.randbelow(250)
+    good = dict(version="2.2.1", contact="Tester_1.ok")
+    st, r = post(url, meta(version="2.2.0", contact="tester"), ip=ip(), token=token)
+    check("2.2.0: 426 update_needed, the text says everything (%s)" % r.get("error"),
+          st == 426 and r.get("code") == "update_needed" and "2.2.1" in r.get("error", "")
+          and "Discord" in r.get("error", "") and "sign in" in r.get("error", ""))
+    st, r = post(url, meta(version="2.1.5"), ip=ip())
+    check("2.1.5 without an account: the update answer too", st == 426)
+    st, r = post(url, meta(**good), ip=ip())
+    check("2.2.1 signed out: 401 sign_in_needed (%s)" % r.get("error"), st == 401 and r.get("code") == "sign_in_needed")
+    st, r = post(url, meta(**good), ip=ip(), token="not-a-token")
+    check("an ended sign-in: 401", st == 401 and r.get("code") == "sign_in_needed")
+    for bad in ("", "@tester", "a", "x" * 33, "two words", "dots..here", "discord.gg/abc", "https://x.io/u"):
+        st, r = post(url, meta(version="2.2.1", contact=bad), ip=ip(), token=token)
+        check("Discord name %r: 400 (%s)" % (bad, r.get("error")), st == 400 and r.get("code") in (
+            "discord_needed", None) and not r.get("ok"))
+    st, r = post(url, meta(**good), ip=ip(), token=token)
+    check("2.2.1 signed in with a Discord name: 200", st == 200 and r.get("ok"))
+    st, s = post(url, meta(version="2.2.1-dev", contact="tester_dev", kind="suggestion", problem="An idea"),
+                 ip=ip(), token=token)
+    check("a dev version and a suggestion: 200 (%s)" % s, st == 200 and s.get("ok"))
+    st, x = post(url, meta(version="2.2.1", contact="tester", kind="suggestion", problem="An idea"), ip=ip())
+    check("a suggestion signed out: 401", st == 401)
+    st, an = post(url, meta(version="1.0.3", app="anthology", contact=""), ip=ip())
+    check("SvR Anthology's apps: not gated (%d)" % st, st == 200)
+    rows = [json.loads(l) for l in open(os.path.join(node_data, "reports", "index.jsonl"), encoding="utf-8")]
+    row = next((x for x in rows if x.get("id") == r.get("id")), {})
+    check("stored: the account and the Discord name, lower case (%s / %s)" % (row.get("account"), row.get("contact")),
+          row.get("account") == name and row.get("contact") == "tester_1.ok")
+    st, d = post_json(url, "/api/reports/status", {"reports": [{"id": r["id"], "secret": r["secret"]}]}, token=token)
+    one = (d.get("reports") or [{}])[0]
+    check("status: no Discord name, no account name in the answer",
+          st == 200 and "contact" not in one and "who" not in one and "tester_1.ok" not in json.dumps(d))
+    st, body = get(url, "/api/admin/reports")
+    one = next((x for x in json.loads(body).get("reports", []) if x["id"] == r["id"]), {})
+    check("dashboard list: account + Discord name (%s)" % one.get("who"),
+          one.get("account") == name and one.get("contact") == "tester_1.ok")
+    set_setting(url, "reports_need_account", "off")
+    st, r = post(url, meta(version="2.2.0", contact="me"), ip=ip())
+    check("off: 2.2.0 signed out with any contact -> 200, as 2.2.0", st == 200 and r.get("ok"))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", required=True)
@@ -390,6 +446,7 @@ def main():
     url = a.url.rstrip("/")
     tag = secrets.token_hex(3)  # (this run's own version: earlier runs don't count as duplicates)
     ver = "9.9." + tag
+    accounts(url, a.node_data)  # (it leaves reports_need_account off: the tests below are 2.2.0's, no account)
 
     # the signature's normalising (offline)
     n1 = reports.normalise("[2026-10-24 15:30:12.123] exception 0xC0000005 at 0x7FF6A1B2C3D4 thread 1234 in D:\\Games\\SvR\\svr2011.exe")

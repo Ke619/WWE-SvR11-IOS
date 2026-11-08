@@ -14,6 +14,8 @@ import struct
 import time
 import zipfile
 
+import discovery_social
+
 TYPES = {"entrance": 1, "superstar": 2, "arena": 4, "moveset": 8}
 MAX_MOD = 250 << 20          # (the user's limit, 20 Oct)
 IMG_W, IMG_H, IMAGES = 1024, 768, 4
@@ -39,6 +41,7 @@ def init(store):
             if col not in have:
                 store.db.execute("ALTER TABLE mods ADD COLUMN %s %s" % (col, kind))
         store.db.commit()
+    discovery_social.init(store)  # (comments, ratings: their tables, the mods' rating columns)
 
 
 def jpeg_size(data):
@@ -111,7 +114,8 @@ def _row(r, full=False):
     d = {"id": r[0], "owner": r[1], "author": r[2], "name": r[3],
          "types": [k for k, v in TYPES.items() if r[4] & v], "tags": [t for t in (r[5] or "").split(",") if t],
          "version": r[6], "size": r[8], "hidden": bool(r[12]), "created": r[13], "downloads": r[14],
-         "updated": r[15], "edited": r[16], "pics": r[17] or 0, "needs": r[18] or ""}
+         "updated": r[15], "edited": r[16], "pics": r[17] or 0, "needs": r[18] or "",
+         "rating": discovery_social.rating_json(r[19], r[20])}  # (discovery_social.py: 1-5 stars)
     if full:
         d["description"] = r[7]
         d["file_name"] = r[11]
@@ -119,10 +123,12 @@ def _row(r, full=False):
 
 
 COLS = ("id, owner, author, name, types, tags, version, description, size, sha, images, file_name, hidden, created,"
-        " downloads, updated, edited, pics, needs")
+        " downloads, updated, edited, pics, needs, rating_sum, rating_count")
 
 
-def search(store, q="", types=0, tag="", sort="new", page=0, with_hidden=False):
+def search(store, q="", types=0, tag="", sort="new", page=0, with_hidden=False, rating_min=3):
+    """sort: new / popular / name / updated / rating (mods with rating_min ratings or more first, by their
+    average, then the number of ratings; the rest after them, the same way)."""
     where, args = [], []
     if not with_hidden:
         where.append("hidden = 0")
@@ -137,7 +143,10 @@ def search(store, q="", types=0, tag="", sort="new", page=0, with_hidden=False):
         args.append("%," + tag.lower().strip() + ",%")
     sql_where = (" WHERE " + " AND ".join(where)) if where else ""
     order = {"new": "created DESC", "popular": "downloads DESC, created DESC", "name": "lower(name)",
-             "updated": "COALESCE(updated, created) DESC"}.get(sort, "created DESC")
+             "updated": "COALESCE(updated, created) DESC",
+             "rating": "(COALESCE(rating_count, 0) >= %d) DESC, CAST(COALESCE(rating_sum, 0) AS REAL) / "
+                       "MAX(COALESCE(rating_count, 0), 1) DESC, rating_count DESC, created DESC"
+                       % max(1, int(rating_min))}.get(sort, "created DESC")
     with store.lock:
         total = store.db.execute("SELECT COUNT(*) FROM mods" + sql_where, args).fetchone()[0]
         rows = store.db.execute("SELECT %s FROM mods%s ORDER BY %s LIMIT ? OFFSET ?" % (COLS, sql_where, order),
@@ -175,6 +184,7 @@ def delete(store, mod_id):
         for s in json.loads(r[1] or "[]"):
             store._drop_blob(s)
         store.db.execute("DELETE FROM mods WHERE id = ?", (mod_id,))
+        discovery_social.drop_mod(store, mod_id)  # (its comments and ratings)
         store.db.commit()
     return True
 

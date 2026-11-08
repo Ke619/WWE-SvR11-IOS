@@ -31,7 +31,7 @@ Fixes marked "potential" couldn't be fully proven here, so please report it if t
 - **Crash when a wrestler's model memory is full** - potential fix.
 - **Pin count in slow motion at 30 fps and below** - potential fix (below 30 fps it's still slower, by design).
 - **Universe card**: picking a slot no longer replaces a mod with the list's first entry.
-- **Universe title rankings**: mods built on an unused superstar (Bob Orton's base and others) now get RAW or SmackDown, so the rankings list them - potential fix.
+- **Universe title rankings**: mods built on one of the game's unused superstar slots (base 115 and others) now get RAW or SmackDown, so the rankings list them - potential fix.
 - **Universe tag teams**: a team with a stock superstar and a mod no longer adds the stock superstar again after each match; teams that already have a double are cleaned up the next time the game saves - potential fix.
 - **Mali phones**: the launcher keeps your graphics look - potential fix.
 - **Move-set and CAW uploads** no longer refused because of a taunt mark - potential fix.

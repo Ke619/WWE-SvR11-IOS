@@ -13,6 +13,7 @@
 #include "graphics_page.h"
 #include "platform.h"
 #include "cpu_difficulty.h"
+#include "crowd_off.h"
 #include "display_modes.h"
 #include "arena_lights.h"
 #include "port_map.h"
@@ -655,8 +656,7 @@ void GraphicsPage::Load() {
     crowd_ = c == "on"       ? 2
              : c == "medium" ? 1
              : c == "off"    ? 0
-             : rex::cvar::GetFlagByName("mali_alpha") == "true" ? 0
-                                                                : 2;
+                             : svr2011::crowd::Level();  // (auto: what this run chose at the start)
     static const bool at_start = crowd_;
     crowd_at_start_ = at_start;
   }

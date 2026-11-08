@@ -151,13 +151,34 @@ void Worker() {
 
 }  // namespace
 
+// Mali, known before the GPU is opened: auto's crowd is chosen at the start (the arenas come through their copies
+// from the first file the game opens), and the GPU report's own check (backend_vulkan.cpp: vendor 0x13B5 turns
+// mali_alpha on) comes seconds later - so a phone started without the launcher's Mali mode (test configs, a home
+// screen shortcut, settings reset) kept the whole crowd while the page said LOW. On Android the Mali driver's
+// GLES library names it; vulkan_simulate_mali (a PC test of the Mali paths) counts as the GPU report counts it.
+bool MaliAtStart(const char** why) {
+  if (rex::cvar::GetFlagByName("mali_alpha") == "true") return *why = "mali_alpha", true;
+  if (rex::cvar::GetFlagByName("vulkan_simulate_mali") == "true") return *why = "vulkan_simulate_mali", true;
+#if defined(__ANDROID__)
+  for (const char* lib : {"/vendor/lib64/egl/libGLES_mali.so", "/vendor/lib/egl/libGLES_mali.so",
+                          "/system/vendor/lib64/egl/libGLES_mali.so", "/system/lib64/egl/libGLES_mali.so"}) {
+    std::error_code e;
+    if (fs::exists(lib, e)) return *why = "a Mali GPU driver", true;
+  }
+#endif
+  return false;
+}
+
 int Level() {
   static const int level = [] {
     const std::string v = REXCVAR_GET(arena_crowd);
     if (v == "off") return 0;
     if (v == "medium") return 1;
     if (v == "on") return 2;
-    return rex::cvar::GetFlagByName("mali_alpha") == "true" ? 0 : 2;
+    const char* why = "";
+    const bool mali = MaliAtStart(&why);
+    REXLOG_INFO("[svr2011] crowd: auto - {}", mali ? std::string("off (") + why + ")" : std::string("everyone"));
+    return mali ? 0 : 2;
   }();
   return level;
 }

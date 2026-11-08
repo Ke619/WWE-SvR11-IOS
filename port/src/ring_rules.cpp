@@ -363,9 +363,26 @@ int MatchStateLateAid() {
 }
 uint32_t g_last_update_arg = 0;
 
+// (CREATE AN ENTRANCE backing out for some mods on Android - reports a81bee / 9d32ce: the object made and removed
+// 0.14 s later, before the editor's lists. Each removal logs how long after it was made and who removed it: the
+// guest call chain - lr, then the saved LRs up the stack's back chain (each frame's LR at its caller's frame - 8).)
+std::atomic<int64_t> g_state_made_at{0};
+std::string GuestCallChain(PPCContext& ctx, uint8_t* base, int depth) {
+  std::string s = fmt::format("{:08X}", uint32_t(ctx.lr));
+  uint32_t sp = ctx.r1.u32;
+  for (int k = 0; k < depth; ++k) {
+    const uint32_t back = sp >= 0x10000 ? Rd32(base + sp) : 0;
+    if (back < 0x10000 || back <= sp || back - sp > 0x100000) break;
+    s += fmt::format(" < {:08X}", Rd32(base + back - 8));
+    sp = back;
+  }
+  return s;
+}
+
 REX_EXTERN(__imp__sub_82323748);
 REX_HOOK_RAW(sub_82323748) {
   __imp__sub_82323748(ctx, base);
+  g_state_made_at = std::chrono::steady_clock::now().time_since_epoch().count();
   REXLOG_INFO("[svr2011] entrance state: object made ({:08X})", Rd32(base + kEntranceState));
 }
 REX_EXTERN(__imp__sub_82769338);
@@ -382,9 +399,12 @@ REX_HOOK_RAW(sub_82769338) {
 REX_EXTERN(__imp__sub_823236D0);
 REX_HOOK_RAW(sub_823236D0) {
   const uint32_t was = Rd32(base + kEntranceState);
+  const std::string chain = was ? GuestCallChain(ctx, base, 6) : std::string();
   __imp__sub_823236D0(ctx, base);
   if (!was) return;
-  REXLOG_INFO("[svr2011] entrance state: object removed ({:08X})", was);
+  const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch() -
+                                                    std::chrono::steady_clock::duration(g_state_made_at.load())).count();
+  REXLOG_INFO("[svr2011] entrance state: object removed ({:08X}) {:.2f} s after it was made - by {}", was, secs, chain);
   if (MatchStateLateAid() && g_last_update_arg) {
     const auto saved = ctx;
     ctx.r3.u64 = g_last_update_arg;

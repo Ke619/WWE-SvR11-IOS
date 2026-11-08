@@ -2883,6 +2883,43 @@ int EntranceForAttire(PPCContext& ctx, uint8_t* base, uint32_t mgr, uint32_t idx
     REXLOG_INFO("[svr2011] superstar mods: {} attire {}: entrance {}", m ? m->name : std::to_string(key / 100), attire + 1, n);
   return n;
 }
+
+// A mod whose profile keeps entrance 0 (a save's entrance block all zero - kept as the mod's own profile, the save's
+// late write after SetEntranceMedia): CREATE AN ENTRANCE made its entrance stage, part 0 played 0 and the stage ended
+// at once - the editor backed out to its menu (Android reports a81bee / 9d32ce: Kane '06, Shawn Michaels, Owen Hart;
+// reproduced on PC with a zeroed block). Entrance 0 for a mod's slot (not a created entrance's): its own entrance= when
+// that has a script, else its base's default.
+uint32_t ModZeroEntrance(uint8_t* base, uint32_t mgr, uint32_t idx, uint32_t n) {
+  if (n || idx >= 16 || base[mgr + 36 + idx * 280 + 195]) return n;  // (a created entrance: its parts are its own)
+  const uint32_t table = Rd32(base + kSlotTable);
+  if (!table) return n;
+  const uint32_t key = Rd32(base + table + kSlotsAt + idx * kSlotSize + kSlotKey);
+  const Mod* m = ModOf(key / 100);
+  if (!m) return n;
+  uint32_t use = m->entrance > 0 && svr2011::EntranceScriptExists(m->entrance) ? uint32_t(m->entrance) : 0;
+  if (!use) {
+    const uint32_t bi = svr2011::RosterIndex(base, m->base);
+    if (bi < 512) {
+      const uint8_t* e = base + svr2011::RosterEntry(kProfiles, kProfileSize, bi) + kEntrance;
+      use = Rd16(e + 0x08) ? Rd16(e + 0x08) : Rd16(e + 0x14);  // (the base's default copy, else its current one)
+    }
+  }
+  if (!use) return n;
+  // (and the zeros healed where the editor and the next save read them: the entrance manager's copy - +16 entrance,
+  // +18 champion, +20 multi-title - and the profile's +0x14 / +0x16 / +0x18; else the editor's rows showed the
+  // first entrance of each list)
+  auto heal = [&](uint32_t at) {
+    if (!base[at] && !base[at + 1]) base[at] = uint8_t(use >> 8), base[at + 1] = uint8_t(use);
+  };
+  for (const uint32_t k : {16u, 18u, 20u}) heal(mgr + 36 + idx * 280 + k);
+  if (const uint32_t si = svr2011::RosterIndex(base, m->slot); si < 512)
+    for (const uint32_t k : {0x14u, 0x16u, 0x18u}) heal(svr2011::RosterEntry(kProfiles, kProfileSize, si) + kEntrance + k);
+  static std::set<uint32_t> told;
+  if (told.insert(m->slot).second)
+    REXLOG_WARN("[svr2011] superstar mods: {} (id {}) - its saved entrance is 0 (an empty entrance block): entrance {} "
+                "instead", m->name, m->slot, use);
+  return use;
+}
 }  // namespace
 // Test aid SVR2011_TEST_CAE_LOG: the entrance block CREATE AN ENTRANCE's page loads
 // (sub_82753570(mgr, out): out = a copy of mgr+36, 280 bytes) - music +12, movie +14,
@@ -2907,8 +2944,9 @@ REX_HOOK_RAW(sub_82756538) {
     if (const int n = EntranceForAttire(ctx, base, mgr, idx, true); n > 0) ctx.r3.u64 = uint32_t(n);
     else ctx.r3 = r;
   }
-  // (a number whose mod is gone: cae_mod_motions.cpp)
+  // (a number whose mod is gone: cae_mod_motions.cpp; a mod's empty saved entrance: ModZeroEntrance)
   ctx.r3.u64 = svr2011::EntranceFallback(base, mgr, idx, int(part), ctx.r3.u32);
+  if (part == 0) ctx.r3.u64 = ModZeroEntrance(base, mgr, idx, ctx.r3.u32);
   // (test aid SVR2011_TEST_CAE_LOG: the number each slot's scene part plays - a created entrance's are 10000+)
   static const bool on = std::getenv("SVR2011_TEST_CAE_LOG") != nullptr;
   static std::set<uint64_t> told;
@@ -2924,6 +2962,7 @@ REX_HOOK_RAW(sub_82756718) {
   if (const int n = EntranceForAttire(ctx, base, mgr, idx, false); n > 0) ctx.r3.u64 = uint32_t(n);
   else ctx.r3 = r;
   ctx.r3.u64 = svr2011::EntranceFallback(base, mgr, idx, -1, ctx.r3.u32);
+  ctx.r3.u64 = ModZeroEntrance(base, mgr, idx, ctx.r3.u32);
 }
 REX_EXTERN(__imp__sub_82756768);
 REX_HOOK_RAW(sub_82756768) {
@@ -2933,6 +2972,7 @@ REX_HOOK_RAW(sub_82756768) {
   if (const int n = EntranceForAttire(ctx, base, mgr, idx, false); n > 0) ctx.r3.u64 = uint32_t(n);
   else ctx.r3 = r;
   ctx.r3.u64 = svr2011::EntranceFallback(base, mgr, idx, -1, ctx.r3.u32);
+  ctx.r3.u64 = ModZeroEntrance(base, mgr, idx, ctx.r3.u32);
 }
 
 // Victory scenes (docs/VICTORY_SCENES.md): after the match the winner's scene is a script EVP? n from

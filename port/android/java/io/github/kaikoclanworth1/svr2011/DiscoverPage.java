@@ -65,6 +65,7 @@ final class DiscoverPage {
     static final String[] kTypeNames = {"All types", "Entrance", "Superstar", "Arena", "Move-set"};
     static final String[] kSorts = {"new", "updated", "popular", "name"};
     static final String[] kSortNames = {"Newest", "Recently updated", "Most downloaded", "Name"};
+    static final String[] kSortNamesRated = {"Newest", "Recently updated", "Most downloaded", "Name", "Top rated"};  // (+ sort=rating while ratings are on)
 
     private final LauncherActivity a_;
     private final ModsPage mods_;
@@ -89,6 +90,8 @@ final class DiscoverPage {
     private boolean mine_, busy_;                   // (the server said it's the player's; a change is being sent)
     private String mineToken_ = "";                 // (the token the page was asked with)
     private String note_;                           // (what a change said: kept over the next page's "Looking…")
+    private DiscoverSocial social_;                 // (the mod's stars and comments)
+    private boolean sortsRated_;                    // (the order list has "Top rated": the server's ratings are on)
 
     DiscoverPage(LauncherActivity a, ModsPage mods) {
         a_ = a;
@@ -127,7 +130,7 @@ final class DiscoverPage {
         find.addView(words_, a_.fullWidth(6));
         type_ = spinner(kTypeNames);
         a_.row(find, "Type", null, type_);
-        sort_ = spinner(kSortNames);
+        sort_ = spinner(kSortNames);  // (sorts(): "Top rated" while the server has ratings on)
         a_.row(find, "Order", null, sort_);
         Button go = a_.button("Search", LauncherActivity.kRed);
         go.setOnClickListener(v -> {
@@ -179,6 +182,8 @@ final class DiscoverPage {
         desc_ = a_.text("", 14, LauncherActivity.kDim);
         desc_.setPadding(0, 0, 0, a_.dp(10));
         about2.addView(desc_);
+        social_ = new DiscoverSocial(a_, this);
+        social_.buildRating(page_);  // (the stars under the description; the comments under the buttons)
         buttons_ = new LinearLayout(a_);
         buttons_.setOrientation(LinearLayout.VERTICAL);
         page_.addView(buttons_);
@@ -186,6 +191,7 @@ final class DiscoverPage {
         download_.setOnClickListener(v -> download());
         buttons_.addView(download_, a_.fullWidth(10));
         ownerViews();
+        social_.buildComments(page_);
         a_.onRefresh(this::updateOwner);  // (the settings read again - the app back from another: signed out?)
 
         // A download running: its bar, what it's at, Cancel (in the buttons' place; on both views).
@@ -210,6 +216,11 @@ final class DiscoverPage {
 
     Spinner spinner(String[] names) {
         Spinner s = new Spinner(a_, Spinner.MODE_DROPDOWN);
+        s.setAdapter(adapter(names));
+        return s;
+    }
+
+    ArrayAdapter<String> adapter(String[] names) {
         ArrayAdapter<String> ad = new ArrayAdapter<String>(a_, android.R.layout.simple_spinner_item, names) {
             @Override
             public View getView(int position, View convertView, ViewGroup parent) {
@@ -220,9 +231,24 @@ final class DiscoverPage {
             }
         };
         ad.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        s.setAdapter(ad);
-        return s;
+        return ad;
     }
+
+    // "Top rated" in the order list only while the server has ratings on (the list's ratings_on).
+    void sorts(boolean rated) {
+        if (rated == sortsRated_) return;
+        sortsRated_ = rated;
+        int pos = sort_.getSelectedItemPosition();
+        sort_.setAdapter(adapter(rated ? kSortNamesRated : kSortNames));
+        sort_.setSelection(pos < (rated ? kSortNamesRated : kSortNames).length ? pos : 0);
+    }
+
+    String sortKey() {
+        int pos = sort_.getSelectedItemPosition();
+        return pos >= 0 && pos < kSorts.length ? kSorts[pos] : pos == kSorts.length && sortsRated_ ? "rating" : "new";
+    }
+
+    int genNow() { return gen_; }
 
     // The tab shown: the list the first time (and the visit remembered: "Updated" since the last one).
     void onShow() {
@@ -337,7 +363,7 @@ final class DiscoverPage {
             q = "";
         }
         final String path = "/api/mods?q=" + q + "&type=" + kTypes[type_.getSelectedItemPosition()]
-            + "&sort=" + kSorts[sort_.getSelectedItemPosition()] + "&page=" + page_n_;
+            + "&sort=" + sortKey() + "&page=" + page_n_;
         if (!downloading_) a_.status("Looking…");
         final Answer[] r = new Answer[1];
         a_.background(() -> r[0] = get(path, 1 << 20, gen), () -> {
@@ -358,6 +384,7 @@ final class DiscoverPage {
         }
         JSONObject j = json(r);
         total_ = j.optInt("total", 0);
+        sorts(j.optBoolean("ratings_on", false));
         JSONArray mods = j.optJSONArray("mods");
         final List<ImageView> thumbs = new ArrayList<>();
         for (int i = 0; mods != null && i < mods.length() && i < kPerPage; i++) {
@@ -423,6 +450,12 @@ final class DiscoverPage {
         return s.toString();
     }
 
+    // A row's stars, "★ 4.3 (12)"; nothing while it has no ratings (or ratings are off: no "rating").
+    static String starsText(JSONObject r) {
+        if (r == null || r.optInt("count", 0) <= 0) return "";
+        return "★ " + String.format(java.util.Locale.US, "%.1f", r.optDouble("avg", 0)) + " (" + r.optInt("count") + ")";
+    }
+
     ImageView listRow(JSONObject m, int index) {
         LinearLayout r = new LinearLayout(a_);
         r.setGravity(Gravity.CENTER_VERTICAL);
@@ -456,6 +489,8 @@ final class DiscoverPage {
         texts.addView(a_.text("v" + m.optString("version") + " - " + FileOps.human(m.optLong("size")) + " - " + dl
             + " download" + (dl == 1 ? "" : "s") + " - " + (m.optLong("updated", 0) != 0 ? "updated " : "new ")
             + date(version(m)), 13, LauncherActivity.kDim));
+        String stars = starsText(m.optJSONObject("rating"));
+        if (!stars.isEmpty()) texts.addView(a_.text(stars, 13, 0xFFFFC83D));
         r.addView(texts, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         r.setOnClickListener(v -> open(index));
         if (list_.getChildCount() > 0) {
@@ -492,6 +527,7 @@ final class DiscoverPage {
         mineToken_ = token();
         edit_.setVisibility(View.GONE);
         updateOwner();
+        social_.clear();
         fillInfo(row, "");
         grid_.setVisibility(View.GONE);
         page_.setVisibility(View.VISIBLE);
@@ -511,6 +547,7 @@ final class DiscoverPage {
             mine_ = m.optBoolean("mine", false);
             updateOwner();
             fillInfo(m, m.optString("description"));
+            social_.show(m, gen, mineToken_);
             if (!downloading_) a_.status(note_ != null ? note_ : "");
             note_ = null;
             a_.background(() -> {

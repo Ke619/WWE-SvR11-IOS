@@ -22,6 +22,9 @@ Fixes marked "potential" couldn't be fully proven here, so please report it if t
 - **DLC packages from other games** in the porters: arenas, props, trons and moves (388 DLC-only moves listed - potential, only a few tested).
 - **WWE 2K14 entrances** keep their own lights and effects (potential improvement).
 
+## ⭐ Discovery
+- **Star ratings and comments** on every mod's page: rate a mod 1-5 stars, read and write comments, and sort the list by **Top rated**. Needs a signed-in online account. Links and talk about copies of games aren't allowed; any comment can be reported.
+
 ## 📝 Reports
 - **Reports and suggestions now need a signed-in online account and your Discord name** (we answer there; only we see it). The launcher, the app, the Mod Maker and the in-game REPORT A PROBLEM all ask for it and remember it. Older versions are told to update.
 
@@ -36,6 +39,7 @@ Fixes marked "potential" couldn't be fully proven here, so please report it if t
 - **Crash in a lock-up** with some ported superstars (Jeff Hardy '09 and others) - potential fix.
 - **Frame rate falling for good** on phones short of memory (the game asked for a big file over and over) - potential fix; the file itself may still not load.
 - **Crash at the start of a match** when a superstar's data was broken - potential fix.
+- **Android: huge touch buttons and broken text** on phones whose game tools lower the game's resolution (OPPO Games and others) - potential fix.
 - **Create an Entrance backing out** for some superstar mods (Kane '06 and others): a mod whose saved entrance is empty now opens with its own entrance - potential fix.
 - **Pin count in slow motion at 30 fps and below** - potential fix (below 30 fps it's still slower, by design).
 - **Universe card**: picking a slot no longer replaces a mod with the list's first entry.

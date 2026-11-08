@@ -23,7 +23,7 @@ namespace svr2011 {
 std::vector<std::filesystem::path> UserMusicSongs() { return {}; }
 void SetSongGain(const std::filesystem::path&, float) {}
 void PlayClip(const std::filesystem::path&, float) {}
-int HostSoundStart(const std::filesystem::path&, bool, float) { return 0; }
+int HostSoundStart(const std::filesystem::path&, bool, float, float) { return 0; }
 void HostSoundStop(int) {}
 void HostSoundPause(int, bool) {}
 void HostSoundVolume(int, float) {}

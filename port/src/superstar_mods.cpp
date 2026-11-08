@@ -23,6 +23,7 @@
 // - owned: DLC-flagged ids must be owned (sub_828C1288 / sub_82589198):
 //   mods are.
 // The select screen shows them in the EXTRA list (managers.cpp, the M tile).
+#include "caller_nv.h"
 #include "big_roster.h"
 #include "cae_mod_motions.h"
 #include "no_mods.h"
@@ -2326,7 +2327,7 @@ REX_HOOK_RAW(sub_828B6CD0) {
     __imp__sub_828B6CD0(ctx, base);
     return;
   }
-  const uint32_t cursor = ctx.r31.u32;
+  const uint32_t cursor = SVR_CALLER_NV(ctx, r31);
   const bool mod = ModOf(ctx.r3.u32) != nullptr;
   __imp__sub_828B6CD0(ctx, base);
   const int shows = !ctx.r3.u32 ? 0 : mod ? 1 : 2;
@@ -4081,13 +4082,13 @@ uint32_t PairTable(const PPCContext& ctx, uint8_t* base) {
   const uint32_t save = Rd32(base + 0x82E407B4);
   const uint32_t own = save ? save + 0x364B4 + 3616 : 0;  // (Universe's own: P+3616)
   auto at = [&](uint32_t obj, uint32_t off) { return obj ? Rd32(base + obj + off) : 0u; };
-  if (lr >= 0x825AF908) return at(ctx.r31.u32, 4);   // sub_825AF908: obj r31, *(obj+4)
+  if (lr >= 0x825AF908) return at(SVR_CALLER_NV(ctx, r31), 4);   // sub_825AF908: obj r31, *(obj+4)
   if (lr >= 0x825AF800) return own;                  // sub_825AF800: sub_8257A490 + 3616
-  if (lr >= 0x825AECE8) return at(ctx.r27.u32, 12);  // sub_825AECE8: obj r27, *(obj+12)
+  if (lr >= 0x825AECE8) return at(SVR_CALLER_NV(ctx, r27), 12);  // sub_825AECE8: obj r27, *(obj+12)
   if (lr >= 0x825ADA48) return own;                  // sub_825ADA48: only tests -1
-  if (lr >= 0x825AD9C8) return at(ctx.r31.u32, 4);   // sub_825AD9C8: obj r31
-  if (lr >= 0x825AD950) return at(ctx.r31.u32, 4);   // sub_825AD950: obj r31
-  if (lr >= 0x825AD8E0) return at(ctx.r30.u32, 4);   // sub_825AD8E0: obj r30
+  if (lr >= 0x825AD9C8) return at(SVR_CALLER_NV(ctx, r31), 4);   // sub_825AD9C8: obj r31
+  if (lr >= 0x825AD950) return at(SVR_CALLER_NV(ctx, r31), 4);   // sub_825AD950: obj r31
+  if (lr >= 0x825AD8E0) return at(SVR_CALLER_NV(ctx, r30), 4);   // sub_825AD8E0: obj r30
   return 0;
 }
 }  // namespace

@@ -16,7 +16,15 @@ namespace svr2011::native {
 namespace {
 constexpr size_t kChunkBytes = 1 << 20;
 constexpr size_t kMaxChunks = 256;  // (reserved: the worker reads the list while it grows)
+#if defined(__SWITCH__)
+// Three cores, none to spare: bigger batches, and the worker sleeps between them (its
+// spinning took about 40% of a core, away from the game's threads).
+constexpr size_t kPublishEvery = 512;
+constexpr int kWorkerSpins = 8, kFinishSpins = 32;
+#else
 constexpr size_t kPublishEvery = 32;
+constexpr int kWorkerSpins = 256, kFinishSpins = 2000;
+#endif
 
 template <typename T>
 constexpr bool Pod = std::is_trivially_copyable_v<T>;
@@ -139,7 +147,7 @@ void RecordingList::Finish() {
   Publish();
   const uint64_t end = published_.load(std::memory_order_relaxed);
   // The worker is usually only a few ops behind: yield briefly first.
-  for (int i = 0; i < 2000 && replayed_.load(std::memory_order_acquire) != end; ++i) std::this_thread::yield();
+  for (int i = 0; i < kFinishSpins && replayed_.load(std::memory_order_acquire) != end; ++i) std::this_thread::yield();
   if (replayed_.load(std::memory_order_acquire) != end) {
     waiting_finish_.store(true, std::memory_order_seq_cst);
     std::unique_lock lock(mutex_);
@@ -169,7 +177,7 @@ void RecordingList::Worker() {
     if (target == pos) {
       // Caught up: spin a little (the next ops usually come within
       // microseconds), then sleep until woken.
-      for (int i = 0; i < 256 && target == pos; ++i) {  // (a reset shows as target < pos)
+      for (int i = 0; i < kWorkerSpins && target == pos; ++i) {  // (a reset shows as target < pos)
         std::this_thread::yield();
         target = published_.load(std::memory_order_seq_cst);
       }

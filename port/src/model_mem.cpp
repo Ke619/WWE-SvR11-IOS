@@ -10,6 +10,7 @@
 // Every failed allocation is logged once per caller with its size, so a
 // model that doesn't fit shows what it asked for.
 
+#include "caller_nv.h"
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -462,7 +463,7 @@ void LogLoaderCache(const uint8_t* base, uint32_t cache, const CacheAlloc& r, do
 REX_EXTERN(__imp__sub_826A1C70);
 REX_HOOK_RAW(sub_826A1C70) {
   const bool loader = uint32_t(ctx.lr) == 0x826A1F1C;  // (sub_826A1D38's file read: r31 = the request)
-  if (loader) t_request = ctx.r31.u32;
+  if (loader) t_request = SVR_CALLER_NV(ctx, r31);
   // (SVR2011_TEST_EMD_LOG=1: each model read - the request's first 50 bytes and its size: which pac a scene's
   // character model is looked up in - research for the Streak walk's mod, rtwm_streak.cpp)
   if (static const bool emd_log = std::getenv("SVR2011_TEST_EMD_LOG") != nullptr; emd_log && loader) {

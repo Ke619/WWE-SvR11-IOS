@@ -1812,7 +1812,15 @@ void UseBackstageRow(int i) {
   RedirectArena(78, i < 0 ? "" : g_backstage_rows[size_t(i)].file);
 }
 
+#if defined(__SWITCH__)
+extern "C" void NxMatchLoad(void);
+void SetMatchLoading(bool loading) {
+  g_match_loading = loading;
+  if (loading) NxMatchLoad();
+}
+#else
 void SetMatchLoading(bool loading) { g_match_loading = loading; }
+#endif
 void SetSuperstarLoading(const std::string& file) { StarLoading(file); }
 
 std::string ArenaModInUse(int* tile) {

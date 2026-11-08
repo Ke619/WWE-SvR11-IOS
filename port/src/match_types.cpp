@@ -150,6 +150,9 @@ std::vector<uint32_t> g_own_row_text;  // guest strings
 constexpr uint32_t kWeaponsLabel = 0x0FA0B100, kWeaponsText = 0x0FA0B101;  // (label, description)
 // MY WWE -> OPTIONS: its WEAPONS row (game_files.cpp) and REPORT A PROBLEM after it (menu_hooks.cpp gives its text).
 constexpr uint32_t kOptionsGroup = 0x11, kOptionsWeaponsLabel = 0x0FA0B201, kReportLabel = 0x0FA0B202;
+#if defined(__SWITCH__)
+constexpr uint32_t kExitLabel = 0xAFC1, kMainGroup = 0x01;  // (the main menu's EXIT: game_files.cpp)
+#endif
 constexpr uint32_t kExtremeFirst = 0x4D, kExtremeLast = 0x50;
 constexpr uint32_t kFullGroup = 0x06;  // ONE ON ONE: 14 rows, the most a list shows
 struct WeaponsRow {
@@ -452,6 +455,15 @@ std::vector<uint8_t> WithRows(const uint8_t* table, uint32_t size) {
   };
   for (uint32_t i = 0; i < total; ++i) {
     const uint8_t* rec = table + kFirst + i * kRec;
+#if defined(__SWITCH__)
+    // No EXIT on the main menu: a Switch game is closed from the HOME menu. (SHOP before it becomes the group's last.)
+    if (Rd32(rec) == kExitLabel && Rd32(rec + 0x18) == kMainGroup) {
+      uint8_t* prev = out.data() + out.size() - kRec;
+      Wr32(prev + 0x3C, Rd32(prev + 0x3C) | (Rd32(rec + 0x3C) & 2u));
+      --added;
+      continue;
+    }
+#endif
     out.insert(out.end(), rec, rec + kRec);
     // MY WWE -> OPTIONS -> REPORT A PROBLEM (report_page.h) after WEAPONS, the group's last: a copy of it (its node
     // id too, as menu.pac's port rows - game_files.cpp; menu.pac has no room left for one more record).

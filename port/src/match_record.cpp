@@ -55,7 +55,12 @@
 #define SVR2011_BUILD_COMMIT "unknown"
 #endif
 
-REXCVAR_DEFINE_INT32(match_recordings, 20, "Logs",
+#if defined(__SWITCH__)
+constexpr int kMatchRecordingsDefault = 0;  // (for problem reports, which this version doesn't send)
+#else
+constexpr int kMatchRecordingsDefault = 20;
+#endif
+REXCVAR_DEFINE_INT32(match_recordings, kMatchRecordingsDefault, "Logs",
                      "Matches kept in logs\\matches: each match's setup, pads, black box and trail, for problem reports "
                      "(0: none)");
 REXCVAR_DECLARE(int32_t, frame_rate);

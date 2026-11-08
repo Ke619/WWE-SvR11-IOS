@@ -1,0 +1,1603 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 6975ea2..9288e1c 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -84,7 +84,10 @@ elseif(APPLE)
+ endif()
+ 
+ # Enforce a Clang toolchain (LLVM Clang or Apple's Clang)
+-if(NOT CMAKE_CXX_COMPILER_ID MATCHES "^(Apple)?Clang$")
++if(NINTENDO_SWITCH)  # [svr2011 switch] devkitA64 is GCC; Horizon counts as POSIX here
++    set(UNIX TRUE)
++    add_compile_definitions(REX_PLATFORM_SWITCH=1)
++elseif(NOT CMAKE_CXX_COMPILER_ID MATCHES "^(Apple)?Clang$")
+     message(FATAL_ERROR "ReXGlue requires the Clang compiler (LLVM Clang or AppleClang). Please set CMAKE_CXX_COMPILER to clang++")
+ endif()
+ 
+@@ -106,7 +109,13 @@ endif()
+ # Set C++23 standard
+ set(CMAKE_CXX_STANDARD 23)
+ set(CMAKE_CXX_STANDARD_REQUIRED ON)
+-set(CMAKE_CXX_EXTENSIONS OFF)
++if(NINTENDO_SWITCH)  # [svr2011 switch] newlib hides POSIX names without them
++    set(CMAKE_CXX_EXTENSIONS ON)
++    include_directories(BEFORE SYSTEM ${CMAKE_CURRENT_SOURCE_DIR}/compat_nx)
++    add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/compat_nx/rex_nx_compat.h>" -w)
++else()
++    set(CMAKE_CXX_EXTENSIONS OFF)
++endif()
+ set(CMAKE_DEBUG_POSTFIX d)
+ set(CMAKE_RELWITHDEBINFO_POSTFIX rd)
+ 
+@@ -135,7 +144,7 @@ endif()
+ # Global compile options
+ add_compile_options(
+     -fno-strict-aliasing
+-    -ffp-model=strict
++    $<$<CXX_COMPILER_ID:Clang,AppleClang>:-ffp-model=strict>
+     $<$<CONFIG:DEBUG>:-g>
+     $<$<CONFIG:DEBUG>:-O0>
+     $<$<CONFIG:RELEASE>:-O3>
+diff --git a/compat_nx/dlfcn.h b/compat_nx/dlfcn.h
+new file mode 100644
+index 0000000..10d34fd
+--- /dev/null
++++ b/compat_nx/dlfcn.h
+@@ -0,0 +1,13 @@
++// [svr2011 switch] No dynamic loading on Horizon: everything is linked statically.
++#pragma once
++#define RTLD_NOW 2
++#define RTLD_LAZY 1
++#define RTLD_LOCAL 0
++#define RTLD_GLOBAL 0
++#define RTLD_DEFAULT ((void*)0)
++static inline void* dlopen(const char*, int) { return 0; }
++static inline int dlclose(void*) { return 0; }
++static inline void* dlsym(void*, const char*) { return 0; }
++static inline const char* dlerror(void) { return "no dynamic loading on Horizon"; }
++typedef struct { const char* dli_fname; void* dli_fbase; const char* dli_sname; void* dli_saddr; } Dl_info;
++static inline int dladdr(const void*, Dl_info*) { return 0; }
+diff --git a/compat_nx/endian.h b/compat_nx/endian.h
+new file mode 100644
+index 0000000..033226a
+--- /dev/null
++++ b/compat_nx/endian.h
+@@ -0,0 +1,2 @@
++#pragma once
++#include <machine/endian.h>
+diff --git a/compat_nx/netinet/ip.h b/compat_nx/netinet/ip.h
+new file mode 100644
+index 0000000..31baf76
+--- /dev/null
++++ b/compat_nx/netinet/ip.h
+@@ -0,0 +1,3 @@
++// [svr2011 switch] libnx has netinet/in.h only.
++#pragma once
++#include <netinet/in.h>
+diff --git a/compat_nx/rex_nx_compat.h b/compat_nx/rex_nx_compat.h
+new file mode 100644
+index 0000000..20eb627
+--- /dev/null
++++ b/compat_nx/rex_nx_compat.h
+@@ -0,0 +1,43 @@
++// [svr2011 switch] Force-included everywhere: names Linux code expects.
++#pragma once
++#if defined(__cplusplus) && !defined(_GNU_SOURCE)
++#define _GNU_SOURCE 1
++#endif
++#include <stdio.h>
++#include <sys/types.h>
++#include <time.h>
++#include <unistd.h>
++#ifndef CLOCK_MONOTONIC_RAW
++#define CLOCK_MONOTONIC_RAW CLOCK_MONOTONIC
++#endif
++typedef off_t off64_t;
++#define fseeko64 fseeko
++#define ftello64 ftello
++#define ftruncate64 ftruncate
++#define stat64 stat
++#define fstat64 fstat
++#define lseek64 lseek
++
++// newlib has no timegm.
++static inline time_t rex_nx_timegm(struct tm* t) {
++  long long y = (long long)t->tm_year + 1900;
++  int m = t->tm_mon + 1;
++  y -= m <= 2;
++  long long era = (y >= 0 ? y : y - 399) / 400;
++  unsigned yoe = (unsigned)(y - era * 400);
++  unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + t->tm_mday - 1;
++  unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
++  long long days = era * 146097 + (long long)doe - 719468;
++  return (time_t)(days * 86400 + t->tm_hour * 3600 + t->tm_min * 60 + t->tm_sec);
++}
++#define timegm rex_nx_timegm
++#define SPDLOG_NO_TZ_OFFSET 1
++#define VULKAN_HPP_ENABLE_DYNAMIC_LOADER_TOOL 0
++
++// Linux calls the game makes for its worker threads: no meaning on Horizon.
++#define PRIO_PROCESS 0
++#define SYS_gettid 0
++static inline int setpriority(int, unsigned, int) { return 0; }
++static inline long rex_nx_syscall(long, ...) { return 0; }
++#define syscall rex_nx_syscall
++static inline pid_t gettid(void) { return 0; }
+diff --git a/compat_nx/sys/syscall.h b/compat_nx/sys/syscall.h
+new file mode 100644
+index 0000000..269d2db
+--- /dev/null
++++ b/compat_nx/sys/syscall.h
+@@ -0,0 +1,2 @@
++// [svr2011 switch] Linux syscalls do not exist on Horizon.
++#pragma once
+diff --git a/compat_nx/sys/utsname.h b/compat_nx/sys/utsname.h
+new file mode 100644
+index 0000000..bb71b78
+--- /dev/null
++++ b/compat_nx/sys/utsname.h
+@@ -0,0 +1,10 @@
++// [svr2011 switch] uname for the log's platform line.
++#pragma once
++#include <string.h>
++struct utsname { char sysname[32], nodename[32], release[32], version[32], machine[32]; };
++static inline int uname(struct utsname* u) {
++  memset(u, 0, sizeof(*u));
++  strcpy(u->sysname, "Horizon");
++  strcpy(u->machine, "aarch64");
++  return 0;
++}
+diff --git a/compat_nx/ucontext.h b/compat_nx/ucontext.h
+new file mode 100644
+index 0000000..ee3df4d
+--- /dev/null
++++ b/compat_nx/ucontext.h
+@@ -0,0 +1,3 @@
++// [svr2011 switch] Horizon has no ucontext; only the type name is needed by headers.
++#pragma once
++typedef struct ucontext_t { void* unused; } ucontext_t;
+diff --git a/include/rex/platform.h b/include/rex/platform.h
+index e90418d..38333d4 100644
+--- a/include/rex/platform.h
++++ b/include/rex/platform.h
+@@ -35,6 +35,12 @@
+ #elif defined(__ANDROID__)
+ #define REX_PLATFORM_ANDROID 1
+ #define REX_PLATFORM_LINUX 1
++#elif defined(__SWITCH__)
++// [svr2011 switch] Horizon with libnx: mostly the POSIX code paths.
++#ifndef REX_PLATFORM_SWITCH
++#define REX_PLATFORM_SWITCH 1
++#endif
++#define REX_PLATFORM_LINUX 1
+ #elif defined(__gnu_linux__)
+ #define REX_PLATFORM_GNU_LINUX 1
+ #define REX_PLATFORM_LINUX 1
+diff --git a/include/rex/ppc/context.h b/include/rex/ppc/context.h
+index 0ede542..4633908 100644
+--- a/include/rex/ppc/context.h
++++ b/include/rex/ppc/context.h
+@@ -177,6 +177,14 @@ struct FPSCRRegister {
+     setcsr(csr);
+   }
+ 
++#ifdef __SWITCH__
++  // Every change between the guest's vector and float code is an msr fpcr, which
++  // serializes. Here the mode stays as it starts: denormals kept.
++  inline void enableFlushModeUnconditional() noexcept {}
++  inline void disableFlushModeUnconditional() noexcept {}
++  inline void enableFlushMode() noexcept {}
++  inline void disableFlushMode() noexcept {}
++#else
+   inline void enableFlushModeUnconditional() noexcept {
+     csr |= FlushMask;
+     setcsr(csr);
+@@ -200,6 +208,7 @@ struct FPSCRRegister {
+       setcsr(csr);
+     }
+   }
++#endif
+ 
+   inline void InitHost() noexcept {
+     csr = getcsr();
+diff --git a/include/rex/thread/fiber.h b/include/rex/thread/fiber.h
+index f1f277a..a7acad7 100644
+--- a/include/rex/thread/fiber.h
++++ b/include/rex/thread/fiber.h
+@@ -20,7 +20,7 @@
+ // before including <ucontext.h>.
+ #define _XOPEN_SOURCE 700
+ #endif
+-#if !REX_PLATFORM_ANDROID  // [svr2011] bionic has no ucontext functions
++#if !(REX_PLATFORM_ANDROID || REX_PLATFORM_SWITCH)  // [svr2011] bionic has no ucontext functions
+ #include <ucontext.h>
+ #endif
+ #include <cstdint>
+@@ -59,7 +59,7 @@ struct Fiber {
+   void* handle_ = nullptr;
+   bool is_thread_fiber_ = false;
+ #elif REX_PLATFORM_LINUX || REX_PLATFORM_MAC
+-#if REX_PLATFORM_ANDROID
++#if REX_PLATFORM_ANDROID || REX_PLATFORM_SWITCH
+   void* sp_ = nullptr;  // saved stack pointer (fiber_posix.cpp: arm64 switch)
+ #else
+   ucontext_t context_{};
+diff --git a/include/rex/ui/vulkan/api.h b/include/rex/ui/vulkan/api.h
+index 246fe22..ff2a702 100644
+--- a/include/rex/ui/vulkan/api.h
++++ b/include/rex/ui/vulkan/api.h
+@@ -26,6 +26,12 @@
+ #define VULKAN_HPP_NO_TO_STRING
+ #endif
+ 
++#if REX_PLATFORM_SWITCH
++// [svr2011 switch] The Android surface slot carries the NWindow (surface_android.h).
++#ifndef VK_USE_PLATFORM_VI_NN
++#define VK_USE_PLATFORM_VI_NN
++#endif
++#endif
+ #if REX_PLATFORM_ANDROID
+ #ifndef VK_USE_PLATFORM_ANDROID_KHR
+ #define VK_USE_PLATFORM_ANDROID_KHR
+diff --git a/include/rex/ui/vulkan/functions/instance_nn_vi_surface.inc b/include/rex/ui/vulkan/functions/instance_nn_vi_surface.inc
+new file mode 100644
+index 0000000..0700f66
+--- /dev/null
++++ b/include/rex/ui/vulkan/functions/instance_nn_vi_surface.inc
+@@ -0,0 +1,2 @@
++// VK_NN_vi_surface functions used in the Switch build.
++XE_UI_VULKAN_FUNCTION(vkCreateViSurfaceNN)
+diff --git a/include/rex/ui/vulkan/instance.h b/include/rex/ui/vulkan/instance.h
+index 283fc75..ed355ff 100644
+--- a/include/rex/ui/vulkan/instance.h
++++ b/include/rex/ui/vulkan/instance.h
+@@ -85,6 +85,9 @@ class VulkanInstance {
+     // VK_KHR_android_surface (#9)
+ #ifdef VK_USE_PLATFORM_ANDROID_KHR
+ #include <rex/ui/vulkan/functions/instance_khr_android_surface.inc>
++#endif
++#ifdef VK_USE_PLATFORM_VI_NN
++#include <rex/ui/vulkan/functions/instance_nn_vi_surface.inc>
+ #endif
+     // VK_KHR_win32_surface (#10)
+ #ifdef VK_USE_PLATFORM_WIN32_KHR
+@@ -116,7 +119,7 @@ class VulkanInstance {
+ #ifdef VK_USE_PLATFORM_WAYLAND_KHR
+     bool ext_KHR_wayland_surface = false;  // #7
+ #endif
+-#ifdef VK_USE_PLATFORM_ANDROID_KHR
++#if defined(VK_USE_PLATFORM_ANDROID_KHR) || defined(VK_USE_PLATFORM_VI_NN)
+     bool ext_KHR_android_surface = false;  // #9
+ #endif
+ #ifdef VK_USE_PLATFORM_WIN32_KHR
+diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
+index 01e1ac6..4742ffe 100644
+--- a/src/core/CMakeLists.txt
++++ b/src/core/CMakeLists.txt
+@@ -63,15 +63,15 @@ elseif(UNIX)
+         clock_posix.cpp
+         dbg_posix.cpp
+         dynlib_posix.cpp
+-        exception_handler_posix.cpp
++        $<IF:$<BOOL:${NINTENDO_SWITCH}>,exception_handler_switch.cpp,exception_handler_posix.cpp>
+         filesystem_posix.cpp
+         fiber_posix.cpp
+-        mapped_memory_posix.cpp
++        $<IF:$<BOOL:${NINTENDO_SWITCH}>,mapped_memory_switch.cpp,mapped_memory_posix.cpp>
+         math_gcc.cpp
+-        memory_posix.cpp
++        $<IF:$<BOOL:${NINTENDO_SWITCH}>,memory_switch.cpp,memory_posix.cpp>
+         platform/console_posix.cpp
+         platform/env_posix.cpp
+-        seh_posix.cpp
++        $<IF:$<BOOL:${NINTENDO_SWITCH}>,seh_switch.cpp,seh_posix.cpp>
+         socket_posix.cpp
+         system_posix.cpp
+         threading_posix.cpp
+@@ -107,6 +107,7 @@ if(APPLE)
+     target_link_libraries(rexcore PRIVATE pthread)
+ elseif(ANDROID)  # [svr2011] pthread and rt are part of bionic's libc
+     target_link_libraries(rexcore PRIVATE dl log android)
++elseif(NINTENDO_SWITCH)  # [svr2011 switch] all in libnx / newlib
+ elseif(UNIX)
+     target_link_libraries(rexcore PRIVATE pthread rt dl)
+ endif()
+diff --git a/src/core/clock_posix.cpp b/src/core/clock_posix.cpp
+index 00f2382..2ab7b14 100644
+--- a/src/core/clock_posix.cpp
++++ b/src/core/clock_posix.cpp
+@@ -18,10 +18,19 @@ static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only")
+ #include <mach/mach_time.h>
+ #endif
+ 
++#if REX_PLATFORM_SWITCH
++#include <switch.h>
++#endif
++
+ namespace rex::chrono {
+ 
+ uint64_t Clock::host_tick_frequency_platform() {
+-#ifdef __APPLE__
++#if REX_PLATFORM_SWITCH
++  // [svr2011 switch] The hardware counter, in both functions: libnx's reported
++  // resolution doesn't match the nanoseconds clock_gettime returns, which made
++  // guest time run many times too fast.
++  return 19200000;
++#elif defined(__APPLE__)
+   mach_timebase_info_data_t info;
+   mach_timebase_info(&info);
+   return (uint64_t)((1000000000ull * (uint64_t)info.denom) / (uint64_t)info.numer);
+@@ -37,7 +46,9 @@ uint64_t Clock::host_tick_frequency_platform() {
+ }
+ 
+ uint64_t Clock::host_tick_count_platform() {
+-#ifdef __APPLE__
++#if REX_PLATFORM_SWITCH
++  return armGetSystemTick();
++#elif defined(__APPLE__)
+   // mach_absolute_time() returns raw hardware ticks; host_tick_frequency_platform()
+   // expresses the rate of these same ticks via mach_timebase_info.
+   // clock_gettime(CLOCK_MONOTONIC_RAW) returns nanoseconds, which would be
+diff --git a/src/core/exception_handler_switch.cpp b/src/core/exception_handler_switch.cpp
+new file mode 100644
+index 0000000..cf589a7
+--- /dev/null
++++ b/src/core/exception_handler_switch.cpp
+@@ -0,0 +1,9 @@
++// [svr2011 switch] Faults are not resumed on Horizon. The MMIO path is the
++// recompiler's REX_MM_LOAD / STORE macros, and no emulated GPU watches pages, so
++// the handler list only has to exist. Crash reports: port/switch/nx_main.cpp.
++#include <rex/exception_handler.h>
++
++namespace rex::arch {
++void ExceptionHandler::Install(Handler, void*) {}
++void ExceptionHandler::Uninstall(Handler, void*) {}
++}  // namespace rex::arch
+diff --git a/src/core/fiber_posix.cpp b/src/core/fiber_posix.cpp
+index 3fa5fa0..8f8a20a 100644
+--- a/src/core/fiber_posix.cpp
++++ b/src/core/fiber_posix.cpp
+@@ -23,7 +23,7 @@
+ 
+ #include <cassert>
+ 
+-#if REX_PLATFORM_ANDROID
++#if REX_PLATFORM_ANDROID || REX_PLATFORM_SWITCH
+ // [svr2011] Android (bionic has no getcontext / makecontext / swapcontext):
+ // an arm64 switch of the callee-saved registers. rex_fiber_switch(&from_sp,
+ // to_sp) pushes x19-x30 and d8-d15, saves sp, loads to_sp and pops the same
+@@ -69,7 +69,7 @@ namespace rex::thread {
+ 
+ thread_local Fiber* Fiber::tls_current_ = nullptr;
+ 
+-#if REX_PLATFORM_ANDROID
++#if REX_PLATFORM_ANDROID || REX_PLATFORM_SWITCH
+ Fiber* Fiber::ConvertCurrentThread() {
+   auto* f = new Fiber();  // (its sp_ is set by the first switch away)
+   f->is_thread_fiber_ = true;
+diff --git a/src/core/filesystem_posix.cpp b/src/core/filesystem_posix.cpp
+index 9149c3f..a68b155 100644
+--- a/src/core/filesystem_posix.cpp
++++ b/src/core/filesystem_posix.cpp
+@@ -100,7 +100,7 @@ std::filesystem::path GetExecutablePath() {
+ }
+ 
+ std::filesystem::path GetExecutableFolder() {
+-#if defined(__ANDROID__)
++#if defined(__ANDROID__) || defined(__SWITCH__)
+   // [svr2011] The executable is the system's app_process; the app's folder
+   // (the game files) is passed by its Java activity.
+   if (auto dir = rex::platform::env::get("REX_APP_FOLDER")) {
+@@ -274,9 +274,63 @@ bool GetInfo(const std::filesystem::path& path, FileInfo* out_info) {
+   return false;
+ }
+ 
++#if REX_PLATFORM_SWITCH
++}  // namespace filesystem
++}  // namespace rex
++extern "C" bool NxListSdFolder(const char* path, void (*entry)(void*, const char*, bool, uint64_t), void* user);
++namespace rex {
++namespace filesystem {
++
++// The game's folder: the card's listing in one request per 64 entries, then what only the
++// NSP has (the card's file wins). Timestamps are left at 0: nothing here reads them.
++static bool ListFilesFast(const std::filesystem::path& path, std::vector<FileInfo>& result) {
++  struct Ctx {
++    const std::filesystem::path* path;
++    std::vector<FileInfo>* out;
++  } ctx{&path, &result};
++  auto add = [](void* user, const char* name, bool folder, uint64_t size) {
++    auto* c = static_cast<Ctx*>(user);
++    FileInfo info;
++    info.name = name;
++    info.path = *c->path;
++    info.create_timestamp = info.access_timestamp = info.write_timestamp = convertUnixtimeToWinFiletime(0);
++    info.type = folder ? FileInfo::Type::kDirectory : FileInfo::Type::kFile;
++    info.total_size = folder ? 0 : size;
++    c->out->push_back(info);
++  };
++  if (!NxListSdFolder(path.c_str(), add, &ctx)) return false;
++  static const std::string kGame = "/SvR2011";
++  const std::string text = path.string();
++  if (text.compare(0, kGame.size(), kGame) != 0 || (text.size() > kGame.size() && text[kGame.size()] != '/')) return true;
++  const std::string in_nsp = "romfs:/game" + text.substr(kGame.size());
++  DIR* dir = opendir(in_nsp.c_str());
++  if (!dir) return true;
++  while (auto ent = readdir(dir)) {
++    if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
++    bool have = false;
++    for (const auto& known : result) {
++      if (known.name == std::filesystem::path(ent->d_name)) {
++        have = true;
++        break;
++      }
++    }
++    if (have) continue;
++    struct stat st {};
++    stat((in_nsp + "/" + ent->d_name).c_str(), &st);
++    add(&ctx, ent->d_name, ent->d_type == DT_DIR, static_cast<uint64_t>(st.st_size));
++  }
++  closedir(dir);
++  return true;
++}
++#endif
++
+ std::vector<FileInfo> ListFiles(const std::filesystem::path& path) {
+   std::vector<FileInfo> result;
+ 
++#if REX_PLATFORM_SWITCH
++  if (ListFilesFast(path, result)) return result;
++  result.clear();
++#endif
+   DIR* dir = opendir(path.c_str());
+   if (!dir) {
+     return result;
+diff --git a/src/core/logging.cpp b/src/core/logging.cpp
+index 1645848..41e9238 100644
+--- a/src/core/logging.cpp
++++ b/src/core/logging.cpp
+@@ -136,7 +136,11 @@ std::shared_ptr<spdlog::logger> CreateCategoryLogger(const std::string& name) {
+   auto sinks = BuildCategorySinks(name);
+   auto logger = std::make_shared<spdlog::logger>(name, sinks.begin(), sinks.end());
+   logger->set_level(ResolveCategoryLevel(name));
++#if REX_PLATFORM_SWITCH
++  logger->flush_on(spdlog::level::off);
++#else
+   logger->flush_on(g_config.flush_level);
++#endif
+   spdlog::register_logger(logger);
+   return logger;
+ }
+@@ -184,7 +188,11 @@ void InitLogging(const LogConfig& config) {
+       if (!entry.logger)
+         continue;
+       entry.logger->set_level(ResolveCategoryLevel(entry.name));
++#if REX_PLATFORM_SWITCH
++      entry.logger->flush_on(spdlog::level::off);
++#else
+       entry.logger->flush_on(config.flush_level);
++#endif
+       if (g_config.category_levels.count(entry.name))
+         entry.has_explicit_level = true;
+     }
+@@ -258,6 +266,9 @@ void InitLogging(const LogConfig& config) {
+ 
+   // Periodic flush
+   int flush_interval = REXCVAR_GET(log_flush_interval);
++#if REX_PLATFORM_SWITCH
++  flush_interval = 2;
++#endif
+   if (flush_interval > 0)
+     spdlog::flush_every(std::chrono::seconds(flush_interval));
+ }
+diff --git a/src/core/mapped_memory_switch.cpp b/src/core/mapped_memory_switch.cpp
+new file mode 100644
+index 0000000..5257523
+--- /dev/null
++++ b/src/core/mapped_memory_switch.cpp
+@@ -0,0 +1,44 @@
++// [svr2011 switch] No mmap on Horizon: a read-mapped file is read into memory.
++#include <cstdio>
++#include <cstdlib>
++
++#include <rex/logging.h>
++#include <rex/memory/mapped_memory.h>
++
++namespace rex::memory {
++
++class HeapMappedMemory : public MappedMemory {
++ public:
++  HeapMappedMemory(void* data, size_t size) : MappedMemory(data, size) {}
++  ~HeapMappedMemory() override { std::free(data_); }
++};
++
++std::unique_ptr<MappedMemory> MappedMemory::Open(const std::filesystem::path& path, Mode mode, size_t offset,
++                                                 size_t length) {
++  if (mode != Mode::kRead) {
++    REXLOG_ERROR("Switch: writable file mapping is not supported: {}", path.string());
++    return nullptr;
++  }
++  FILE* f = std::fopen(path.string().c_str(), "rb");
++  if (!f) {
++    return nullptr;
++  }
++  std::fseek(f, 0, SEEK_END);
++  long total = std::ftell(f);
++  size_t size = length ? length : size_t(total) - offset;
++  void* data = std::malloc(size ? size : 1);
++  std::fseek(f, long(offset), SEEK_SET);
++  size_t got = data ? std::fread(data, 1, size, f) : 0;
++  std::fclose(f);
++  if (got != size) {
++    std::free(data);
++    return nullptr;
++  }
++  return std::unique_ptr<MappedMemory>(new HeapMappedMemory(data, size));
++}
++
++std::unique_ptr<ChunkedMappedMemoryWriter> ChunkedMappedMemoryWriter::Open(const std::filesystem::path&, size_t, bool) {
++  return nullptr;
++}
++
++}  // namespace rex::memory
+diff --git a/src/core/memory_switch.cpp b/src/core/memory_switch.cpp
+new file mode 100644
+index 0000000..7fa1e2c
+--- /dev/null
++++ b/src/core/memory_switch.cpp
+@@ -0,0 +1,233 @@
++/**
++ * [svr2011 switch] Guest memory on Horizon (the memory_posix.cpp of the Switch).
++ *
++ * The guest address space is views of one "file": several guest ranges show the
++ * same physical pages. Horizon has no file mappings, so:
++ *  - MapFileView only records the view; the window of address space is reserved.
++ *  - Backing comes from slabs of heap, each turned into mappable code-alias
++ *    memory (svcMapProcessCodeMemory + RW), made as they are needed, so only
++ *    what the game commits is real memory.
++ *  - Committing a range gives its file offsets granules from the slabs, and maps
++ *    each granule into every view that shows that offset (svcMapProcessMemory).
++ *
++ * Measured on the console (port/docs/SWITCH_PORT_PLAN.md): one block at several
++ * addresses works, writes show through all of them; 24,000 mappings with a 32 MB
++ * system_resource_size in the NPDM; 2 MB aligned mappings are far cheaper.
++ *
++ * Page protection isn't tracked: everything mapped is read/write.
++ */
++
++#include <cstdio>
++#include <cstring>
++#include <malloc.h>
++#include <mutex>
++#include <unordered_map>
++#include <vector>
++
++#include <switch.h>
++
++#include <rex/logging.h>
++#include <rex/memory/utils.h>
++#include <rex/memory.h>
++#include <rex/platform.h>
++
++namespace rex {
++namespace memory {
++
++namespace {
++
++constexpr size_t kPage = 0x1000;
++constexpr size_t kGranule = 256 * 1024;
++constexpr size_t kSlab = 32 * 1024 * 1024;
++constexpr size_t kBlock = 2 * 1024 * 1024;
++
++struct View {
++  uint8_t* base;
++  size_t length;
++  size_t file_offset;
++};
++
++std::mutex g_lock;
++std::vector<View> g_views;
++// file offset / kGranule -> host address of the granule's memory in its slab's alias
++std::unordered_map<uint64_t, uint64_t> g_granules;
++uint64_t g_slab_next = 0, g_slab_end = 0;
++size_t g_slabs = 0, g_maps = 0;
++
++constexpr uintptr_t kHandleValue = 0x53564D;  // the only file mapping
++
++Handle Self() { return envGetOwnProcessHandle(); }
++
++bool NewSlab() {
++  void* heap = memalign(kBlock, kSlab);
++  if (!heap) {
++    REXLOG_ERROR("Switch memory: out of heap at {} slabs ({} MB)", g_slabs, g_slabs * kSlab / (1024 * 1024));
++    return false;
++  }
++  std::memset(heap, 0, kSlab);
++  virtmemLock();
++  uint64_t alias = reinterpret_cast<uint64_t>(virtmemFindCodeMemory(kSlab + kBlock, kPage));
++  alias = (alias + kBlock - 1) & ~uint64_t(kBlock - 1);
++  Result rc = svcMapProcessCodeMemory(Self(), alias, reinterpret_cast<uint64_t>(heap), kSlab);
++  virtmemUnlock();
++  if (R_SUCCEEDED(rc)) {
++    rc = svcSetProcessMemoryPermission(Self(), alias, kSlab, Perm_Rw);
++  }
++  if (R_FAILED(rc)) {
++    REXLOG_ERROR("Switch memory: slab rc={:#x}", rc);
++    return false;
++  }
++  g_slab_next = alias;
++  g_slab_end = alias + kSlab;
++  g_slabs++;
++  return true;
++}
++
++// Map [src, src+size) of a granule, for file offset `file`, into every view.
++bool MapToViews(uint64_t file, uint64_t src, size_t size) {
++  for (const View& v : g_views) {
++    uint64_t begin = std::max<uint64_t>(file, v.file_offset);
++    uint64_t end = std::min<uint64_t>(file + size, v.file_offset + v.length);
++    if (begin >= end) {
++      continue;
++    }
++    uint8_t* to = v.base + (begin - v.file_offset);
++    Result rc = svcMapProcessMemory(to, Self(), src + (begin - file), end - begin);
++    if (R_FAILED(rc)) {
++      REXLOG_ERROR("Switch memory: map {} size {:#x} rc={:#x} after {} maps", static_cast<void*>(to), end - begin,
++                   rc, g_maps);
++      return false;
++    }
++    g_maps++;
++  }
++  return true;
++}
++
++const View* ViewOf(const void* address) {
++  auto a = static_cast<const uint8_t*>(address);
++  for (const View& v : g_views) {
++    if (a >= v.base && a < v.base + v.length) {
++      return &v;
++    }
++  }
++  return nullptr;
++}
++
++bool Commit(const View& view, uint8_t* address, size_t length) {
++  uint64_t first = view.file_offset + (address - view.base);
++  uint64_t last = first + length;
++  std::lock_guard<std::mutex> lock(g_lock);
++  // View offsets may start inside a granule (E0000000 is 0x1000 in), which is fine:
++  // granules are in file offsets.
++  for (uint64_t g = first / kGranule; g <= (last - 1) / kGranule; g++) {
++    if (g_granules.count(g)) {
++      continue;
++    }
++    if (g_slab_next + kGranule > g_slab_end && !NewSlab()) {
++      return false;
++    }
++    uint64_t src = g_slab_next;
++    g_slab_next += kGranule;
++    if (!MapToViews(g * kGranule, src, kGranule)) {
++      return false;
++    }
++    g_granules[g] = src;
++  }
++  return true;
++}
++
++}  // namespace
++
++size_t page_size() { return kPage; }
++size_t allocation_granularity() { return kPage; }
++
++bool IsWritableExecutableMemorySupported() { return false; }
++bool IsWritableExecutableMemoryPreferred() { return false; }
++
++void* AllocFixed(void* base_address, size_t length, AllocationType allocation_type, PageAccess access) {
++  if (!base_address) {
++    void* mem = memalign(kPage, (length + kPage - 1) & ~(kPage - 1));
++    if (mem) {
++      std::memset(mem, 0, length);
++    }
++    return mem;
++  }
++  const View* view = ViewOf(base_address);
++  if (!view) {
++    return nullptr;
++  }
++  if (allocation_type == AllocationType::kReserve) {
++    return base_address;
++  }
++  return Commit(*view, static_cast<uint8_t*>(base_address), length) ? base_address : nullptr;
++}
++
++bool DeallocFixed(void* base_address, size_t length, DeallocationType deallocation_type) {
++  const View* view = ViewOf(base_address);
++  if (!view) {
++    if (deallocation_type == DeallocationType::kRelease) {
++      free(base_address);
++    }
++    return true;
++  }
++  // The memory stays mapped for the next commit, which must read as zero. Only
++  // whole committed granules can be touched: a reservation released unused isn't.
++  uint64_t first = view->file_offset + (static_cast<uint8_t*>(base_address) - view->base);
++  std::lock_guard<std::mutex> lock(g_lock);
++  uint64_t pos = first, end = first + length;
++  while (pos < end) {
++    uint64_t next = std::min<uint64_t>((pos / kGranule + 1) * kGranule, end);
++    auto it = g_granules.find(pos / kGranule);
++    if (it != g_granules.end()) {
++      std::memset(reinterpret_cast<void*>(it->second + (pos % kGranule)), 0, next - pos);
++    }
++    pos = next;
++  }
++  return true;
++}
++
++bool Protect(void* base_address, size_t length, PageAccess access, PageAccess* out_old_access) {
++  if (out_old_access) {
++    *out_old_access = PageAccess::kReadWrite;
++  }
++  return true;
++}
++
++bool QueryProtect(void* base_address, size_t& length, PageAccess& access_out) {
++  access_out = PageAccess::kReadWrite;
++  return true;
++}
++
++FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path, size_t length, PageAccess access,
++                                          bool commit) {
++  return static_cast<FileMappingHandle>(kHandleValue);
++}
++
++void CloseFileMappingHandle(FileMappingHandle handle, const std::filesystem::path& path) {
++  std::lock_guard<std::mutex> lock(g_lock);
++  g_views.clear();
++}
++
++void* MapFileView(FileMappingHandle handle, void* base_address, size_t length, PageAccess access,
++                  size_t file_offset) {
++  if (!base_address) {
++    return nullptr;
++  }
++  std::lock_guard<std::mutex> lock(g_lock);
++  g_views.push_back({static_cast<uint8_t*>(base_address), length, file_offset});
++  return base_address;
++}
++
++bool UnmapFileView(FileMappingHandle handle, void* base_address, size_t length) {
++  std::lock_guard<std::mutex> lock(g_lock);
++  for (auto it = g_views.begin(); it != g_views.end(); ++it) {
++    if (it->base == base_address) {
++      g_views.erase(it);
++      return true;
++    }
++  }
++  return true;
++}
++
++}  // namespace memory
++}  // namespace rex
+diff --git a/src/core/seh_switch.cpp b/src/core/seh_switch.cpp
+new file mode 100644
+index 0000000..752ef33
+--- /dev/null
++++ b/src/core/seh_switch.cpp
+@@ -0,0 +1,14 @@
++// [svr2011 switch] No signals on Horizon: guest SEH scopes never catch a host fault.
++#include <rex/platform/seh.h>
++
++namespace rex::platform {
++namespace {
++thread_local SehThreadState g_state;
++thread_local bool g_active = false;
++}  // namespace
++SehThreadState& seh_thread_state() { return g_state; }
++int seh_filter(u32, void*) { return 0; }
++[[noreturn]] void seh_rethrow() { __builtin_trap(); }
++void seh_initialize() {}
++bool& seh_active() { return g_active; }
++}  // namespace rex::platform
+diff --git a/src/core/threading_posix.cpp b/src/core/threading_posix.cpp
+index 6d9e384..c737267 100644
+--- a/src/core/threading_posix.cpp
++++ b/src/core/threading_posix.cpp
+@@ -30,7 +30,11 @@ static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only")
+ 
+ #include <fcntl.h>
+ #endif
++#if REX_PLATFORM_SWITCH
++#include <switch.h>
++#else
+ #include <sys/syscall.h>
++#endif
+ #include <sys/time.h>
+ #include <sys/types.h>
+ #include <unistd.h>
+@@ -114,6 +118,10 @@ enum class SignalType {
+   k_Count
+ };
+ 
++#if REX_PLATFORM_SWITCH
++// [svr2011 switch] No signals on Horizon: wake-ups poll, see the thread class.
++void install_signal_handler(SignalType) {}
++#else
+ int GetSystemSignal(SignalType num) {
+ #if defined(__APPLE__)
+   // macOS has no realtime signals (SIGRTMIN..SIGRTMAX); map the runtime's
+@@ -170,13 +178,19 @@ void install_signal_handler(SignalType type) {
+   }
+ }
+ 
++#endif
++
+ // TODO(dougvj)
+ void EnableAffinityConfiguration() {}
+ 
+ // uint64_t ticks() { return mach_absolute_time(); }
+ 
+ uint32_t current_thread_system_id() {
+-#if defined(__APPLE__)
++#if REX_PLATFORM_SWITCH
++  u64 id = 0;
++  svcGetThreadId(&id, CUR_THREAD_HANDLE);
++  return static_cast<uint32_t>(id);
++#elif defined(__APPLE__)
+   return static_cast<uint32_t>(pthread_mach_thread_np(pthread_self()));
+ #else
+   return static_cast<uint32_t>(syscall(SYS_gettid));
+@@ -363,6 +377,17 @@ class PosixConditionBase {
+       return std::make_pair(result, 0);
+     }
+ 
++    // [svr2011 switch] Only signals of these handles need to wake this wait.
++    struct Registered {
++      std::vector<PosixConditionBase*>& h;
++      explicit Registered(std::vector<PosixConditionBase*>& handles) : h(handles) {
++        for (auto* c : h) c->multi_waiters_.fetch_add(1, std::memory_order_seq_cst);
++      }
++      ~Registered() {
++        for (auto* c : h) c->multi_waiters_.fetch_sub(1, std::memory_order_seq_cst);
++      }
++    } registered(handles);
++
+     auto start_time = std::chrono::steady_clock::now();
+     auto end_time = (timeout == std::chrono::milliseconds::max())
+                         ? std::chrono::steady_clock::time_point::max()
+@@ -469,6 +494,10 @@ class PosixConditionBase {
+   inline virtual void post_execution() = 0;
+   std::condition_variable cond_;
+   std::mutex mutex_;
++  std::atomic<int> multi_waiters_{0};
++  void NotifyMulti() {
++    if (multi_waiters_.load(std::memory_order_seq_cst) > 0) multi_wait::Notify();
++  }
+ };
+ 
+ // There really is no native POSIX handle for a single wait/signal construct
+@@ -489,7 +518,7 @@ class PosixCondition<Event> : public PosixConditionBase {
+     auto lock = std::unique_lock<std::mutex>(mutex_);
+     signal_ = true;
+     cond_.notify_all();
+-    multi_wait::Notify();
++    NotifyMulti();
+     return true;
+   }
+ 
+@@ -527,7 +556,7 @@ class PosixCondition<Semaphore> : public PosixConditionBase {
+     }
+     count_ += release_count;
+     cond_.notify_all();
+-    multi_wait::Notify();
++    NotifyMulti();
+     return true;
+   }
+ 
+@@ -536,7 +565,7 @@ class PosixCondition<Semaphore> : public PosixConditionBase {
+   inline void post_execution() override {
+     count_--;
+     cond_.notify_all();
+-    multi_wait::Notify();
++    NotifyMulti();
+   }
+   uint32_t count_;
+   const uint32_t maximum_count_;
+@@ -561,7 +590,7 @@ class PosixCondition<Mutant> : public PosixConditionBase {
+       // Free to be acquired by another thread
+       if (count_ == 0) {
+         cond_.notify_all();
+-        multi_wait::Notify();
++        NotifyMulti();
+       }
+       return true;
+     }
+@@ -594,7 +623,7 @@ class PosixCondition<Timer> : public PosixConditionBase {
+     std::lock_guard<std::mutex> lock(mutex_);
+     signal_ = true;
+     cond_.notify_all();
+-    multi_wait::Notify();
++    NotifyMulti();
+     return true;
+   }
+ 
+@@ -699,6 +728,7 @@ class PosixCondition<Thread> : public PosixConditionBase {
+       pthread_attr_destroy(&attr);
+       return false;
+     }
++#if !REX_PLATFORM_SWITCH  // (set by the thread itself at its start)
+     if (params.initial_priority != 0) {
+       sched_param sched{};
+       sched.sched_priority = params.initial_priority + 1;
+@@ -711,6 +741,7 @@ class PosixCondition<Thread> : public PosixConditionBase {
+         return false;
+       }
+     }
++#endif
+     if (pthread_create(&thread_, &attr, ThreadStartRoutine, start_data) != 0) {
+       pthread_attr_destroy(&attr);
+       return false;
+@@ -746,6 +777,9 @@ class PosixCondition<Thread> : public PosixConditionBase {
+   bool Signal() override { return true; }
+ 
+   std::string name() const {
++#if REX_PLATFORM_SWITCH
++    return std::string();
++#endif
+     WaitStarted();
+     auto result = std::array<char, 17>{'\0'};
+     std::unique_lock<std::mutex> lock(state_mutex_);
+@@ -762,7 +796,7 @@ class PosixCondition<Thread> : public PosixConditionBase {
+         std::lock_guard<std::mutex> lock(android_pre_api_26_name_mutex_);
+         rex::string::copy_truncating(result.data(), android_pre_api_26_name_, result.size());
+       }
+-#else
++#elif !REX_PLATFORM_SWITCH
+       if (pthread_getname_np(thread_, result.data(), result.size() - 1) != 0) {
+         assert_always();
+       }
+@@ -772,6 +806,9 @@ class PosixCondition<Thread> : public PosixConditionBase {
+   }
+ 
+   void set_name(const std::string& name) {
++#if REX_PLATFORM_SWITCH
++    return;
++#endif
+     WaitStarted();
+     std::unique_lock<std::mutex> lock(state_mutex_);
+     if (state_ != State::kUninitialized && state_ != State::kFinished) {
+@@ -780,7 +817,7 @@ class PosixCondition<Thread> : public PosixConditionBase {
+       if (pthread_equal(thread_, pthread_self())) {
+         pthread_setname_np(std::string(name).c_str());
+       }
+-#else
++#elif !REX_PLATFORM_SWITCH
+       pthread_setname_np(thread_, std::string(name).c_str());
+ #endif
+ #if REX_PLATFORM_ANDROID
+@@ -803,12 +840,14 @@ class PosixCondition<Thread> : public PosixConditionBase {
+ #if defined(__APPLE__)
+   uint32_t system_id() const { return static_cast<uint32_t>(pthread_mach_thread_np(thread_)); }
+ #else
+-  uint32_t system_id() const { return static_cast<uint32_t>(thread_); }
++  uint32_t system_id() const { return static_cast<uint32_t>(reinterpret_cast<uintptr_t>(thread_)); }
+ #endif
+ 
+   uint64_t affinity_mask() {
+     WaitStarted();
+-#if defined(__APPLE__)
++#if REX_PLATFORM_SWITCH
++    return 0x7;
++#elif defined(__APPLE__)
+     // macOS doesn't expose Linux-style pthread affinity masks; report every
+     // logical processor as available.
+     auto cpu_count = std::min<uint32_t>(logical_processor_count(), 64);
+@@ -839,7 +878,9 @@ class PosixCondition<Thread> : public PosixConditionBase {
+ 
+   void set_affinity_mask(uint64_t mask) {
+     WaitStarted();
+-#if defined(__APPLE__)
++#if REX_PLATFORM_SWITCH
++    (void)mask;  // the kernel balances them over cores 0-2 (each thread's own start)
++#elif defined(__APPLE__)
+     // macOS doesn't expose Linux-style pthread affinity masks; keep this a
+     // no-op so higher layers can build and run.
+     (void)mask;
+@@ -865,6 +906,9 @@ class PosixCondition<Thread> : public PosixConditionBase {
+ 
+   int priority() {
+     WaitStarted();
++#if REX_PLATFORM_SWITCH
++    return 16;
++#else
+     int policy;
+     sched_param param{};
+     int ret = pthread_getschedparam(thread_, &policy, &param);
+@@ -873,10 +917,14 @@ class PosixCondition<Thread> : public PosixConditionBase {
+     }
+ 
+     return param.sched_priority;
++#endif
+   }
+ 
+   void set_priority(int new_priority) {
+     WaitStarted();
++#if REX_PLATFORM_SWITCH
++    (void)new_priority;  // all at 0x3B, the priority Horizon shares time at (measured)
++#else
+     sched_param param{};
+     param.sched_priority = new_priority;
+     int result = pthread_setschedparam(thread_, SCHED_FIFO, &param);
+@@ -893,6 +941,7 @@ class PosixCondition<Thread> : public PosixConditionBase {
+           break;
+       }
+     }
++#endif
+   }
+ 
+   void QueueUserCallback(std::function<void()> callback) {
+@@ -912,7 +961,9 @@ class PosixCondition<Thread> : public PosixConditionBase {
+       return;
+     }
+ 
+-#if defined(__APPLE__)
++#if REX_PLATFORM_SWITCH
++    int result = 0;  // alertable waits poll the queue
++#elif defined(__APPLE__)
+     // macOS has no sigqueue/pthread_sigqueue; pthread_kill delivers the signal
+     // without the sigval payload.
+     int result = pthread_kill(thread_, GetSystemSignal(SignalType::kThreadUserCallback));
+@@ -1003,8 +1054,13 @@ class PosixCondition<Thread> : public PosixConditionBase {
+       return true;
+     }
+ 
++#if REX_PLATFORM_SWITCH
++    REXSYS_WARN("Suspend of another thread is not supported on Switch");
++    return true;
++#else
+     int result = pthread_kill(thread_, GetSystemSignal(SignalType::kThreadSuspend));
+     return result == 0;
++#endif
+   }
+ 
+   void Terminate(int exit_code) {
+@@ -1031,12 +1087,14 @@ class PosixCondition<Thread> : public PosixConditionBase {
+       exit_code_ = exit_code;
+       signaled_ = true;
+       cond_.notify_all();
+-      multi_wait::Notify();
++      NotifyMulti();
+     }
+     if (is_current_thread) {
+       pthread_exit(reinterpret_cast<void*>(exit_code));
+     } else {
+-#if REX_PLATFORM_ANDROID
++#if REX_PLATFORM_SWITCH
++      REXSYS_WARN("Terminate of another thread is not supported on Switch");
++#elif REX_PLATFORM_ANDROID
+       if (pthread_kill(thread_, GetSystemSignal(SignalType::kThreadTerminate)) != 0) {
+         assert_always();
+       }
+@@ -1067,7 +1125,7 @@ class PosixCondition<Thread> : public PosixConditionBase {
+   // (0 before it starts and once it has finished: never a stale handle).
+   std::atomic<pid_t> tid_{0};
+   pid_t SystemTid() const {
+-#if REX_PLATFORM_ANDROID
++#if REX_PLATFORM_ANDROID || REX_PLATFORM_SWITCH
+     const pid_t tid = tid_.load(std::memory_order_acquire);
+     return tid > 0 ? tid : -1;  // (-1: the call fails with ESRCH instead of aborting)
+ #else
+@@ -1464,7 +1522,16 @@ class PosixThread : public PosixConditionHandle<Thread> {
+ thread_local PosixThread* current_thread_ = nullptr;
+ 
+ void* PosixCondition<Thread>::ThreadStartRoutine(void* parameter) {
+-#if !REX_PLATFORM_ANDROID
++#if REX_PLATFORM_SWITCH
++  {
++    // Spread over the three game cores, each free to move, until the game's threads are
++    // placed (nx_profile.cpp). 0x3B is the priority where threads on those cores share
++    // time: at 0x2C one starves the other (measured), and guest code spins.
++    static std::atomic<int> s_next{0};
++    svcSetThreadCoreMask(CUR_THREAD_HANDLE, s_next.fetch_add(1) % 3, 0x7);
++    svcSetThreadPriority(CUR_THREAD_HANDLE, 0x3B);
++  }
++#elif !REX_PLATFORM_ANDROID
+   if (pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, nullptr) != 0) {
+     assert_always();
+   }
+@@ -1482,7 +1549,11 @@ void* PosixCondition<Thread>::ThreadStartRoutine(void* parameter) {
+ 
+   current_thread_ = thread;
+   current_thread_condition_ = &thread->handle_;
++#if REX_PLATFORM_SWITCH
++  thread->handle_.tid_.store(pid_t(current_thread_system_id()), std::memory_order_release);
++#else
+   thread->handle_.tid_.store(pid_t(syscall(SYS_gettid)), std::memory_order_release);
++#endif
+   {
+     std::unique_lock<std::mutex> lock(thread->handle_.state_mutex_);
+     thread->handle_.state_ = create_suspended ? State::kSuspended : State::kRunning;
+@@ -1577,11 +1648,16 @@ void Thread::Exit(int exit_code) {
+ }
+ 
+ void set_current_thread_name(const std::string_view name) {
++#if REX_PLATFORM_SWITCH
++  return;
++#endif
+ #if defined(__APPLE__)
+   pthread_setname_np(std::string(name).c_str());
+ #else
++#if !REX_PLATFORM_SWITCH
+   pthread_setname_np(pthread_self(), std::string(name).c_str());
+ #endif
++#endif
+ #if REX_PLATFORM_ANDROID
+   if (!android_pthread_getname_np_ && current_thread_) {
+     current_thread_->condition().SetAndroidPreApi26Name(name);
+@@ -1589,6 +1665,7 @@ void set_current_thread_name(const std::string_view name) {
+ #endif
+ }
+ 
++#if !REX_PLATFORM_SWITCH
+ static void signal_handler(int signal, siginfo_t* /*info*/, void* /*context*/) {
+   switch (GetSystemSignalType(signal)) {
+     case SignalType::kThreadSuspend: {
+@@ -1611,4 +1688,6 @@ static void signal_handler(int signal, siginfo_t* /*info*/, void* /*context*/) {
+   }
+ }
+ 
++#endif
++
+ }  // namespace rex::thread
+diff --git a/src/graphics/CMakeLists.txt b/src/graphics/CMakeLists.txt
+index d90945b..49780a9 100644
+--- a/src/graphics/CMakeLists.txt
++++ b/src/graphics/CMakeLists.txt
+@@ -102,7 +102,11 @@ if(REXGLUE_USE_D3D12)
+         ${REXGPU_XENOS_D3D12_SOURCES})
+ endif()
+ 
+-add_library(rexgpu-xenos SHARED ${REXGPU_XENOS_SOURCES})
++if(NINTENDO_SWITCH)  # [svr2011 switch] no dynamic libraries
++    add_library(rexgpu-xenos STATIC ${REXGPU_XENOS_SOURCES})
++else()
++    add_library(rexgpu-xenos SHARED ${REXGPU_XENOS_SOURCES})
++endif()
+ add_library(rex::gpu-xenos ALIAS rexgpu-xenos)
+ 
+ set_target_properties(rexgpu-xenos PROPERTIES
+diff --git a/src/system/CMakeLists.txt b/src/system/CMakeLists.txt
+index 2531c00..c4cc122 100644
+--- a/src/system/CMakeLists.txt
++++ b/src/system/CMakeLists.txt
+@@ -48,7 +48,11 @@ set(REXSYSTEM_SOURCES
+     xex_module.cpp
+ )
+ 
+-add_library(rexruntime SHARED ${REXSYSTEM_SOURCES})
++if(NINTENDO_SWITCH)  # [svr2011 switch] no dynamic libraries
++    add_library(rexruntime STATIC ${REXSYSTEM_SOURCES})
++else()
++    add_library(rexruntime SHARED ${REXSYSTEM_SOURCES})
++endif()
+ add_library(rex::runtime ALIAS rexruntime)
+ add_library(rex::system ALIAS rexruntime)
+ add_library(rex::kernel ALIAS rexruntime)
+diff --git a/src/system/gpu_plugin_loader.cpp b/src/system/gpu_plugin_loader.cpp
+index 1e20c8c..9f71bd0 100644
+--- a/src/system/gpu_plugin_loader.cpp
++++ b/src/system/gpu_plugin_loader.cpp
+@@ -22,6 +22,10 @@
+ #include <rex/platform.h>
+ #include <rex/platform/dynlib.h>
+ 
++#if REX_PLATFORM_SWITCH
++extern "C" rex::system::IGraphicsSystem* rex_gpu_create(uint32_t abi_version, const rex::system::GpuCreateInfo* info);
++#endif
++
+ namespace rex::system {
+ 
+ namespace {
+@@ -55,6 +59,17 @@ std::vector<platform::DynamicLibrary>& LoadedPlugins() {
+ }  // namespace
+ 
+ std::unique_ptr<IGraphicsSystem> LoadGpuPlugin(std::string_view name, std::string_view backend) {
++#if REX_PLATFORM_SWITCH
++  // [svr2011 switch] Linked into the program.
++  {
++    std::string backend_str(backend);
++    GpuCreateInfo info{};
++    info.struct_size = sizeof(GpuCreateInfo);
++    info.backend = backend_str.c_str();
++    IGraphicsSystem* created = rex_gpu_create(kGpuPluginAbiVersion, &info);
++    return std::unique_ptr<IGraphicsSystem>(created);
++  }
++#else
+ #if defined(__ANDROID__)
+   // [svr2011] Packaged in the APK's native libraries: loaded by name.
+   std::filesystem::path path = PluginFileName(name);
+@@ -106,6 +121,7 @@ std::unique_ptr<IGraphicsSystem> LoadGpuPlugin(std::string_view name, std::strin
+   LoadedPlugins().push_back(std::move(library));
+   REXSYS_DEBUG("GPU plugin '{}' loaded ({})", name, path.filename().string());
+   return std::unique_ptr<IGraphicsSystem>(graphics_system);
++#endif
+ }
+ 
+ }  // namespace rex::system
+diff --git a/src/system/mmio_handler.cpp b/src/system/mmio_handler.cpp
+index 353bff0..1ba44bf 100644
+--- a/src/system/mmio_handler.cpp
++++ b/src/system/mmio_handler.cpp
+@@ -424,7 +424,7 @@ bool MMIOHandler::ExceptionCallback(arch::Exception* ex) {
+     if (access_violation_callback_) {
+       const bool handled = access_violation_callback_(std::move(lock), access_violation_callback_context_,
+                                                       fault_host_address, is_write);
+-#if REX_ARCH_ARM64 && !defined(_WIN32)
++#if REX_ARCH_ARM64 && !defined(_WIN32) && !REX_PLATFORM_SWITCH
+       // [svr2011] where the guest code was (the first few unhandled faults)
+       static std::atomic<int> reported{0};
+       if (!handled && reported.fetch_add(1) < 3) {
+diff --git a/src/system/xam/content_manager.cpp b/src/system/xam/content_manager.cpp
+index 9de17d2..b4952c3 100644
+--- a/src/system/xam/content_manager.cpp
++++ b/src/system/xam/content_manager.cpp
+@@ -16,6 +16,14 @@
+ 
+ #include <fmt/format.h>
+ 
++#include <rex/platform.h>
++#if REX_PLATFORM_SWITCH
++#include <fcntl.h>
++#include <unistd.h>
++#include <chrono>
++#include <vector>
++#endif
++
+ #if defined(_WIN32)
+ #ifndef WIN32_LEAN_AND_MEAN
+ #define WIN32_LEAN_AND_MEAN
+@@ -261,6 +269,7 @@ X_RESULT ContentManager::WriteContentHeaderFile(uint64_t xuid, XCONTENT_AGGREGAT
+ 
+   auto file = rex::filesystem::OpenFile(header_path, "wb");
+   if (!file) {
++    REXSYS_WARN("Saves: could not write the header {}", rex::path_to_utf8(header_path));
+     return X_ERROR_FILE_NOT_FOUND;
+   }
+   fwrite(&data, 1, sizeof(XCONTENT_AGGREGATE_DATA), file);
+@@ -631,6 +640,41 @@ void ShowFolder(const std::filesystem::path& p) {
+ #endif
+ }
+ 
++#if REX_PLATFORM_SWITCH
++// [switch] copy_file goes through stdio's 1 KB buffer here: 20 s for a 3 MB save on the
++// card, each time a save is opened.
++void CopyWhole(const std::filesystem::path& from, const std::filesystem::path& to, std::error_code& ec) {
++  ec.clear();
++  const auto start = std::chrono::steady_clock::now();
++  const int in = open(from.c_str(), O_RDONLY);
++  const int out = in >= 0 ? open(to.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666) : -1;
++  bool ok = in >= 0 && out >= 0;
++  size_t total = 0;
++  std::vector<char> buffer(1024 * 1024);
++  while (ok) {
++    const ssize_t got = read(in, buffer.data(), buffer.size());
++    if (got <= 0) {
++      ok = got == 0;
++      break;
++    }
++    for (ssize_t done = 0; ok && done < got;) {
++      const ssize_t put = write(out, buffer.data() + done, size_t(got - done));
++      ok = put > 0;
++      if (ok) done += put;
++    }
++    total += size_t(got);
++  }
++  if (in >= 0) close(in);
++  if (out >= 0 && close(out) != 0) ok = false;
++  if (!ok) {
++    ec = std::make_error_code(std::errc::io_error);
++    return;
++  }
++  REXSYS_INFO("Flat saves: {} KB copied to the mount folder in {} ms", total >> 10,
++              std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count());
++}
++#endif
++
+ std::string ReadSmallText(const std::filesystem::path& p) {
+   std::string text;
+   if (!std::filesystem::exists(p)) {
+@@ -690,7 +734,14 @@ void ContentManager::PrepareFlatMount(const std::string& name) {
+   std::filesystem::create_hard_link(file, link, ec);
+   if (ec) {
+     // No hard links on this drive: work on a copy, moved back on close.
++#if REX_PLATFORM_SWITCH
++    CopyWhole(file, link, ec);
++#else
+     std::filesystem::copy_file(file, link, std::filesystem::copy_options::overwrite_existing, ec);
++#endif
++    if (ec) {
++      REXSYS_WARN("Flat saves: could not copy {} to its mount folder ({})", name, ec.message());
++    }
+   }
+ }
+ 
+@@ -712,7 +763,12 @@ void ContentManager::CommitFlatMount(const std::string& name) {
+   }
+   if (files.size() == 1 && !has_dirs) {
+     const auto inner = files[0];
++#if REX_PLATFORM_SWITCH
++    // [switch] No hard links here, so the mount's file is always a copy or a new file.
++    {
++#else
+     if (!(std::filesystem::exists(file) && std::filesystem::equivalent(inner, file, ec))) {
++#endif
+       // A new file (or a copy): it becomes the save.
+       std::filesystem::rename(inner, file, ec);
+       if (ec) {
+@@ -752,6 +808,7 @@ void ContentManager::CommitFlatMount(const std::string& name) {
+ 
+ void ContentManager::DeleteFlat(const std::string& name) {
+   std::error_code ec;
++  REXSYS_INFO("Flat saves: deleting {}", name);
+   std::filesystem::remove_all(FlatMountPath(name), ec);
+   std::filesystem::remove_all(FlatPath(name), ec);
+   std::filesystem::remove(FlatInfoPath(name, ".header"), ec);
+diff --git a/src/system/xmemory.cpp b/src/system/xmemory.cpp
+index 1932a1f..0e76da1 100644
+--- a/src/system/xmemory.cpp
++++ b/src/system/xmemory.cpp
+@@ -28,6 +28,9 @@
+ #include <rex/stream.h>
+ #include <rex/system/function_dispatcher.h>
+ #include <rex/system/mmio_handler.h>
++#if REX_PLATFORM_SWITCH
++#include <switch.h>
++#endif
+ #include <rex/system/xmemory.h>
+ #include <rex/thread.h>
+ 
+@@ -162,6 +165,22 @@ bool Memory::Initialize() {
+   // Attempt to create our views. This may fail at the first address
+   // we pick, so try a few times.
+   mapping_base_ = 0;
++#if REX_PLATFORM_SWITCH
++  {
++    // [svr2011 switch] A free stretch of the address space, reserved, 2 MB aligned.
++    const size_t window = 0x120000000ull + 0x200000;
++    virtmemLock();
++    auto found = static_cast<uint8_t*>(virtmemFindAslr(window, 0x1000));
++    if (found) {
++      virtmemAddReservation(found, window);
++    }
++    virtmemUnlock();
++    auto mapping_base = reinterpret_cast<uint8_t*>((reinterpret_cast<uintptr_t>(found) + 0x1FFFFF) & ~uintptr_t(0x1FFFFF));
++    if (found && !MapViews(mapping_base)) {
++      mapping_base_ = mapping_base;
++    }
++  }
++#else
+   for (size_t n = 32; n < 64; n++) {
+     auto mapping_base = reinterpret_cast<uint8_t*>(1ull << n);
+     if (!MapViews(mapping_base)) {
+@@ -169,6 +188,7 @@ bool Memory::Initialize() {
+       break;
+     }
+   }
++#endif
+   if (!mapping_base_) {
+     REXSYS_ERROR("Unable to find a continuous block in the 64bit address space.");
+     assert_always();
+diff --git a/src/ui/CMakeLists.txt b/src/ui/CMakeLists.txt
+index 8638e12..758cdbd 100644
+--- a/src/ui/CMakeLists.txt
++++ b/src/ui/CMakeLists.txt
+@@ -81,7 +81,7 @@ elseif(APPLE)
+     set(REXUI_PLATFORM_SOURCES
+         surface_mac.cpp
+     )
+-elseif(ANDROID)  # [svr2011]
++elseif(ANDROID OR NINTENDO_SWITCH)  # [svr2011]
+     set(REXUI_PLATFORM_SOURCES
+         surface_android.cpp
+     )
+@@ -166,6 +166,7 @@ endif()
+ if(ANDROID)
+     # [svr2011] Android: SDL3 windows (ANativeWindow), no X11 / Wayland.
+     target_link_libraries(rexui PUBLIC android log)
++elseif(NINTENDO_SWITCH)  # [svr2011 switch] no X11 / Wayland
+ elseif(UNIX AND NOT APPLE)
+     find_package(PkgConfig REQUIRED)
+     pkg_check_modules(X11_XCB REQUIRED x11-xcb)
+diff --git a/src/ui/surface_android.cpp b/src/ui/surface_android.cpp
+index b1ba2a6..d213ee2 100644
+--- a/src/ui/surface_android.cpp
++++ b/src/ui/surface_android.cpp
+@@ -1,3 +1,17 @@
++#if defined(__SWITCH__)
++// [svr2011 switch] The surface's window is the NWindow.
++#include <switch.h>
++#include <rex/ui/surface_android.h>
++namespace rex::ui {
++bool AndroidNativeWindowSurface::GetSizeImpl(uint32_t& width_out, uint32_t& height_out) const {
++  u32 w = 0, h = 0;
++  nwindowGetDimensions(reinterpret_cast<NWindow*>(window_), &w, &h);
++  width_out = w;
++  height_out = h;
++  return w && h;
++}
++}  // namespace rex::ui
++#else
+ // [svr2011] See rex/ui/surface_android.h.
+ 
+ #include <rex/ui/surface_android.h>
+@@ -19,3 +33,5 @@ bool AndroidNativeWindowSurface::GetSizeImpl(uint32_t& width_out, uint32_t& heig
+ 
+ }  // namespace ui
+ }  // namespace rex
++
++#endif
+diff --git a/src/ui/vulkan/vulkan_instance.cpp b/src/ui/vulkan/vulkan_instance.cpp
+index c91e74c..895edea 100644
+--- a/src/ui/vulkan/vulkan_instance.cpp
++++ b/src/ui/vulkan/vulkan_instance.cpp
+@@ -37,6 +37,14 @@ REXCVAR_DEFINE_INT32(vulkan_debug_message_repeats, 5, "UI/Vulkan",
+                      "How many times the same Vulkan debug message is logged (0 = no limit); "
+                      "some drivers (Adreno) repeat a hint every frame");
+ 
++#if REX_PLATFORM_SWITCH
++extern "C" void* vk_icdGetInstanceProcAddr(void*, const char*);
++static inline void* rex_nx_vkGetInstanceProcAddr(void* i, const char* n) { return ::vk_icdGetInstanceProcAddr(i, n); }
++static inline void rex_nx_vkDestroyInstance(void* i, const void* a) {
++  reinterpret_cast<void (*)(void*, const void*)>(::vk_icdGetInstanceProcAddr(i, "vkDestroyInstance"))(i, a);
++}
++#endif
++
+ namespace rex {
+ namespace ui {
+ namespace vulkan {
+@@ -117,6 +125,8 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(const bool with_surface,
+     }
+     return nullptr;
+   }
++#elif REX_PLATFORM_SWITCH
++  loader_loaded = true;
+ #else
+   if (g_loader_opener) {
+     if (void* handle = g_loader_opener()) {
+@@ -132,8 +142,14 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(const bool with_surface,
+   }
+ #endif
+ 
++#if REX_PLATFORM_SWITCH
++// [svr2011 switch] mesa-switch links statically: there is no loader to open.
++#define XE_VULKAN_LOAD_LOADER_FUNCTION(name) \
++  functions_loaded &= (ifn.name = reinterpret_cast<PFN_##name>(&::rex_nx_##name)) != nullptr;
++#else
+ #define XE_VULKAN_LOAD_LOADER_FUNCTION(name) \
+   functions_loaded &= (ifn.name = vulkan_instance->loader_.GetSymbol<PFN_##name>(#name)) != nullptr;
++#endif
+   XE_VULKAN_LOAD_LOADER_FUNCTION(vkGetInstanceProcAddr);
+   XE_VULKAN_LOAD_LOADER_FUNCTION(vkDestroyInstance);
+ #undef XE_VULKAN_LOAD_LOADER_FUNCTION
+@@ -205,6 +221,11 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(const bool with_surface,
+     requested_extensions.emplace("VK_KHR_android_surface",
+                                  &vulkan_instance->extensions_.ext_KHR_android_surface);
+ #endif
++#ifdef VK_USE_PLATFORM_VI_NN
++    // #63.
++    requested_extensions.emplace("VK_NN_vi_surface",
++                                 &vulkan_instance->extensions_.ext_KHR_android_surface);
++#endif
+ #ifdef VK_USE_PLATFORM_WIN32_KHR
+     // #10.
+     requested_extensions.emplace("VK_KHR_win32_surface",
+@@ -487,6 +508,11 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(const bool with_surface,
+ #include <rex/ui/vulkan/functions/instance_khr_android_surface.inc>
+   }
+ #endif
++#ifdef VK_USE_PLATFORM_VI_NN
++  if (vulkan_instance->extensions_.ext_KHR_android_surface) {
++#include <rex/ui/vulkan/functions/instance_nn_vi_surface.inc>
++  }
++#endif
+ #ifdef VK_USE_PLATFORM_WIN32_KHR
+   if (vulkan_instance->extensions_.ext_KHR_win32_surface) {
+ #include <rex/ui/vulkan/functions/instance_khr_win32_surface.inc>
+diff --git a/src/ui/vulkan/vulkan_presenter.cpp b/src/ui/vulkan/vulkan_presenter.cpp
+index 73f90ca..41fa380 100644
+--- a/src/ui/vulkan/vulkan_presenter.cpp
++++ b/src/ui/vulkan/vulkan_presenter.cpp
+@@ -34,7 +34,7 @@
+ #include <ffx_api/vk/ffx_api_vk.h>
+ #endif
+ 
+-#if REX_PLATFORM_ANDROID
++#if REX_PLATFORM_ANDROID || REX_PLATFORM_SWITCH
+ #include <rex/ui/surface_android.h>
+ #endif
+ #if REX_PLATFORM_GNU_LINUX
+@@ -427,7 +427,7 @@ Surface::TypeFlags VulkanPresenter::GetSurfaceTypesSupportedByInstance(
+     return 0;
+   }
+   Surface::TypeFlags type_flags = 0;
+-#if REX_PLATFORM_ANDROID
++#if REX_PLATFORM_ANDROID || REX_PLATFORM_SWITCH
+   if (instance_extensions.ext_KHR_android_surface) {
+     type_flags |= Surface::kTypeFlag_AndroidNativeWindow;
+   }
+@@ -800,6 +800,18 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(Surface& new_su
+     }
+     VkResult vulkan_surface_create_result = VK_ERROR_UNKNOWN;
+     switch (surface_type) {
++#if REX_PLATFORM_SWITCH
++      case Surface::kTypeIndex_AndroidNativeWindow: {
++        auto& vi_surface = static_cast<const AndroidNativeWindowSurface&>(new_surface);
++        VkViSurfaceCreateInfoNN surface_create_info;
++        surface_create_info.sType = VK_STRUCTURE_TYPE_VI_SURFACE_CREATE_INFO_NN;
++        surface_create_info.pNext = nullptr;
++        surface_create_info.flags = 0;
++        surface_create_info.window = vi_surface.window();
++        vulkan_surface_create_result = ifn.vkCreateViSurfaceNN(
++            instance, &surface_create_info, nullptr, &paint_context_.vulkan_surface);
++      } break;
++#endif
+ #if REX_PLATFORM_ANDROID
+       case Surface::kTypeIndex_AndroidNativeWindow: {
+         auto& android_native_window_surface =
+diff --git a/src/ui/window_sdl.cpp b/src/ui/window_sdl.cpp
+index 9145077..c00c527 100644
+--- a/src/ui/window_sdl.cpp
++++ b/src/ui/window_sdl.cpp
+@@ -41,7 +41,7 @@ REXCVAR_DEFINE_BOOL(fullscreen_exclusive, false, "UI/Window",
+ #include <SDL3/SDL_metal.h>
+ 
+ #include <rex/ui/surface_mac.h>
+-#elif REX_PLATFORM_ANDROID
++#elif REX_PLATFORM_ANDROID || REX_PLATFORM_SWITCH
+ #include <rex/ui/surface_android.h>  // [svr2011]
+ #else
+ #include <X11/Xlib-xcb.h>
+@@ -452,8 +452,8 @@ std::unique_ptr<Surface> WindowSDL::CreateSurfaceImpl(Surface::TypeFlags allowed
+       SDL_Metal_DestroyView(metal_view);
+     }
+   }
+-#elif REX_PLATFORM_ANDROID
+-  // [svr2011] the activity's ANativeWindow
++#elif REX_PLATFORM_ANDROID || REX_PLATFORM_SWITCH
++  // [svr2011] the activity's ANativeWindow (Switch: the NWindow, port/switch/sdl3_nx)
+   if (allowed_types & Surface::kTypeFlag_AndroidNativeWindow) {
+     SDL_PropertiesID props = SDL_GetWindowProperties(sdl_window_);
+     auto* window = static_cast<ANativeWindow*>(
+diff --git a/thirdparty/CMakeLists.txt b/thirdparty/CMakeLists.txt
+index f102b56..9a88dcd 100644
+--- a/thirdparty/CMakeLists.txt
++++ b/thirdparty/CMakeLists.txt
+@@ -301,7 +301,15 @@ if(UNIX AND NOT APPLE)
+     set(SDL_PIPEWIRE_SHARED   ON  CACHE BOOL "" FORCE)
+ endif()
+ 
++if(NINTENDO_SWITCH)
++    # [svr2011 switch] SDL's headers, with the functions we use implemented in
++    # port/switch/sdl3_nx (the target's sources are added by the project).
++    add_library(sdl3_nx INTERFACE)
++    target_include_directories(sdl3_nx INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/sdl3/include)
++    add_library(SDL3::SDL3 ALIAS sdl3_nx)
++else()
+ add_subdirectory(sdl3)
++endif()
+ 
+ #=============================================================================
+ # DXC API headers (vendored from DirectXShaderCompiler, runtime-loaded)
+diff --git a/thirdparty/renderdoc/renderdoc_app.h b/thirdparty/renderdoc/renderdoc_app.h
+index da323e9..f685ddf 100644
+--- a/thirdparty/renderdoc/renderdoc_app.h
++++ b/thirdparty/renderdoc/renderdoc_app.h
+@@ -30,7 +30,7 @@
+ 
+ #if defined(WIN32) || defined(_WIN32)
+ 	#define RENDERDOC_CC __cdecl
+-#elif defined(__linux__)
++#elif defined(__linux__) || defined(__SWITCH__)
+ 	#define RENDERDOC_CC
+ #else
+ 	#error "Unknown platform"

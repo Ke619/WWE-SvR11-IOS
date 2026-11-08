@@ -559,6 +559,9 @@ uint32_t LoaderCacheFallback(uint32_t size) {
   // model under a name no pac carries. It never fits nothing, so it spun forever: a small zeroed block instead,
   // the read empty - the load goes on, and the log names the missing file)
   const uint32_t p = FallbackBlock(std::max(size, 2048u));
+  // (no room: the cache's retry loop asks again at once, over a million times a second - SVR2011_TEST_FALLBACK_NO_ROOM;
+  // report bd538a, a phone with no 22 MB left: the frame rate down for good. A short wait between its asks)
+  if (!p && r.given) std::this_thread::sleep_for(std::chrono::milliseconds(1));
   if (!size && !r.given)
     REXLOG_ERROR("[svr2011] file cache: {} is in no pac (0 bytes) - read as an empty file so the load goes on",
                  r.name);

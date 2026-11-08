@@ -8,6 +8,7 @@
 // 26 lists CREATE A MOVE-SET's tabs show (counts at +944 + list * 2), filled by sub_82378A68 in
 // record order. A moveset keeps a u16 move id per slot (profile + 2 * slot, CAWs and superstars alike).
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -270,4 +271,46 @@ REX_HOOK_RAW(sub_8218E580) {
   ctx.r3.u64 = MatchMove(base, slot, ctx.r3.u32);
   svr2011::NoteMove(fighter, slot, ctx.r3.u32);
   svr2011::CrowdMoveAsked(fighter, slot);
+}
+
+// A chain going on (reports 0e7c43 / 07ca33 / bd538a, Android 2.2.0: Jeff Hardy '09, Jeff Hardy '08 and CM Punk '09
+// mods, both people in motion 102 or 103 at one spot). sub_822104F8(ch) says the chain goes on; each of its three
+// callers then runs sub_822106F0(ch), which looks for ch's motion (+212) in its chain slots 57-60
+// (sub_8218E600(ch, 56 + i)) to pick the next hit from a 4 x 4 table on its stack. Its search never stops at 4: with a
+// moveset whose slots 57-60 don't hold that motion it read slot after slot, then the stack far past the table - the
+// crash in sub_822106F0, about 3400 slots on. Here: when the motion isn't in those slots, 04F8's own "no" (no chain;
+// its callers' usual way on), and a line. Test aids: SVR2011_TEST_CHAIN_LOG=1 a line for every chain that goes on;
+// SVR2011_TEST_CHAIN_FORCE=1 04F8 says "goes on" every time it is asked (a chain's next hit out of any motion: the
+// motion is in no chain slot); SVR2011_TEST_CHAIN_GUARD_OFF=1 the game's own way (no check here).
+REX_EXTERN(__imp__sub_822104F8);
+REX_HOOK_RAW(sub_822104F8) {
+  const uint32_t ch = ctx.r3.u32;
+  __imp__sub_822104F8(ctx, base);
+  static const bool force = [] { const char* v = std::getenv("SVR2011_TEST_CHAIN_FORCE"); return v && *v == '1'; }();
+  static const bool off = [] { const char* v = std::getenv("SVR2011_TEST_CHAIN_GUARD_OFF"); return v && *v == '1'; }();
+  if (force && ch) ctx.r3.u64 = 1;
+  if (!ctx.r3.u32 || !ch || off) return;
+  const auto saved = ctx;
+  const uint32_t motion = Rd32(base, ch + 212);
+  uint32_t slots[4] = {}, at = 0;
+  for (uint32_t i = 1; i <= 4; ++i) {  // (the getter sub_822106F0 asks - its hook above: the same answers)
+    ctx.r3.u64 = ch;
+    ctx.r4.u64 = 56 + i;
+    sub_8218E600(ctx, base);
+    slots[i - 1] = ctx.r3.u32 & 0xFFFF;
+    if (!at && slots[i - 1] == motion) at = i;
+  }
+  ctx = saved;
+  static const bool log = [] { const char* v = std::getenv("SVR2011_TEST_CHAIN_LOG"); return v && *v == '1'; }();
+  if (log)
+    REXLOG_INFO("[svr2011] chain: person {:08X} (superstar {}) motion {}, slots 57-60 {} {} {} {} - {}", ch,
+                Rd32(base, ch + 1156), motion, slots[0], slots[1], slots[2], slots[3],
+                at ? "hit " + std::to_string(at) : std::string("not there"));
+  if (at) return;
+  ctx.r3.u64 = 0;
+  static std::atomic<int> told{0};
+  if (const int n = ++told; n <= 10 || n % 100 == 0)
+    REXLOG_WARN("[svr2011] chain: superstar {} in motion {}, but its chain slots 57-60 hold {} {} {} {} - no chain "
+                "(the game read past its table here: a crash) ({} times)",
+                Rd32(base, ch + 1156), motion, slots[0], slots[1], slots[2], slots[3], n);
 }

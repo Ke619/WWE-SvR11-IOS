@@ -414,6 +414,11 @@ def accounts(url, node_data):
             "discord_needed", None) and not r.get("ok"))
     st, r = post(url, meta(**good), ip=ip(), token=token)
     check("2.2.1 signed in with a Discord name: 200", st == 200 and r.get("ok"))
+    h = "ab" * 32
+    st, d = post_json(url, "/api/reports/mods/check", {"mods": [{"hash": h, "size": 10}]})
+    check("mods check signed out: none asked for (%s)" % d, st == 200 and d.get("missing") == [] and d.get("mods_off"))
+    st, d = post_json(url, "/api/reports/mods/check", {"mods": [{"hash": h, "size": 10}]}, token=token)
+    check("mods check signed in: asked for as before", st == 200 and d.get("missing") == [h])
     st, s = post(url, meta(version="2.2.1-dev", contact="tester_dev", kind="suggestion", problem="An idea"),
                  ip=ip(), token=token)
     check("a dev version and a suggestion: 200 (%s)" % s, st == 200 and s.get("ok"))

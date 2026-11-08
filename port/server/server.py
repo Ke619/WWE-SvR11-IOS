@@ -2029,9 +2029,16 @@ class Service:
             return web.json_response({"ok": False, "error": "Too many checks from here - try again later."}, status=429)
         q.append(t)
         try:
-            mods = reports.clean_mods((await request.json()).get("mods"))
+            body = await request.json()
+            mods = reports.clean_mods(body.get("mods"))
         except (ValueError, AttributeError):
             return web.json_response({"ok": False, "error": "Send {\"mods\": [...]} as JSON."}, status=400)
+        if (SETTINGS["reports_need_account"] == "on" and str(body.get("app") or "") not in reports.ANTHOLOGY_APPS
+                and not self.raw_account(request)):
+            # (no sign-in: the report will be refused - an older client, or one signed out - so no mods are asked
+            # for; it's refused once with its pictures and zip, not after uploading every mod)
+            return web.json_response({"ok": True, "missing": [], "max_upload": 0, "max_mod": reports.MAX_MOD,
+                                      "mods_off": True})
         loop = asyncio.get_running_loop()
         try:
             have = set(await loop.run_in_executor(None, self.reports.has_mods, [m["hash"] for m in mods]))
@@ -2047,18 +2054,16 @@ class Service:
 
     def report_account(self, request, meta):
         """reports_need_account on: None when it may be sent, else (status, code, error). raw_account: a player
-        that account_checks keep off online may still report; a banned account may not."""
+        that account_checks keep off online may still report."""
         if older_release(meta.get("version"), REPORTS_ACCOUNT_SINCE):
             return 426, "update_needed", REPORTS_OLD_CLIENT
         if not request.headers.get("Authorization", "").startswith("Bearer "):
             return 401, "sign_in_needed", ("Sign in to an online account to send %s: the launcher's Online tab "
                                            "(Sign in or Create account)." %
                                            ("a suggestion" if meta["kind"] == "suggestion" else "a report"))
-        account = self.raw_account(request)
-        if not account:
+        # (a banned account ends here too: banning deletes its sessions, from_token knows none - it isn't told why)
+        if not self.raw_account(request):
             return 401, "sign_in_needed", "Your online sign-in has ended - sign in again on the launcher's Online tab."
-        if account.get("banned"):
-            return 403, "account_banned", "This account can't send reports."
         meta["contact"], why = reports.discord_name(meta.get("contact"))
         if why:
             return 400, "discord_needed", why

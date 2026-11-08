@@ -348,6 +348,9 @@ public class LauncherActivity extends Activity {
         pages_.add(scroll);
     }
 
+    // The Online page (a report / idea form's Sign in: 2.2.1 sends come from an online account).
+    void goOnline() { select(Math.max(0, names_.indexOf("Online"))); }
+
     void select(int index) {
         for (int i = 0; i < tabs_.size(); i++) {
             boolean on = i == index;

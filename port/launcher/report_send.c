@@ -349,12 +349,86 @@ static char *json_with_match(const ReportUpload *u, int with_mods)
 }
 
 /* One POST: 1 when an HTTP answer came (*status, *answer malloc'd), 0 on no answer / a local error (why). */
+int report_discord_check(const WCHAR *text, char *out, int n, WCHAR *why, int why_n)
+{
+    char s[80];
+    int i, k = 0;
+    const WCHAR *p = text ? text : L"";
+    while (*p == L' ' || *p == L'\t') p++;
+    for (; *p && k < (int)sizeof s - 1; p++) {
+        WCHAR c = *p;
+        if (c >= L'A' && c <= L'Z') c = (WCHAR)(c - L'A' + L'a');
+        if (c > 127) { s[k++] = '?'; continue; }  /* (anything else isn't in a Discord name) */
+        s[k++] = (char)c;
+    }
+    while (k && (s[k - 1] == ' ' || s[k - 1] == '\t')) k--;
+    s[k] = 0;
+    out[0] = 0;
+    if (!k) { wcscpy_s(why, why_n, L"Add your Discord name - we answer there."); return 0; }
+    if (strchr(s, '@')) { wcscpy_s(why, why_n, L"Write your Discord name without the @."); return 0; }
+    if (strchr(s, '/') || strchr(s, ':')) { wcscpy_s(why, why_n, L"Write your Discord name, not a link."); return 0; }
+    for (i = 0; i < k; i++)
+        if (!((s[i] >= 'a' && s[i] <= 'z') || (s[i] >= '0' && s[i] <= '9') || s[i] == '_' || s[i] == '.') ||
+            (s[i] == '.' && s[i + 1] == '.'))
+            break;
+    if (i < k || k < 2 || k > 32) {
+        wcscpy_s(why, why_n, L"That isn't a Discord name: 2-32 characters - lowercase letters, digits, _ and . "
+                             L"(no spaces, no two dots in a row).");
+        return 0;
+    }
+    strcpy_s(out, n, s);
+    return 1;
+}
+
+static void discord_path(const WCHAR *game_dir, WCHAR *out)
+{
+    swprintf_s(out, MAX_PATH, L"%s\\UserData\\report_discord.txt", game_dir ? game_dir : L".");
+}
+
+void report_discord_load(const WCHAR *game_dir, WCHAR *out, int n)
+{
+    WCHAR path[MAX_PATH];
+    char line[80] = "";
+    FILE *f;
+    out[0] = 0;
+    discord_path(game_dir, path);
+    if (_wfopen_s(&f, path, L"rb") || !f) return;
+    if (fgets(line, sizeof line, f)) {
+        size_t k = strlen(line);
+        while (k && (line[k - 1] == '\n' || line[k - 1] == '\r')) line[--k] = 0;
+        MultiByteToWideChar(CP_UTF8, 0, line, -1, out, n);
+    }
+    fclose(f);
+}
+
+void report_discord_save(const WCHAR *game_dir, const char *name)
+{
+    WCHAR path[MAX_PATH], dir[MAX_PATH];
+    FILE *f;
+    if (!name || !name[0]) return;
+    swprintf_s(dir, MAX_PATH, L"%s\\UserData", game_dir ? game_dir : L".");
+    CreateDirectoryW(dir, NULL);
+    discord_path(game_dir, path);
+    if (_wfopen_s(&f, path, L"wb") || !f) return;
+    fprintf(f, "%s\n", name);
+    fclose(f);
+}
+
+static char s_auth[200];
+void report_auth_set(const char *token) { strcpy_s(s_auth, sizeof s_auth, token ? token : ""); }
+const char *report_auth(void) { return s_auth; }
+
+int report_needs_sign_in(const ReportResult *r)
+{
+    return r->status == 401 || !strcmp(r->code, "sign_in_needed");
+}
+
 static int post_once(const WCHAR *server, const ReportUpload *u, int with_mods, DWORD *status, char **answer,
                      int *mods_in, WCHAR *why, int why_n)
 {
     static const char bound[] = "----svr2011report5d2e81";
     Body body;
-    WCHAR url[1000], host[256], upath[900], headers[200];
+    WCHAR url[1000], host[256], upath[900], headers[600];
     URL_COMPONENTS uc;
     HINTERNET ses = NULL, con = NULL, req = NULL;
     DWORD sz = sizeof *status, got = 0;
@@ -433,7 +507,11 @@ static int post_once(const WCHAR *server, const ReportUpload *u, int with_mods, 
     if (con)
         req = WinHttpOpenRequest(con, L"POST", upath, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
                                  uc.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0);
-    swprintf_s(headers, 200, L"Content-Type: multipart/form-data; boundary=%S\r\n", bound);
+    {
+        const char *token = u->token ? u->token : s_auth;
+        swprintf_s(headers, 600, L"Content-Type: multipart/form-data; boundary=%S\r\n%s%S%s", bound,
+                   token[0] ? L"Authorization: Bearer " : L"", token, token[0] ? L"\r\n" : L"");
+    }
     if (req && body.total < 0xFFFFFFFFull &&
         WinHttpSendRequest(req, headers, (DWORD)-1L, WINHTTP_NO_REQUEST_DATA, 0, (DWORD)body.total, 0)) {
         int sent_ok = 1;
@@ -515,7 +593,8 @@ int report_send(const WCHAR *server, const ReportUpload *u, ReportResult *r)
     }
     for (i = 0; i < u->n_mods && i < REPORT_MAX_MODS; i++) any_mods |= u->mod_zips[i] != NULL;
     post_once(server, u, 1, &status, &answer, &mods_in, r->why, 300);
-    if (any_mods && status != 200) {
+    if (answer) json_get(answer, "code", r->code, sizeof r->code);
+    if (any_mods && status != 200 && !r->code[0]) {   /* (an account refusal: the same without mods too) */
         /* (refused - too big, the mod store off - or cut off while sending: the report without the mods) */
         WCHAR first[300];
         swprintf_s(first, 300, status ? L"the server refused the report with the mods (HTTP %lu)"

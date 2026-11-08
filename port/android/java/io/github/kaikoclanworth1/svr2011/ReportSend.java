@@ -109,6 +109,51 @@ final class ReportSend {
         return false;
     }
 
+    // 2.2.1: a report or an idea comes from a signed-in online account (the game folder's svr2011.toml online_token,
+    // as OnlinePage writes it) with the player's Discord name as the contact - the server (reports_need_account)
+    // refuses one without: "code" sign_in_needed (401), discord_needed (400), update_needed (426). The sign-in goes as
+    // "Authorization: Bearer <token>"; never in a report, its zip or a log.
+    static volatile String authToken = "";
+
+    // A Discord name as the server takes it (reports.discord_name): 2-32 characters, lowercase letters, digits, "_"
+    // and ".", no two dots in a row. Capitals are made lower case. null when it's fine (name[0] the name), else why.
+    static String discordWhy(String text, String[] name) {
+        String s = text == null ? "" : text.trim().toLowerCase(Locale.US);
+        name[0] = "";
+        if (s.isEmpty()) return "Add your Discord name - we answer there.";
+        if (s.indexOf('@') >= 0) return "Write your Discord name without the @.";
+        if (s.indexOf('/') >= 0 || s.indexOf(':') >= 0) return "Write your Discord name, not a link.";
+        if (!s.matches("[a-z0-9_.]{2,32}") || s.contains(".."))
+            return "That isn't a Discord name: 2-32 characters - lowercase letters, digits, _ and . (no spaces, no two "
+                + "dots in a row).";
+        name[0] = s;
+        return null;
+    }
+
+    // The Discord name the forms remember (<game>/UserData/report_discord.txt - as the PC's forms keep it).
+    static String discordLoad(File game) {
+        try {
+            String t = new String(ProblemReport.read(new File(game, "UserData/report_discord.txt"), 256),
+                                  StandardCharsets.UTF_8);
+            int nl = t.indexOf('\n');
+            return (nl >= 0 ? t.substring(0, nl) : t).trim();
+        } catch (Exception e) {
+            return "";
+        }
+    }
+    static void discordSave(File game, String name) {
+        if (name == null || name.isEmpty()) return;
+        File d = new File(game, "UserData");
+        d.mkdirs();
+        try (OutputStream o = new FileOutputStream(new File(d, "report_discord.txt"))) {
+            o.write((name + "\n").getBytes(StandardCharsets.UTF_8));
+        } catch (Exception ignored) {
+        }
+    }
+
+    // The sign-in refused or missing: show "sign in" (the app's Online page).
+    static boolean needsSignIn(Result r) { return r.status == 401 || "sign_in_needed".equals(r.code); }
+
     static final class Answers {
         String app = "android", version = "", os = "", problem = "", happens = "", what = "", before = "",
             contact = "", signature = "", updater = "";
@@ -405,6 +450,7 @@ final class ReportSend {
                 c.setRequestMethod("POST");
                 c.setDoOutput(true);
                 c.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+                if (!authToken.isEmpty()) c.setRequestProperty("Authorization", "Bearer " + authToken);
                 try (OutputStream o = c.getOutputStream()) {
                     o.write(b.toString().getBytes(StandardCharsets.UTF_8));
                 }
@@ -447,6 +493,7 @@ final class ReportSend {
         int seenBefore, modsSent, modsStored;
         boolean matchStored, modsDropped;
         String modsWhy = "";
+        String code = "";            // the server's refusal code ("sign_in_needed", "discord_needed", ...)
     }
 
     static String imageType(byte[] d) {
@@ -561,6 +608,7 @@ final class ReportSend {
                 c.setDoOutput(true);
                 c.setFixedLengthStreamingMode(total);
                 c.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + kBound);
+                if (!authToken.isEmpty()) c.setRequestProperty("Authorization", "Bearer " + authToken);
                 byte[] buf = new byte[1 << 16];
                 if (u.progress != null) u.progress.at(0, total);
                 try (OutputStream o = c.getOutputStream()) {
@@ -618,7 +666,8 @@ final class ReportSend {
         boolean anyMods = false;
         for (Mod m : u.mods) anyMods |= u.withMods && m.zip != null;
         String answer = postOnce(server, u, u.withMods, r);
-        if (anyMods && r.status != 200) {
+        r.code = jsonValue(answer, "code");
+        if (anyMods && r.status != 200 && r.code.isEmpty()) {   // (an account refusal: the same without mods too)
             String err = jsonValue(answer, "error");
             r.modsWhy = r.status != 0 ? (err.isEmpty() ? "the server refused the report with the mods (HTTP " + r.status + ")"
                 : "the server refused the mods: " + err) : "the upload with the mods didn't get through";
@@ -649,6 +698,10 @@ final class ReportSend {
             if (r.why.isEmpty()) r.why = "The server can't be reached (offline, or it's down).";
         } else {
             String err = jsonValue(answer, "error");
+            if (err.isEmpty() && r.status == 401) {   // (no body read - a 401 in streaming mode: the sign-in it means)
+                err = "Sign in to an online account first: the Online page (Sign in or Create account).";
+                r.code = "sign_in_needed";
+            }
             r.why = err.isEmpty() ? "The server refused it (HTTP " + r.status + ")." : "The server refused it (" + r.status
                 + "): " + err;
             r.id = "";

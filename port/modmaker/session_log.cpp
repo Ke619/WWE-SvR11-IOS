@@ -418,12 +418,15 @@ bool g_test_pending = false;
 int g_test_frames = 0;
 // Send report (launcher/report_send.h: the online server's /api/reports): the contact, the pictures, the answer.
 char g_contact[64] = "";
+bool g_signed_in = true;  // (the launcher's sign-in found - the form says so when not)
 std::vector<std::wstring> g_pics;   // up to REPORT_MAX_IMAGES
 std::string g_pic_why;              // why the last picture wasn't added
 std::atomic<bool> g_sending{false};
 bool g_sent_done = false;           // a send finished (g_sent: its answer)
 ReportResult g_sent{};
 std::string g_send_file;            // --test-report-send <answers file>
+std::string g_test_token;           // (its token= line: a test account's sign-in; else the game folder's)
+std::string g_why;                  // (Send refused before sending: the Discord name or the sign-in)
 bool g_send_test = false;
 
 // What the report needs from the UI thread, taken before the worker starts.
@@ -642,6 +645,26 @@ std::wstring ReportServer() {
   return server;
 }
 
+// The launcher's saved online sign-in (<game>\svr2011.toml online_token) - 2.2.1: a report comes from an
+// account. Read when needed, never copied anywhere (the session log blanks token values).
+std::string ReportToken() {
+  if (!g_test_token.empty()) return g_test_token;
+  std::string token;
+  if (FILE* f = g_game.empty() ? nullptr : _wfsopen((fs::path(g_game) / L"svr2011.toml").c_str(), L"rb", _SH_DENYNO)) {
+    char line[512];
+    while (std::fgets(line, sizeof line, f)) {
+      const char* p = line;
+      while (*p == ' ') ++p;
+      if (std::strncmp(p, "online_token", 12)) continue;
+      const char* q = std::strchr(p, '"');
+      const char* e = q ? std::strchr(q + 1, '"') : nullptr;
+      token = q && e ? std::string(q + 1, e) : std::string();
+    }
+    std::fclose(f);
+  }
+  return token;
+}
+
 // Sends the made zip with the answers and pictures (a worker); the window shows the answer (g_sent).
 void SendReport(const std::wstring& zip, bool test) {
   g_sending = true;
@@ -650,7 +673,9 @@ void SendReport(const std::wstring& zip, bool test) {
   const std::string problem = kKinds[g_kind], happens = kAgain[g_again], what = g_what, before = g_before,
                     contact = g_contact;
   const std::vector<std::wstring> pics = g_pics;
-  Line("report: sending to " + Utf8(server) + " (" + std::to_string(pics.size()) + " picture(s))");
+  const std::string token = ReportToken();
+  Line("report: sending to " + Utf8(server) + " (" + std::to_string(pics.size()) + " picture(s), signed in: " +
+       (token.empty() ? "no" : "yes") + ")");
   std::thread([=] {
     // (the hint for the server's duplicate check: the newest session log's last error line)
     std::string sig;
@@ -673,10 +698,13 @@ void SendReport(const std::wstring& zip, bool test) {
     u.zip = zip.c_str();
     for (size_t i = 0; i < pics.size() && i < REPORT_MAX_IMAGES; ++i) u.images[i] = pics[i].c_str();
     u.n_images = int(std::min<size_t>(pics.size(), REPORT_MAX_IMAGES));
+    u.token = token.c_str();  // (2.2.1: the account it's from)
     ReportResult r{};
     // (sent: its receipt kept for the launcher's Reports tab - the game folder's UserData\reports.json)
-    if (report_send(server.c_str(), &u, &r) && r.secret[0] && !g_game.empty())
+    if (report_send(server.c_str(), &u, &r) && r.secret[0] && !g_game.empty()) {
       receipt_add(g_game.c_str(), "modmaker", r.id, r.secret, problem.c_str(), what.c_str());
+      report_discord_save(g_game.c_str(), contact.c_str());  // (the forms here fill it in next time)
+    }
     std::free(json);
     OnUiThread([r, test] {
       g_sent = r;
@@ -796,9 +824,13 @@ void Window() {
     ImGui::InputTextMultiline("##what", g_what, sizeof g_what, ImVec2(-1, 110 * g_scale));
     ImGui::TextUnformatted("What were you doing just before? (optional)");
     ImGui::InputTextMultiline("##before", g_before, sizeof g_before, ImVec2(-1, 70 * g_scale));
-    ImGui::TextUnformatted("Your Discord name (optional - so we can ask you):");
+    ImGui::TextUnformatted("Your Discord name (needed - we answer there; only we see it):");
     ImGui::SetNextItemWidth(-1);
-    ImGui::InputText("##contact", g_contact, sizeof g_contact);
+    ImGui::InputText("##contact", g_contact, sizeof g_contact, ImGuiInputTextFlags_CharsNoBlank);
+    if (static int asked = 0; ++asked % 120 == 1) g_signed_in = !ReportToken().empty();  // (about every 2 s)
+    if (!g_signed_in)
+      ImGui::TextColored(ImVec4(0.9f, 0.4f, 0.3f, 1), "Not signed in: sign in (or create an account) on the launcher's "
+                                                      "Online tab first - reports come from an online account.");
     ImGui::TextUnformatted("Pictures (up to 5): screenshots of the problem help a lot.");
     for (size_t i = 0; i < g_pics.size(); ++i) {
       ImGui::PushID(int(i));
@@ -832,8 +864,16 @@ void Window() {
     ImGui::BeginDisabled(!said);
     static bool has_url = false;  // (the server's rule too: no web addresses)
     if (ImGui::Button("Send report")) {
-      has_url = report_text_has_url(g_what) || report_text_has_url(g_before) || report_text_has_url(g_contact);
-      if (!has_url) {
+      has_url = report_text_has_url(g_what) || report_text_has_url(g_before);
+      g_why.clear();
+      if (!has_url) {  // (2.2.1: the Discord name - the server's rule - and the launcher's sign-in)
+        char name[80];
+        WCHAR why[200];
+        if (!report_discord_check(Wide(g_contact).c_str(), name, sizeof name, why, 200)) g_why = Utf8(std::wstring(why));
+        else if (std::strncpy(g_contact, name, sizeof g_contact - 1), (g_signed_in = !ReportToken().empty()), !g_signed_in)
+          g_why = "Sign in on the launcher's Online tab first (Sign in or Create account), then send.";
+      }
+      if (!has_url && g_why.empty()) {
         g_description = Describe();
         g_sent_done = false;
         StartReport(g_description, false, true);
@@ -844,6 +884,7 @@ void Window() {
     ImGui::SameLine();
     if (ImGui::Button("Cancel")) has_url = false, ImGui::CloseCurrentPopup();
     if (has_url) ImGui::TextColored(ImVec4(0.9f, 0.4f, 0.3f, 1), "%s", REPORT_NO_URLS);
+    if (!g_why.empty()) ImGui::TextColored(ImVec4(0.9f, 0.4f, 0.3f, 1), "%s", g_why.c_str());
   } else if (g_sent_done && g_sent.id[0]) {
     ImGui::TextWrapped("Your report reached us. Report id:  %s", g_sent.id);
     if (g_sent.seen_before > 0)
@@ -863,7 +904,10 @@ void Window() {
     ImGui::TextColored(ImVec4(0.9f, 0.4f, 0.3f, 1), "Not sent: %s",
                        g_sent_done ? Utf8(std::wstring(g_sent.why)).c_str() : "the report wasn't made.");
     ImGui::PopTextWrapPos();
-    ImGui::TextWrapped("Check that you're online, then try again.");
+    if (g_sent_done && report_needs_sign_in(&g_sent))
+      ImGui::TextWrapped("Sign in on the launcher's Online tab (Sign in or Create account), then try again.");
+    else if (!(g_sent_done && g_sent.code[0]))
+      ImGui::TextWrapped("Check that you're online, then try again.");
     ImGui::Spacing();
     if (ImGui::Button("Try again")) {
       g_sent_done = false;
@@ -935,12 +979,26 @@ void Tick() {
           if (k == "what") std::strncpy(g_what, v.c_str(), sizeof g_what - 1);
           else if (k == "before") std::strncpy(g_before, v.c_str(), sizeof g_before - 1);
           else if (k == "contact") std::strncpy(g_contact, v.c_str(), sizeof g_contact - 1);
+          else if (k == "token") g_test_token = v;  // (a test account's sign-in)
           else if (k == "problem") g_kind = std::clamp(std::atoi(v.c_str()), 0, int(IM_ARRAYSIZE(kKinds)) - 1);
           else if (k == "image") AddPicture(Wide(v));
         }
         std::fclose(f);
       }
       if (!g_pic_why.empty()) Log("report test: picture refused - " + g_pic_why);
+      {  // (the Send button's checks: the Discord name, then the sign-in)
+        char name[80];
+        WCHAR why[200];
+        const bool any = std::getenv("SVR2011_REPORT_ANY_CONTACT") != nullptr;  // (tests: the server's own refusal)
+        if (!report_discord_check(Wide(g_contact).c_str(), name, sizeof name, why, 200) && !any) {
+          Log("report test: not sent - " + Utf8(std::wstring(why)));
+          PostMessageW(g_wnd, WM_CLOSE, 0, 0);
+          Window();
+          return;
+        }
+        if (name[0]) std::strncpy(g_contact, name, sizeof g_contact - 1);
+        Log(std::string("report test: signed in ") + (ReportToken().empty() ? "no" : "yes"));
+      }
       StartReport(Describe(), true, true);  // (sends, logs the answer and closes)
     } else {
       std::strncpy(g_what, g_test.c_str(), sizeof g_what - 1);
@@ -954,6 +1012,13 @@ void OpenReport(std::function<std::string()> project_state) {
   g_state = std::move(project_state);
   g_made.clear();
   g_open = true;
+  g_why.clear();
+  g_signed_in = !ReportToken().empty();
+  if (!g_contact[0] && !g_game.empty()) {  // (the Discord name sent last from any form in this game folder)
+    WCHAR saved[80];
+    report_discord_load(g_game.c_str(), saved, 80);
+    std::strncpy(g_contact, Utf8(std::wstring(saved)).c_str(), sizeof g_contact - 1);
+  }
   Line("report: the report window opened");
 }
 

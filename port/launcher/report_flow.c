@@ -23,8 +23,15 @@ const WCHAR *report_flow_check(const ReportAnswers *a)
     const char *p = a->what;
     while (*p == ' ' || *p == '\r' || *p == '\n' || *p == '\t') p++;
     if (!*p) return L"Please say what happened first.";
-    return report_text_has_url(a->what) || report_text_has_url(a->before) || report_text_has_url(a->contact)
-               ? REPORT_NO_URLS_W : NULL;
+    if (report_text_has_url(a->what) || report_text_has_url(a->before)) return REPORT_NO_URLS_W;
+    {   /* (the Discord name: the server's rule, before the zip is made) */
+        static WCHAR why[200];
+        WCHAR w[200];
+        char name[80];
+        MultiByteToWideChar(CP_UTF8, 0, a->contact, -1, w, 200);
+        if (!report_discord_check(w, name, sizeof name, why, 200)) return why;
+    }
+    return NULL;
 }
 
 void report_flow_describe(const ReportAnswers *a, const WCHAR *version, const char *platform, char *out, int n)
@@ -99,8 +106,20 @@ int report_flow_send(const ReportFlow *f, ReportResult *r)
     char sig[400], ver[40], upd[600], match_name[300] = "";
     char *json;
     int logs = 0, crashes = 0, i, ok = 0;
+    char discord[80] = "";
     ZeroMemory(r, sizeof *r);
     if (f->guard && f->guard(f->server, r)) return 0;
+    {   /* (2.2.1: the sign-in, and the Discord name as the server keeps it) */
+        WCHAR w[200];
+        MultiByteToWideChar(CP_UTF8, 0, f->answers->contact, -1, w, 200);
+        if (!report_discord_check(w, discord, sizeof discord, r->why, 300)) return 0;
+        report_auth_set(f->token);
+        if (!f->token || !f->token[0]) {
+            strcpy_s(r->code, sizeof r->code, "sign_in_needed");
+            wcscpy_s(r->why, 300, L"Sign in first: the launcher's Online tab (Sign in or Create account).");
+            return 0;
+        }
+    }
     if ((m = (ReportMatchSet *)calloc(1, sizeof *m)) == NULL) {
         wcscpy_s(r->why, 300, L"Out of memory.");
         return 0;
@@ -120,7 +139,7 @@ int report_flow_send(const ReportFlow *f, ReportResult *r)
     report_signature(f->game_dir, sig, sizeof sig);
     update_log_last(f->game_dir, upd, sizeof upd);
     json = report_json(f->app, ver, f->answers->problem, f->answers->happens, f->answers->what, f->answers->before,
-                       f->answers->contact, sig, upd);
+                       discord, sig, upd);
     ZeroMemory(&u, sizeof u);
     u.json = json;
     u.zip = zip;
@@ -129,7 +148,9 @@ int report_flow_send(const ReportFlow *f, ReportResult *r)
     report_match_set_parts(m, f->game_dir, f->with_mods, &u, match_name, sizeof match_name);
     u.progress = f->progress;
     u.ctx = f->ctx;
+    u.token = f->token;
     if (json && report_send(f->server, &u, r) && r->secret[0]) {
+        report_discord_save(f->game_dir, discord);
         receipt_add_ex(f->game_dir, f->app, r->id, r->secret, f->answers->problem, f->answers->what, f->pictures_later);
         ok = 1;
     } else if (json && r->id[0]) {

@@ -156,6 +156,12 @@ SETTINGS_SPEC = {
                     "help": "the NEWS panel on the game's ONLINE screen (after the players-online count): plain "
                             "text, new lines kept; characters the game's font lacks are replaced or left out. "
                             "Empty = the built-in welcome. Games show it the next time they open ONLINE"},
+    # (2.2.1: reports and suggestions only from a signed-in account with a Discord name; older clients are told to
+    # update. Answers and changes stay keyed by the receipt. Off = as 2.2.0: anyone, any contact)
+    "reports_need_account": {"default": "on", "choices": ["on", "off"], "live": True,
+                             "help": "reports and suggestions: on = only signed in to an online account, with a "
+                                     "Discord name (2.2.1 forms; older clients are told to update); off = anyone, "
+                                     "as 2.2.0. Answers to questions and changes work either way. At once"},
     "cc_unmarked": {"default": "refuse", "choices": ["refuse", "log"], "live": True,
                     "help": "Community Creations uploads from builds that don't check for mods (no 'checked' "
                             "mark): refuse = refused (once latest_release is 2.1.5 or newer - before, only "
@@ -174,6 +180,15 @@ SETTINGS_SPEC = {
 }
 SETTINGS = {k: v["default"] for k, v in SETTINGS_SPEC.items()}
 MODFREE_SINCE = (2, 1, 5)  # (the release whose game marks Community Creations uploads checked for mods)
+REPORTS_ACCOUNT_SINCE = (2, 2, 1)  # (the release whose report forms send the account and a Discord name)
+# (shown as it is by 2.2.0 and older launchers / Mod Makers / apps: it has to say everything on its own)
+REPORTS_OLD_CLIENT = "Reports need 2.2.1: update, sign in to an online account and add your Discord name."
+
+
+def older_release(text, want):
+    """True only for a plain release number below want ('2.2.0' < (2, 2, 1)); dev builds and odd strings: False."""
+    m = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)(?:\.\d+)?", (text or "").strip())
+    return bool(m) and tuple(int(x) for x in m.groups()) < want
 
 
 def release_at_least(text, want):
@@ -2014,9 +2029,16 @@ class Service:
             return web.json_response({"ok": False, "error": "Too many checks from here - try again later."}, status=429)
         q.append(t)
         try:
-            mods = reports.clean_mods((await request.json()).get("mods"))
+            body = await request.json()
+            mods = reports.clean_mods(body.get("mods"))
         except (ValueError, AttributeError):
             return web.json_response({"ok": False, "error": "Send {\"mods\": [...]} as JSON."}, status=400)
+        if (SETTINGS["reports_need_account"] == "on" and str(body.get("app") or "") not in reports.ANTHOLOGY_APPS
+                and not self.raw_account(request)):
+            # (no sign-in: the report will be refused - an older client, or one signed out - so no mods are asked
+            # for; it's refused once with its pictures and zip, not after uploading every mod)
+            return web.json_response({"ok": True, "missing": [], "max_upload": 0, "max_mod": reports.MAX_MOD,
+                                      "mods_off": True})
         loop = asyncio.get_running_loop()
         try:
             have = set(await loop.run_in_executor(None, self.reports.has_mods, [m["hash"] for m in mods]))
@@ -2030,19 +2052,38 @@ class Service:
                                   "max_upload": min(reports.MAX_NEW_MOD_BYTES, room), "max_mod": reports.MAX_MOD,
                                   "mods_off": off})
 
+    def report_account(self, request, meta):
+        """reports_need_account on: None when it may be sent, else (status, code, error). raw_account: a player
+        that account_checks keep off online may still report."""
+        if older_release(meta.get("version"), REPORTS_ACCOUNT_SINCE):
+            return 426, "update_needed", REPORTS_OLD_CLIENT
+        where = "the app's Online page" if meta.get("platform") == "android" else "the launcher's Online tab"
+        if not request.headers.get("Authorization", "").startswith("Bearer "):
+            return 401, "sign_in_needed", ("Sign in to an online account to send %s: %s (Sign in or Create "
+                                           "account)." % ("a suggestion" if meta["kind"] == "suggestion" else
+                                                          "a report", where))
+        # (a banned account ends here too: banning deletes its sessions, from_token knows none - it isn't told why)
+        if not self.raw_account(request):
+            return 401, "sign_in_needed", "Your online sign-in has ended - sign in again on %s." % where
+        meta["contact"], why = reports.discord_name(meta.get("contact"))
+        if why:
+            return 400, "discord_needed", why
+        return None
+
     async def api_report(self, request):
         """multipart: report (JSON), zip (optional), image0-image4 (optional png / jpg / webp), match (the match
         folder's zip, optional), mod0..modN (a mod's zip each, named <content hash>.zip: only those the check
         asked for) -> {ok, id, secret (the sender's receipt: its Reports list asks with it), signature, seen_before,
         match, mods_stored, mods_refused}"""
-        def no(status, why):
-            return web.json_response({"ok": False, "error": why}, status=status)
+        def no(status, why, code=""):
+            return web.json_response(dict({"ok": False, "error": why}, **({"code": code} if code else {})),
+                                     status=status)
         length = request.content_length
         if length and length > self.MAX_REPORT_BODY:
             return no(413, "The report is too large (the zip: %d MB at most, pictures: %d MB each, the mods: %d MB)." % (
                 reports.MAX_ZIP >> 20, reports.MAX_IMAGE >> 20, reports.MAX_NEW_MOD_BYTES >> 20))
         ip = self.client_ip(request)
-        account = self.token_account(request)
+        account = self.raw_account(request)  # (noted with the report; banned: refused below when accounts are needed)
         meta, zip_bytes, images, match_bytes = None, b"", {}, b""
         mod_files = {}  # hash -> temporary file (a mod part, streamed to disk)
         tmp_dir = self.report_tmp
@@ -2112,6 +2153,11 @@ class Service:
             meta, why = reports.clean_meta(meta)
             if why:
                 return no(400, why)
+            if SETTINGS["reports_need_account"] == "on" and meta["app"] not in reports.ANTHOLOGY_APPS:
+                refused = self.report_account(request, meta)
+                if refused:
+                    gs.log("reports: refused from %s %s (%s)" % (meta["app"], meta["version"], refused[1]))
+                    return no(refused[0], refused[2], refused[1])
             if zip_bytes and zip_bytes[:2] != b"PK":
                 return no(400, "zip: not a zip file")
             if match_bytes and match_bytes[:2] != b"PK":

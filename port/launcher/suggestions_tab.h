@@ -16,6 +16,8 @@ void suggestions_build(HWND wnd, mods_add_fn add, int tab, int id_base, reports_
                        reports_token_fn token, int (*refuses)(const WCHAR *server, const char *what),
                        const WCHAR *version);
 void suggestions_show(const WCHAR *game_dir);
+/* 2.2.1: ideas come from a signed-in account - signed out, the tab's Sign in button calls this (the Online tab). */
+void suggestions_set_sign_in(void (*go)(void));
 int suggestions_command(int id, int code);
 int suggestions_notify(const NMHDR *nm);
 /* Its threads' answers (WM_APP + 22); 1 when it was its. */

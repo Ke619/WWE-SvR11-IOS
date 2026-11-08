@@ -181,6 +181,8 @@ td.acts { text-align: right; white-space: nowrap; }
 .names textarea { width: 100%; min-height: 260px; resize: vertical; box-sizing: border-box;
                   font: 13px/1.45 ui-monospace, Consolas, monospace; }
 .names label { display: block; font-weight: 600; margin-bottom: 4px; }
+.ctext { white-space: pre-wrap; word-break: break-word; max-width: 520px; }  /* (a comment: plain text, its lines) */
+.ctext.gone { opacity: .55; }
 .mark { background: var(--bad-bg); color: var(--bad); border-radius: 3px; padding: 0 2px; }
 .row .btn { margin-left: 0; }
 .viewer { position: fixed; inset: 0; background: rgba(0,0,0,.72); display: none; align-items: center;
@@ -225,6 +227,7 @@ td.acts { text-align: right; white-space: nowrap; }
     <button role="tab" id="tab-matches" aria-controls="p-matches">Matches <span class="count live" id="n-matches"></span></button>
     <button role="tab" id="tab-cc" aria-controls="p-cc">Community Creations <span class="count" id="n-cc"></span></button>
     <button role="tab" id="tab-discovery" aria-controls="p-discovery">Discovery <span class="count" id="n-discovery"></span></button>
+    <button role="tab" id="tab-comments" aria-controls="p-comments">Comments <span class="count" id="n-comments"></span></button>
     <button role="tab" id="tab-names" aria-controls="p-names">Names <span class="count" id="n-names"></span></button>
     <button role="tab" id="tab-reports" aria-controls="p-reports">Reports <span class="count" id="n-reports"></span></button>
     <button role="tab" id="tab-suggestions" aria-controls="p-suggestions">Suggestions <span class="count" id="n-sug"></span></button>
@@ -366,14 +369,39 @@ td.acts { text-align: right; white-space: nowrap; }
   <section role="tabpanel" id="p-discovery" aria-labelledby="tab-discovery" tabindex="0" hidden>
     <h2>Mods <span class="spacer"></span><input class="filter" id="f-mod" placeholder="Filter" aria-label="Filter mods"></h2>
     <div class="scroll"><table>
-      <thead><tr><th>Name</th><th>Type</th><th>Author</th><th>Version</th><th class="num">Size</th><th class="num">Downloads</th><th>Uploaded</th><th></th></tr></thead>
-      <tbody id="mods"><tr><td colspan="8" class="empty">Loading&hellip;</td></tr></tbody>
+      <thead><tr><th>Name</th><th>Type</th><th>Author</th><th>Version</th><th class="num">Size</th><th class="num">Downloads</th><th class="num">Rating</th><th>Uploaded</th><th></th></tr></thead>
+      <tbody id="mods"><tr><td colspan="9" class="empty">Loading&hellip;</td></tr></tbody>
     </table></div>
 
     <h2>Storage audit <span class="spacer"></span><span class="note" id="audit-note"></span>
       <button class="btn" id="audit-run">Run audit</button></h2>
     <p class="intro">Compares the files where the uploads' bytes live (the storage node) with what the database refers to. An orphan is a file nothing refers to (e.g. a delete while the node was down): it goes only with its Delete. Hidden mods are listed so they aren't mistaken for orphans.</p>
     <div id="audit"></div>
+  </section>
+
+  <section role="tabpanel" id="p-comments" aria-labelledby="tab-comments" tabindex="0" hidden>
+    <h2>Discovery comments <span class="spacer"></span><span class="note" id="cm-note"></span>
+      <select class="filter" id="cm-state" aria-label="Which comments">
+        <option value="">All</option><option value="reported">Reported</option><option value="shown">Shown</option>
+        <option value="hidden">Hidden</option><option value="deleted">Deleted by players</option></select>
+      <input class="filter" id="f-cm" placeholder="Search text or writer" aria-label="Search comments"></h2>
+    <p class="intro">Comments on Discovery mods, reported ones first. The server refuses links, invites, the name
+      filter's words and the comment word list (Names tab) on its own. <b>Hide</b> takes a comment off the mod's page
+      (Show puts it back); <b>Delete</b> removes it for good. Comments deleted by their writer or the mod's uploader stay
+      here 30 days. <b>Mute</b> stops an account commenting (or commenting and rating). The switches are on the
+      Settings tab: discovery_comments, discovery_ratings, discovery_rating_min.</p>
+    <div class="scroll"><table>
+      <thead><tr><th>Mod</th><th>Writer</th><th>Comment</th><th>State</th><th>Posted</th><th></th></tr></thead>
+      <tbody id="comments"><tr><td colspan="6" class="empty">Open this tab to load.</td></tr></tbody>
+    </table></div>
+    <div class="row"><button class="btn" id="cm-prev">Newer</button> <span class="note" id="cm-page"></span>
+      <button class="btn" id="cm-next">Older</button></div>
+
+    <h2>Muted accounts</h2>
+    <div class="scroll"><table>
+      <thead><tr><th>Account</th><th>Muted from</th><th>Why</th><th>Since</th><th></th></tr></thead>
+      <tbody id="mutes"><tr><td colspan="5" class="empty">None.</td></tr></tbody>
+    </table></div>
   </section>
 
   <section role="tabpanel" id="p-names" aria-labelledby="tab-names" tabindex="0" hidden>
@@ -397,6 +425,22 @@ td.acts { text-align: right; white-space: nowrap; }
         <p class="note">Words never flagged though a listed word is inside them (e.g. snigger). One per line.</p></div>
     </div>
     <div class="row"><button class="btn primary" id="nf-save">Save list</button><span class="note" id="nf-saved"></span></div>
+
+    <h2>Comment words (Discovery comments) <span class="spacer"></span><span class="note" id="cw-note"></span></h2>
+    <p class="intro">A second list, for Discovery comments only, with the same rules as the name filter: talk of game
+      copies (ISO, XEX, ROM, NSP, torrents, "download the game"...). Short words are read whole and spelled out too
+      ("i s o", "i.s.o", "game.iso" - not "isolated"). Split archive names (.7z.001, .part1.rar) are refused as well.
+      The name filter's list above is checked on comments too.</p>
+    <p><label class="note"><input type="checkbox" id="cw-on"> <b>Comment words on</b></label></p>
+    <div class="names">
+      <div><label for="cw-words">Words <span class="note" id="cw-count"></span></label>
+        <textarea class="filter" id="cw-words" spellcheck="false"></textarea></div>
+      <div><label for="cw-allow">Allow list</label>
+        <textarea class="filter" id="cw-allow" spellcheck="false"></textarea></div>
+    </div>
+    <div class="row"><button class="btn primary" id="cw-save">Save comment words</button><span class="note" id="cw-saved"></span>
+      <input class="filter" id="cw-test" placeholder="Would this comment pass?" aria-label="A comment to test" style="width:320px">
+      <button class="btn" id="cw-try">Test</button> <span id="cw-result" role="status"></span></div>
 
     <h2>Test a name</h2>
     <p><input class="filter" id="nf-test" placeholder="Would this name pass?" aria-label="A name to test" style="width:320px">
@@ -554,7 +598,8 @@ td.acts { text-align: right; white-space: nowrap; }
     else if (name === 'matches') { live(); leaderboard(); }
     else if (name === 'cc') loadUploads();
     else if (name === 'discovery') loadMods();
-    else if (name === 'names') { loadNames(); loadFlagged(); }
+    else if (name === 'comments') loadComments();
+    else if (name === 'names') { loadNames(); loadFlagged(); loadCommentWords(); }
     else if (name === 'reports' || name === 'suggestions') loadReports();
     else if (name === 'settings') { if (!settingsList.length) settings(); }
     else if (name === 'logs') log();
@@ -995,17 +1040,134 @@ td.acts { text-align: right; white-space: nowrap; }
       return '<tr><td>' + esc(m.name) + (m.hidden ? ' <span class="tag bad">hidden</span>' : '') +
         (m.updated ? ' <span class="tag on" title="file updated by its owner">updated ' + ago(m.updated) + '</span>' : '') +
         '</td><td>' + esc(m.types.join(', ')) + '</td><td>' + esc(m.author) + '</td><td>' + esc(m.version) +
-        '</td><td class="num">' + bytes(m.size) + '</td><td class="num">' + m.downloads + '</td><td>' + ago(m.created) +
+        '</td><td class="num">' + bytes(m.size) + '</td><td class="num">' + m.downloads + '</td><td class="num">' +
+        (m.rating && m.rating.count ? m.rating.avg.toFixed(1) + ' <span class="note">(' + m.rating.count + ')</span>' : '-') +
+        '</td><td>' + ago(m.created) +
         '</td><td class="acts"><button class="btn" data-modview="' + m.id + '">View</button>' +
+        '<button class="btn" data-cmmod="' + m.id + '">Comments</button>' +
+        (m.rating && m.rating.count ? '<button class="btn" data-mod="' + m.id + '" data-a="clear-ratings">Clear ratings</button>' : '') +
         '<button class="btn" data-mod="' + m.id + '" data-a="' + (m.hidden ? 'show' : 'hide') + '">' + (m.hidden ? 'Show' : 'Hide') + '</button>' +
         '<button class="btn danger" data-mod="' + m.id + '" data-a="delete">Delete</button></td></tr>';
-    }).join('') : '<tr><td colspan="8" class="empty">No mods.</td></tr>';
+    }).join('') : '<tr><td colspan="9" class="empty">No mods.</td></tr>';
   }
   function loadMods() {
     return api('api/admin/mods').then(function (d) {
       mods = d.mods; el('n-discovery').textContent = d.total != null ? d.total : d.mods.length; renderMods();
     }).catch(function () {});
   }
+
+  // ---- Discovery comments: reported first, the latest; hide / show / delete / clear reports / mute
+  var cmPage = 0, cmMod = '', cmTotal = 0, cmTimer = null;
+  function loadComments() {
+    var q = 'api/admin/discovery/comments?page=' + cmPage + '&state=' + encodeURIComponent(el('cm-state').value) +
+            '&q=' + encodeURIComponent(el('f-cm').value) + (cmMod ? '&mod=' + cmMod : '');
+    return api(q).then(function (d) {
+      cmTotal = d.total;
+      el('cm-note').innerHTML = (d.comments_on ? '<span class="tag on">comments on</span>' : '<span class="tag bad">comments off</span>') +
+        ' ' + (d.ratings_on ? '<span class="tag on">ratings on</span>' : '<span class="tag bad">ratings off</span>') +
+        (cmMod ? ' <button class="btn" id="cm-allmods">All mods</button>' : '');
+      var reported = d.comments.filter(function (c) { return c.reports > 0 && c.state !== 'deleted'; }).length;
+      if (!el('cm-state').value && !el('f-cm').value && !cmMod && cmPage === 0) el('n-comments').textContent = reported || '';
+      el('comments').innerHTML = d.comments.length ? d.comments.map(function (c) {
+        var state = c.state === 'deleted' ? '<span class="tag">deleted by its ' + esc(c.changed_by || '?') + '</span>' :
+                    c.state === 'hidden' ? '<span class="tag bad">hidden</span>' : '<span class="tag on">shown</span>';
+        if (c.reports) {
+          state += ' <span class="tag bad" title="' + esc(c.reported_by.map(function (r) {
+            return r.by + (r.why ? ': ' + r.why : ''); }).join('\n')) + '">' + c.reports + ' report' + (c.reports === 1 ? '' : 's') + '</span>';
+          state += '<div class="note">' + c.reported_by.map(function (r) {
+            return esc(r.by) + (r.why ? ': ' + esc(r.why) : ''); }).join('<br>') + '</div>';
+        }
+        var acts = (c.state === 'hidden' ? '<button class="btn" data-cm="' + c.id + '" data-a="show">Show</button>' :
+                    c.state === 'shown' ? '<button class="btn" data-cm="' + c.id + '" data-a="hide">Hide</button>' : '') +
+          (c.reports ? '<button class="btn" data-cm="' + c.id + '" data-a="clear-reports">Clear reports</button>' : '') +
+          (c.muted ? '<button class="btn" data-unmute="' + c.account + '">Unmute</button>' :
+            '<button class="btn" data-cm="' + c.id + '" data-a="mute-comments">Mute</button>' +
+            '<button class="btn" data-cm="' + c.id + '" data-a="mute-all" title="comments and ratings">Mute all</button>') +
+          '<button class="btn danger" data-cm="' + c.id + '" data-a="delete">Delete</button>';
+        return '<tr><td>' + esc(c.mod_name) + ' <span class="note">#' + c.mod + '</span></td><td>' + esc(c.author) +
+          (c.muted ? ' <span class="tag bad">muted' + (c.muted === 'all' ? ' (all)' : '') + '</span>' : '') +
+          '</td><td><div class="ctext' + (c.state === 'shown' ? '' : ' gone') + '">' + esc(c.text) + '</div></td><td>' + state +
+          '</td><td>' + ago(c.created) + '</td><td class="acts">' + acts + '</td></tr>';
+      }).join('') : '<tr><td colspan="6" class="empty">No comments' + (el('cm-state').value || el('f-cm').value ? ' match.' : ' yet.') + '</td></tr>';
+      var pages = Math.max(1, Math.ceil(d.total / d.per_page));
+      el('cm-page').textContent = 'page ' + (d.page + 1) + ' of ' + pages + ' (' + d.total + ')';
+      el('cm-prev').disabled = d.page === 0;
+      el('cm-next').disabled = d.page + 1 >= pages;
+      el('mutes').innerHTML = d.mutes.length ? d.mutes.map(function (m) {
+        return '<tr><td>' + esc(m.name) + '</td><td>' + (m.scope === 'all' ? 'comments and ratings' : 'comments') +
+          '</td><td class="note">' + esc(m.note) + '</td><td>' + ago(m.at) + '</td><td class="acts">' +
+          '<button class="btn" data-unmute="' + m.account + '">Unmute</button></td></tr>';
+      }).join('') : '<tr><td colspan="5" class="empty">None.</td></tr>';
+    }).catch(function () {});
+  }
+  el('cm-state').addEventListener('change', function () { cmPage = 0; loadComments(); });
+  el('f-cm').addEventListener('input', function () {
+    clearTimeout(cmTimer); cmTimer = setTimeout(function () { cmPage = 0; loadComments(); }, 300);
+  });
+  el('cm-prev').addEventListener('click', function () { if (cmPage > 0) { cmPage--; loadComments(); } });
+  el('cm-next').addEventListener('click', function () { cmPage++; loadComments(); });
+  el('p-comments').addEventListener('click', function (e) {
+    var b = e.target.closest('button');
+    if (!b) return;
+    if (b.id === 'cm-allmods') { cmMod = ''; cmPage = 0; loadComments(); return; }
+    var post = function (path, body) {
+      b.disabled = true;
+      return api(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body || {})})
+        .then(loadComments).catch(function (err) { alert(err.message); b.disabled = false; });
+    };
+    if (b.dataset.unmute) { post('api/admin/discovery/mute', {account: +b.dataset.unmute, scope: ''}); return; }
+    if (!b.dataset.cm) return;
+    var a = b.dataset.a;
+    if (a === 'delete' && !confirm('Delete this comment for good?')) return;
+    if (a === 'mute-comments' && !confirm('Mute this account from commenting on Discovery?')) return;
+    if (a === 'mute-all' && !confirm('Mute this account from commenting and rating on Discovery?')) return;
+    post('api/admin/discovery/comment/' + b.dataset.cm + '/' + a);
+  });
+
+  // ---- the comment word list (Names tab: the Discovery comments' second list)
+  var cwDirty = false;
+  function loadCommentWords() {
+    if (cwDirty) return;
+    return api('api/admin/names?list=comments').then(function (d) {
+      el('cw-on').checked = d.enabled;
+      el('cw-words').value = d.words.join('\n');
+      el('cw-allow').value = d.allow.join('\n');
+      el('cw-count').textContent = d.terms + ' word' + (d.terms === 1 ? '' : 's');
+      el('cw-note').innerHTML = d.enabled ? '<span class="tag on">on</span>' : '<span class="tag bad">off</span>';
+    }).catch(function () {});
+  }
+  ['cw-words', 'cw-allow'].forEach(function (id) {
+    el(id).addEventListener('input', function () { cwDirty = true; el('cw-saved').textContent = 'not saved'; });
+  });
+  function saveCommentWords(body) {
+    body.list = 'comments';
+    return api('api/admin/names', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                   body: JSON.stringify(body)}).then(function () {
+      cwDirty = false; el('cw-saved').textContent = 'saved - in use now'; loadCommentWords();
+    }).catch(function (e) { alert('Not saved: ' + e.message); loadCommentWords(); });
+  }
+  el('cw-save').addEventListener('click', function () {
+    saveCommentWords({words: el('cw-words').value.split('\n'), allow: el('cw-allow').value.split('\n')});
+  });
+  el('cw-on').addEventListener('change', function () {
+    var on = this.checked;
+    if (!on && !confirm('Turn the comment word list off? Comments about game copies are let through until it is on again.')) {
+      this.checked = true; return;
+    }
+    saveCommentWords({enabled: on});
+  });
+  function testCommentWords() {
+    var t = el('cw-test').value;
+    if (!t.trim()) { el('cw-result').textContent = ''; return; }
+    api('api/admin/names/test', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                 body: JSON.stringify({text: t, list: 'comments'})}).then(function (d) {
+      el('cw-result').innerHTML = (d.passes ? '<span class="tag on">passes</span>'
+                                            : '<span class="tag bad">refused</span> matched <b>' + esc(d.term) + '</b>') +
+        ' <span class="note">(this list only' + (cwDirty ? ', as saved' : '') + ')</span>';
+    }).catch(function (e) { el('cw-result').textContent = e.message; });
+  }
+  el('cw-try').addEventListener('click', testCommentWords);
+  el('cw-test').addEventListener('keydown', function (e) { if (e.key === 'Enter') testCommentWords(); });
 
   // ---- the name filter: its list, a test, what is on the server now that it catches
   var namesDirty = false;
@@ -1518,6 +1680,7 @@ td.acts { text-align: right; white-space: nowrap; }
         esc(u.title || '(untitled)') + '<small>' + esc(TYPES[u.type] || '') + ' by ' + esc(u.author || '') + ' &middot; tap or Esc to close</small>');
       return;
     }
+    if (b.dataset.cmmod) { cmMod = b.dataset.cmmod; cmPage = 0; el('cm-state').value = ''; el('f-cm').value = ''; show('comments'); return; }
     if (b.dataset.modview) {
       var m = mods.filter(function (x) { return String(x.id) === b.dataset.modview; })[0] || {};
       openViewer('api/admin/mod/' + b.dataset.modview + '/image.jpg', null,
@@ -1534,6 +1697,7 @@ td.acts { text-align: right; white-space: nowrap; }
     var id = b.dataset.up || b.dataset.user || b.dataset.mod;
     if (a === 'delete' && !confirm(what === 'user' ? 'Delete this account and everything it uploaded?' :
                                    what === 'mod' ? 'Delete this mod from Discovery?' : 'Delete this upload?')) return;
+    if (a === 'clear-ratings' && !confirm('Clear all of this mod\'s star ratings? Players can rate it again.')) return;
     if (a === 'reset' && !confirm('Give this account a new random password? Its sessions are signed out.')) return;
     if (a === 'reactivation-code' && !confirm('Make a re-activation code for this account? It shows once; an older one ' +
                                              'it had stops working.')) return;
@@ -1577,6 +1741,7 @@ td.acts { text-align: right; white-space: nowrap; }
   if (current !== 'overview' && current !== 'matches') live();
   if (current !== 'overview') stats();
   if (current !== 'discovery') loadMods();
+  if (current !== 'comments') loadComments();  // (the tab's count: reported comments)
   if (current !== 'reports') loadReports();
   setInterval(function () { if (current === 'overview') stats(); }, 5000);
   setInterval(function () { if (current === 'overview') node(); }, 15000);
@@ -1589,6 +1754,7 @@ td.acts { text-align: right; white-space: nowrap; }
     else if (current === 'matches') leaderboard();
     else if (current === 'cc') loadUploads();
     else if (current === 'discovery') loadMods();
+    else if (current === 'comments') loadComments();
     else if (current === 'reports' || current === 'suggestions') loadReports();
   }, 30000);
 })();

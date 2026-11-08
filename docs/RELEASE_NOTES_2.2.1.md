@@ -29,6 +29,7 @@ Fixes marked "potential" couldn't be fully proven here, so please report it if t
 ## 🛠️ Fixes
 - **Crash as the next match loads** - potential fix.
 - **Crash when a wrestler's model memory is full** - potential fix.
+- **Black screen before an entrance** (a triple threat with mods, before the 3rd entrance): a motion that never ends is now cut short, so the game goes on - potential fix.
 - **Pin count in slow motion at 30 fps and below** - potential fix (below 30 fps it's still slower, by design).
 - **Universe card**: picking a slot no longer replaces a mod with the list's first entry.
 - **Universe title rankings**: mods built on one of the game's unused superstar slots (base 115 and others) now get RAW or SmackDown, so the rankings list them - potential fix.

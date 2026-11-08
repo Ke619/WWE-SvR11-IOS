@@ -39,6 +39,8 @@ Fixes marked "potential" couldn't be fully proven here, so please report it if t
 - **Crash in a lock-up** with some ported superstars (Jeff Hardy '09 and others) - potential fix.
 - **Frame rate falling for good** on phones short of memory (the game asked for a big file over and over) - potential fix; the file itself may still not load.
 - **Crash at the start of a match** when a superstar's data was broken - potential fix.
+- **Titantron showing blocky colour noise** on slower phones (Mali and others): fixed. On a device too slow for a movie, the movie now runs a little behind its sound instead.
+- **CROWD DENSITY auto on Mali phones**: the first match now has the LOW crowd the page shows.
 - **Android: huge touch buttons and broken text** on phones whose game tools lower the game's resolution (OPPO Games and others) - potential fix.
 - **Create an Entrance backing out** for some superstar mods (Kane '06 and others): a mod whose saved entrance is empty now opens with its own entrance - potential fix.
 - **Pin count in slow motion at 30 fps and below** - potential fix (below 30 fps it's still slower, by design).

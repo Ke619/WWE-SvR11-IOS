@@ -37,7 +37,7 @@ unit=/etc/systemd/system/svr2011.service
 ngx_dir=/etc/nginx/svr2011
 ngx_file=$ngx_dir/svr-location.conf
 files="server.py admin_auth.py gamespy.py leaderboards.py match_names.py media.py relay.py relay_link.py thumbs.py lb_reset.py
-       signup.py namefilter.py discovery.py reports.py dashboard.html leaderboards.json requirements.txt"
+       signup.py namefilter.py discovery.py discovery_social.py reports.py dashboard.html leaderboards.json requirements.txt"
 pw_tool=/usr/local/sbin/svr2011-admin-password
 
 # run CMD...: does it (or prints it with --dry-run)

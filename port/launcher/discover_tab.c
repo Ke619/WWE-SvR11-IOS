@@ -3,7 +3,9 @@
  * Three views on one page: the grid (search by words, type and order; 24 a page, each with its first picture),
  * a mod's page (its four pictures, what it is, Download and install; Delete for its uploader) and the upload
  * form (name, version, types, tags, description, the .svrmod, four pictures - made 1024 x 768 JPEG here:
- * the server has no image library and only checks them). Every request runs on a thread of its own and
+ * the server has no image library and only checks them). A mod's page also has its stars (rate it 1-5, signed in)
+ * and Comments (N): a fourth view with its comments, newest first (write, delete your own, report) - the server
+ * checks every comment (docs/DISCOVERY_API.md "Comments and ratings"). Every request runs on a thread of its own and
  * answers with WM_APP_DISCOVER; a page's late answers (an older search) are dropped by their number. */
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -32,11 +34,17 @@ enum {
     U_TITLE, U_NAME_L, U_NAME, U_VER_L, U_VER, U_TYPES_L, U_T0, U_T1, U_T2, U_T3, U_TAGS_L, U_TAGS, U_DESC_L, U_DESC,
     U_FILE_L, U_FILE, U_FILE_PICK, U_PICS_L, U_PICS, U_PICS_PICK, U_AUTHOR, U_SEND, U_CANCEL, U_PROGRESS,
     D_EDIT, D_NEWFILE, D_FIRSTPIC,   /* (the uploader's own: Edit..., New version..., Make first) */
-    D_DLBAR, D_DLCANCEL, D_COUNT     /* (a download running: its bar and Cancel) */
+    D_DLBAR, D_DLCANCEL,             /* (a download running: its bar and Cancel) */
+    D_RATING, D_STAR0, D_STAR1, D_STAR2, D_STAR3, D_STAR4, D_COMMENTS,   /* (a mod's page: its stars, Comments (N)) */
+    C_TITLE, C_LIST, C_FULL, C_MORE, C_DEL, C_REPORT, C_WRITE_L, C_WRITE, C_SEND, C_BACK,   /* (its comments' view) */
+    D_COUNT   /* (the launcher gives Discovery 100 ids: ID_DISCOVER_BASE 1300 .. 1399) */
 };
-enum { V_GRID, V_MOD, V_UPLOAD };
+enum { V_GRID, V_MOD, V_UPLOAD, V_COMMENTS };
 enum { R_LIST, R_THUMB, R_DETAIL, R_PIC, R_DOWNLOAD, R_UPLOAD, R_DELETE, R_PROGRESS, R_EDIT,
-       R_RECONNECT, R_DLPROG };   /* (the server didn't answer: trying again; a download's progress) */
+       R_RECONNECT, R_DLPROG,     /* (the server didn't answer: trying again; a download's progress) */
+       R_COMMENTS, R_CPOST, R_CDEL, R_CREPORT, R_RATE };   /* (comments: a page, a new one, delete, report; a rating) */
+#define MAX_COMMENTS 200   /* (loaded on one page: 20 a request, More for the next) */
+#define COMMENT_MAX 500    /* (characters: the server's limit) */
 #define DL_TRIES 6   /* (a download that breaks: resumed / restarted this many times in all) */
 #define PER_PAGE 24
 #define THUMB_W 160
@@ -49,8 +57,16 @@ typedef struct {
     long long owner;   /* (the uploader's account id) */
     long long size, created, updated, edited;   /* (Unix seconds; updated / edited 0: never) */
     int pics;          /* (goes up with each picture change: img/n?v=pics) */
+    int rating10, rating_count;   /* (the stars: average x 10, how many; 0 0: none, or ratings off) */
     WCHAR name[64], author[48], types[80], tags[220], version[24];
 } Mod;
+
+/* A comment on the mod shown (GET /api/mods/{id}/comments): mine / can_delete as the server said for the token. */
+typedef struct {
+    int id, mine, can_delete;
+    long long created;
+    WCHAR author[48], text[COMMENT_MAX + 20];
+} Comment;
 
 static HWND s_wnd, s_c[D_COUNT];
 static int s_base, s_view = V_GRID, s_page, s_total, s_n, s_shown, s_busy, s_pic, s_cur = -1;
@@ -71,6 +87,12 @@ static HBITMAP s_pics[4];
 static WCHAR s_game[MAX_PATH], s_file_name[MAX_PATH], s_up_file[MAX_PATH], s_up_pics[4][MAX_PATH];
 static discover_server_fn s_server;
 static discover_account_fn s_account;
+/* The mod page's stars and comments, from its answer (asked with s_mine_token): the server's switches, the asker's
+   own rating and rights; the comments' view: what is loaded of them and their own request counter. */
+static int s_comments_on, s_ratings_on, s_can_rate, s_my_rating, s_n_comments;
+static Comment s_cms[MAX_COMMENTS];
+static int s_cm_n, s_cm_total, s_cm_page, s_cm_can, s_cm_busy;
+static volatile LONG s_cgen;   /* (a newer comments page, or another mod's, drops an older one's answer) */
 
 static const WCHAR *const k_types[4] = { L"entrance", L"superstar", L"arena", L"moveset" };
 static const WCHAR *const k_type_names[4] = { L"Entrance", L"Superstar", L"Arena", L"Move-set" };
@@ -155,10 +177,16 @@ static const char *jstr(const char *p, const char *end, WCHAR *out, size_t n)
             p++;
             if (*p == 'n') u[k++] = '\n';
             else if (*p == 'u' && p + 4 < end) {
-                unsigned c = 0;
+                unsigned c = 0, lo = 0;
                 sscanf_s(p + 1, "%4x", &c);
                 p += 4;
-                if (c < 0x80) u[k++] = (char)c;
+                if (c >= 0xD800 && c < 0xDC00 && p + 6 < end && p[1] == '\\' && p[2] == 'u' &&
+                    sscanf_s(p + 3, "%4x", &lo) == 1 && lo >= 0xDC00 && lo < 0xE000) {   /* (a pair: 4 UTF-8 bytes) */
+                    c = 0x10000 + ((c - 0xD800) << 10) + (lo - 0xDC00);
+                    p += 6;
+                    u[k++] = (char)(0xF0 | c >> 18); u[k++] = (char)(0x80 | (c >> 12 & 63));
+                    u[k++] = (char)(0x80 | (c >> 6 & 63)); u[k++] = (char)(0x80 | (c & 63));
+                } else if (c < 0x80) u[k++] = (char)c;
                 else if (c < 0x800) { u[k++] = (char)(0xC0 | c >> 6); u[k++] = (char)(0x80 | (c & 63)); }
                 else { u[k++] = (char)(0xE0 | c >> 12); u[k++] = (char)(0x80 | (c >> 6 & 63)); u[k++] = (char)(0x80 | (c & 63)); }
             } else u[k++] = *p;
@@ -170,6 +198,8 @@ static const char *jstr(const char *p, const char *end, WCHAR *out, size_t n)
 }
 
 static long long jnum(const char *p) { return p ? _atoi64(p) : 0; }
+static double jdbl(const char *p) { return p ? atof(p) : 0; }
+static int jtrue(const char *p) { return p && !strncmp(p, "true", 4); }
 
 /* A JSON array of strings at p, joined with ", ". */
 static void jlist(const char *p, const char *end, const WCHAR *const *names, WCHAR *out, size_t n)
@@ -219,6 +249,37 @@ static void parse_mod(const char *p, const char *end, Mod *m)
     jlist(jkey(p, end, "tags"), end, NULL, m->tags, 220);
     m->size = jnum(jkey(p, end, "size"));
     m->downloads = (int)jnum(jkey(p, end, "downloads"));
+    {   /* the stars: "rating": {"avg", "count"} (left out while the server has ratings off) */
+        const char *rt = jkey(p, end, "rating");
+        if (rt && *rt == '{') {
+            const char *re = jobject_end(rt, end);
+            m->rating10 = (int)(jdbl(jkey(rt, re, "avg")) * 10 + 0.5);
+            m->rating_count = (int)jnum(jkey(rt, re, "count"));
+        }
+    }
+}
+
+static int parse_comment(const char *p, const char *end, Comment *c)
+{
+    ZeroMemory(c, sizeof *c);
+    c->id = (int)jnum(jkey(p, end, "id"));
+    c->created = jnum(jkey(p, end, "created"));
+    jstr(jkey(p, end, "author"), end, c->author, 48);
+    jstr(jkey(p, end, "text"), end, c->text, COMMENT_MAX + 20);
+    c->mine = jtrue(jkey(p, end, "mine"));
+    c->can_delete = jtrue(jkey(p, end, "can_delete"));
+    return c->id > 0;
+}
+
+/* How long ago (Unix seconds): "just now", "5 min ago", "3 h ago", "2 days ago", else the date. */
+static void fmt_age(WCHAR *out, size_t n, long long t)
+{
+    const long long d = (long long)time(NULL) - t;
+    if (d < 60) wcscpy_s(out, n, L"just now");
+    else if (d < 3600) swprintf_s(out, n, L"%lld min ago", d / 60);
+    else if (d < 86400) swprintf_s(out, n, L"%lld h ago", d / 3600);
+    else if (d < 30 * 86400) swprintf_s(out, n, L"%lld day%s ago", d / 86400, d < 2 * 86400 ? L"" : L"s");
+    else fmt_date(out, n, t);
 }
 
 /* ── pictures (WIC) ────────────────────────────────────────────────────── */
@@ -365,12 +426,13 @@ typedef struct {
     int kind, gen, index, n_ids, ids[PER_PAGE], pics_v[PER_PAGE];
     WCHAR path[700], file[MAX_PATH], pics[4][MAX_PATH];
     char token[160], *fields;    /* (an upload: its text fields, "name\0value\0..." ) */
-    char *json;                  /* (an edit: the changed details, a PATCH body; NULL: none) */
+    char *json;                  /* (an edit: the changed details, a PATCH body; a comment / rating: its POST body) */
     size_t fields_n;
+    int cgen, mod;               /* (comments / ratings: s_cgen when asked; the mod's id) */
 } Job;
 
 typedef struct {
-    int kind, gen, index, status;
+    int kind, gen, index, status, cgen, mod;
     uint8_t *data;
     size_t n;
     WCHAR text[300];
@@ -381,6 +443,7 @@ static void post(Job *j, int status, uint8_t *data, size_t n, int index, const W
     Result *r = (Result *)calloc(1, sizeof *r);
     if (!r) { free(data); return; }
     r->kind = j->kind; r->gen = j->gen; r->index = index; r->status = status; r->data = data; r->n = n;
+    r->cgen = j->cgen; r->mod = j->mod;
     if (text) wcscpy_s(r->text, 300, text);
     if (!PostMessageW(s_wnd, WM_APP_DISCOVER, 0, (LPARAM)r)) { free(data); free(r); }
 }
@@ -773,6 +836,20 @@ static DWORD WINAPI job_thread(LPVOID p)
         st = http(j, L"DELETE", j->path, NULL, NULL, 0, &data, &n, 1 << 16);
         post(j, st, data, n, 0, NULL);
         break;
+    case R_COMMENTS:   /* (a page of comments; index: the page) */
+        st = http(j, L"GET", j->path, NULL, NULL, 0, &data, &n, 1 << 20);
+        post(j, st, data, n, j->index, NULL);
+        break;
+    case R_CPOST: case R_CREPORT: case R_RATE: {   /* (index: the comment / the stars) */
+        const char *b = j->json ? j->json : "{}";
+        st = http(j, L"POST", j->path, "application/json", (const uint8_t *)b, strlen(b), &data, &n, 1 << 16);
+        post(j, st, data, n, j->index, NULL);
+        break;
+    }
+    case R_CDEL:       /* (index: the comment) */
+        st = http(j, L"DELETE", j->path, NULL, NULL, 0, &data, &n, 1 << 16);
+        post(j, st, data, n, j->index, NULL);
+        break;
     case R_UPLOAD: {
         WCHAR why[200] = L"";
         st = send_multipart(j, 1, L"POST", L"/api/mods", &data, &n, why);
@@ -831,7 +908,7 @@ static void start(Job *j)
     }
     t = CreateThread(NULL, 0, job_thread, j, 0, NULL);
     if (t) CloseHandle(t);
-    else { free(j->fields); free(j); }
+    else { free(j->fields); free(j->json); free(j); }
 }
 
 static Job *job(int kind)
@@ -845,7 +922,9 @@ static Job *job(int kind)
 
 static const int k_grid_ids[] = { D_SEARCH, D_TYPE, D_SORT, D_GO, D_GRID, D_PREV, D_PAGE, D_NEXT, D_UPLOAD };
 static const int k_mod_ids[] = { D_PIC, D_PICPREV, D_PICLBL, D_PICNEXT, D_INFO, D_DESC, D_BACK, D_DOWNLOAD, D_DELETE,
-                                 D_EDIT, D_NEWFILE, D_FIRSTPIC, D_DLBAR, D_DLCANCEL };
+                                 D_EDIT, D_NEWFILE, D_FIRSTPIC, D_DLBAR, D_DLCANCEL,
+                                 D_RATING, D_STAR0, D_STAR1, D_STAR2, D_STAR3, D_STAR4, D_COMMENTS };
+static const int k_cm_ids[] = { C_TITLE, C_LIST, C_FULL, C_MORE, C_DEL, C_REPORT, C_WRITE_L, C_WRITE, C_SEND, C_BACK };
 
 /* The mod's page shows the player's own mod: the server said so ("mine") for the token signed in now - not for one
    from before a sign-out or another account's sign-in (then its Delete was refused: 403). */
@@ -859,6 +938,25 @@ static int owner_now(void)
     return token[0] && !strcmp(token, s_mine_token);
 }
 
+/* The mod's page was asked with the token signed in now (its stars and rights are this account's). */
+static int token_now(void)
+{
+    char token[160];
+    WCHAR me[8];
+    long long my_id = -1;
+    s_account(token, sizeof token, me, 8, &my_id);
+    return token[0] && !strcmp(token, s_mine_token);
+}
+
+static int signed_in(void)
+{
+    char token[160];
+    WCHAR me[8];
+    long long my_id = -1;
+    s_account(token, sizeof token, me, 8, &my_id);
+    return token[0] != 0;
+}
+
 static void set_view(int v)
 {
     int i, mine;
@@ -869,6 +967,12 @@ static void set_view(int v)
         size_t k;
         for (k = 0; k < sizeof k_grid_ids / sizeof k_grid_ids[0]; k++) if (k_grid_ids[k] == i) show = v == V_GRID;
         for (k = 0; k < sizeof k_mod_ids / sizeof k_mod_ids[0]; k++) if (k_mod_ids[k] == i) show = v == V_MOD;
+        for (k = 0; k < sizeof k_cm_ids / sizeof k_cm_ids[0]; k++) if (k_cm_ids[k] == i) show = v == V_COMMENTS;
+        if (i == D_RATING) show = show && s_ratings_on;
+        if (i >= D_STAR0 && i <= D_STAR4) show = show && s_ratings_on && s_can_rate && token_now();
+        if (i == D_COMMENTS) show = show && s_comments_on;
+        if (i == C_MORE) show = show && s_cm_n < s_cm_total;
+        if (i == C_WRITE || i == C_SEND) show = show && s_cm_can && signed_in();
         if (i >= U_TITLE && i <= U_PROGRESS) show = v == V_UPLOAD;
         if (i == D_DELETE || i == D_EDIT || i == D_NEWFILE || i == D_FIRSTPIC)
             show = show && mine && !s_dl;   /* (only on the player's own mod - checked again at every view) */
@@ -878,10 +982,145 @@ static void set_view(int v)
     }
 }
 
+/* The mod page's stars: the average and count, the asker's own (filled stars), Comments (N). */
+static void show_rating(void)
+{
+    WCHAR t[160];
+    const Mod *m = s_cur >= 0 ? &s_mods[s_cur] : NULL;
+    int k;
+    if (!m) return;
+    if (m->rating_count)
+        swprintf_s(t, 160, L"\x2605 %.1f  (%d rating%s)", m->rating10 / 10.0, m->rating_count, m->rating_count == 1 ? L"" : L"s");
+    else
+        wcscpy_s(t, 160, L"No ratings yet");
+    if (!signed_in()) wcscat_s(t, 160, L"\nSign in to rate it");
+    else if (s_mine) wcscat_s(t, 160, L"\nYour own mod");
+    else if (token_now() && !s_can_rate) wcscat_s(t, 160, L"\nYou can't rate mods");
+    else wcscat_s(t, 160, s_my_rating ? L"\nYour rating:" : L"\nRate it:");
+    SetWindowTextW(s_c[D_RATING], t);
+    for (k = 0; k < 5; k++) SetWindowTextW(s_c[D_STAR0 + k], k < s_my_rating ? L"\x2605" : L"\x2606");
+    swprintf_s(t, 160, L"Comments (%d)", s_n_comments);
+    SetWindowTextW(s_c[D_COMMENTS], t);
+}
+
+/* The comments loaded, into the list (newest first: the server's order); the title with the count. */
+static void fill_comments(void)
+{
+    int i;
+    WCHAR t[200];
+    ListView_DeleteAllItems(s_c[C_LIST]);
+    for (i = 0; i < s_cm_n; i++) {
+        LVITEMW it;
+        WCHAR when[48], one[160];
+        size_t a, b = 0;
+        for (a = 0; s_cms[i].text[a] && b + 4 < 160; a++) {   /* (one line: new lines as " / ") */
+            if (s_cms[i].text[a] == L'\n') { one[b++] = L' '; one[b++] = L'/'; one[b++] = L' '; }
+            else one[b++] = s_cms[i].text[a];
+        }
+        one[b] = 0;
+        fmt_age(when, 48, s_cms[i].created);
+        ZeroMemory(&it, sizeof it);
+        it.mask = LVIF_TEXT | LVIF_PARAM;
+        it.iItem = i;
+        it.lParam = i;
+        it.pszText = s_cms[i].author;
+        ListView_InsertItem(s_c[C_LIST], &it);
+        ListView_SetItemText(s_c[C_LIST], i, 1, when);
+        ListView_SetItemText(s_c[C_LIST], i, 2, one);
+    }
+    if (s_cur >= 0)
+        swprintf_s(t, 200, L"Comments on \"%s\" (%d)", s_mods[s_cur].name, s_cm_total);
+    else
+        wcscpy_s(t, 200, L"Comments");
+    SetWindowTextW(s_c[C_TITLE], t);
+    SetWindowTextW(s_c[C_FULL], L"");
+}
+
+/* The selected comment (its index in s_cms) or -1. */
+static int comment_sel(void)
+{
+    const int i = s_c[C_LIST] ? ListView_GetNextItem(s_c[C_LIST], -1, LVNI_SELECTED) : -1;
+    return i >= 0 && i < s_cm_n ? i : -1;
+}
+
+/* The comments' buttons and the writing line, as the selection, the sign-in and the server's word say. */
+static void comment_buttons(void)
+{
+    const int sel = comment_sel(), in = signed_in();
+    WCHAR t[200], w[COMMENT_MAX + 64];
+    int len = 0;
+    if (s_c[C_WRITE]) len = GetWindowTextW(s_c[C_WRITE], w, COMMENT_MAX + 64);
+    EnableWindow(s_c[C_DEL], sel >= 0 && s_cms[sel].can_delete && !s_cm_busy);
+    EnableWindow(s_c[C_REPORT], sel >= 0 && in && !s_cms[sel].mine && !s_cm_busy);
+    if (!in) wcscpy_s(t, 200, L"Sign in on the Online tab to write a comment.");
+    else if (!s_cm_can) wcscpy_s(t, 200, L"Your account can't comment on Discovery.");
+    else swprintf_s(t, 200, L"Write a comment (plain text - no links): %d / %d", len, COMMENT_MAX);
+    SetWindowTextW(s_c[C_WRITE_L], t);
+    EnableWindow(s_c[C_SEND], len > 0 && len <= COMMENT_MAX && !s_cm_busy);
+    if (s_view == V_COMMENTS) set_view(V_COMMENTS);
+}
+
+/* The selected comment in full (its new lines as the edit control wants them). */
+static void comment_full(void)
+{
+    const int sel = comment_sel();
+    WCHAR crlf[2 * (COMMENT_MAX + 20)];
+    size_t a, b = 0;
+    if (sel >= 0) {
+        WCHAR head[120];
+        fmt_age(head, 120, s_cms[sel].created);
+        swprintf_s(crlf, 2 * (COMMENT_MAX + 20), L"%s, %s:\r\n", s_cms[sel].author, head);
+        b = wcslen(crlf);
+        for (a = 0; s_cms[sel].text[a] && b + 3 < 2 * (COMMENT_MAX + 20); a++) {
+            if (s_cms[sel].text[a] == L'\n') crlf[b++] = L'\r';
+            crlf[b++] = s_cms[sel].text[a];
+        }
+    }
+    crlf[b] = 0;
+    SetWindowTextW(s_c[C_FULL], crlf);
+    comment_buttons();
+}
+
+static void comments_request(int page)
+{
+    Job *j;
+    if (s_cur < 0 || !(j = job(R_COMMENTS))) return;
+    j->cgen = s_cgen;
+    j->mod = s_mods[s_cur].id;
+    j->index = page;
+    swprintf_s(j->path, 700, L"/api/mods/%d/comments?page=%d", j->mod, page);
+    start(j);
+}
+
+static void open_comments(void)
+{
+    if (s_cur < 0) return;
+    InterlockedIncrement(&s_cgen);
+    s_cm_n = s_cm_total = s_cm_page = s_cm_can = 0;
+    fill_comments();
+    set_view(V_COMMENTS);
+    comment_buttons();
+    status(L"Loading the comments\x2026");
+    comments_request(0);
+}
+
+/* A POST of a comment, a report or a rating (the body's JSON made here). */
+static void social_post(int kind, const WCHAR *path, const char *json, int index)
+{
+    Job *j;
+    if (s_cur < 0 || !(j = job(kind))) return;
+    if (!(j->json = _strdup(json ? json : "{}"))) { free(j); return; }
+    j->cgen = s_cgen;
+    j->mod = s_mods[s_cur].id;
+    j->index = index;
+    wcscpy_s(j->path, 700, path);
+    start(j);
+}
+
 static void search(void)
 {
     static const char *const types[] = { "", "entrance", "superstar", "arena", "moveset" };
-    static const char *const sorts[] = { "new", "popular", "name", "updated" };
+    static const char *const sorts[] = { "new", "popular", "name", "updated", "rating" };
     WCHAR q[120], qe[400];
     char u[400];
     const char *s;
@@ -900,7 +1139,7 @@ static void search(void)
     qe[k] = 0;
     s_gen++;
     swprintf_s(j->path, 700, L"/api/mods?q=%s&type=%S&sort=%S&page=%d", qe, types[ti > 0 && ti < 5 ? ti : 0],
-               sorts[si > 0 && si < 4 ? si : 0], s_page);
+               sorts[si > 0 && si < 5 ? si : 0], s_page);
     status(L"Looking\x2026");
     start(j);
 }
@@ -916,6 +1155,8 @@ static void open_mod(int i)
     SetWindowTextW(s_c[D_INFO], L"");
     SetWindowTextW(s_c[D_DESC], L"");
     SetWindowTextW(s_c[D_PICLBL], L"1 / 4");
+    s_comments_on = s_ratings_on = s_can_rate = s_my_rating = s_n_comments = 0;   /* (until its page answers) */
+    InterlockedIncrement(&s_cgen);
     if (!(j = job(R_DETAIL))) return;
     {   /* the player's own: only when the page's answer says so ("mine", asked with this token) */
         WCHAR me[8];
@@ -1132,7 +1373,7 @@ void discover_build(HWND wnd, mods_add_fn add, int tab, int id_base, discover_se
                     discover_account_fn account)
 {
     static const WCHAR *const types[] = { L"All types", L"Entrance", L"Superstar", L"Arena", L"Move-set" };
-    static const WCHAR *const sorts[] = { L"Newest", L"Most downloaded", L"By name", L"Recently updated" };
+    static const WCHAR *const sorts[] = { L"Newest", L"Most downloaded", L"By name", L"Recently updated", L"Top rated" };
     int i, y;
 #define C(i, cls, text, style, x, y, w, h) (s_c[i] = add(tab, cls, text, style, x, y, w, h, id_base + (i)))
     s_wnd = wnd;
@@ -1146,7 +1387,7 @@ void discover_build(HWND wnd, mods_add_fn add, int tab, int id_base, discover_se
     for (i = 0; i < 5; i++) SendMessageW(s_c[D_TYPE], CB_ADDSTRING, 0, (LPARAM)types[i]);
     SendMessageW(s_c[D_TYPE], CB_SETCURSEL, 0, 0);
     C(D_SORT, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, 378, 54, 120, 200);
-    for (i = 0; i < 4; i++) SendMessageW(s_c[D_SORT], CB_ADDSTRING, 0, (LPARAM)sorts[i]);
+    for (i = 0; i < 5; i++) SendMessageW(s_c[D_SORT], CB_ADDSTRING, 0, (LPARAM)sorts[i]);
     SendMessageW(s_c[D_SORT], CB_SETCURSEL, 0, 0);
     C(D_GO, L"Button", L"Search", BS_DEFPUSHBUTTON | WS_TABSTOP, 506, 53, 82, 28);
     C(D_GRID, WC_LISTVIEWW, L"", LVS_ICON | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP, 28, 88, 560, 392);
@@ -1164,7 +1405,12 @@ void discover_build(HWND wnd, mods_add_fn add, int tab, int id_base, discover_se
     C(D_PICPREV, L"Button", L"\x2190", BS_PUSHBUTTON | WS_TABSTOP, 28, 360, 44, 28);
     C(D_PICLBL, L"Static", L"1 / 4", SS_CENTER, 80, 366, 268, 20);
     C(D_PICNEXT, L"Button", L"\x2192", BS_PUSHBUTTON | WS_TABSTOP, 384, 360, 44, 28);
-    C(D_INFO, L"Static", L"", SS_LEFT | SS_NOPREFIX, 442, 54, 146, 300);
+    C(D_INFO, L"Static", L"", SS_LEFT | SS_NOPREFIX, 442, 54, 146, 206);
+    /* (its stars: the average, then five buttons - the player's own filled; Comments (N) under them) */
+    C(D_RATING, L"Static", L"", SS_LEFT | SS_NOPREFIX, 442, 262, 146, 34);
+    for (i = 0; i < 5; i++)
+        C(D_STAR0 + i, L"Button", L"\x2606", BS_PUSHBUTTON | WS_TABSTOP, 442 + i * 29, 298, 28, 26);
+    C(D_COMMENTS, L"Button", L"Comments", BS_PUSHBUTTON | WS_TABSTOP, 442, 328, 146, 26);
     C(D_DESC, L"Edit", L"", ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL | WS_BORDER, 28, 396, 560, 84);
     C(D_BACK, L"Button", L"\x2190 Back", BS_PUSHBUTTON | WS_TABSTOP, 28, 488, 100, 30);
     C(D_DOWNLOAD, L"Button", L"Download and install", BS_DEFPUSHBUTTON | WS_TABSTOP, 136, 486, 176, 32);
@@ -1177,6 +1423,40 @@ void discover_build(HWND wnd, mods_add_fn add, int tab, int id_base, discover_se
     C(D_DLBAR, PROGRESS_CLASSW, L"", PBS_SMOOTH, 136, 496, 340, 14);
     SendMessageW(s_c[D_DLBAR], PBM_SETRANGE32, 0, 1000);
     C(D_DLCANCEL, L"Button", L"Cancel", BS_PUSHBUTTON | WS_TABSTOP, 488, 488, 100, 30);
+    /* a mod's comments (newest first; the one selected in full under them; write one at the bottom) */
+    C(C_TITLE, L"Static", L"Comments", SS_LEFT | SS_NOPREFIX | SS_ENDELLIPSIS, 28, 56, 560, 20);
+    C(C_LIST, WC_LISTVIEWW, L"", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER | WS_BORDER | WS_TABSTOP,
+      28, 80, 560, 192);
+    ListView_SetExtendedListViewStyle(s_c[C_LIST], LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
+    {   /* (From and When at the screen's scale; Comment the rest of the width, the scroll bar left out) */
+        static const WCHAR *const cols[3] = { L"From", L"When", L"Comment" };
+        const int dpi = (int)GetDpiForWindow(s_c[C_LIST]) ? (int)GetDpiForWindow(s_c[C_LIST]) : 96;
+        int widths[3];
+        RECT lr;
+        LVCOLUMNW c;
+        GetClientRect(s_c[C_LIST], &lr);
+        widths[0] = MulDiv(120, dpi, 96);
+        widths[1] = MulDiv(90, dpi, 96);
+        widths[2] = lr.right - widths[0] - widths[1] - GetSystemMetricsForDpi(SM_CXVSCROLL, (UINT)dpi) - 2;
+        if (widths[2] < MulDiv(200, dpi, 96)) widths[2] = MulDiv(326, dpi, 96);
+        for (i = 0; i < 3; i++) {
+            ZeroMemory(&c, sizeof c);
+            c.mask = LVCF_TEXT | LVCF_WIDTH;
+            c.pszText = (WCHAR *)cols[i];
+            c.cx = widths[i];
+            ListView_InsertColumn(s_c[C_LIST], i, &c);
+        }
+    }
+    C(C_FULL, L"Edit", L"", ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL | WS_BORDER, 28, 278, 560, 58);
+    C(C_MORE, L"Button", L"More comments", BS_PUSHBUTTON | WS_TABSTOP, 28, 342, 140, 26);
+    C(C_DEL, L"Button", L"Delete", BS_PUSHBUTTON | WS_TABSTOP, 380, 342, 100, 26);
+    C(C_REPORT, L"Button", L"Report", BS_PUSHBUTTON | WS_TABSTOP, 488, 342, 100, 26);
+    C(C_WRITE_L, L"Static", L"", SS_LEFT | SS_NOPREFIX, 28, 376, 560, 18);
+    C(C_WRITE, L"Edit", L"", ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL | WS_BORDER | WS_TABSTOP,
+      28, 396, 560, 82);
+    SendMessageW(s_c[C_WRITE], EM_LIMITTEXT, COMMENT_MAX, 0);
+    C(C_BACK, L"Button", L"\x2190 Back", BS_PUSHBUTTON | WS_TABSTOP, 28, 488, 100, 30);
+    C(C_SEND, L"Button", L"Send", BS_DEFPUSHBUTTON | WS_TABSTOP, 488, 486, 100, 32);
     /* the upload form */
     C(U_TITLE, L"Static", L"Upload a mod: every field but tags and the description is needed. Only .svrmod files.",
       SS_LEFT | SS_NOPREFIX, 28, 54, 560, 20);
@@ -1246,6 +1526,14 @@ void discover_show(const WCHAR *game_dir)
         s_account(token, sizeof token, me, 8, &my_id);
         if (token[0] && strcmp(token, s_mine_token)) open_mod(s_cur);
     }
+    if (s_view == V_COMMENTS && s_cur >= 0) {   /* (signed in, out or as another since: the page and its comments again) */
+        char token[160];
+        WCHAR me[8];
+        long long my_id = -1;
+        s_account(token, sizeof token, me, 8, &my_id);
+        if (strcmp(token, s_mine_token)) { open_mod(s_cur); open_comments(); }
+        else comment_buttons();
+    }
     if (s_view == V_UPLOAD) upload_view();
     if (s_view == V_UPLOAD && !s_busy) ShowWindow(s_c[U_PROGRESS], SW_HIDE);
     if (!s_shown) {
@@ -1258,8 +1546,84 @@ int discover_command(int id, int code)
 {
     const int i = id - s_base;
     if (i < 0 || i >= D_COUNT) return 0;
+    if (i == C_WRITE) {   /* (the counter as the player types) */
+        if (code == EN_CHANGE) comment_buttons();
+        return 1;
+    }
     if (code != BN_CLICKED && i != D_SEARCH && i != D_TYPE && i != D_SORT) return 0;
     switch (i) {
+    case D_COMMENTS: open_comments(); return 1;
+    case C_BACK: set_view(V_MOD); show_rating(); status(L""); return 1;
+    case C_MORE:
+        if (s_cm_n < s_cm_total && s_cm_n < MAX_COMMENTS) { status(L"Loading more comments\x2026"); comments_request(s_cm_page + 1); }
+        return 1;
+    case C_SEND: {
+        WCHAR w[COMMENT_MAX + 64], path[96];
+        char *json;
+        size_t a = 0, b;
+        if (s_cur < 0 || s_cm_busy) return 1;
+        GetWindowTextW(s_c[C_WRITE], w, COMMENT_MAX + 64);
+        while (w[a] == L' ' || w[a] == L'\r' || w[a] == L'\n' || w[a] == L'\t') a++;
+        for (b = wcslen(w); b > a && (w[b - 1] == L' ' || w[b - 1] == L'\r' || w[b - 1] == L'\n' || w[b - 1] == L'\t'); b--) {}
+        w[b] = 0;
+        if (b <= a) { status(L"Write something first."); return 1; }
+        if (b - a > COMMENT_MAX) { status(L"Comments are 500 characters at most."); return 1; }
+        if (!(json = (char *)malloc(8192))) return 1;
+        strcpy_s(json, 8192, "{\"text\":");
+        json_text(json, 8192, w + a);
+        strcat_s(json, 8192, "}");
+        swprintf_s(path, 96, L"/api/mods/%d/comments", s_mods[s_cur].id);
+        s_cm_busy = 1;
+        comment_buttons();
+        status(L"Posting your comment\x2026");
+        social_post(R_CPOST, path, json, 0);
+        free(json);
+        return 1;
+    }
+    case C_DEL: {
+        const int sel = comment_sel();
+        WCHAR path[96];
+        if (sel < 0 || !s_cms[sel].can_delete || s_cm_busy || s_cur < 0) return 1;
+        if (MessageBoxW(s_wnd, s_cms[sel].mine ? L"Delete your comment?" : L"Delete this comment from your mod's page?",
+                        L"Delete comment", MB_OKCANCEL | MB_ICONQUESTION) != IDOK) return 1;
+        swprintf_s(path, 96, L"/api/mods/%d/comments/%d", s_mods[s_cur].id, s_cms[sel].id);
+        {
+            Job *j = job(R_CDEL);
+            if (!j) return 1;
+            j->cgen = s_cgen;
+            j->mod = s_mods[s_cur].id;
+            j->index = s_cms[sel].id;
+            wcscpy_s(j->path, 700, path);
+            s_cm_busy = 1;
+            comment_buttons();
+            status(L"Deleting the comment\x2026");
+            start(j);
+        }
+        return 1;
+    }
+    case C_REPORT: {
+        const int sel = comment_sel();
+        WCHAR path[96];
+        if (sel < 0 || s_cms[sel].mine || s_cur < 0) return 1;
+        if (MessageBoxW(s_wnd, L"Report this comment to the online server's moderators? They see it with your account name.",
+                        L"Report comment", MB_OKCANCEL | MB_ICONQUESTION) != IDOK) return 1;
+        swprintf_s(path, 96, L"/api/mods/%d/comments/%d/report", s_mods[s_cur].id, s_cms[sel].id);
+        status(L"Reporting the comment\x2026");
+        social_post(R_CREPORT, path, "{}", s_cms[sel].id);
+        return 1;
+    }
+    case D_STAR0: case D_STAR1: case D_STAR2: case D_STAR3: case D_STAR4: {
+        WCHAR path[96];
+        char json[32];
+        int stars = i - D_STAR0 + 1;
+        if (s_cur < 0 || !s_can_rate || !token_now()) return 1;
+        if (stars == s_my_rating) stars = 0;   /* (the same star again: the rating taken back) */
+        sprintf_s(json, 32, "{\"stars\":%d}", stars);
+        swprintf_s(path, 96, L"/api/mods/%d/rating", s_mods[s_cur].id);
+        status(L"Saving your rating\x2026");
+        social_post(R_RATE, path, json, stars);
+        return 1;
+    }
     case D_TYPE: case D_SORT:
         if (code == CBN_SELCHANGE) { s_page = 0; search(); }
         return 1;
@@ -1374,6 +1738,10 @@ int discover_command(int id, int code)
 
 int discover_notify(const NMHDR *nm)
 {
+    if (s_c[C_LIST] && nm->hwndFrom == s_c[C_LIST]) {   /* (a comment selected: in full under the list) */
+        if (nm->code == LVN_ITEMCHANGED && (((const NMLISTVIEW *)nm)->uChanged & LVIF_STATE)) comment_full();
+        return 1;
+    }
     if (!s_c[D_GRID] || nm->hwndFrom != s_c[D_GRID]) return 0;
     if (nm->code == NM_CLICK || nm->code == NM_RETURN) {
         const int i = nm->code == NM_CLICK ? ((const NMITEMACTIVATE *)nm)->iItem
@@ -1473,6 +1841,11 @@ int discover_message(UINT m, WPARAM wp, LPARAM lp)
                     swprintf_s(label, 140, L"\x2022 Updated: %s", m->name);
                 else
                     wcscpy_s(label, 140, m->name);
+                if (m->rating_count) {   /* (the stars first - a long name's end is cut off: "★4.3  Name") */
+                    WCHAR st[180];
+                    swprintf_s(st, 180, L"\x2605%.1f  %s", m->rating10 / 10.0, label);
+                    wcscpy_s(label, 140, st);
+                }
             }
             ZeroMemory(&it, sizeof it);
             it.mask = LVIF_TEXT | LVIF_PARAM | LVIF_IMAGE;
@@ -1541,7 +1914,27 @@ int discover_message(UINT m, WPARAM wp, LPARAM lp)
         {   /* the server's word on whose it is (asked with the token), when it gives one */
             const char *mine = jkey((const char *)r->data, end, "mine");
             s_mine = mine && !strncmp(mine, "true", 4);
+        }
+        {   /* comments and stars: the switches (an older server says neither: both hidden), the asker's own */
+            const char *d0 = (const char *)r->data;
+            s_comments_on = jtrue(jkey(d0, end, "comments_on"));
+            s_ratings_on = jtrue(jkey(d0, end, "ratings_on"));
+            s_n_comments = (int)jnum(jkey(d0, end, "comments"));
+            s_can_rate = jtrue(jkey(d0, end, "can_rate"));
+            s_my_rating = (int)jnum(jkey(d0, end, "my_rating"));
+            show_rating();
             if (s_view == V_MOD) set_view(V_MOD);
+        }
+        {   /* test aids (--capture discover with SVR2011_DISCOVER_OPEN), once: SVR2011_DISCOVER_RATE=<1-5> rates it,
+               SVR2011_DISCOVER_COMMENTS=1 opens its comments, SVR2011_DISCOVER_COMMENT=<text> posts one there */
+            static int social;
+            const char *v = getenv("SVR2011_DISCOVER_RATE"), *cv = getenv("SVR2011_DISCOVER_COMMENT");
+            if (!social++) {
+                if (v && *v >= '1' && *v <= '5' && s_can_rate)
+                    PostMessageW(s_wnd, WM_COMMAND, MAKEWPARAM(s_base + D_STAR0 + (*v - '1'), BN_CLICKED), 0);
+                if ((cv && *cv) || ((v = getenv("SVR2011_DISCOVER_COMMENTS")) && *v == '1'))
+                    PostMessageW(s_wnd, WM_COMMAND, MAKEWPARAM(s_base + D_COMMENTS, BN_CLICKED), 0);
+            }
         }
         {
             const long long got = downloaded_stamp(md->id), now_v = md->updated ? md->updated : md->created;
@@ -1603,6 +1996,110 @@ int discover_message(UINT m, WPARAM wp, LPARAM lp)
             SetWindowTextW(s_c[D_DESC], crlf[0] ? crlf : L"(no description)");
         }
         status(L"");
+        break;
+    }
+    case R_COMMENTS: {
+        const char *d0 = (const char *)r->data, *end = d0 + r->n, *p;
+        if (r->cgen != s_cgen) break;   /* (an older page, or another mod's) */
+        if (r->status != 200 || !r->data) { answer_error(r, L"Comments", t, 400); status(t); break; }
+        if (jkey(d0, end, "enabled") && !jtrue(jkey(d0, end, "enabled"))) {
+            s_comments_on = 0;
+            status(L"Comments are off on the online server for now.");
+            set_view(V_MOD);
+            show_rating();
+            break;
+        }
+        if (r->index == 0) s_cm_n = 0;
+        s_cm_page = r->index;
+        s_cm_total = (int)jnum(jkey(d0, end, "total"));
+        s_cm_can = jtrue(jkey(d0, end, "can_comment"));
+        p = jkey(d0, end, "comments");
+        while (p && p < end && s_cm_n < MAX_COMMENTS) {   /* (the array's objects, up to its ']') */
+            const char *e;
+            while (p < end && *p != '{' && *p != ']') p++;
+            if (p >= end || *p != '{') break;
+            e = jobject_end(p, end);
+            if (parse_comment(p, e, &s_cms[s_cm_n])) s_cm_n++;
+            p = e;
+        }
+        fill_comments();
+        comment_buttons();
+        status(s_cm_total ? L"" : L"No comments yet - be the first.");
+        {   /* test aids (with SVR2011_DISCOVER_OPEN): SVR2011_DISCOVER_PICK=<row> selects that comment (in full under
+               the list); SVR2011_DISCOVER_COMMENT=<text> posts one, once */
+            static int posted, picked;
+            const char *cv = getenv("SVR2011_DISCOVER_COMMENT"), *pk = getenv("SVR2011_DISCOVER_PICK");
+            if (pk && *pk && !picked++ && atoi(pk) < s_cm_n)
+                ListView_SetItemState(s_c[C_LIST], atoi(pk), LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+            if (cv && *cv && !posted++ && s_cm_can) {
+                WCHAR w[COMMENT_MAX + 1];
+                MultiByteToWideChar(CP_UTF8, 0, cv, -1, w, COMMENT_MAX + 1);
+                SetWindowTextW(s_c[C_WRITE], w);
+                PostMessageW(s_wnd, WM_COMMAND, MAKEWPARAM(s_base + C_SEND, BN_CLICKED), 0);
+            }
+        }
+        break;
+    }
+    case R_CPOST: {
+        const char *d0 = (const char *)r->data, *end = d0 + r->n, *c;
+        s_cm_busy = 0;
+        if (r->status != 200 || !r->data) { answer_error(r, L"Not posted", t, 400); status(t); comment_buttons(); break; }
+        c = jkey(d0, end, "comment");
+        if (r->cgen == s_cgen && c && *c == '{') {   /* (on top: the newest) */
+            Comment nc;
+            if (parse_comment(c, jobject_end(c, end), &nc)) {
+                if (s_cm_n == MAX_COMMENTS) s_cm_n--;
+                memmove(&s_cms[1], &s_cms[0], sizeof s_cms[0] * (size_t)s_cm_n);
+                s_cms[0] = nc;
+                s_cm_n++;
+            }
+            s_cm_total = (int)jnum(jkey(d0, end, "total"));
+            s_n_comments = s_cm_total;
+            fill_comments();
+        }
+        SetWindowTextW(s_c[C_WRITE], L"");
+        status(L"Posted - everyone sees it now.");
+        comment_buttons();
+        break;
+    }
+    case R_CDEL: {
+        int k;
+        s_cm_busy = 0;
+        if (r->status != 200) { answer_error(r, L"Delete", t, 400); status(t); comment_buttons(); break; }
+        if (r->cgen == s_cgen)
+            for (k = 0; k < s_cm_n; k++)
+                if (s_cms[k].id == r->index) {
+                    memmove(&s_cms[k], &s_cms[k + 1], sizeof s_cms[0] * (size_t)(s_cm_n - k - 1));
+                    s_cm_n--;
+                    if (s_cm_total > 0) s_cm_total--;
+                    s_n_comments = s_cm_total;
+                    break;
+                }
+        fill_comments();
+        status(L"Comment deleted.");
+        comment_buttons();
+        break;
+    }
+    case R_CREPORT:
+        if (r->status != 200) { answer_error(r, L"Report", t, 400); status(t); break; }
+        status(L"Reported - the online server's moderators will look at it. Thank you.");
+        break;
+    case R_RATE: {
+        const char *d0 = (const char *)r->data, *end = d0 + r->n, *rt;
+        if (r->status != 200 || !r->data) { answer_error(r, L"Rating", t, 400); status(t); break; }
+        if (s_cur >= 0 && s_mods[s_cur].id == r->mod) {
+            rt = jkey(d0, end, "rating");
+            if (rt && *rt == '{') {
+                const char *re = jobject_end(rt, end);
+                s_mods[s_cur].rating10 = (int)(jdbl(jkey(rt, re, "avg")) * 10 + 0.5);
+                s_mods[s_cur].rating_count = (int)jnum(jkey(rt, re, "count"));
+            }
+            s_my_rating = r->index;
+            show_rating();
+        }
+        if (r->index) swprintf_s(t, 400, L"Rated %d star%s - click the same star again to take it back.", r->index, r->index == 1 ? L"" : L"s");
+        else wcscpy_s(t, 400, L"Your rating was taken back.");
+        status(t);
         break;
     }
     case R_PIC:

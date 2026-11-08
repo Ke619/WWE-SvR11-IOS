@@ -125,20 +125,23 @@ class Term:
 
 
 class NameFilter:
-    def __init__(self, folder, log=print):
-        self.path = os.path.join(folder, "name_filter.json")
+    def __init__(self, folder, log=print, file_name="name_filter.json", seed_data=None):
+        """file_name / seed_data: another list with the same rules (server.py: the Discovery comments' word
+        list, comment_words.json) - seed_data() its first contents."""
+        seed_ = seed_data or seed
+        self.path = os.path.join(folder, file_name)
         self.log = log
         self.lock = threading.Lock()
         try:
             with open(self.path, encoding="utf-8") as f:
                 data = json.load(f)
         except FileNotFoundError:
-            data = seed()
+            data = seed_()
             self._write(data)
             log("names: %s made from the seed list (%d words)" % (self.path, len(data["words"])))
         except (OSError, ValueError) as e:  # (a broken file: the seed in memory, the file left for the owner)
             log("names: %s unreadable (%s) - the seed list until it is saved again" % (self.path, e))
-            data = seed()
+            data = seed_()
         self._set(data)
 
     def _set(self, data):

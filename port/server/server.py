@@ -55,6 +55,7 @@ from aiohttp import web
 import admin_auth as aa
 import gamespy as gs
 import discovery
+import discovery_social
 import leaderboards
 import match_names
 import media
@@ -172,6 +173,14 @@ SETTINGS_SPEC = {
     "discovery_quota_mb": {"default": 1024, "min": 50, "max": 102400, "live": True,
                            "help": "Discovery: the most one account's mods may take in all (MB); an upload or an "
                                    "update over it is refused"},
+    # (Discovery comments and star ratings: discovery_social.py; off = the pages answer enabled: false, posts
+    # are refused - what is stored stays)
+    "discovery_comments": {"default": "on", "choices": ["on", "off"], "live": True,
+                           "help": "Discovery: comments on mods' pages (signed-in accounts; checked for links, the name filter and the Names tab's comment words). Off = hidden and refused, nothing deleted. At once"},
+    "discovery_ratings": {"default": "on", "choices": ["on", "off"], "live": True,
+                          "help": "Discovery: 1-5 star ratings (one per account per mod, not the uploader's own). Off = hidden and refused, nothing deleted. At once"},
+    "discovery_rating_min": {"default": 3, "min": 1, "max": 100, "live": True,
+                             "help": "Discovery: the ratings a mod needs to sort with the rated ones (Sort by rating): mods with fewer come after them, so one 5-star rating doesn't top the list"},
     "discovery_warn_mb": {"default": 50, "min": 5, "max": 1024, "live": True,
                           "help": "Discovery: mods larger than this (MB) are stored, with a warning in the answer "
                                   "(big entrance movies: an .mp4 is ~10x smaller than a Bink one)"},
@@ -407,6 +416,7 @@ class Accounts:
             self.db.execute("DELETE FROM sessions WHERE account = ?", (account_id,))
             self.db.execute("DELETE FROM friends WHERE account = ? OR friend = ?", (account_id, account_id))
             self.db.execute("DELETE FROM lb_rows WHERE account = ?", (account_id,))  # (its leaderboard rows)
+            discovery_social.drop_account(self.store, account_id)  # (Discovery comments, ratings, mute)
             self.db.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
             self.db.commit()
         self.cache.clear()
@@ -721,6 +731,12 @@ class Service:
         self.accounts = Accounts(self.store)
         # (the name filter: Community Creations names, Discovery mods, entrances, account names - namefilter.py)
         self.names = namefilter.NameFilter(args.data, gs.log)
+        # (Discovery comments' own list: talk of game copies - the Names tab's second list)
+        self.comment_words = namefilter.NameFilter(
+            args.data, gs.log, "comment_words.json", lambda: {"enabled": True,
+                                                              "words": list(discovery_social.COMMENT_WORDS_SEED),
+                                                              "allow": list(discovery_social.COMMENT_WORDS_ALLOW)})
+        self.social_limits = discovery_social.Limiter()
         self.accounts.names = self.names
         self.signup = signup.Signup(self.store, self.accounts, gs.log,
                                     open_accounts=bool(getattr(args, "test_open_accounts", False)),
@@ -1556,9 +1572,18 @@ class Service:
         except ValueError:
             page = 0
         types = sum(v for k, v in discovery.TYPES.items() if k in q.get("type", "").lower().split(","))
+        ratings_on = SETTINGS["discovery_ratings"] == "on"
+        sort = q.get("sort", "new")
+        if sort == "rating" and not ratings_on:
+            sort = "new"
         res = await asyncio.get_running_loop().run_in_executor(
             None, discovery.search, self.store, q.get("q", "")[:100], types, q.get("tag", "")[:24],
-            q.get("sort", "new"), page)
+            sort, page, False, SETTINGS["discovery_rating_min"])
+        if not ratings_on:
+            for m in res["mods"]:
+                m.pop("rating", None)
+        res["ratings_on"] = ratings_on
+        res["comments_on"] = SETTINGS["discovery_comments"] == "on"
         return web.json_response(res)
 
     async def api_mod(self, request):
@@ -1584,6 +1609,7 @@ class Service:
         # (asked with a Bearer token: is it the asker's own mod - the launchers' "my mod" buttons go by this)
         account = self.account(request) if request.headers.get("Authorization") else None
         info["mine"] = bool(account) and info["owner"] == account["id"]
+        await asyncio.get_running_loop().run_in_executor(None, self.social_page, request, info)
         return web.json_response(info)
 
     # The owner's edits (docs/DISCOVERY_API.md): the same check as DELETE (the Bearer account is the uploader's),
@@ -1889,6 +1915,253 @@ class Service:
                 mid, fields["name"], fields["version"], len(data), manifest.get("type", "?"), account["name"]))
             return web.json_response(dict({"ok": True, "id": mid, "size": len(data)}, **self.mod_size_warning(len(data))))
 
+    # -- Discovery comments and ratings (discovery_social.py; docs/DISCOVERY_API.md "Comments and ratings") ------
+    # A signed-in account (raw_account: account_checks' blocks don't stop it; a banned account has no session) posts,
+    # deletes its own, reports and rates. Each refusal: {ok: false, code, error} - error in plain words to show.
+
+    def social_no(self, status, code, error=None):
+        return web.json_response({"ok": False, "code": code,
+                                  "error": error or discovery_social.COMMENT_WHY.get(code, code)}, status=status)
+
+    def social_page(self, request, info):
+        """A mod's page (GET /api/mods/{id}): its rating and comment count, the switches, and with a token the
+        asker's own rating and what it may do. (A worker thread.)"""
+        comments_on, ratings_on = SETTINGS["discovery_comments"] == "on", SETTINGS["discovery_ratings"] == "on"
+        info["comments_on"], info["ratings_on"] = comments_on, ratings_on
+        info["comments"] = discovery_social.comment_count(self.store, info["id"]) if comments_on else 0
+        if not ratings_on:
+            info.pop("rating", None)
+        account = self.raw_account(request) if request.headers.get("Authorization") else None
+        if account:
+            mute = discovery_social.muted(self.store, account["id"])
+            own = info["owner"] == account["id"]
+            info["can_comment"] = comments_on and not mute
+            info["can_rate"] = ratings_on and mute != "all" and not own
+            info["my_rating"] = discovery_social.my_rating(self.store, info["id"], account["id"]) if ratings_on else 0
+
+    def discovery_comment_why(self, account, text, ip):
+        """A comment's checks, in order: (the text as kept, "") or (text, the refusal's code). The rate limits
+        count only comments that pass the rest."""
+        text, code = discovery_social.clean_text(text)
+        if code:
+            return text, code
+        if reports.has_url(text) or discovery_social.has_invite(text):
+            return text, "link"
+        if self.names.enabled and self.names.match(text):
+            return text, "word"
+        if self.names.enabled and self.names.match(account["name"]):
+            return text, "account_name"
+        if self.comment_words.enabled and (self.comment_words.match(text) or discovery_social.has_archive_name(text)):
+            return text, "piracy"
+        if discovery_social.posted_lately(self.store, account["id"], text):
+            return text, "repeat"
+        if self.social_limits.check((("comment", account["id"]), 5, 60), (("comment-h", account["id"]), 30, 3600),
+                                    (("comment-ip", ip), 60, 3600)):
+            return text, "too_fast"
+        return text, ""
+
+    async def api_mod_comments(self, request):
+        """GET ?page=N: a mod's comments, newest first (a token: can_delete on each). POST {text}: a new one."""
+        mid = self._mod_id(request)
+        loop = asyncio.get_running_loop()
+        info, _ = discovery.get(self.store, mid) if mid is not None else (None, None)
+        if not info:
+            return self.social_no(404, "no_mod")
+        on = SETTINGS["discovery_comments"] == "on"
+        if request.method in ("GET", "HEAD"):
+            if not on:
+                return web.json_response({"ok": True, "enabled": False, "total": 0, "page": 0,
+                                          "per_page": discovery_social.PAGE, "comments": []})
+            try:
+                page = max(0, int(request.query.get("page", "0")))
+            except ValueError:
+                page = 0
+            account = self.raw_account(request) if request.headers.get("Authorization") else None
+            res = await loop.run_in_executor(None, discovery_social.comments, self.store, mid, page,
+                                             account["id"] if account else None, info["owner"])
+            res.update(ok=True, enabled=True)
+            if account:
+                res["can_comment"] = not await loop.run_in_executor(None, discovery_social.muted, self.store,
+                                                                    account["id"])
+            return web.json_response(res)
+        if request.method != "POST":
+            return web.Response(status=405)
+        if not on:
+            return self.social_no(403, "comments_off")
+        account = self.raw_account(request)
+        if not account:
+            return self.social_no(401, "sign_in_needed")
+        if await loop.run_in_executor(None, discovery_social.muted, self.store, account["id"]):
+            return self.social_no(403, "muted")
+        try:
+            body = await request.json()
+        except ValueError:
+            body = None
+        if not isinstance(body, dict):
+            return self.social_no(400, "empty")
+        ip = self.client_ip(request)
+        text, code = await loop.run_in_executor(None, self.discovery_comment_why, account,
+                                                str(body.get("text", ""))[:4000], ip)
+        if code:
+            gs.log("discovery: comment on mod %d from %s refused (%s)" % (mid, account["name"], code))
+            return self.social_no(429 if code == "too_fast" else 400, code)
+        c = await loop.run_in_executor(None, discovery_social.add_comment, self.store, mid, account["id"], text, ip)
+        gs.log("discovery: comment %d on mod %d by %s (%d characters)" % (c["id"], mid, account["name"], len(text)))
+        total = await loop.run_in_executor(None, discovery_social.comment_count, self.store, mid)
+        return web.json_response({"ok": True, "comment": discovery_social.public(c, account["id"], info["owner"]),
+                                  "total": total})
+
+    def social_comment(self, request):
+        """(the mod's info, the shown comment on it) for /api/mods/{id}/comments/{cid}, else (None, the response)."""
+        mid = self._mod_id(request)
+        try:
+            cid = int(request.match_info["cid"])
+        except (KeyError, ValueError):
+            return None, None, self.social_no(404, "no_comment")
+        info, _ = discovery.get(self.store, mid) if mid is not None else (None, None)
+        if not info:
+            return None, None, self.social_no(404, "no_mod")
+        c = discovery_social.get_comment(self.store, cid)
+        if not c or c["mod"] != mid or c["state"] != "shown":
+            return None, None, self.social_no(404, "no_comment")
+        return info, c, None
+
+    async def api_mod_comment_delete(self, request):
+        """DELETE: by its writer, or the mod's uploader (kept 30 days for the dashboard, gone for players)."""
+        account = self.raw_account(request)
+        if not account:
+            return self.social_no(401, "sign_in_needed")
+        info, c, no = await asyncio.get_running_loop().run_in_executor(None, self.social_comment, request)
+        if no:
+            return no
+        by = "writer" if c["account"] == account["id"] else "owner" if info["owner"] == account["id"] else None
+        if not by:
+            return self.social_no(403, "not_yours")
+        await asyncio.get_running_loop().run_in_executor(None, discovery_social.set_state, self.store, c["id"],
+                                                         discovery_social.DELETED, by)
+        gs.log("discovery: comment %d on mod %d deleted by its %s %s" % (c["id"], info["id"], by, account["name"]))
+        return web.json_response({"ok": True})
+
+    async def api_mod_comment_report(self, request):
+        """POST {why?}: to the dashboard (once per account per comment)."""
+        account = self.raw_account(request)
+        if not account:
+            return self.social_no(401, "sign_in_needed")
+        info, c, no = await asyncio.get_running_loop().run_in_executor(None, self.social_comment, request)
+        if no:
+            return no
+        try:
+            body = await request.json()
+        except ValueError:
+            body = {}
+        why = re.sub(r"\s+", " ", str((body or {}).get("why", "") if isinstance(body, dict) else "")).strip()[:200]
+        if self.social_limits.check((("report", account["id"]), 20, 3600)):
+            return self.social_no(429, "report_too_fast")
+        new = await asyncio.get_running_loop().run_in_executor(None, discovery_social.report_comment, self.store,
+                                                               c["id"], account["id"], why)
+        if new:
+            gs.log("discovery: comment %d on mod %d reported by %s" % (c["id"], info["id"], account["name"]))
+        return web.json_response({"ok": True, "new": new})
+
+    async def api_mod_rating(self, request):
+        """POST {stars: 1-5, or 0 to take the rating back} -> {ok, rating: {avg, count}, my_rating}."""
+        if SETTINGS["discovery_ratings"] != "on":
+            return self.social_no(403, "ratings_off")
+        mid = self._mod_id(request)
+        loop = asyncio.get_running_loop()
+        info, _ = discovery.get(self.store, mid) if mid is not None else (None, None)
+        if not info:
+            return self.social_no(404, "no_mod")
+        account = self.raw_account(request)
+        if not account:
+            return self.social_no(401, "sign_in_needed")
+        if await loop.run_in_executor(None, discovery_social.muted, self.store, account["id"]) == "all":
+            return self.social_no(403, "muted_ratings")
+        if info["owner"] == account["id"]:
+            return self.social_no(403, "own_mod")
+        try:
+            body = await request.json()
+            stars = body.get("stars") if isinstance(body, dict) else None
+            if isinstance(stars, bool) or not isinstance(stars, int) or not 0 <= stars <= 5:
+                raise ValueError
+        except (ValueError, TypeError):
+            return self.social_no(400, "bad_stars")
+        if self.social_limits.check((("rating", account["id"]), 60, 3600)):
+            return self.social_no(429, "rate_too_fast")
+        rating = await loop.run_in_executor(None, discovery_social.rate, self.store, mid, account["id"], stars)
+        gs.log("discovery: mod %d rated %s by %s" % (mid, stars or "(taken back)", account["name"]))
+        return web.json_response({"ok": True, "rating": rating, "my_rating": stars})
+
+    @admin_only
+    async def admin_discovery_comments(self, request):
+        """The Discovery comments tab: ?page, q, state (shown / hidden / deleted / reported), mod, account ->
+        {total, page, per_page, comments (reported first, then the latest; each with its reports), mutes, the
+        switches}."""
+        q = request.query
+
+        def num(k):
+            try:
+                return int(q[k]) if q.get(k) else None
+            except ValueError:
+                return None
+
+        def work():
+            res = discovery_social.admin_comments(self.store, num("page") or 0, q.get("q", "")[:100],
+                                                  q.get("state", ""), num("mod"), num("account"))
+            for c in res["comments"]:
+                c["reported_by"] = discovery_social.comment_reports(self.store, c["id"]) if c["reports"] else []
+            res["mutes"] = discovery_social.mutes(self.store)
+            return res
+        res = await asyncio.get_running_loop().run_in_executor(None, work)
+        res.update(comments_on=SETTINGS["discovery_comments"] == "on", ratings_on=SETTINGS["discovery_ratings"] == "on")
+        return web.json_response(res)
+
+    @admin_only
+    async def admin_discovery_comment(self, request):
+        """POST: hide / show / delete (for good) / clear-reports / mute-comments / mute-all (its writer)."""
+        try:
+            cid = int(request.match_info["cid"])
+        except ValueError:
+            return web.json_response({"ok": False, "error": "No such comment."}, status=404)
+        action = request.match_info["action"]
+        c = discovery_social.get_comment(self.store, cid)
+        if not c:
+            return web.json_response({"ok": False, "error": "No such comment."}, status=404)
+        loop = asyncio.get_running_loop()
+        if action in ("hide", "show"):
+            await loop.run_in_executor(None, discovery_social.set_state, self.store, cid,
+                                       discovery_social.HIDDEN if action == "hide" else discovery_social.SHOWN,
+                                       "dashboard")
+        elif action == "delete":
+            await loop.run_in_executor(None, discovery_social.delete_comment, self.store, cid)
+        elif action == "clear-reports":
+            await loop.run_in_executor(None, discovery_social.clear_reports, self.store, cid)
+        elif action in ("mute-comments", "mute-all"):
+            await loop.run_in_executor(None, discovery_social.set_mute, self.store, c["account"], action[5:],
+                                       "comment %d" % cid)
+        else:
+            return web.json_response({"ok": False}, status=400)
+        gs.log("admin: discovery comment %d (mod %d, by %s): %s" % (cid, c["mod"], c["author"], action))
+        return web.json_response({"ok": True})
+
+    @admin_only
+    async def admin_discovery_mute(self, request):
+        """POST {account (id), scope: comments / all / "" (unmuted), note?}."""
+        try:
+            body = await request.json()
+            aid, scope = int(body.get("account")), str(body.get("scope") or "")
+        except (ValueError, TypeError, AttributeError):
+            return web.json_response({"ok": False, "error": "Send {account, scope}."}, status=400)
+        if scope and scope not in discovery_social.MUTE_SCOPES:
+            return web.json_response({"ok": False, "error": "scope: comments, all or empty."}, status=400)
+        account = self.accounts.get(aid)
+        if not account:
+            return web.json_response({"ok": False, "error": "No such account."}, status=404)
+        await asyncio.get_running_loop().run_in_executor(None, discovery_social.set_mute, self.store, aid, scope,
+                                                         str(body.get("note") or ""))
+        gs.log("admin: discovery mute of %s: %s" % (account["name"], scope or "lifted"))
+        return web.json_response({"ok": True})
+
     # -- the name filter (namefilter.py; the dashboard's Names tab) --------------------------------------------
 
     STRING_TYPES = ("asciiStringValue", "unicodeStringValue")
@@ -1957,9 +2230,16 @@ class Service:
                             "author": a["name"], "title": "", "banned": bool(a["banned"])})
         return out
 
+    def name_list(self, request, body=None):
+        """The Names tab's list: ?list=comments (or {"list": "comments"}) the Discovery comments' word list, else
+        the name filter."""
+        which = request.query.get("list") or (body.get("list") if isinstance(body, dict) else "")
+        return (self.comment_words, "comment word list") if which == "comments" else (self.names, "name filter")
+
     @admin_only
     async def admin_names(self, request):
-        """GET: the list, the allow list, the switch. POST {enabled?, words?, allow?}: saved, used at once."""
+        """GET: the list, the allow list, the switch. POST {enabled?, words?, allow?}: saved, used at once.
+        ?list=comments: the same for the Discovery comments' word list."""
         if request.method == "POST":
             try:
                 body = await request.json()
@@ -1977,11 +2257,13 @@ class Service:
                     return web.json_response({"ok": False, "error": "%s: at most 5000 lines of 100 characters" % k},
                                              status=400)
                 lists[k] = [str(w).strip() for w in v if str(w).strip()]
+            nf, what = self.name_list(request, body)
             await asyncio.get_running_loop().run_in_executor(
-                None, lambda: self.names.save(body.get("enabled"), lists.get("words"), lists.get("allow")))
-            gs.log("admin: name filter saved (%s, %d words, %d allowed)" % (
-                "on" if self.names.enabled else "off", len(self.names.word_lines), len(self.names.allow_lines)))
-        return web.json_response(dict({"ok": True}, **self.names.state()))
+                None, lambda: nf.save(body.get("enabled"), lists.get("words"), lists.get("allow")))
+            gs.log("admin: %s saved (%s, %d words, %d allowed)" % (
+                what, "on" if nf.enabled else "off", len(nf.word_lines), len(nf.allow_lines)))
+            return web.json_response(dict({"ok": True}, **nf.state()))
+        return web.json_response(dict({"ok": True}, **self.name_list(request)[0].state()))
 
     @admin_only
     async def admin_names_test(self, request):
@@ -1991,7 +2273,7 @@ class Service:
         except ValueError:
             body = {}
         text = str((body or {}).get("text", ""))[:2000]
-        term = self.names.match(text)
+        term = self.name_list(request, body or {})[0].match(text)
         return web.json_response({"ok": True, "passes": term is None, "term": term,
                                   "readings": [" ".join(r) for r in namefilter.words(text)]})
 
@@ -2528,6 +2810,10 @@ class Service:
             await asyncio.get_running_loop().run_in_executor(None, discovery.delete, self.store, mid)
         elif action in ("hide", "show"):
             discovery.set_hidden(self.store, mid, action == "hide")
+        elif action == "clear-ratings":
+            n = await asyncio.get_running_loop().run_in_executor(None, discovery_social.clear_ratings, self.store, mid)
+            gs.log("admin: mod %d: its %d rating(s) cleared" % (mid, n))
+            return web.json_response({"ok": True, "cleared": n})
         else:
             return web.json_response({"ok": False}, status=400)
         gs.log("admin: mod %d %s" % (mid, action))
@@ -3152,6 +3438,9 @@ class Service:
                 await asyncio.sleep(3600)
                 try:
                     await asyncio.get_running_loop().run_in_executor(None, self.store.collect_garbage)
+                    gone = await asyncio.get_running_loop().run_in_executor(None, discovery_social.prune, self.store)
+                    if gone:
+                        gs.log("discovery: %d deleted comment(s) over 30 days old removed" % gone)
                 except Exception:
                     gs.log("error:", traceback.format_exc())
 
@@ -3205,6 +3494,12 @@ class Service:
         app.router.add_put(b + "/api/mods/{id}/file", self.api_mod_update_file)  # (an update: its owner, or the node's key)
         app.router.add_put(b + "/api/mods/{id}/pictures/{n}", self.api_mod_update_picture)  # (its owner)
         app.router.add_get(b + "/api/mods/{id}/img/{n}", self.api_mod_image)
+        # (comments and ratings: discovery_social.py - reading needs no account; posting, deleting, reporting
+        # and rating need a signed-in one)
+        app.router.add_route("*", b + "/api/mods/{id}/comments", self.api_mod_comments)  # (GET; POST)
+        app.router.add_delete(b + "/api/mods/{id}/comments/{cid}", self.api_mod_comment_delete)
+        app.router.add_post(b + "/api/mods/{id}/comments/{cid}/report", self.api_mod_comment_report)
+        app.router.add_post(b + "/api/mods/{id}/rating", self.api_mod_rating)
         app.router.add_post(b + "/api/reports", self.api_report)
         app.router.add_post(b + "/api/reports/mods/check", self.api_report_mods_check)
         app.router.add_post(b + "/api/reports/status", self.api_report_status)
@@ -3254,6 +3549,9 @@ class Service:
             app.router.add_route("*", p + "/api/admin/names", self.admin_names)  # (GET; POST: save)
             app.router.add_post(p + "/api/admin/names/test", self.admin_names_test)
             app.router.add_get(p + "/api/admin/names/flagged", self.admin_names_flagged)
+            app.router.add_get(p + "/api/admin/discovery/comments", self.admin_discovery_comments)
+            app.router.add_post(p + "/api/admin/discovery/comment/{cid}/{action}", self.admin_discovery_comment)
+            app.router.add_post(p + "/api/admin/discovery/mute", self.admin_discovery_mute)
         app.cleanup_ctx.append(self.background)
         return app
 

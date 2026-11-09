@@ -678,6 +678,8 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
         if i in eb:
             ents[i] = eb[i]
     if own_crowd is not None:
+        if own_crowd[:4] == b'PACH':   # (SvR 2008's audience.pac keeps it unpacked: 2 MB twice, the file 1 MB past its old size)
+            own_crowd = bpe(own_crowd)
         ents[0x4E20] = ents[0x4E2A] = own_crowd
         notes.append("its own crowd (people, pictures and seats for its stands%s), as both crowd packs"
                      % (', from pac/audience.pac' if game == 'svr2008' else ', gathered from the stage' if game == 'svr2007' else ''))

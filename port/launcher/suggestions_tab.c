@@ -22,6 +22,9 @@
 enum { S_INTRO, S_NEW, S_TITLE_L, S_TITLE, S_TEXT_L, S_TEXT, S_PICS, S_PICS_L, S_SEND, S_MINE, S_LIST, S_EMPTY,
        S_DETAIL, S_REFRESH, S_STATUS, S_DISC_L, S_DISC, S_SIGNIN, S_COUNT };
 enum { SUG_MAX_PICS = 3 };
+/* (above the form, and again before Send: ideas are for the game and its tools, not mod requests) */
+#define SUGGEST_ABOUT L"Suggestions are for the game and its tools (the launcher, the Mod Maker, the porters) - not " \
+                      L"requests for mods. Ask mod makers for mods on Discord."
 
 static HWND s_wnd, s_c[S_COUNT];
 static int s_base;
@@ -244,6 +247,13 @@ static void send_idea(void)
     }
     memcpy(j->pics, s_pics, sizeof s_pics);
     j->npics = s_npics;
+    if (!getenv("SVR2011_SUGGEST_SEND") &&   /* (the reminder again before it goes; not in a test send) */
+        MessageBoxW(s_wnd, L"Before you send it:\n\n" SUGGEST_ABOUT L"\n\nSend this idea?", L"Send an idea",
+                    MB_YESNO | MB_ICONQUESTION) != IDYES) {
+        free(j);
+        status(L"Not sent.");
+        return;
+    }
     busy(1);
     status(L"Sending your idea\x2026");
     if ((h = CreateThread(NULL, 0, send_thread, j, 0, NULL)) != NULL) CloseHandle(h);
@@ -296,8 +306,7 @@ void suggestions_build(HWND wnd, mods_add_fn add, int tab, int id_base, reports_
     dc = GetDC(wnd);
     dpi = GetDeviceCaps(dc, LOGPIXELSX);
     ReleaseDC(wnd, dc);
-    C(S_INTRO, L"Static", L"An idea for the game, the launcher or the Mod Maker? Send it here - we read every one and "
-                          L"answer below: Sure, No (not planned), or Done in an update.", SS_LEFT, 28, 10, 560, 36);
+    C(S_INTRO, L"Static", SUGGEST_ABOUT, SS_LEFT, 28, 10, 560, 36);
     C(S_NEW, L"Button", L"Send an idea", BS_GROUPBOX, 28, 50, 560, 206);
     C(S_TITLE_L, L"Static", L"Title:", SS_LEFT | SS_NOPREFIX, 42, 76, 70, 20);
     C(S_TITLE, L"Edit", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, 112, 72, 462, 24);

@@ -9191,6 +9191,9 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
     switch (m) {
     case WM_NOTIFY: {
         NMHDR *n = (NMHDR *)lp;
+        LRESULT cd;
+        if (n->code == NM_CUSTOMDRAW && discover_custom_draw(n, &cd))   /* (Discovery's tiles) */
+            return cd;
         if (n->idFrom == ID_TAB && n->code == TCN_SELCHANGE)
             show_tab(TabCtrl_GetCurSel(s_tab));
         if (n->idFrom == ID_FR_LIST && n->code == LVN_ITEMCHANGED) {
@@ -10442,6 +10445,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     icc.dwICC = ICC_TAB_CLASSES | ICC_PROGRESS_CLASS | ICC_STANDARD_CLASSES | ICC_LISTVIEW_CLASSES;
     InitCommonControlsEx(&icc);
     s_dpi = (int)GetDpiForSystem();
+    if (getenv("SVR2011_TEST_DPI") && atoi(getenv("SVR2011_TEST_DPI")) >= 96)   /* (test aid: --capture shots at a scale) */
+        s_dpi = atoi(getenv("SVR2011_TEST_DPI"));
     make_fonts();
     theme_init();
     s_page_brush = CreateSolidBrush(C_PAGE);

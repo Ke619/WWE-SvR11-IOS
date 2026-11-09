@@ -1949,6 +1949,18 @@ void LightingPanel() {
   if (ImGui::SliderFloat("Strength", &g_light.strength, 0.3f, 1.6f, "%.2f")) p = int(std::size(kPresets)) - 1, Edited();
   ImGui::TextDisabled("Every arena material's colour (not the crowd).");
   if (ImGui::Checkbox("Crowd in the seats", &g_light.crowd)) Edited();
+  {  // the crowd's colour: the arena's audience lightmap (aud_lightmap)
+    const bool has = g_arena && HasAudienceLightmap(*g_arena);
+    ImGui::BeginDisabled(!has || !g_light.crowd);
+    static const char* kCrowd[] = {"Crowd lighting: as made", "Crowd lighting: neutral", "Crowd lighting: a colour"};
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::Combo("##crowd_light", &g_light.crowd_mode, kCrowd, 3)) Edited();
+    if (g_light.crowd_mode == 2 && ImGui::ColorEdit3("Crowd colour", g_light.crowd_color)) Edited();
+    if (ImGui::SliderFloat("Crowd brightness", &g_light.crowd_bright, 0.5f, 1.5f, "%.2f")) Edited();
+    ImGui::EndDisabled();
+    if (!has) ImGui::TextDisabled("This arena has no crowd light picture (aud_lightmap): its crowd keeps its colours.");
+    else ImGui::TextDisabled("The tint the crowd takes (RAW's red, SmackDown's blue). Seen in the game, not in this view.");
+  }
   ImGui::SeparatorText("In the game");
   {
     static const char* const kMatch[] = {"The game's (match lighting)", "The entrance's lighting",
@@ -2567,7 +2579,7 @@ void ViewPreset(int which) {
 }  // namespace
 
 bool Lighting::Default() const {
-  return color[0] == 1 && color[1] == 1 && color[2] == 1 && strength == 1 && crowd;
+  return color[0] == 1 && color[1] == 1 && color[2] == 1 && strength == 1 && crowd && CrowdDefault();
 }
 
 void Init(ID3D11Device* dev, ID3D11DeviceContext* ctx, const Hooks& hooks) {
@@ -2791,6 +2803,16 @@ void ClearView() {
 
 void TestEdit() {
   if (!g_arena) return;
+  // test aid SVR2011_TEST_CROWD_LIGHT=<neutral | asmade | r g b>[,<brightness>]: the crowd lighting row set before the save
+  if (const char* cv = std::getenv("SVR2011_TEST_CROWD_LIGHT"); cv && *cv) {
+    std::string v = cv, br;
+    if (const size_t c = v.find(','); c != std::string::npos) br = v.substr(c + 1), v.resize(c);
+    std::istringstream rgb(v);
+    if (v == "neutral") g_light.crowd_mode = 1;
+    else if (rgb >> g_light.crowd_color[0] >> g_light.crowd_color[1] >> g_light.crowd_color[2]) g_light.crowd_mode = 2;
+    if (!br.empty()) g_light.crowd_bright = std::clamp(std::strtof(br.c_str(), nullptr), 0.5f, 1.5f);
+    Log("test edit: crowd lighting " + v + (br.empty() ? "" : " x" + br));
+  }
   if (g_sel >= 0 && g_objs[g_sel].movable) {
     g_objs[g_sel].pos.x += 20;
     ApplyObj(g_objs[g_sel]);
@@ -2914,6 +2936,12 @@ void ApplyBuild(Arena& a) {
   if (!g_light.crowd) {
     const int n = HideCrowd(a);
     Log("  crowd left out (" + std::to_string(n) + " crowd models)");
+  } else if (!g_light.CrowdDefault()) {
+    static const float kWhite[3] = {1, 1, 1};
+    // (as made, only brighter / darker: null - the picture's own colour scaled)
+    const float* c = g_light.crowd_mode == 2 ? g_light.crowd_color : g_light.crowd_mode == 1 ? kWhite : nullptr;
+    if (TintAudienceLightmap(a, c, g_light.crowd_bright)) Log("  crowd lighting: the arena's aud_lightmap retinted");
+    else Log("  crowd lighting: this arena has no aud_lightmap - left as it is");
   }
   RingReport rep;
   ApplyRing(a, g_ring, rep);
@@ -2924,10 +2952,22 @@ std::string ManifestLines() {
   std::string s = g_ring.Default() ? "" : g_ring.ManifestLines();
   if (!g_light.Default()) {
     char b[128];
-    std::snprintf(b, sizeof b, "light.color=%.3f %.3f %.3f\nlight.strength=%.3f\n", g_light.color[0], g_light.color[1],
-                  g_light.color[2], g_light.strength);
-    s += b;
+    if (g_light.color[0] != 1 || g_light.color[1] != 1 || g_light.color[2] != 1 || g_light.strength != 1) {
+      std::snprintf(b, sizeof b, "light.color=%.3f %.3f %.3f\nlight.strength=%.3f\n", g_light.color[0], g_light.color[1],
+                    g_light.color[2], g_light.strength);
+      s += b;
+    }
     if (!g_light.crowd) s += "crowd=0\n";
+    if (g_light.crowd && !g_light.CrowdDefault()) {  // (baked into arena.pac: read back when the mod reopens)
+      char c[128];
+      if (g_light.crowd_mode == 2)
+        std::snprintf(c, sizeof c, "crowd.light=%.3f %.3f %.3f\n", g_light.crowd_color[0], g_light.crowd_color[1], g_light.crowd_color[2]);
+      else
+        std::snprintf(c, sizeof c, "crowd.light=%s\n", g_light.crowd_mode == 1 ? "neutral" : "as made");
+      s += c;
+      std::snprintf(c, sizeof c, "crowd.bright=%.2f\n", g_light.crowd_bright);
+      s += c;
+    }
   }
   if (std::fabs(g_light.game_scale - 1.0f) > 0.004f) {  // (the game's arena_lights.cpp)
     char b[48];
@@ -2954,6 +2994,16 @@ void FromManifest(const std::string& text) {
       g_light.preset = int(std::size(kPresets)) - 1;
     } else if (line == "crowd=0") {
       g_light.crowd = false;
+    } else if (line.rfind("crowd.light=", 0) == 0) {
+      const std::string v = line.substr(12);
+      if (v == "neutral") {
+        g_light.crowd_mode = 1;
+      } else if (v != "as made") {
+        std::istringstream c(v);
+        if (c >> g_light.crowd_color[0] >> g_light.crowd_color[1] >> g_light.crowd_color[2]) g_light.crowd_mode = 2;
+      }
+    } else if (line.rfind("crowd.bright=", 0) == 0) {
+      g_light.crowd_bright = std::clamp(std::strtof(line.c_str() + 13, nullptr), 0.5f, 1.5f);
     } else if (line.rfind("light_scale=", 0) == 0) {
       g_light.game_scale = std::clamp(std::strtof(line.c_str() + 12, nullptr), 0.5f, 2.0f);
     } else if (line == "match_light=entrance") {
@@ -2966,6 +3016,13 @@ void FromManifest(const std::string& text) {
       g_light.strength = std::strtof(line.c_str() + 15, nullptr);
       g_light.preset = int(std::size(kPresets)) - 1;
     }
+  }
+  if (!g_light.CrowdDefault()) {
+    char b[128];
+    std::snprintf(b, sizeof b, "crowd lighting from the mod: %s (%.2f %.2f %.2f) x%.2f",
+                  g_light.crowd_mode == 2 ? "a colour" : g_light.crowd_mode == 1 ? "neutral" : "as made", g_light.crowd_color[0],
+                  g_light.crowd_color[1], g_light.crowd_color[2], g_light.crowd_bright);
+    Log(b);
   }
 }
 

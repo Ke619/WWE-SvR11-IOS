@@ -652,7 +652,17 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
     # (SvR 2009's crowd pack 0x4E20 is 2011's format - its people, textures and seat tables for its own stands - with
     # no low-detail copy 0x4E2A: kept, as both. Its 0x4E21 / 0x4E22 / 0x4E23 / 0x7922 - animation, areas, motions - are
     # the host's, the same in every 2011 arena)
+    # SvR 2008 keeps its one crowd for every arena in pac/audience.pac (AUDE/BASE: the same pack - people, pictures, seat
+    # tables and the seat areas with their heights for 2008's stands). With 2011 RAW's in its place the people sat at
+    # RAW's stand heights: sunk behind 2008's seats, on its stairs (One Night Stand)
     own_crowd = ents.get(0x4E20) if game == 'svr2009' and OWN_CROWD else None
+    if game == 'svr2008' and OWN_CROWD:
+        try:
+            import moves_port
+            aude = {nm: b for typ, es in moves_port.read_pac(disc.read('pac/audience.pac')) if typ == b'AUDE' for nm, b in es}
+            own_crowd = aude.get(b'BASE')
+        except Exception as e:  # (no audience.pac - a lone arena file: the host's crowd)
+            notes.append('SvR 2008 crowd not read (%s): the host\'s' % e)
     if own_crowd is not None and (svrfmt.bpe_decode(own_crowd) if own_crowd[:4] == b'BPE ' else own_crowd)[:4] != b'PACH':
         own_crowd = None
     for i in (0x4E20, 0x4E21, 0x4E22, 0x4E23, 0x4E2A, 0x7922):  # older crowd / motion formats
@@ -662,7 +672,8 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
             ents[i] = eb[i]
     if own_crowd is not None:
         ents[0x4E20] = ents[0x4E2A] = own_crowd
-        notes.append("its own crowd (people, pictures and seats for its stands), as both crowd packs")
+        notes.append("its own crowd (people, pictures and seats for its stands%s), as both crowd packs"
+                     % (', from pac/audience.pac' if game == 'svr2008' else ''))
     unp = lambda b: svrfmt.bpe_decode(b) if b[:4] == b'BPE ' else b  # noqa: E731
     have = None
     progress(8, 'lights')

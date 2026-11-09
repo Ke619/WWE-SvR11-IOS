@@ -65,7 +65,7 @@ final class DiscoverPage {
     static final String[] kTypeNames = {"All types", "Entrance", "Superstar", "Arena", "Move-set"};
     static final String[] kSorts = {"new", "updated", "popular", "name"};
     static final String[] kSortNames = {"Newest", "Recently updated", "Most downloaded", "Name"};
-    static final String[] kSortNamesRated = {"Newest", "Recently updated", "Most downloaded", "Name", "Top rated"};  // (+ sort=rating while ratings are on)
+    static final String[] kSortNamesRated = {"Newest", "Recently updated", "Most downloaded", "Name", "Most upvoted"};  // (+ sort=upvotes while upvotes are on)
 
     private final LauncherActivity a_;
     private final ModsPage mods_;
@@ -90,8 +90,8 @@ final class DiscoverPage {
     private boolean mine_, busy_;                   // (the server said it's the player's; a change is being sent)
     private String mineToken_ = "";                 // (the token the page was asked with)
     private String note_;                           // (what a change said: kept over the next page's "Looking…")
-    private DiscoverSocial social_;                 // (the mod's stars and comments)
-    private boolean sortsRated_;                    // (the order list has "Top rated": the server's ratings are on)
+    private DiscoverSocial social_;                 // (the mod's upvotes and comments)
+    private boolean sortsRated_;                    // (the order list has "Most upvoted": the server's upvotes are on)
 
     DiscoverPage(LauncherActivity a, ModsPage mods) {
         a_ = a;
@@ -130,7 +130,7 @@ final class DiscoverPage {
         find.addView(words_, a_.fullWidth(6));
         type_ = spinner(kTypeNames);
         a_.row(find, "Type", null, type_);
-        sort_ = spinner(kSortNames);  // (sorts(): "Top rated" while the server has ratings on)
+        sort_ = spinner(kSortNames);  // (sorts(): "Most upvoted" while the server has upvotes on)
         a_.row(find, "Order", null, sort_);
         Button go = a_.button("Search", LauncherActivity.kRed);
         go.setOnClickListener(v -> {
@@ -183,7 +183,7 @@ final class DiscoverPage {
         desc_.setPadding(0, 0, 0, a_.dp(10));
         about2.addView(desc_);
         social_ = new DiscoverSocial(a_, this);
-        social_.buildRating(page_);  // (the stars under the description; the comments under the buttons)
+        social_.buildRating(page_);  // (the upvotes under the description; the comments under the buttons)
         buttons_ = new LinearLayout(a_);
         buttons_.setOrientation(LinearLayout.VERTICAL);
         page_.addView(buttons_);
@@ -234,7 +234,7 @@ final class DiscoverPage {
         return ad;
     }
 
-    // "Top rated" in the order list only while the server has ratings on (the list's ratings_on).
+    // "Most upvoted" in the order list only while the server has upvotes on (the list's upvotes_on).
     void sorts(boolean rated) {
         if (rated == sortsRated_) return;
         sortsRated_ = rated;
@@ -245,7 +245,7 @@ final class DiscoverPage {
 
     String sortKey() {
         int pos = sort_.getSelectedItemPosition();
-        return pos >= 0 && pos < kSorts.length ? kSorts[pos] : pos == kSorts.length && sortsRated_ ? "rating" : "new";
+        return pos >= 0 && pos < kSorts.length ? kSorts[pos] : pos == kSorts.length && sortsRated_ ? "upvotes" : "new";
     }
 
     int genNow() { return gen_; }
@@ -384,7 +384,7 @@ final class DiscoverPage {
         }
         JSONObject j = json(r);
         total_ = j.optInt("total", 0);
-        sorts(j.optBoolean("ratings_on", false));
+        sorts(j.optBoolean("upvotes_on", false));
         JSONArray mods = j.optJSONArray("mods");
         final List<ImageView> thumbs = new ArrayList<>();
         for (int i = 0; mods != null && i < mods.length() && i < kPerPage; i++) {
@@ -450,10 +450,11 @@ final class DiscoverPage {
         return s.toString();
     }
 
-    // A row's stars, "★ 4.3 (12)"; nothing while it has no ratings (or ratings are off: no "rating").
-    static String starsText(JSONObject r) {
-        if (r == null || r.optInt("count", 0) <= 0) return "";
-        return "★ " + String.format(java.util.Locale.US, "%.1f", r.optDouble("avg", 0)) + " (" + r.optInt("count") + ")";
+    // A row's upvotes, "▲ 12" or "No upvotes yet"; nothing while upvotes are off (the row has no "upvotes").
+    static String upvotesText(JSONObject m) {
+        if (!m.has("upvotes")) return "";
+        int n = m.optInt("upvotes", 0);
+        return n > 0 ? "\u25B2 " + n : "No upvotes yet";
     }
 
     ImageView listRow(JSONObject m, int index) {
@@ -489,8 +490,8 @@ final class DiscoverPage {
         texts.addView(a_.text("v" + m.optString("version") + " - " + FileOps.human(m.optLong("size")) + " - " + dl
             + " download" + (dl == 1 ? "" : "s") + " - " + (m.optLong("updated", 0) != 0 ? "updated " : "new ")
             + date(version(m)), 13, LauncherActivity.kDim));
-        String stars = starsText(m.optJSONObject("rating"));
-        if (!stars.isEmpty()) texts.addView(a_.text(stars, 13, 0xFFFFC83D));
+        String ups = upvotesText(m);
+        if (!ups.isEmpty()) texts.addView(a_.text(ups, 13, m.optInt("upvotes", 0) > 0 ? 0xFFFFC83D : LauncherActivity.kDim));
         r.addView(texts, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         r.setOnClickListener(v -> open(index));
         if (list_.getChildCount() > 0) {
@@ -1030,6 +1031,12 @@ final class DiscoverPage {
                 .setNegativeButton("Cancel", null)
                 .show();
         });
+    }
+
+    // The author's comments switch (DiscoverSocial): PATCH {"comments": on}; then the page again.
+    void setComments(boolean on) {
+        change(on ? "Turning comments on" : "Turning comments off", "PATCH", "", "application/json",
+            ("{\"comments\":" + on + "}").getBytes(StandardCharsets.UTF_8));
     }
 
     void deleteMine() {

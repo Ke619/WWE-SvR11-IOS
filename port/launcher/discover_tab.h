@@ -23,6 +23,8 @@ int discover_command(int id, int code);
 int discover_notify(const NMHDR *nm);
 /* Its owner-drawn picture (WM_DRAWITEM); 1 when it was its. */
 int discover_draw(const DRAWITEMSTRUCT *d);
+/* The grid's tiles (NM_CUSTOMDRAW from its list): 1 if it was the grid's, *result the window's answer. */
+int discover_custom_draw(const NMHDR *nm, LRESULT *result);
 /* Tests (--capture): 1 while a download runs; its bar (0.1 %, -1: none), whether Delete shows, the status line. */
 int discover_test_state(int *permille, int *owner_buttons, WCHAR *line, size_t n);
 /* Its threads' answers (WM_APP + 20); 1 when it was its. */

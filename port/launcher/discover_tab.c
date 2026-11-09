@@ -15,6 +15,8 @@
 #include "test_run.h"
 
 #include <commctrl.h>
+#include <uxtheme.h>
+#include <vssym32.h>
 #include <shobjidl.h>
 #include <wincodec.h>
 #include <winhttp.h>
@@ -27,6 +29,7 @@
 
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "windowscodecs.lib")
+#pragma comment(lib, "uxtheme.lib")
 
 enum {
     D_SEARCH, D_TYPE, D_SORT, D_GO, D_GRID, D_PREV, D_PAGE, D_NEXT, D_UPLOAD, D_STATUS,
@@ -42,7 +45,8 @@ enum {
 enum { V_GRID, V_MOD, V_UPLOAD, V_COMMENTS };
 enum { R_LIST, R_THUMB, R_DETAIL, R_PIC, R_DOWNLOAD, R_UPLOAD, R_DELETE, R_PROGRESS, R_EDIT,
        R_RECONNECT, R_DLPROG,     /* (the server didn't answer: trying again; a download's progress) */
-       R_COMMENTS, R_CPOST, R_CDEL, R_CREPORT, R_RATE };   /* (comments: a page, a new one, delete, report; a rating) */
+       R_COMMENTS, R_CPOST, R_CDEL, R_CREPORT, R_RATE,
+       R_FIT };   /* (the grid's size or scale changed: its tiles fitted again) */   /* (comments: a page, a new one, delete, report; a rating) */
 #define MAX_COMMENTS 200   /* (loaded on one page: 20 a request, More for the next) */
 #define COMMENT_MAX 500    /* (characters: the server's limit) */
 #define DL_TRIES 6   /* (a download that breaks: resumed / restarted this many times in all) */
@@ -83,6 +87,19 @@ static WCHAR s_cur_desc[2001], s_ini[MAX_PATH];
 static long long s_last_visit;   /* (the previous visit to Discovery: "Updated" since then) */
 static Mod s_mods[PER_PAGE];
 static HIMAGELIST s_thumbs;
+/* The grid's tiles, drawn here (NM_CUSTOMDRAW): the picture, the name on up to 2 lines, the stars on their own line,
+   UPDATED as a badge on the picture. Their size follows the grid's width and the screen's scale (grid_fit). */
+static int s_tile_w, s_tile_h, s_line_h, s_thumb_w = THUMB_W, s_thumb_h = THUMB_H, s_fit_cw, s_fit_ch;
+static int s_img[PER_PAGE], s_badge[PER_PAGE];   /* (a tile's picture in s_thumbs or -1; 1 UPDATED, 2 NEW VERSION) */
+static uint8_t *s_raw[PER_PAGE];                 /* (the thumbnails as sent: made again at a new size) */
+static size_t s_raw_n[PER_PAGE];
+static HTHEME s_grid_theme;
+static HFONT s_badge_font;
+#define K_TEXT RGB(236, 237, 241)
+#define K_MUTED RGB(150, 153, 163)
+#define K_ACCENT RGB(214, 22, 44)
+#define K_GOLD RGB(240, 160, 40)
+#define K_CARD RGB(27, 30, 36)
 static HBITMAP s_pics[4];
 static WCHAR s_game[MAX_PATH], s_file_name[MAX_PATH], s_up_file[MAX_PATH], s_up_pics[4][MAX_PATH];
 static discover_server_fn s_server;
@@ -100,6 +117,14 @@ static const WCHAR *const k_type_names[4] = { L"Entrance", L"Superstar", L"Arena
 /* ── small helpers ─────────────────────────────────────────────────────── */
 
 static void status(const WCHAR *t) { SetWindowTextW(s_c[D_STATUS], t); }
+
+/* A length laid out at 96 dpi, at the launcher's scale now (the status line is laid out 560 wide). */
+static int sc(int v)
+{
+    RECT r;
+    if (!s_c[D_STATUS] || !GetWindowRect(s_c[D_STATUS], &r) || r.right <= r.left) return v;
+    return MulDiv(v, r.right - r.left, 560);
+}
 
 static void fmt_bytes(WCHAR *out, size_t n, long long b)
 {
@@ -920,6 +945,191 @@ static Job *job(int kind)
 
 /* ── the views ─────────────────────────────────────────────────────────── */
 
+/* A tile's rectangle in the grid (the list centres its icon in the column; the tile hangs from the icon's top). */
+static int tile_rect(int item, RECT *out)
+{
+    RECT ic;
+    int cx;
+    if (!s_c[D_GRID] || item < 0 || !ListView_GetItemRect(s_c[D_GRID], item, &ic, LVIR_ICON)) return 0;
+    cx = (ic.left + ic.right) / 2;
+    out->left = cx - s_tile_w / 2;
+    out->right = out->left + s_tile_w;
+    out->top = ic.top;
+    out->bottom = ic.top + s_tile_h;
+    return 1;
+}
+
+/* The grid's width with its scroll bar (the same whether a page needs it or not: no new fit when it shows). */
+static int grid_width(const RECT *client)
+{
+    const int vs = (GetWindowLongW(s_c[D_GRID], GWL_STYLE) & WS_VSCROLL) != 0;
+    return client->right + (vs ? GetSystemMetricsForDpi(SM_CXVSCROLL, (UINT)sc(96)) : 0);
+}
+
+/* The tiles fitted to the grid: as many columns of at least 150 (at 1x) as fit, the rows spread to fill the height;
+   the thumbnails made again at the new size from the bytes kept. */
+static void grid_fit(void)
+{
+    const HWND g = s_c[D_GRID];
+    RECT rc;
+    int cw, gap, cols, tw, th, rows, vgap, i, pad;
+    HDC dc;
+    HFONT f;
+    TEXTMETRICW tm;
+    LOGFONTW lf;
+    if (!g) return;
+    GetClientRect(g, &rc);
+    s_fit_cw = grid_width(&rc);
+    s_fit_ch = rc.bottom;
+    cw = s_fit_cw - GetSystemMetricsForDpi(SM_CXVSCROLL, (UINT)sc(96));   /* (room for the scroll bar, shown or not) */
+    if (cw < sc(60)) return;
+    gap = sc(12);
+    pad = sc(6);
+    cols = (cw - gap) / (sc(150) + gap);
+    if (cols < 1) cols = 1;
+    s_tile_w = (cw - gap) / cols - gap;
+    tw = s_tile_w - 2 * pad;
+    th = tw * 3 / 4;
+    f = (HFONT)SendMessageW(g, WM_GETFONT, 0, 0);
+    dc = GetDC(g);
+    SelectObject(dc, f ? f : GetStockObject(DEFAULT_GUI_FONT));
+    GetTextMetricsW(dc, &tm);
+    ReleaseDC(g, dc);
+    s_line_h = tm.tmHeight;
+    s_tile_h = pad + th + sc(6) + 2 * s_line_h + sc(2) + s_line_h + sc(8);
+    rows = (rc.bottom - gap) / (s_tile_h + gap);
+    if (rows < 1) rows = 1;
+    vgap = rows ? (rc.bottom - gap - rows * s_tile_h) / rows : gap;
+    if (vgap < gap || vgap > sc(40)) vgap = gap;
+    ListView_SetIconSpacing(g, s_tile_w + gap, s_tile_h + vgap);
+    if (f && GetObjectW(f, sizeof lf, &lf)) {   /* (the badge: small capitals in bold) */
+        lf.lfHeight = lf.lfHeight * 4 / 5;
+        lf.lfWeight = FW_BOLD;
+        if (s_badge_font) DeleteObject(s_badge_font);
+        s_badge_font = CreateFontIndirectW(&lf);
+    }
+    if (!s_grid_theme) s_grid_theme = OpenThemeData(g, L"ListView");
+    if (tw != s_thumb_w || th != s_thumb_h || !s_thumbs) {
+        HIMAGELIST il = ImageList_Create(tw, th, ILC_COLOR32, PER_PAGE, 0);
+        s_thumb_w = tw;
+        s_thumb_h = th;
+        for (i = 0; i < PER_PAGE; i++) {
+            HBITMAP b;
+            s_img[i] = -1;
+            if (il && s_raw[i] && i < s_n && (b = picture_bitmap(s_raw[i], s_raw_n[i], tw, th)) != NULL) {
+                s_img[i] = ImageList_Add(il, b, NULL);
+                DeleteObject(b);
+            }
+        }
+        ListView_SetImageList(g, il, LVSIL_NORMAL);
+        if (s_thumbs) ImageList_Destroy(s_thumbs);
+        s_thumbs = il;
+    }
+    ListView_Arrange(g, LVA_DEFAULT);
+    InvalidateRect(g, NULL, TRUE);
+}
+
+/* A name on up to two lines, centred: broken at a space, the second line cut with an ellipsis -> the lines used. */
+static int draw_name(HDC dc, const WCHAR *s, RECT r)
+{
+    const int n = (int)wcslen(s);
+    int fit = 0, brk;
+    SIZE sz;
+    RECT r2 = r;
+    r.bottom = r.top + s_line_h;
+    GetTextExtentExPointW(dc, s, n, r.right - r.left, &fit, NULL, &sz);
+    if (fit >= n) {
+        DrawTextW(dc, s, n, &r, DT_CENTER | DT_SINGLELINE | DT_NOPREFIX);
+        return 1;
+    }
+    for (brk = fit; brk > 0 && s[brk] != L' '; brk--)
+        ;
+    if (brk == 0) brk = fit > 0 ? fit : 1;   /* (one long word: broken where it stops fitting) */
+    DrawTextW(dc, s, brk, &r, DT_CENTER | DT_SINGLELINE | DT_NOPREFIX);
+    while (s[brk] == L' ') brk++;
+    r2.top = r.bottom;
+    r2.bottom = r2.top + s_line_h;
+    DrawTextW(dc, s + brk, -1, &r2, DT_CENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+    return 2;
+}
+
+static void grid_draw(NMLVCUSTOMDRAW *cd)
+{
+    const HDC dc = cd->nmcd.hdc;
+    const int item = (int)cd->nmcd.dwItemSpec, i = (int)cd->nmcd.lItemlParam, pad = sc(6);
+    const int sel = (ListView_GetItemState(s_c[D_GRID], item, LVIS_SELECTED) & LVIS_SELECTED) != 0;
+    const int hot = (cd->nmcd.uItemState & CDIS_HOT) != 0;
+    RECT t, p, n;
+    const Mod *m;
+    if (i < 0 || i >= s_n || !tile_rect(item, &t)) return;
+    m = &s_mods[i];
+    if (sel || hot) {   /* (the list's own hover / selection look, over the whole tile) */
+        const int st = sel ? (hot ? LISS_HOTSELECTED : (GetFocus() == s_c[D_GRID] ? LISS_SELECTED : LISS_SELECTEDNOTFOCUS))
+                           : LISS_HOT;
+        if (!s_grid_theme || FAILED(DrawThemeBackground(s_grid_theme, dc, LVP_LISTITEM, st, &t, NULL))) {
+            HBRUSH b = CreateSolidBrush(sel ? RGB(52, 58, 70) : RGB(38, 42, 50));
+            FillRect(dc, &t, b);
+            DeleteObject(b);
+        }
+    }
+    p.left = t.left + pad;
+    p.top = t.top + pad;
+    p.right = p.left + s_thumb_w;
+    p.bottom = p.top + s_thumb_h;
+    if (s_img[i] >= 0) {
+        ImageList_Draw(s_thumbs, s_img[i], dc, p.left, p.top, ILD_NORMAL);
+    } else {
+        HBRUSH b = CreateSolidBrush(K_CARD);
+        FillRect(dc, &p, b);
+        DeleteObject(b);
+    }
+    SetBkMode(dc, TRANSPARENT);
+    SelectObject(dc, (HFONT)SendMessageW(s_c[D_GRID], WM_GETFONT, 0, 0));
+    if (s_badge[i]) {   /* (on the picture's corner) */
+        const WCHAR *bt = s_badge[i] == 2 ? L"NEW VERSION" : L"UPDATED";
+        HGDIOBJ old = SelectObject(dc, s_badge_font ? (HGDIOBJ)s_badge_font : GetStockObject(DEFAULT_GUI_FONT));
+        SIZE bs;
+        RECT br;
+        HBRUSH b = CreateSolidBrush(K_ACCENT);
+        GetTextExtentPoint32W(dc, bt, (int)wcslen(bt), &bs);
+        br.left = p.left + sc(6);
+        br.top = p.top + sc(6);
+        br.right = br.left + bs.cx + sc(10);
+        br.bottom = br.top + bs.cy + sc(4);
+        FillRect(dc, &br, b);
+        DeleteObject(b);
+        SetTextColor(dc, RGB(255, 255, 255));
+        DrawTextW(dc, bt, -1, &br, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        SelectObject(dc, old);
+    }
+    n.left = t.left + pad;
+    n.right = t.right - pad;
+    n.top = p.bottom + sc(6);
+    n.bottom = n.top + 2 * s_line_h;
+    SetTextColor(dc, K_TEXT);
+    n.top += draw_name(dc, m->name, n) * s_line_h + sc(2);   /* (the stars right under the name) */
+    n.bottom = n.top + s_line_h;
+    if (m->rating_count) {   /* (the stars' own line: a gold star, then the average and how many) */
+        WCHAR rest[48];
+        SIZE a, b;
+        int x;
+        RECT sr = n;
+        swprintf_s(rest, 48, L" %.1f  (%d)", m->rating10 / 10.0, m->rating_count);
+        GetTextExtentPoint32W(dc, L"\x2605", 1, &a);
+        GetTextExtentPoint32W(dc, rest, (int)wcslen(rest), &b);
+        x = (n.left + n.right - a.cx - b.cx) / 2;
+        SetTextColor(dc, K_GOLD);
+        sr.left = x;
+        DrawTextW(dc, L"\x2605", 1, &sr, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+        SetTextColor(dc, K_MUTED);
+        sr.left = x + a.cx;
+        DrawTextW(dc, rest, -1, &sr, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+    } else {
+        SetTextColor(dc, K_MUTED);
+        DrawTextW(dc, L"No ratings yet", -1, &n, DT_CENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+    }
+}
+
 static const int k_grid_ids[] = { D_SEARCH, D_TYPE, D_SORT, D_GO, D_GRID, D_PREV, D_PAGE, D_NEXT, D_UPLOAD };
 static const int k_mod_ids[] = { D_PIC, D_PICPREV, D_PICLBL, D_PICNEXT, D_INFO, D_DESC, D_BACK, D_DOWNLOAD, D_DELETE,
                                  D_EDIT, D_NEWFILE, D_FIRSTPIC, D_DLBAR, D_DLCANCEL,
@@ -1004,10 +1214,23 @@ static void show_rating(void)
 }
 
 /* The comments loaded, into the list (newest first: the server's order); the title with the count. */
+static void comments_fit(void)
+{
+    RECT lr;
+    int w0 = sc(112), w1 = sc(84), w2;
+    GetClientRect(s_c[C_LIST], &lr);
+    w2 = lr.right - w0 - w1 - GetSystemMetrics(SM_CXVSCROLL) - 2;
+    if (w2 < sc(120)) w2 = sc(120);
+    ListView_SetColumnWidth(s_c[C_LIST], 0, w0);
+    ListView_SetColumnWidth(s_c[C_LIST], 1, w1);
+    ListView_SetColumnWidth(s_c[C_LIST], 2, w2);
+}
+
 static void fill_comments(void)
 {
     int i;
     WCHAR t[200];
+    comments_fit();
     ListView_DeleteAllItems(s_c[C_LIST]);
     for (i = 0; i < s_cm_n; i++) {
         LVITEMW it;
@@ -1426,7 +1649,7 @@ void discover_build(HWND wnd, mods_add_fn add, int tab, int id_base, discover_se
     /* a mod's comments (newest first; the one selected in full under them; write one at the bottom) */
     C(C_TITLE, L"Static", L"Comments", SS_LEFT | SS_NOPREFIX | SS_ENDELLIPSIS, 28, 56, 560, 20);
     C(C_LIST, WC_LISTVIEWW, L"", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER | WS_BORDER | WS_TABSTOP,
-      28, 80, 560, 192);
+      28, 80, 560, 140);
     ListView_SetExtendedListViewStyle(s_c[C_LIST], LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
     {   /* (From and When at the screen's scale; Comment the rest of the width, the scroll bar left out) */
         static const WCHAR *const cols[3] = { L"From", L"When", L"Comment" };
@@ -1447,13 +1670,14 @@ void discover_build(HWND wnd, mods_add_fn add, int tab, int id_base, discover_se
             ListView_InsertColumn(s_c[C_LIST], i, &c);
         }
     }
-    C(C_FULL, L"Edit", L"", ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL | WS_BORDER, 28, 278, 560, 58);
-    C(C_MORE, L"Button", L"More comments", BS_PUSHBUTTON | WS_TABSTOP, 28, 342, 140, 26);
-    C(C_DEL, L"Button", L"Delete", BS_PUSHBUTTON | WS_TABSTOP, 380, 342, 100, 26);
-    C(C_REPORT, L"Button", L"Report", BS_PUSHBUTTON | WS_TABSTOP, 488, 342, 100, 26);
-    C(C_WRITE_L, L"Static", L"", SS_LEFT | SS_NOPREFIX, 28, 376, 560, 18);
+    /* (the selected comment in full: 500 characters fit at 1x without scrolling) */
+    C(C_FULL, L"Edit", L"", ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL | WS_BORDER, 28, 228, 560, 112);
+    C(C_MORE, L"Button", L"More comments", BS_PUSHBUTTON | WS_TABSTOP, 28, 348, 140, 28);
+    C(C_DEL, L"Button", L"Delete", BS_PUSHBUTTON | WS_TABSTOP, 380, 348, 100, 28);
+    C(C_REPORT, L"Button", L"Report", BS_PUSHBUTTON | WS_TABSTOP, 488, 348, 100, 28);
+    C(C_WRITE_L, L"Static", L"", SS_LEFT | SS_NOPREFIX, 28, 388, 560, 18);
     C(C_WRITE, L"Edit", L"", ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL | WS_BORDER | WS_TABSTOP,
-      28, 396, 560, 82);
+      28, 408, 560, 68);
     SendMessageW(s_c[C_WRITE], EM_LIMITTEXT, COMMENT_MAX, 0);
     C(C_BACK, L"Button", L"\x2190 Back", BS_PUSHBUTTON | WS_TABSTOP, 28, 488, 100, 30);
     C(C_SEND, L"Button", L"Send", BS_DEFPUSHBUTTON | WS_TABSTOP, 488, 486, 100, 32);
@@ -1479,6 +1703,11 @@ void discover_build(HWND wnd, mods_add_fn add, int tab, int id_base, discover_se
     C(U_DESC_L, L"Static", L"Description", SS_LEFT, 28, y + 4, 90, 20);
     C(U_DESC, L"Edit", L"", ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL | WS_BORDER | WS_TABSTOP, 120, y, 468, 76);
     SendMessageW(s_c[U_DESC], EM_LIMITTEXT, 2000, 0);
+    /* (the boxes that scroll: dark scroll bars) */
+    SetWindowTheme(s_c[D_DESC], L"DarkMode_Explorer", NULL);
+    SetWindowTheme(s_c[C_FULL], L"DarkMode_Explorer", NULL);
+    SetWindowTheme(s_c[C_WRITE], L"DarkMode_Explorer", NULL);
+    SetWindowTheme(s_c[U_DESC], L"DarkMode_Explorer", NULL);
     y += 86;
     C(U_FILE_L, L"Static", L".svrmod", SS_LEFT, 28, y + 6, 90, 20);
     C(U_FILE, L"Static", L"(none chosen)", SS_LEFT | SS_NOPREFIX | SS_PATHELLIPSIS, 120, y + 6, 330, 20);
@@ -1744,8 +1973,15 @@ int discover_notify(const NMHDR *nm)
     }
     if (!s_c[D_GRID] || nm->hwndFrom != s_c[D_GRID]) return 0;
     if (nm->code == NM_CLICK || nm->code == NM_RETURN) {
-        const int i = nm->code == NM_CLICK ? ((const NMITEMACTIVATE *)nm)->iItem
-                                           : ListView_GetNextItem(s_c[D_GRID], -1, LVNI_SELECTED);
+        int i = nm->code == NM_CLICK ? ((const NMITEMACTIVATE *)nm)->iItem
+                                     : ListView_GetNextItem(s_c[D_GRID], -1, LVNI_SELECTED);
+        if (i < 0 && nm->code == NM_CLICK) {
+            const POINT pt = ((const NMITEMACTIVATE *)nm)->ptAction;
+            int k;
+            RECT tr;
+            for (k = 0; k < ListView_GetItemCount(s_c[D_GRID]); k++)
+                if (tile_rect(k, &tr) && PtInRect(&tr, pt)) { i = k; break; }
+        }
         if (i >= 0) {
             LVITEMW it;
             ZeroMemory(&it, sizeof it);
@@ -1756,6 +1992,25 @@ int discover_notify(const NMHDR *nm)
         return 1;
     }
     return 0;
+}
+
+/* The grid drawn: each tile as grid_fit sized it (CDRF_SKIPDEFAULT: the list's own drawing left out). */
+int discover_custom_draw(const NMHDR *nm, LRESULT *result)
+{
+    NMLVCUSTOMDRAW *cd = (NMLVCUSTOMDRAW *)nm;
+    if (!s_c[D_GRID] || nm->hwndFrom != s_c[D_GRID] || nm->code != NM_CUSTOMDRAW) return 0;
+    if (cd->nmcd.dwDrawStage == CDDS_PREPAINT) {
+        RECT rc;
+        GetClientRect(s_c[D_GRID], &rc);
+        if (grid_width(&rc) != s_fit_cw || rc.bottom != s_fit_ch) PostMessageW(s_wnd, WM_APP_DISCOVER, R_FIT, 0);
+        *result = CDRF_NOTIFYITEMDRAW;
+    } else if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
+        grid_draw(cd);
+        *result = CDRF_SKIPDEFAULT;
+    } else {
+        *result = CDRF_DODEFAULT;
+    }
+    return 1;
 }
 
 int discover_draw(const DRAWITEMSTRUCT *d)
@@ -1794,6 +2049,10 @@ int discover_message(UINT m, WPARAM wp, LPARAM lp)
     Result *r;
     WCHAR t[400];
     if (m != WM_APP_DISCOVER) return 0;
+    if (wp == R_FIT) {
+        grid_fit();
+        return 1;
+    }
     if (wp == R_PROGRESS) {
         SendMessageW(s_c[U_PROGRESS], PBM_SETPOS, (WPARAM)lp, 0);
         return 1;
@@ -1823,7 +2082,15 @@ int discover_message(UINT m, WPARAM wp, LPARAM lp)
         const char *p, *end = (const char *)r->data + r->n;
         ListView_DeleteAllItems(s_c[D_GRID]);
         ImageList_RemoveAll(s_thumbs);
+        for (int q = 0; q < PER_PAGE; q++) {
+            free(s_raw[q]);
+            s_raw[q] = NULL;
+            s_raw_n[q] = 0;
+            s_img[q] = -1;
+            s_badge[q] = 0;
+        }
         s_n = 0;
+        grid_fit();
         if (r->status != 200 || !r->data) { answer_error(r, L"Discovery", t, 400); status(t); break; }
         s_total = (int)jnum(jkey((const char *)r->data, end, "total"));
         p = jkey((const char *)r->data, end, "mods");
@@ -1836,16 +2103,10 @@ int discover_message(UINT m, WPARAM wp, LPARAM lp)
                 const Mod *m = &s_mods[s_n];
                 const long long got = downloaded_stamp(m->id), now_v = m->updated ? m->updated : m->created;
                 if (got && now_v > got)
-                    swprintf_s(label, 140, L"\x2191 Update: %s", m->name);   /* (downloaded here; newer now) */
+                    s_badge[s_n] = 2;   /* (downloaded here; newer now) */
                 else if (m->updated && s_last_visit && m->updated > s_last_visit)
-                    swprintf_s(label, 140, L"\x2022 Updated: %s", m->name);
-                else
-                    wcscpy_s(label, 140, m->name);
-                if (m->rating_count) {   /* (the stars first - a long name's end is cut off: "★4.3  Name") */
-                    WCHAR st[180];
-                    swprintf_s(st, 180, L"\x2605%.1f  %s", m->rating10 / 10.0, label);
-                    wcscpy_s(label, 140, st);
-                }
+                    s_badge[s_n] = 1;
+                wcscpy_s(label, 140, m->name);   /* (the tile draws its stars and badge: grid_draw) */
             }
             ZeroMemory(&it, sizeof it);
             it.mask = LVIF_TEXT | LVIF_PARAM | LVIF_IMAGE;
@@ -1891,14 +2152,16 @@ int discover_message(UINT m, WPARAM wp, LPARAM lp)
         break;
     }
     case R_THUMB: {
-        HBITMAP b = picture_bitmap(r->data, r->n, THUMB_W, THUMB_H);
-        if (b && r->index < s_n) {
-            LVITEMW it;
-            ZeroMemory(&it, sizeof it);
-            it.mask = LVIF_IMAGE;
-            it.iItem = r->index;
-            it.iImage = ImageList_Add(s_thumbs, b, NULL);
-            ListView_SetItem(s_c[D_GRID], &it);
+        HBITMAP b = picture_bitmap(r->data, r->n, s_thumb_w, s_thumb_h);
+        if (b && r->index >= 0 && r->index < s_n) {
+            RECT tr;
+            free(s_raw[r->index]);
+            if ((s_raw[r->index] = (uint8_t *)malloc(r->n)) != NULL) {   /* (kept: a new size makes it again) */
+                memcpy(s_raw[r->index], r->data, r->n);
+                s_raw_n[r->index] = r->n;
+            }
+            s_img[r->index] = ImageList_Add(s_thumbs, b, NULL);
+            if (tile_rect(r->index, &tr)) InvalidateRect(s_c[D_GRID], &tr, FALSE);
         }
         if (b) DeleteObject(b);
         break;

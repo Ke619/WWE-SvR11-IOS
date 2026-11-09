@@ -1,8 +1,10 @@
-// WWE SmackDown vs. Raw 2011 - Android launcher: a Discovery mod's stars and comments (docs/DISCOVERY_API.md,
-// "Comments and ratings"). Under the description on a mod's page: the average and the player's own stars, then the
-// comments (newest first, 20 a page) with a box to write one. Reading needs no account; the rest needs the Online
-// tab's sign-in (signed out: "Sign in to ..." opens the Online tab). Each part hides while the server has it off.
-// Every refusal shows the server's own words ("error"). Comment text is shown as plain text only (no links).
+// WWE SmackDown vs. Raw 2011 - Android launcher: a Discovery mod's upvotes and comments (docs/DISCOVERY_API.md,
+// "Comments and upvotes"; 2.2.2's upvotes replace 2.2.1's stars). Under the description on a mod's page: the upvotes
+// and the player's ▲ Upvote button, then (under the page's buttons) the comments, newest first, 20 a page, with a box
+// to write one; the mod's author has a "Comments: on / off" switch, and others then see "Comments: off (author)".
+// Reading needs no account; the rest needs the Online tab's sign-in (signed out: "Sign in to ..." opens the Online
+// tab). Each part hides while the server has it off. Every refusal shows the server's own words ("error"). Comment
+// text is shown as plain text only (no links). The wording follows the PC launcher's (discover_tab.c).
 package io.github.kaikoclanworth1.svr2011;
 
 import android.graphics.Typeface;
@@ -25,13 +27,12 @@ final class DiscoverSocial {
 
     private final LauncherActivity a_;
     private final DiscoverPage page_;
-    private LinearLayout rateCard_, commentCard_, stars_, commentList_, writeBox_;
-    private TextView avg_, rateNote_, commentHead_, counter_, noComment_;
-    private Button rateSignIn_, commentSignIn_, send_, more_;
-    private final Button[] starButtons_ = new Button[5];
+    private LinearLayout upCard_, commentCard_, commentList_, writeBox_;
+    private TextView upCount_, upNote_, commentHead_, counter_, noComment_, authorOff_;
+    private Button upvote_, upSignIn_, commentSignIn_, send_, more_, switch_;
     private EditText box_;
-    private int id_, gen_, myRating_, total_, page_n_;
-    private boolean busy_;
+    private int id_, gen_, upvotes_, total_, page_n_;
+    private boolean busy_, myUpvote_, commentsOn_;
     private String token_ = "";  // (the token the page was asked with: its can_* and mine are for it)
 
     DiscoverSocial(LauncherActivity a, DiscoverPage page) {
@@ -39,36 +40,34 @@ final class DiscoverSocial {
         page_ = page;
     }
 
-    // The stars' card (under the description) and the comments' card (under the page's buttons).
+    // The upvotes' card (under the description) and the comments' card (under the page's buttons).
     void buildRating(LinearLayout parent) {
-        rateCard_ = a_.card(parent, "Rating");
-        avg_ = a_.text("", 15, LauncherActivity.kText);
-        avg_.setPadding(0, a_.dp(10), 0, a_.dp(6));
-        rateCard_.addView(avg_);
-        stars_ = new LinearLayout(a_);
-        for (int k = 0; k < 5; k++) {
-            final int n = k + 1;
-            Button b = a_.button("☆", LauncherActivity.kCard);
-            b.setTextSize(22);
-            b.setOnClickListener(v -> rate(n));
-            starButtons_[k] = b;
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
-            lp.rightMargin = a_.dp(k < 4 ? 6 : 0);
-            stars_.addView(b, lp);
-        }
-        rateCard_.addView(stars_, a_.fullWidth(4));
-        rateNote_ = a_.text("", 13, LauncherActivity.kDim);
-        rateNote_.setPadding(0, a_.dp(4), 0, 0);
-        rateCard_.addView(rateNote_);
-        rateSignIn_ = a_.button("Sign in to rate it", LauncherActivity.kCard);
-        rateSignIn_.setOnClickListener(v -> a_.goOnline());
-        rateCard_.addView(rateSignIn_, a_.fullWidth(6));
-        hint(rateCard_);
-        showCard(rateCard_, false);
+        upCard_ = a_.card(parent, "Upvotes");
+        upCount_ = a_.text("", 15, LauncherActivity.kText);
+        upCount_.setPadding(0, a_.dp(10), 0, a_.dp(6));
+        upCard_.addView(upCount_);
+        upvote_ = a_.button("\u25B2 Upvote", LauncherActivity.kCard);
+        upvote_.setOnClickListener(v -> vote());
+        upCard_.addView(upvote_, a_.fullWidth(4));
+        upNote_ = a_.text("", 13, LauncherActivity.kDim);
+        upNote_.setPadding(0, a_.dp(4), 0, 0);
+        upCard_.addView(upNote_);
+        upSignIn_ = a_.button("Sign in to upvote it", LauncherActivity.kCard);
+        upSignIn_.setOnClickListener(v -> a_.goOnline());
+        upCard_.addView(upSignIn_, a_.fullWidth(6));
+        hint(upCard_);
+        showCard(upCard_, false);
     }
 
     void buildComments(LinearLayout parent) {
         commentCard_ = a_.card(parent, "Comments");
+        switch_ = a_.button("Comments: on", LauncherActivity.kCard);  // (the author's own mod: their switch)
+        switch_.setOnClickListener(v -> toggleComments());
+        commentCard_.addView(switch_, a_.fullWidth(8));
+        authorOff_ = a_.text("Comments: off (author)", 15, LauncherActivity.kDim);  // (others, when the author turned them off)
+        authorOff_.setAlpha(0.6f);
+        authorOff_.setPadding(0, a_.dp(10), 0, a_.dp(6));
+        commentCard_.addView(authorOff_);
         commentHead_ = a_.text("", 13, LauncherActivity.kDim);
         commentHead_.setPadding(0, a_.dp(8), 0, a_.dp(4));
         commentCard_.addView(commentHead_);
@@ -126,38 +125,57 @@ final class DiscoverSocial {
         id_ = 0;
         busy_ = false;
         commentList_.removeAllViews();
-        showCard(rateCard_, false);
+        showCard(upCard_, false);
         showCard(commentCard_, false);
     }
 
-    // The mod's details came (GET /api/mods/{id}, asked with `token`): its stars, then its first comments.
+    // The mod's details came (GET /api/mods/{id}, asked with `token`): its upvotes, then its first comments.
     void show(JSONObject m, int gen, String token) {
         id_ = m.optInt("id");
         gen_ = gen;
         token_ = token;
         boolean signedIn = !token.isEmpty();
-        boolean ratingsOn = m.optBoolean("ratings_on", m.has("rating"));
-        showCard(rateCard_, ratingsOn);
-        if (ratingsOn) {
-            myRating_ = m.optInt("my_rating", 0);
-            showAverage(m.optJSONObject("rating"));
-            boolean canRate = signedIn && m.optBoolean("can_rate", false);
-            stars_.setVisibility(canRate ? View.VISIBLE : View.GONE);
-            rateNote_.setText(canRate ? "Tap a star to rate it." : !signedIn ? ""
-                : m.optBoolean("mine", false) ? "Your own mod" : "You can't rate mods");
-            rateNote_.setVisibility(rateNote_.getText().length() > 0 ? View.VISIBLE : View.GONE);
-            rateSignIn_.setVisibility(signedIn ? View.GONE : View.VISIBLE);
-            paintStars();
+        boolean upOn = m.optBoolean("upvotes_on", m.has("upvotes"));
+        showCard(upCard_, upOn);
+        if (upOn) {
+            upvotes_ = m.optInt("upvotes", 0);
+            myUpvote_ = m.optBoolean("my_upvote", false);
+            boolean canUp = signedIn && m.optBoolean("can_upvote", false);
+            upvote_.setVisibility(canUp ? View.VISIBLE : View.GONE);
+            upNote_.setText(canUp || !signedIn ? "" : m.optBoolean("mine", false) ? "Your own mod" : "You can't upvote mods");
+            upNote_.setVisibility(upNote_.getText().length() > 0 ? View.VISIBLE : View.GONE);
+            upSignIn_.setVisibility(signedIn ? View.GONE : View.VISIBLE);
+            paintUpvotes();
         }
-        boolean commentsOn = m.optBoolean("comments_on", true);
-        showCard(commentCard_, commentsOn);
-        if (commentsOn) {
+        // Comments: the server's switch off hides them; the author's switch shows its state (the author can turn it on).
+        final boolean authorOff = m.optBoolean("comments_author_off", false);
+        final boolean mine = page_.ownerNow();
+        commentsOn_ = m.optBoolean("comments_on", true);
+        showCard(commentCard_, commentsOn_ || authorOff);
+        switch_.setVisibility(mine && (commentsOn_ || authorOff) ? View.VISIBLE : View.GONE);
+        switch_.setText(commentsOn_ ? "Comments: on" : "Comments: off");
+        if (commentsOn_) {
+            authorOff_.setVisibility(View.GONE);
+            commentHead_.setVisibility(View.VISIBLE);
             canComment(signedIn, m.optBoolean("can_comment", false));
             commentSignIn_.setVisibility(signedIn ? View.GONE : View.VISIBLE);
             commentHead_.setText("Loading the comments…");
             more_.setVisibility(View.GONE);
             load(0);
+        } else if (authorOff) {
+            showAuthorOff(mine);
         }
+    }
+
+    // The author turned comments off: nothing to read or write; others see "Comments: off (author)", greyed.
+    private void showAuthorOff(boolean mine) {
+        commentsOn_ = false;
+        authorOff_.setVisibility(mine ? View.GONE : View.VISIBLE);
+        commentHead_.setVisibility(View.GONE);
+        canComment(false, false);
+        commentSignIn_.setVisibility(View.GONE);
+        commentList_.removeAllViews();
+        more_.setVisibility(View.GONE);
     }
 
     private void canComment(boolean signedIn, boolean can) {
@@ -167,46 +185,46 @@ final class DiscoverSocial {
 
     private boolean current(int id, int gen) { return id == id_ && id != 0 && page_.genNow() == gen; }
 
-    private void showAverage(JSONObject r) {
-        int count = r != null ? r.optInt("count", 0) : 0;
-        double avg = r != null ? r.optDouble("avg", 0) : 0;
-        avg_.setText(count == 0 ? "No ratings yet"
-            : "★ " + String.format(java.util.Locale.US, "%.1f", avg) + "  (" + count + " rating" + (count == 1 ? "" : "s") + ")"
-              + (myRating_ > 0 ? "  -  yours: " + myRating_ : ""));
+    private void paintUpvotes() {
+        upCount_.setText(upvotes_ == 0 ? "No upvotes yet" : "\u25B2 " + upvotes_ + " upvote" + (upvotes_ == 1 ? "" : "s"));
+        upvote_.setText(myUpvote_ ? "\u25B2 Upvoted" : "\u25B2 Upvote");
+        upvote_.setTextColor(myUpvote_ ? 0xFFFFC83D : 0xFFFFFFFF);
     }
 
-    private void paintStars() {
-        for (int k = 0; k < 5; k++) {
-            boolean lit = k < myRating_;
-            starButtons_[k].setText(lit ? "★" : "☆");
-            starButtons_[k].setTextColor(lit ? 0xFFFFC83D : 0xFFFFFFFF);
-        }
-    }
+    // ── upvotes ────────────────────────────────────────────────────────────
 
-    // ── stars ──────────────────────────────────────────────────────────────
-
-    // A star tapped: that many; the same again takes the rating back (0).
-    void rate(int n) {
+    // ▲ Upvote; pressed again (▲ Upvoted) it's taken back.
+    void vote() {
         if (busy_ || id_ == 0 || token_.isEmpty()) return;
-        final int stars = n == myRating_ ? 0 : n;
+        final boolean up = !myUpvote_;
         final int id = id_, gen = gen_;
         busy_ = true;
-        a_.status("Saving your rating…");
-        final byte[] body = ("{\"stars\":" + stars + "}").getBytes(StandardCharsets.UTF_8);
+        a_.status(up ? "Upvoting…" : "Taking your upvote back…");
+        final byte[] body = ("{\"up\":" + up + "}").getBytes(StandardCharsets.UTF_8);
         final DiscoverPage.Answer[] r = new DiscoverPage.Answer[1];
         final String t = token_;
-        a_.background(() -> r[0] = page_.send("POST", "/api/mods/" + id + "/rating", "application/json", body, t), () -> {
+        a_.background(() -> r[0] = page_.send("POST", "/api/mods/" + id + "/upvote", "application/json", body, t), () -> {
             busy_ = false;
             if (!current(id, gen)) return;
-            if (!refused(r[0], "Rating")) {
+            if (!refused(r[0], "Upvote")) {
                 JSONObject j = DiscoverPage.json(r[0]);
-                myRating_ = j.optInt("my_rating", stars);
-                showAverage(j.optJSONObject("rating"));
-                paintStars();
-                a_.status(myRating_ == 0 ? "Your rating was taken back." : "Rated " + myRating_ + " star"
-                    + (myRating_ == 1 ? "" : "s") + " - tap the same star again to take it back.");
+                myUpvote_ = j.optBoolean("my_upvote", up);
+                upvotes_ = j.optInt("upvotes", upvotes_);
+                paintUpvotes();
+                a_.status(myUpvote_ ? "Upvoted - press it again to take it back." : "Your upvote was taken back.");
             }
         });
+    }
+
+    // The author's switch: off asks first (the comments stay on the server, hidden); on goes at once.
+    void toggleComments() {
+        if (busy_ || id_ == 0 || !page_.ownerNow()) return;
+        if (commentsOn_) {
+            a_.confirm("Turn comments off for your mod? Players won't see its comments or be able to write one. They "
+                + "stay on the server: turn them on again any time.", "Turn off", () -> page_.setComments(false));
+        } else {
+            page_.setComments(true);
+        }
     }
 
     // ── comments ───────────────────────────────────────────────────────────
@@ -230,7 +248,12 @@ final class DiscoverSocial {
             }
             JSONObject j = DiscoverPage.json(r[0]);
             if (!j.optBoolean("enabled", true)) {
-                showCard(commentCard_, false);
+                if (j.optBoolean("author_off", false)) {
+                    switch_.setText("Comments: off");
+                    showAuthorOff(page_.ownerNow());
+                } else {
+                    showCard(commentCard_, false);
+                }
                 return;
             }
             page_n_ = n;
@@ -403,15 +426,17 @@ final class DiscoverSocial {
         String code = DiscoverPage.json(r).optString("code", "");
         if (code.equals("sign_in_needed")) {
             token_ = "";
-            stars_.setVisibility(View.GONE);
-            rateSignIn_.setVisibility(View.VISIBLE);
+            upvote_.setVisibility(View.GONE);
+            upSignIn_.setVisibility(View.VISIBLE);
             canComment(false, false);
-            rateNote_.setVisibility(View.GONE);
-            commentSignIn_.setVisibility(View.VISIBLE);
+            upNote_.setVisibility(View.GONE);
+            if (commentsOn_) commentSignIn_.setVisibility(View.VISIBLE);
         } else if (code.equals("comments_off")) {
             showCard(commentCard_, false);
-        } else if (code.equals("ratings_off")) {
-            showCard(rateCard_, false);
+        } else if (code.equals("author_off")) {
+            showAuthorOff(page_.ownerNow());
+        } else if (code.equals("upvotes_off")) {
+            showCard(upCard_, false);
         }
         android.util.Log.i("SvR2011", "discovery: " + what.toLowerCase(java.util.Locale.ROOT) + " on mod " + id_ + " refused ("
             + r.status + (code.isEmpty() ? "" : " " + code) + ")");

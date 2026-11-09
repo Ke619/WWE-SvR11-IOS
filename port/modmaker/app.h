@@ -632,8 +632,9 @@ bool BinkFromVideoButton(const char* label, std::wstring& movie, const std::stri
 void ViewFooter();
 // WWE '12 - 2K17 "bgNN" pacs from 60 up aren't arenas (docs/ARENA_PORT_RESULTS.md, special stages): backstage rooms
 // (bg67, bg78 - which crashes on an arena slot) and studio / photo stages (a white mat over a black void). The
-// number of a "...bgNN..." file / source name (-1: none), and whether it is one of those.
+// number of a "...bgNN..." file / source name (-1: none), and whether it is one of those. A DLC package's pac
+// ("bg60_dlc40.pac": 2K16's DLC arenas are bg60-65) is an arena, as arena_port.py lists it (report fec877).
 int ArenaPacNumber(const std::string& name);
-inline bool SpecialStage(const std::string& name) { return ArenaPacNumber(name) >= 60; }
+bool SpecialStage(const std::string& name);
 
 }  // namespace mm

@@ -1,4 +1,4 @@
-"""Entrances from other games -> SvR 2011 entrances: one entry point for the Mod Maker.
+r"""Entrances from other games -> SvR 2011 entrances: one entry point for the Mod Maker.
 
   python entrance_port.py games
   python entrance_port.py list --game <id> --src <extract folder or disc image> [--game-pac <2011 pac dir>]
@@ -916,10 +916,22 @@ def dlc_props(src, game, evp11, rep):
     found = {}
     for pk in packages:
         for low in pk.matching(r'^pac/(evt/evtobj_dlc\d+|prop/\d+_dlc\d+)\.pac$'):
-            raw = pk.read(low)
-            if raw[:4] == b'\x0f\xf5\x12\xed':
-                raw = E13.xdec(raw, E13.find_svrmod(SVRMOD))
-            for (g, n), b in E13.epk8_entries(raw).items():
+            # (a package pac this reader can't read leaves its props out, not the whole entrance: WWE 2K17's Goldberg
+            # with its packages failed on a table running past the file's end, report 20261108 09187a)
+            try:
+                raw = pk.read(low)
+                if raw[:4] == b'\x0f\xf5\x12\xed':
+                    raw = E13.xdec(raw, E13.find_svrmod(SVRMOD))
+                try:
+                    ents = E13.epk8_entries(raw)
+                except (struct.error, ValueError, IndexError):
+                    if raw[:4] != b'EPAC':
+                        raise
+                    ents = E13.epac16_entries(raw)   # (2K16 / 2K17's per-entry EPAC layout)
+            except Exception as x:
+                rep['notes'].append('%s in DLC package %s: not read (%s) - its props are left out' % (low, pk.display, x))
+                continue
+            for (g, n), b in ents.items():
                 if g == 'SOBJ' and n.isdigit():
                     found.setdefault(int(n), b)
     for pid, warnings in sorted(missing.items()):

@@ -2011,6 +2011,8 @@ int ArenaPacNumber(const std::string& name) {  // (the last "bg" followed by exa
   return found;
 }
 
+bool SpecialStage(const std::string& name) { return ArenaPacNumber(name) >= 60 && Lower(name).find("_dlc") == std::string::npos; }
+
 void ViewFooter() {
   ImGui::PushID("viewfooter");
   // (on the same line while a checkbox labelled `label` still fits there, else on the next)

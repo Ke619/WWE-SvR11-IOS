@@ -1698,6 +1698,52 @@ uint32_t ResidentCount() {
   return n;
 }
 
+// (EvictUnused) Report f57339, OPPO A53 (3.6 GB, Adreno 610): the resident textures only grew - 42 MB at the first
+// scene, 115 MB by the second match - while the phone ran out of memory and every match after the first crawled
+// (the game's pages swapped out: its threads idle, frames 100-200 ms). A texture nothing has drawn for a minute
+// (another match's arena and superstars, a menu left) gives its host copy back; its entry and descriptor slot stay,
+// so its next use uploads it again into the same slot. Not one a texture pack is still reading in (pending).
+constexpr uint64_t kEvictUnusedFrames = 3600;  // (a minute at 60 fps; longer at a phone's 30)
+constexpr uint64_t kEvictEveryFrames = 300;
+
+void EvictUnused(const Context& ctx) {
+  static const bool on = [] {
+    const char* v = std::getenv("SVR2011_TEST_TEXTURE_EVICT");
+    if (v && *v) return *v == '1';
+#if defined(__ANDROID__)
+    return true;
+#else
+    return false;
+#endif
+  }();
+  static uint64_t next = 0;
+  if (!on || g_no_cache || g_check_every_use || ctx.frame < next) return;
+  next = ctx.frame + kEvictEveryFrames;
+  uint32_t evicted = 0;
+  uint64_t bytes = 0;
+  for (auto& [key, e] : g_textures) {
+    if (!e.resource || e.pending || e.failed || ctx.frame < e.used_frame + kEvictUnusedFrames) continue;
+    if (e.view) ctx.retire(std::move(e.view));
+    if (!IsPadPicture(e.resource)) ctx.retire(std::move(e.resource));
+    e.resource = nullptr;
+    e.view = nullptr;
+    bytes += e.bytes;
+    if (e.skip) g_reduced -= std::min<uint32_t>(g_reduced, 1);
+    g_resident_bytes -= std::min(g_resident_bytes, e.bytes);
+    e.bytes = 0;
+    e.skip = 0;
+    e.dynamic = false;
+    e.replaced = false;
+    e.ready = nullptr;
+    ++evicted;
+  }
+  if (evicted) {
+    ++g_generation;
+    REXLOG_INFO("native renderer: {} textures unused for a minute let go ({:.1f} MB); {:.1f} MB resident", evicted,
+                bytes / 1048576.0, g_resident_bytes / 1048576.0);
+  }
+}
+
 Stats TakePerf() {
   Stats s = g_stats;
   s.textures = 0;  // (with a resource: a texture quality change drops them)

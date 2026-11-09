@@ -1536,14 +1536,15 @@ def template_travel(g11, tid):
     return None
 
 
-def template_start(g11, tid):
-    """a 2011 move's attacker (x 0 y 0) root at its first key, None if unread - the anchor the ported attacker starts on"""
+def template_start(g11, tid, y=0):
+    """a 2011 move's attacker (x 0 y 0; y: another person's) root at its first key, None if unread - the anchor the
+    ported attacker starts on"""
     import ymks
     for path, kind, ks in g11.banks_of(tid):
-        if kind != 'YMKs' or (0, 0) not in ks:
+        if kind != 'YMKs' or (0, y) not in ks:
             continue
         pac, bank = g11.bank(path)
-        e = bank.find(tid, 0, 0)
+        e = bank.find(tid, 0, y)
         if e is None:
             continue
         r = next((k['root'] for k in ymks.body_keys(e['data'], bank.T, path.startswith('MOTP')) if k.get('root')), None)
@@ -1594,6 +1595,7 @@ def heading_turn(st, tt, min_travel=200.0, min_angle=0.35):
 # A tag team slot's kind -> where its moves start (WAZE +0x73): the 265 stock movesets hold standing double teams
 # (situation 0, 26xx) in slots 0x18E-0x194 and corner ones (situation 18, 24xx) in 0x196-0x19C
 TAG_KIND_SIT = {'standing': 0, 'corner': 18}
+TAG_LAYOUT_LIMIT = 1000   # (a corner-kind tag move's start this far from its template's: not ported yet)
 TAG_IDS = {18: (2400, 2600), 0: (2600, 2800)}   # (2011's tag team records by kind: 2412-2484 / 2600-2700 have motions)
 
 
@@ -2124,6 +2126,19 @@ def convert(a, rep):
     if tag:   # (the three keep the source's relation: no anchor shift, no singles pair layout)
         offset = (0.0, 0.0, 0.0)
         keys_of[0].append(R.keys(par, nf, None))
+        # A corner-kind move (18: corner double teams and team finishers) that starts its people elsewhere than 2011's
+        # corner layout isn't placed yet: 2K15 / 2K16's Batista Bomb & RKO starts its partner on the other side (719,
+        # -360 against 2011's ~-1150, -720) and, forced in a tag match, its attacker walked out of the ring and ended
+        # on the floor (9 Nov). Of the '12-2K16 tag moves only it is this far off (> 1000 root units); the rest -
+        # Doomsday Device, Uso Splash among them - start as 2011's and played right. The slot keeps its base move.
+        if g11.situation.get(tid) == 18:
+            for who, y, mine in (('attacker', 0, keys_of[0][0]), ('partner', 2, keys_of[0][2])):
+                r_t = template_start(g11, tid, y)
+                if r_t and mine:
+                    d = math.hypot(mine[0][0][0] - r_t[0], mine[0][0][2] - r_t[2])
+                    if d > TAG_LAYOUT_LIMIT:
+                        raise BadInput("tag team finisher-style moves aren't ported yet: its %s starts %.0f root units "
+                                       "from where 2011's corner double teams start theirs" % (who, d))
     if r0:
         import numpy as np
         a0 = keys_of[0][0][0][0]

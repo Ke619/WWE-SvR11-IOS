@@ -245,9 +245,12 @@ slot can't be tested with a forced start in a normal match.
   (`SVR2011_TEST_MATCH=people=CAW0,...`): the F-5 played 9 times, the victim down each time, no stuck pair.
   The moveset keeps the id, so every pack move saves alike; menu shots of a hidden game come from
   `SVR2011_TEST_SHOT_REQUEST`.
-- Batista Bomb & RKO (a double-team move, 9 Nov, 2.3d): forced in a tag match (`FORCE_PARTNER`) all three play it to
-  its end, but the attacker walks out of the ring and ends on the floor (area 1) - not right yet. Its source record
-  starts at 18 (the corner kind), as 2011's team finishers; the attacker's place in such a finisher isn't worked out.
+- Batista Bomb & RKO (a double-team move, 9 Nov, 2.3d): forced in a tag match (`FORCE_PARTNER`) all three played it to
+  its end, but the attacker walked out of the ring and ended on the floor (area 1). Its source starts its people off
+  2011's corner layout (the partner at 719, -360). The porter now keeps it back: a corner-kind tag move whose attacker
+  or partner starts over 1000 root units from its template's raises "tag team finisher-style moves aren't ported yet"
+  and moveset_port keeps the slot's base move with that warning. Of the '12-2K16 tag moves only it trips this (2K16:
+  54 of its 55 corner-kind moves port); the placement waits for the team finisher work.
 - Tag team moves seen playing to their end in a forced tag match (9 Nov, the partner the source's own): WWE '13's Double
   Suplex (standing, the pair suplexes the victim), WWE '12's Doomsday Device (the partner off the top rope, the victim
   ends lying, 448), 2K14's Uso Splash (the victim thrown, the partner dives at him from the corner; the landing wasn't

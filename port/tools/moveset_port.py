@@ -255,6 +255,12 @@ def port_moveset(c):
                                          % (nm, limit))
                 continue
             except Exception as e:   # noqa: BLE001
+                if 'finisher-style' in str(e):   # (a tag team finisher-style move: kept back on purpose, not a failure)
+                    for to in tos:
+                        rows.append((None, to, v, nm, "base kept (tag team finisher-style moves aren't ported yet)",
+                                     base[to // 2]))
+                    c.rep['warnings'].append('moveset: "%s": %s - the base move kept' % (nm, e))
+                    continue
                 for to in tos:
                     rows.append((None, to, v, nm, 'base kept (port failed: %s)' % str(e)[:80], base[to // 2]))
                 continue

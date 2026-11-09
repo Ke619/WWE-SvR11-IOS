@@ -75,5 +75,6 @@ void TouchGameInMatch(bool in_match);
 // Tests (script_input.h "touch"): a touch at x, y (fractions of the window)
 // by `pointer`; action 0 down, 1 move, 2 up.
 void TouchInject(uint32_t pointer, int action, float x, float y);
+constexpr uint32_t kTouchMousePointer = 0xFFFFFFF0u;  // (TouchInject's pointer for the mouse: tests' "click")
 
 }  // namespace svr2011

@@ -6,6 +6,7 @@
 #include "online_overlay.h"
 #include "keyboard_typing.h"
 #include "menu_touch.h"
+#include "frame_rate.h"
 
 #include <algorithm>
 #include <atomic>
@@ -42,7 +43,9 @@ REXCVAR_DEFINE_BOOL(touch_controls, true, "UI", "On-screen touch controller");
 REXCVAR_DEFINE_BOOL(touch_controls, false, "UI", "On-screen touch controller");
 #endif
 REXCVAR_DEFINE_BOOL(menu_touch, true, "UI", "Tap the game's menus directly");
-REXCVAR_DEFINE_BOOL(menu_touch_mouse, false, "UI", "A left click counts as a tap on the game's menus");
+REXCVAR_DEFINE_BOOL(menu_touch_mouse, true, "UI",
+                    "The mouse on the game's menus: a left click acts as a tap (lists, OPTIONS, the select grid, the VS "
+                    "screen); the cursor shows while the mouse moves");
 
 REXCVAR_DEFINE_BOOL(touch_auto_layout, true, "UI",
                     "Touch controller: MATCH layout in matches, MENU layout in menus");
@@ -632,6 +635,8 @@ Clock::time_point g_tap_at;
 
 void TapDown(uint32_t pointer, float x, float y) {
   if (!REXCVAR_GET(menu_touch) || (pointer == kMousePointer && !REXCVAR_GET(menu_touch_mouse))) return;
+  // (a match with mnk_mode on: the mouse is the player's camera and moves there, not a finger)
+  if (pointer == kMousePointer && svr2011::InMatch() && rex::cvar::Query<bool>("mnk_mode")) return;
   g_tap_pointer = pointer, g_tap_x = x, g_tap_y = y, g_tap_at = Clock::now();
 }
 
@@ -1201,6 +1206,10 @@ void InstallTouchControls(rex::ui::ImGuiDrawer* drawer, rex::ui::Window* window,
     window->app_context().CallInUIThread([window] {
       window->AddInputListener(&g_listener, 900);
       window->AddListener(&g_focus_listener);
+      // (the menus by mouse: its cursor shows while it moves and hides again - mnk_mode's capture hides it and puts
+      // this back after; menu_touch_mouse off: as before, always shown)
+      if (REXCVAR_GET(menu_touch) && REXCVAR_GET(menu_touch_mouse))
+        window->SetCursorVisibility(rex::ui::Window::CursorVisibility::kAutoHidden);
     });
   }
   REXLOG_INFO("touch controls: {} ({})", REXCVAR_GET(touch_controls) ? "on" : "off", g_file.string());

@@ -16,6 +16,7 @@
 //                               SVR2011_TEST_SCRIPT_AS_KEYBOARD=1 lists the script as the keyboard)
 //   touch <x> <y> <ms>          a finger on the on-screen controller at x, y
 //                               (fractions of the window) for ms
+//   click <x> <y> [ms]          the mouse's left button at x, y (fractions of the window): the menus by mouse
 //   drag <x0> <y0> <x1> <y1> <ms>   a finger down at x0, y0, moved to x1, y1
 //
 // Steps that wait for the game instead of a fixed time (so a slow phone and a
@@ -105,6 +106,7 @@ class ScriptInputDriver final : public rex::input::InputDriver {
     int sd = 0;  // ("sdcopy" 1 / "sdpaste" 2: story_designer.h)  // ("paste <text>" / "copy": keyboard_typing.h test aids)
     uint16_t key = 0;  // PC keyboard key pressed when the step starts
     bool touch = false;  // a finger (touch_controls.h) from x0, y0 to x1, y1
+    bool mouse = false;  // ... the mouse's left button instead (the menus by mouse: "click")
     float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
     enum Kind : uint8_t { kPlain, kTitle, kMenu, kUntil, kPressUntil, kWhere } kind = kPlain;  // (a step that waits for the game)
     std::string arg;  // its label / text

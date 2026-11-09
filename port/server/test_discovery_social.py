@@ -1,10 +1,11 @@
-"""Checks Discovery comments and star ratings (discovery_social.py, docs/DISCOVERY_API.md "Comments and ratings") on
+"""Checks Discovery comments and upvotes (discovery_social.py, docs/DISCOVERY_API.md "Comments and upvotes") on
 a private server of its own: loopback, a throwaway data folder, --test-open-accounts, the dashboard on loopback.
 
-  the mod page's rating / comment count / rights; posting (signed in only), every automatic refusal (links,
+  the mod page's upvotes / comment count / rights; posting (signed in only), every automatic refusal (links,
   invites, the name filter, the comment word list and its look-alikes, split archives, length, lines, repeats,
-  the rate limit), who may delete, reports, ratings (own mod, change, take back, bad values), the rating sort and
-  discovery_rating_min, mutes, the dashboard's hide / show / delete / clear reports / clear ratings, the switches,
+  the rate limit), who may delete, reports, upvotes (own mod, again, take back, bad values; 2.2.1's stars refused),
+  Most upvoted, mutes, the dashboard's hide / show / delete / clear reports / clear upvotes, the switches, the
+  author's own comments switch (PATCH comments: false - hidden, refused, kept for the dashboard),
   the Names tab's comment word list, a banned account, a hidden mod, account and mod deletion, the 30-day prune.
 
     python test_discovery_social.py [--port 8532] [--keep]
@@ -67,8 +68,11 @@ class Player:
     def comment(self, mid, text):
         return self.call("POST", "/api/mods/%d/comments" % mid, {"text": text})
 
-    def rate(self, mid, stars):
+    def rate(self, mid, stars):   # (2.2.1's stars: refused now)
         return self.call("POST", "/api/mods/%d/rating" % mid, {"stars": stars})
+
+    def upvote(self, mid, up=True):
+        return self.call("POST", "/api/mods/%d/upvote" % mid, {"up": up})
 
 
 def admin(url, method, path, value=None):
@@ -171,15 +175,15 @@ def run(url, data):
 
     # -- a mod's page
     st, r = anon(url, "/api/mods/%d" % m1)
-    check(st == 200 and r.get("rating") == {"avg": 0, "count": 0} and r.get("comments") == 0 and
-          r.get("comments_on") is True and r.get("ratings_on") is True and "can_rate" not in r,
-          "page, no token: rating 0/0, 0 comments, both on, no rights")
+    check(st == 200 and r.get("upvotes") == 0 and r.get("comments") == 0 and r.get("comments_on") is True and
+          r.get("upvotes_on") is True and r.get("ratings_on") is False and "rating" not in r and "can_upvote" not in r,
+          "page, no token: 0 upvotes, 0 comments, on, no stars (2.2.1 hides them), no rights")
     st, r = b.call("GET", "/api/mods/%d" % m1)
-    check(r.get("can_rate") is True and r.get("can_comment") is True and r.get("my_rating") == 0,
-          "page, another account: can rate and comment, my_rating 0")
+    check(r.get("can_upvote") is True and r.get("can_comment") is True and r.get("my_upvote") is False and
+          r.get("can_rate") is False, "page, another account: can upvote and comment, not upvoted, no stars")
     st, r = a.call("GET", "/api/mods/%d" % m1)
-    check(r.get("can_rate") is False and r.get("can_comment") is True and r.get("mine") is True,
-          "page, the uploader: can't rate its own, can comment")
+    check(r.get("can_upvote") is False and r.get("can_comment") is True and r.get("mine") is True,
+          "page, the uploader: can't upvote its own, can comment")
 
     # -- posting
     st, r = b.call("POST", "/api/mods/%d/comments" % m1, {"text": "no token"}, token=False)
@@ -306,40 +310,39 @@ def run(url, data):
     st, r = anon(url, "/api/mods/%d/comments" % m1)
     check(first in [x["id"] for x in r.get("comments", [])], "shown again")
 
-    # -- ratings
-    st, r = a.rate(m1, 5)
-    check(st == 403 and r.get("code") == "own_mod", "the uploader rates its own: own_mod")
-    st, r = b.rate(m1, 5)
-    check(st == 200 and r.get("rating") == {"avg": 5, "count": 1} and r.get("my_rating") == 5, "bob 5: 5.0 / 1")
-    st, r = c.rate(m1, 2)
-    check(r.get("rating") == {"avg": 3.5, "count": 2}, "cat 2: 3.5 / 2 (%s)" % r.get("rating"))
-    st, r = b.rate(m1, 1)
-    check(r.get("rating") == {"avg": 1.5, "count": 2}, "bob changes to 1: 1.5 / 2 (%s)" % r.get("rating"))
-    for bad in (6, -1, "5", 2.5, True, None):
-        st, r = b.rate(m1, bad)
-        check(st == 400 and r.get("code") == "bad_stars", "stars %r: bad_stars" % (bad,))
-    st, r = b.rate(m1, 0)
-    check(r.get("rating") == {"avg": 2, "count": 1} and r.get("my_rating") == 0, "bob takes his back: 2 / 1")
+    # -- upvotes
+    st, r = a.upvote(m1)
+    check(st == 403 and r.get("code") == "own_mod_upvote", "the uploader upvotes its own: own_mod_upvote")
+    st, r = b.upvote(m1)
+    check(st == 200 and r.get("upvotes") == 1 and r.get("my_upvote") is True, "bob upvotes: 1")
+    st, r = b.upvote(m1)
+    check(st == 200 and r.get("upvotes") == 1, "bob again: still 1")
+    st, r = c.upvote(m1)
+    check(r.get("upvotes") == 2, "cat upvotes: 2 (%s)" % r.get("upvotes"))
+    st, r = b.upvote(m1, False)
+    check(r.get("upvotes") == 1 and r.get("my_upvote") is False, "bob takes his back: 1")
+    for bad in ("yes", 1, None):
+        st, r = b.call("POST", "/api/mods/%d/upvote" % m1, {"up": bad})
+        check(st == 400 and r.get("code") == "bad_up", "up %r: bad_up" % (bad,))
     st, r = c.call("GET", "/api/mods/%d" % m1)
-    check(r.get("my_rating") == 2 and r.get("rating") == {"avg": 2, "count": 1}, "the page: cat's own rating 2")
-    st, r = b.call("POST", "/api/mods/%d/rating" % m1, {"stars": 4}, token=False)
-    check(st == 401, "rating without a token: 401")
+    check(r.get("my_upvote") is True and r.get("upvotes") == 1, "the page: cat's own upvote")
+    st, r = b.call("POST", "/api/mods/%d/upvote" % m1, {"up": True}, token=False)
+    check(st == 401, "upvote without a token: 401")
+    st, r = c.rate(m1, 5)
+    check(st == 410 and r.get("code") == "update_to_upvote" and "update" in r.get("error", ""),
+          "2.2.1's stars: refused with what to do (%s)" % r.get("error"))
 
-    # -- the rating sort: m2 4.0 x 3, m1 5.0 x 1 (fewer than discovery_rating_min 3), m3 none
-    c.rate(m1, 5)
+    # -- Most upvoted: m2 x 3, m1 x 1, m3 none
     for p in (a, c, d):
-        p.rate(m2, 4)
-    st, r = anon(url, "/api/mods?sort=rating")
+        p.upvote(m2)
+    st, r = anon(url, "/api/mods?sort=upvotes")
     order = [x["id"] for x in r.get("mods", [])]
-    check(order[:3] == [m2, m1, m3] and r.get("ratings_on") is True,
-          "sort=rating, min 3: the 3-rating mod before the single 5 (%s)" % order)
-    admin(url, "POST", "/api/admin/settings", {"discovery_rating_min": 1})
+    check(order[:3] == [m2, m1, m3] and r.get("upvotes_on") is True and r.get("ratings_on") is False,
+          "sort=upvotes: most first (%s)" % order)
     st, r = anon(url, "/api/mods?sort=rating")
-    order = [x["id"] for x in r.get("mods", [])]
-    check(order[:3] == [m1, m2, m3], "min 1: the single 5 first (%s)" % order)
-    admin(url, "POST", "/api/admin/settings", {"discovery_rating_min": 3})
+    check([x["id"] for x in r.get("mods", [])][:3] == [m2, m1, m3], "sort=rating (2.2.1's): the same order")
     row = [x for x in r.get("mods", []) if x["id"] == m2][0]
-    check(row.get("rating") == {"avg": 4, "count": 3}, "the list's row has the rating")
+    check(row.get("upvotes") == 3 and "rating" not in row, "the list's row: upvotes, no stars")
 
     # -- mutes
     st, r = admin(url, "GET", "/api/admin/discovery/comments?account=%d" % c.id)
@@ -349,12 +352,12 @@ def run(url, data):
     st, r = c.comment(m3, "muted cat speaks")
     check(st == 403 and r.get("code") == "muted", "muted (comments): comment refused")
     st, r = c.call("GET", "/api/mods/%d" % m3)
-    check(r.get("can_comment") is False and r.get("can_rate") is True, "the page: can't comment, can rate")
-    st, r = c.rate(m3, 3)
-    check(st == 200, "muted (comments): still rates")
+    check(r.get("can_comment") is False and r.get("can_upvote") is True, "the page: can't comment, can upvote")
+    st, r = c.upvote(m3)
+    check(st == 200, "muted (comments): still upvotes")
     admin(url, "POST", "/api/admin/discovery/mute", {"account": c.id, "scope": "all", "note": "test"})
-    st, r = c.rate(m3, 4)
-    check(st == 403 and r.get("code") == "muted_ratings", "muted (all): rating refused")
+    st, r = c.upvote(m3, False)
+    check(st == 403 and r.get("code") == "muted_ratings", "muted (all): upvote refused")
     st, r = admin(url, "GET", "/api/admin/discovery/comments")
     check([m["name"] for m in r.get("mutes", [])] == [c.name] and r["mutes"][0]["scope"] == "all",
           "the dashboard lists the mute")
@@ -373,30 +376,56 @@ def run(url, data):
     st, r = anon(url, "/api/mods/%d" % m1)
     check(r.get("comments_on") is False and r.get("comments") == 0, "comments off: the page says so")
     admin(url, "POST", "/api/admin/settings", {"discovery_comments": "on"})
-    admin(url, "POST", "/api/admin/settings", {"discovery_ratings": "off"})
-    st, r = anon(url, "/api/mods?sort=rating")
-    check(r.get("ratings_on") is False and all("rating" not in x for x in r.get("mods", [])) and
-          [x["id"] for x in r["mods"]][:1] == [m2], "ratings off: no rating in rows, sort falls back to new")
-    st, r = d.rate(m1, 3)
-    check(st == 403 and r.get("code") == "ratings_off", "ratings off: rating refused")
+    admin(url, "POST", "/api/admin/settings", {"discovery_upvotes": "off"})
+    st, r = anon(url, "/api/mods?sort=upvotes")
+    check(r.get("upvotes_on") is False and all("upvotes" not in x for x in r.get("mods", [])) and
+          [x["id"] for x in r["mods"]][:1] == [m2], "upvotes off: none in rows, the sort falls back to new")
+    st, r = d.upvote(m1)
+    check(st == 403 and r.get("code") == "upvotes_off", "upvotes off: refused")
     st, r = d.call("GET", "/api/mods/%d" % m1)
-    check("rating" not in r and r.get("can_rate") is False and r.get("ratings_on") is False, "ratings off: the page")
-    admin(url, "POST", "/api/admin/settings", {"discovery_ratings": "on"})
+    check("upvotes" not in r and r.get("can_upvote") is False and r.get("upvotes_on") is False, "upvotes off: the page")
+    admin(url, "POST", "/api/admin/settings", {"discovery_upvotes": "on"})
     st, r = anon(url, "/api/mods/%d" % m2)
-    check(r.get("rating") == {"avg": 4, "count": 3}, "ratings on again: kept (%s)" % r.get("rating"))
+    check(r.get("upvotes") == 3, "upvotes on again: kept (%s)" % r.get("upvotes"))
 
-    # -- clear a mod's ratings
-    st, r = admin(url, "POST", "/api/admin/mod/%d/clear-ratings" % m1)
-    check(st == 200 and r.get("cleared") == 1, "clear ratings: 1 cleared (%s)" % r.get("cleared"))
+    # -- clear a mod's upvotes
+    st, r = admin(url, "POST", "/api/admin/mod/%d/clear-upvotes" % m1)
+    check(st == 200 and r.get("cleared") == 1, "clear upvotes: 1 cleared (%s)" % r.get("cleared"))
     st, r = anon(url, "/api/mods/%d" % m1)
-    check(r.get("rating") == {"avg": 0, "count": 0}, "the mod's rating 0 / 0")
+    check(r.get("upvotes") == 0, "the mod's upvotes 0")
+
+    # -- the author's own comments switch (PATCH /api/mods/{id} {"comments": false})
+    st, r = b.call("GET", "/api/mods/%d/comments" % m2)
+    before = r.get("total")
+    st, r = d.call("PATCH", "/api/mods/%d" % m2, {"comments": False})
+    check(st == 403, "someone else can't turn its comments off (%d)" % st)
+    st, r = b.call("PATCH", "/api/mods/%d" % m2, {"comments": "off"})
+    check(st == 400, "comments: not a true/false - 400")
+    st, r = b.call("PATCH", "/api/mods/%d" % m2, {"comments": False})
+    check(st == 200 and r.get("mod", {}).get("comments_off") is True and not r["mod"].get("edited"),
+          "the author turns them off (not counted as an edit)")
+    st, r = anon(url, "/api/mods/%d" % m2)
+    check(r.get("comments_on") is False and r.get("comments_author_off") is True and r.get("comments") == 0,
+          "the page: comments off by the author")
+    st, r = anon(url, "/api/mods/%d/comments" % m2)
+    check(st == 200 and r.get("enabled") is False and r.get("author_off") is True and r.get("comments") == [] and
+          "author" in r.get("why", ""), "the list: hidden, says why")
+    st, r = d.comment(m2, "while the author has them off")
+    check(st == 403 and r.get("code") == "author_off", "posting: author_off (%s)" % r.get("error"))
+    st, r = admin(url, "GET", "/api/admin/discovery/comments?mod=%d&state=shown" % m2)
+    check(r.get("total") == before, "the dashboard still sees them all (%s of %s)" % (r.get("total"), before))
+    st, r = admin(url, "GET", "/api/admin/mods")
+    check(any(m["id"] == m2 and m.get("comments_off") for m in r.get("mods", [])), "the dashboard's mod row says so")
+    st, r = b.call("PATCH", "/api/mods/%d" % m2, {"comments": True})
+    st, r = anon(url, "/api/mods/%d/comments" % m2)
+    check(r.get("enabled") is True and r.get("total") == before, "on again: all back (%s)" % r.get("total"))
 
     # -- a hidden mod
     admin(url, "POST", "/api/admin/mod/%d/hide" % m3)
     st, r = anon(url, "/api/mods/%d/comments" % m3)
     check(st == 404 and r.get("code") == "no_mod", "a hidden mod: comments 404")
-    st, r = d.rate(m3, 3)
-    check(st == 404, "a hidden mod: rating 404")
+    st, r = d.upvote(m3)
+    check(st == 404, "a hidden mod: upvote 404")
     admin(url, "POST", "/api/admin/mod/%d/show" % m3)
 
     # -- a banned account
@@ -405,25 +434,25 @@ def run(url, data):
     st, r = e.comment(m1, "eve banned")
     check(st == 401 and r.get("code") == "sign_in_needed", "banned: its session is gone (401)")
 
-    # -- account deleted: dan's ratings, reports and comments go; the mods' counts follow
+    # -- account deleted: dan's upvotes, reports and comments go; the mods' counts follow
     d.call("POST", "/api/mods/%d/comments/%d/report" % (m1, first), {"why": "x"})
     st, r = admin(url, "POST", "/api/admin/user/%d/delete" % users[d.name]["id"])
     st, r = anon(url, "/api/mods/%d" % m2)
-    check(r.get("rating") == {"avg": 4, "count": 2}, "dan deleted: m2 4.0 / 2 (%s)" % r.get("rating"))
+    check(r.get("upvotes") == 2, "dan deleted: m2 2 upvotes (%s)" % r.get("upvotes"))
     st, r = admin(url, "GET", "/api/admin/discovery/comments?state=reported")
     check(r.get("total") == 0, "dan's report gone")
     db = sqlite3.connect(os.path.join(data, "community.db"))
-    n = db.execute("SELECT (SELECT COUNT(*) FROM mod_ratings WHERE account = ?) + (SELECT COUNT(*) FROM mod_comments"
+    n = db.execute("SELECT (SELECT COUNT(*) FROM mod_upvotes WHERE account = ?) + (SELECT COUNT(*) FROM mod_comments"
                    " WHERE account = ?)", (d.id, d.id)).fetchone()[0]
     check(n == 0, "dan's rows gone from the database")
 
-    # -- mod deleted by its owner: its comments and ratings go
+    # -- mod deleted by its owner: its comments and upvotes go
     st, r = a.call("DELETE", "/api/mods/%d" % m1)
     check(st == 200, "ann deletes mod %d" % m1)
-    n = db.execute("SELECT (SELECT COUNT(*) FROM mod_comments WHERE mod = ?) + (SELECT COUNT(*) FROM mod_ratings"
+    n = db.execute("SELECT (SELECT COUNT(*) FROM mod_comments WHERE mod = ?) + (SELECT COUNT(*) FROM mod_upvotes"
                    " WHERE mod = ?) + (SELECT COUNT(*) FROM mod_comment_reports WHERE comment = ?)",
                    (m1, m1, first)).fetchone()[0]
-    check(n == 0, "its comments, ratings and reports gone")
+    check(n == 0, "its comments, upvotes and reports gone")
     st, r = anon(url, "/api/mods/%d/comments" % m1)
     check(st == 404, "its comments: 404")
     db.close()
@@ -442,7 +471,7 @@ def run(url, data):
     for method, path in (("GET", "/api/admin/discovery/comments"), ("POST", "/api/admin/discovery/mute"),
                          ("POST", "/api/admin/discovery/comment/%d/hide" % cat_comment),
                          ("GET", "/api/admin/names?list=comments"), ("POST", "/api/admin/names"),
-                         ("POST", "/api/admin/mod/%d/clear-ratings" % m2)):
+                         ("POST", "/api/admin/mod/%d/clear-upvotes" % m2)):
         st, _ = request(url + path, method, b"{}" if method == "POST" else None, outside)
         check(st in (401, 403), "from outside: %s %s refused (%d)" % (method, path, st))
 

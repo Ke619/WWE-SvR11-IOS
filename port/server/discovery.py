@@ -115,7 +115,8 @@ def _row(r, full=False):
          "types": [k for k, v in TYPES.items() if r[4] & v], "tags": [t for t in (r[5] or "").split(",") if t],
          "version": r[6], "size": r[8], "hidden": bool(r[12]), "created": r[13], "downloads": r[14],
          "updated": r[15], "edited": r[16], "pics": r[17] or 0, "needs": r[18] or "",
-         "rating": discovery_social.rating_json(r[19], r[20])}  # (discovery_social.py: 1-5 stars)
+         "upvotes": r[21] or 0,  # (discovery_social.py; 2.2.1's stars, r[19] / r[20], are no longer shown)
+         "comments_off": bool(r[22])}  # (the author turned its comments off)
     if full:
         d["description"] = r[7]
         d["file_name"] = r[11]
@@ -123,12 +124,12 @@ def _row(r, full=False):
 
 
 COLS = ("id, owner, author, name, types, tags, version, description, size, sha, images, file_name, hidden, created,"
-        " downloads, updated, edited, pics, needs, rating_sum, rating_count")
+        " downloads, updated, edited, pics, needs, rating_sum, rating_count, upvotes, comments_off")
 
 
 def search(store, q="", types=0, tag="", sort="new", page=0, with_hidden=False, rating_min=3):
-    """sort: new / popular / name / updated / rating (mods with rating_min ratings or more first, by their
-    average, then the number of ratings; the rest after them, the same way)."""
+    """sort: new / popular / name / updated / upvotes (most upvoted first; "rating", 2.2.1's, sorts the same).
+    rating_min: 2.2.1's, unused."""
     where, args = [], []
     if not with_hidden:
         where.append("hidden = 0")
@@ -144,9 +145,8 @@ def search(store, q="", types=0, tag="", sort="new", page=0, with_hidden=False, 
     sql_where = (" WHERE " + " AND ".join(where)) if where else ""
     order = {"new": "created DESC", "popular": "downloads DESC, created DESC", "name": "lower(name)",
              "updated": "COALESCE(updated, created) DESC",
-             "rating": "(COALESCE(rating_count, 0) >= %d) DESC, CAST(COALESCE(rating_sum, 0) AS REAL) / "
-                       "MAX(COALESCE(rating_count, 0), 1) DESC, rating_count DESC, created DESC"
-                       % max(1, int(rating_min))}.get(sort, "created DESC")
+             "upvotes": "COALESCE(upvotes, 0) DESC, created DESC",
+             "rating": "COALESCE(upvotes, 0) DESC, created DESC"}.get(sort, "created DESC")
     with store.lock:
         total = store.db.execute("SELECT COUNT(*) FROM mods" + sql_where, args).fetchone()[0]
         rows = store.db.execute("SELECT %s FROM mods%s ORDER BY %s LIMIT ? OFFSET ?" % (COLS, sql_where, order),

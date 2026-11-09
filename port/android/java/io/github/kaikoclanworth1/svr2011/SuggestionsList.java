@@ -26,13 +26,17 @@ import java.util.List;
 
 final class SuggestionsList {
     static final int kMaxPictures = 3;
+    // (on the page, above the form, and again before Send - as the PC launcher's Suggestions tab)
+    static final String kAbout = "Suggestions are for the game and its tools (the launcher, the Mod Maker, the porters)"
+        + " - not requests for mods. Ask mod makers for mods on Discord.";
 
     static void show(LauncherActivity a) {
         LinearLayout v = new LinearLayout(a);
         v.setOrientation(LinearLayout.VERTICAL);
         v.setPadding(a.dp(20), a.dp(8), a.dp(20), a.dp(4));
-        v.addView(a.text("An idea for the game, the launcher or the Mod Maker? Send it here - we read every one and "
-            + "answer it here: Sure, No (not planned), or Done in an update.", 13, LauncherActivity.kDim));
+        v.addView(a.text(kAbout, 14, LauncherActivity.kText));
+        v.addView(a.text("We read every one and answer it here: Sure, No (not planned), or Done in an update.", 13,
+            LauncherActivity.kDim));
         Button send = a.button("Send an idea…", LauncherActivity.kRed);
         v.addView(send, a.fullWidth(8));
         TextView status = a.text("", 13, LauncherActivity.kDim);
@@ -108,6 +112,7 @@ final class SuggestionsList {
         LinearLayout v = new LinearLayout(a);
         v.setOrientation(LinearLayout.VERTICAL);
         v.setPadding(a.dp(20), a.dp(8), a.dp(20), a.dp(4));
+        v.addView(a.text(kAbout, 13, LauncherActivity.kDim));
         EditText title = new EditText(a);
         title.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
         title.setTextColor(LauncherActivity.kText);
@@ -213,9 +218,23 @@ final class SuggestionsList {
                 a.status("Sign in (or create an account), then send your idea.");
                 return;
             }
+            Runnable go = () -> sendIdea(a, d, b, error, rows, listStatus, pics, t, w, name[0]);
+            new AlertDialog.Builder(a, AlertDialog.THEME_DEVICE_DEFAULT_DARK)   // (the reminder again before it goes)
+                .setTitle("Before you send it")
+                .setMessage(kAbout + "\n\nSend this idea?")
+                .setPositiveButton("Send", (x2, y2) -> go.run())
+                .setNegativeButton("Cancel", null)
+                .show();
+        }));
+        d.show();
+    }
+
+    static void sendIdea(LauncherActivity a, AlertDialog d, View b, TextView error, LinearLayout rows,
+                         TextView listStatus, List<File> pics, String t, String w, String contact) {
+        {
             ReportSend.Answers ans = new ReportSend.Answers();
             ans.kind = "suggestion";
-            ans.contact = name[0];
+            ans.contact = contact;
             ans.version = a.versionName();
             ans.os = android.os.Build.VERSION.RELEASE + " (API " + android.os.Build.VERSION.SDK_INT + "), "
                 + android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL;
@@ -244,7 +263,6 @@ final class SuggestionsList {
                     error.setVisibility(View.VISIBLE);
                 }
             });
-        }));
-        d.show();
+        }
     }
 }

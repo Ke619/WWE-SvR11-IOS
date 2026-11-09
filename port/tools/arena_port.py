@@ -155,6 +155,8 @@ SVR2007 = {
 # SvR 2007-2010 lack: without it he stands in the bind pose in the intro)
 HOST_ENTRIES = (0x192, 0x4E20, 0x4E21, 0x4E22, 0x4E23, 0x4E2A, 0x7922, 0xEE48, 0xEA6C)
 MOTION_BANK = 0x7922
+# a source arena's own crowd where its format is 2011's (SvR 2009); SVR2011_PORT_HOST_CROWD=1: the host's, as before
+OWN_CROWD = os.environ.get('SVR2011_PORT_HOST_CROWD') != '1'
 # SvR 2007-2009 turnbuckle covers (ar_cover10-13): a black logo pad (rin_tb00) inside a white taped
 # shell (rin_tb10) that 2011 draws over the pad - the "white turnbuckles". 2011 RAW's covers are the
 # same black logo pads with no shell, on the same ring.
@@ -640,18 +642,45 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
         _, ga, _ = svrfmt.epac_read(disc.read('pac/bg/bg%02d.pac' % n))
         stage = ga[0][1][0][1]
     ents = {}
+    loose_crowd = []
     for i, x in svrfmt.pach_read(stage):
-        # (2007: its crowd is loose models and seat files 0x4E20-0x52FF, plus 0x9C40-0x9CFF)
+        # (2007: its crowd is loose models and seat files 0x4E20-0x52FF, plus 0x9C40-0x9CFF - the parts of 2011's crowd
+        # pack, the same ids as SvR 2008's audience.pac, unpacked into the stage: gathered into one below)
         if game == 'svr2007' and (0x4E20 <= i <= 0x52FF or 0x9C40 <= i <= 0x9CFF):
+            loose_crowd.append((i, x))
             continue
         ents[{0xC8: 0x190, 0xC9: 0x191}.get(i, i)] = x
     if 0x190 not in ents:
         raise RuntimeError('bg%02d: no texture set (0xC8)' % n)
+    # (SvR 2009's crowd pack 0x4E20 is 2011's format - its people, textures and seat tables for its own stands - with
+    # no low-detail copy 0x4E2A: kept, as both. Its 0x4E21 / 0x4E22 / 0x4E23 / 0x7922 - animation, areas, motions - are
+    # the host's, the same in every 2011 arena)
+    # SvR 2008 keeps its one crowd for every arena in pac/audience.pac (AUDE/BASE: the same pack - people, pictures, seat
+    # tables and the seat areas with their heights for 2008's stands). With 2011 RAW's in its place the people sat at
+    # RAW's stand heights: sunk behind 2008's seats, on its stairs (One Night Stand)
+    # (Legends of WrestleMania: each arena its own pack, as SvR 2009 - its audience.pac holds only BORD)
+    own_crowd = ents.get(0x4E20) if game in ('svr2009', 'low') and OWN_CROWD else None
+    if game == 'svr2008' and OWN_CROWD:
+        try:
+            import moves_port
+            aude = {nm: b for typ, es in moves_port.read_pac(disc.read('pac/audience.pac')) if typ == b'AUDE' for nm, b in es}
+            own_crowd = aude.get(b'BASE')
+        except Exception as e:  # (no audience.pac - a lone arena file: the host's crowd)
+            notes.append('SvR 2008 crowd not read (%s): the host\'s' % e)
+    if game == 'svr2007' and OWN_CROWD and any((svrfmt.bpe_decode(x) if x[:4] == b'BPE ' else x)[:3] == b'; \x90'
+                                               for i, x in loose_crowd):   # (a seat table among them: a whole crowd)
+        own_crowd = bpe(svrfmt.pach_write(sorted(loose_crowd)))
+    if own_crowd is not None and (svrfmt.bpe_decode(own_crowd) if own_crowd[:4] == b'BPE ' else own_crowd)[:4] != b'PACH':
+        own_crowd = None
     for i in (0x4E20, 0x4E21, 0x4E22, 0x4E23, 0x4E2A, 0x7922):  # older crowd / motion formats
         ents.pop(i, None)
     for i in HOST_ENTRIES + HOST_COVERS:
         if i in eb:
             ents[i] = eb[i]
+    if own_crowd is not None:
+        ents[0x4E20] = ents[0x4E2A] = own_crowd
+        notes.append("its own crowd (people, pictures and seats for its stands%s), as both crowd packs"
+                     % (', from pac/audience.pac' if game == 'svr2008' else ', gathered from the stage' if game == 'svr2007' else ''))
     unp = lambda b: svrfmt.bpe_decode(b) if b[:4] == b'BPE ' else b  # noqa: E731
     have = None
     progress(8, 'lights')
@@ -679,7 +708,8 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
         if moved:
             ents[0xC351] = bpe(flags)
             notes.append('light sets missing from the arena, moved: ' + ', '.join('%d -> %d' % kv for kv in sorted(moved.items())))
-    notes.append('crowd, announce table pictures and card from 2011 RAW')
+    notes.append('announce table pictures and card from 2011 RAW' if own_crowd is not None else
+                 'crowd, announce table pictures and card from 2011 RAW')
 
     def build(tex_blob):
         e = dict(ents)

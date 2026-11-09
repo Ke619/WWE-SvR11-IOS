@@ -16,7 +16,14 @@
 // count and longest, and which entries the waits were for. The ping indicator
 // (fps_overlay.cpp) reads NetStatsNow().
 #include "net_stats.h"
+#include "match_diag.h"
 #include "online.h"
+#include "online_chat.h"
+#include "pad_types.h"
+
+#include <rex/input/input.h>
+#include <rex/input/input_system.h>
+#include <rex/runtime.h>
 
 #include <algorithm>
 #include <array>
@@ -25,6 +32,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <mutex>
 #include <string>
 
@@ -52,6 +60,11 @@ struct Window {
   uint64_t frames = 0, waited = 0, waits = 0;
   double longest_ms = 0, waited_ms = 0;
   std::array<uint64_t, kMaxEntries> blamed{};  // frames waited for each entry's input
+  // (report 6dde2f) frames with a press: this game's input as sent (+48), each entry's as applied (+52), and each
+  // of this PC's controllers (player 1-4) as the input system has them
+  uint64_t sent_pressed = 0;
+  std::array<uint64_t, kMaxEntries> applied_pressed{};
+  std::array<uint64_t, svr2011::kMaxPlayers> pad_pressed{};
 };
 
 std::mutex g_mutex;
@@ -60,6 +73,38 @@ Clock::time_point g_window_start{};
 bool g_was_waiting = false;
 Clock::time_point g_wait_start{}, g_last_frame{};
 uint32_t g_entries = 0, g_local = 0;
+uint32_t g_send_port = 0xFFFFFFFF;  // (the controller port the match reads this game's input from: its wrestler's +1152)
+uint32_t g_told_net = 0;            // (the match net object whose entries were logged)
+bool g_warned_pad = false;          // (the "another controller was used" warning, once a match)
+
+// The character objects by lobby slot (the send reads this game's pad from its slot's: +1152 the controller port,
+// +1156 the person).
+constexpr uint32_t kSlotCharacters = 0x82E3CC50;
+
+// Any press on a controller (buttons, triggers, sticks past a dead zone).
+bool Pressed(const rex::input::X_INPUT_GAMEPAD& g) {
+  auto tilted = [](int16_t v) { return v > 9000 || v < -9000; };
+  return uint16_t(g.buttons) != 0 || g.left_trigger > 40 || g.right_trigger > 40 || tilted(int16_t(g.thumb_lx)) ||
+         tilted(int16_t(g.thumb_ly)) || tilted(int16_t(g.thumb_rx)) || tilted(int16_t(g.thumb_ry));
+}
+
+// This PC's controllers with a press now (bit per player 1-4).
+uint32_t PadsPressed() {
+  auto* rt = rex::Runtime::instance();
+  auto* input = rt ? static_cast<rex::input::InputSystem*>(rt->input_system()) : nullptr;
+  if (!input) return 0;
+  uint32_t bits = 0;
+  for (uint32_t p = 0; p < svr2011::kMaxPlayers; ++p) {
+    rex::input::X_INPUT_STATE st{};
+    if (input->GetState(p, &st) == 0 && Pressed(st.gamepad)) bits |= 1u << p;
+  }
+  return bits;
+}
+
+const char* PadName(uint32_t port) {
+  static const char* const kType[] = {"no controller", "Xbox", "PlayStation", "keyboard"};
+  return port < svr2011::kMaxPlayers ? kType[int(svr2011::PlayerPadType(port))] : "no controller";
+}
 svr2011::NetStats g_now{};       // the last finished window (the indicator)
 std::atomic<int64_t> g_last_sample_ms{0};
 
@@ -79,10 +124,30 @@ void Report(Clock::time_point now) {
     rtts += fmt::format("{}{}.{}: {:.0f} (worst {:.0f}){}", rtts.empty() ? "" : ", ", (l.peer >> 8) & 255,
                         l.peer & 255, l.rtt_ms, l.worst_ms, l.relayed ? " relay" : "");
   }
+  std::string applied, pads;
+  for (uint32_t k = 0; k < g_entries && k < kMaxEntries; ++k)
+    applied += fmt::format("{}{}:{}", applied.empty() ? "" : " ", k, g_window.applied_pressed[k]);
+  for (uint32_t p = 0; p < svr2011::kMaxPlayers; ++p)
+    if (svr2011::PlayerPadType(p) != svr2011::PadType::kNone || g_window.pad_pressed[p])
+      pads += fmt::format("{}{}:{}", pads.empty() ? "" : " ", p + 1, g_window.pad_pressed[p]);
   REXLOG_INFO("net: {:.1f} s, {} frames ({:.1f}/s), waited {} frames ({:.0f} ms) in {} waits, longest {:.0f} ms; "
-              "waiting for entries [{}] (this game {} of {}); round trips ms [{}]",
+              "waiting for entries [{}] (this game {} of {}); round trips ms [{}]; frames pressed: sent {} (player "
+              "{}'s controller), applied [{}], this PC's players [{}]",
               secs, g_window.frames, g_window.frames / std::max(secs, 0.001), g_window.waited, g_window.waited_ms,
-              g_window.waits, g_window.longest_ms, blame, g_local, g_entries, rtts);
+              g_window.waits, g_window.longest_ms, blame, g_local, g_entries, rtts, g_window.sent_pressed,
+              g_send_port + 1, applied, pads);
+  // (report 6dde2f: the player plays with one controller, the match takes another - the other games see this
+  // wrestler stand still)
+  if (!g_warned_pad && g_window.frames >= 200 && g_window.sent_pressed == 0 && g_send_port < svr2011::kMaxPlayers) {
+    for (uint32_t p = 0; p < svr2011::kMaxPlayers; ++p)
+      if (p != g_send_port && g_window.pad_pressed[p] >= 30) {
+        REXLOG_WARN("net: player {}'s controller ({}) was used for {} frames, but this match takes this game's input "
+                    "from player {}'s ({}) - the other players see this wrestler stand still (report 6dde2f)",
+                    p + 1, PadName(p), g_window.pad_pressed[p], g_send_port + 1, PadName(g_send_port));
+        g_warned_pad = true;
+        break;
+      }
+  }
   g_now.active = true;
   g_now.waited_pct = g_window.frames ? float(100.0 * g_window.waited / g_window.frames) : 0.0f;
   g_now.longest_ms = float(g_window.longest_ms);
@@ -130,6 +195,28 @@ REX_HOOK_RAW(sub_82893BD0) {
       g_window.longest_ms =
           std::max(g_window.longest_ms, std::chrono::duration<double, std::milli>(now - g_wait_start).count());
     }
+    {   // (report 6dde2f) who drives what: once a match, every entry's slot and person and this game's controller
+      const uint32_t slot = Rd32(o + kLocal);
+      const uint32_t ch = slot < 6 ? Rd32(base + kSlotCharacters + 4 * slot) : 0;
+      g_send_port = ch ? Rd32(base + ch + 1152) : 0xFFFFFFFF;
+      if (obj != g_told_net && ch) {   // (once its wrestler is there: before the match it isn't)
+        g_told_net = obj;
+        g_warned_pad = false;
+        std::string entries;
+        for (uint32_t k = 0; k < g_entries; ++k) {
+          const uint32_t ks = Rd32(o + k * kEntrySize + 4);
+          const uint32_t kc = ks < 6 ? Rd32(base + kSlotCharacters + 4 * ks) : 0;
+          entries += fmt::format("{}{}: slot {}, person {}{}", entries.empty() ? "" : "; ", k, ks,
+                                 kc ? int32_t(Rd32(base + kc + 1156)) : -1, k == g_local ? " (this game)" : "");
+        }
+        REXLOG_INFO("net: this game is entry {} of {} (slot {}); its wrestler is person {}, its input is player {}'s "
+                    "controller ({}); entries: {}", g_local, g_entries, slot, ch ? int32_t(Rd32(base + ch + 1156)) : -1,
+                    g_send_port + 1, PadName(g_send_port), entries);
+      }
+      const uint32_t pads = PadsPressed();
+      for (uint32_t p = 0; p < svr2011::kMaxPlayers; ++p)
+        if (pads >> p & 1) ++g_window.pad_pressed[p];
+    }
     g_was_waiting = waiting;
     g_last_frame = now;
     g_last_sample_ms = NowMs();
@@ -138,6 +225,31 @@ REX_HOOK_RAW(sub_82893BD0) {
   {
     svr2011::OnlineCpuPadScope pads(base, obj);  // (online.h: a human in a slot past the CPUs')
     __imp__sub_82893BD0(ctx, base);
+  }
+  if (!off && obj) {   // (the step check, online_chat.h: each time the match clock reaches a multiple of 300)
+    static uint32_t last_clock = 0xFFFFFFFF;
+    const uint32_t clock = svr2011::MatchClock(base);
+    if (clock != last_clock && clock && clock % 300 == 0) {
+      last_clock = clock;
+      uint64_t h = 1469598103934665603ull;
+      auto mix = [&h](uint32_t v) {
+        for (int i = 0; i < 4; ++i) h = (h ^ ((v >> (8 * i)) & 255)) * 1099511628211ull;
+      };
+      auto bits = [](float f) { uint32_t u; std::memcpy(&u, &f, 4); return u; };
+      std::string summary;
+      for (const auto& m : svr2011::MatchPeople(base)) {
+        mix(m.person), mix(m.motion), mix(bits(m.root_x)), mix(bits(m.root_y)), mix(bits(m.root_z));
+        if (m.has_position) mix(bits(m.x)), mix(bits(m.y)), mix(bits(m.z));
+        summary += fmt::format("{}{}:m{}@{:.1f},{:.1f}", summary.empty() ? "" : " ", m.person, m.motion, m.root_x,
+                               m.root_z);
+      }
+      svr2011::OnlineMatchStep(clock, h, summary);
+    }
+  }
+  if (!off && obj) {   // (the input just sent: the local entry's +48)
+    const uint8_t* o = base + obj;
+    std::lock_guard lock(g_mutex);
+    if (g_local < kMaxEntries && Rd32(o + g_local * kEntrySize + 48) != 0) ++g_window.sent_pressed;
   }
   if (FILE* f = InputLog(); f && obj) {  // (the input just sent: the local entry's +48)
     const uint8_t* o = base + obj;
@@ -153,9 +265,16 @@ REX_HOOK_RAW(sub_82893BD0) {
 // - for measuring how many frames a press takes to apply, locally and remotely.
 REX_EXTERN(__imp__sub_82893E18);
 REX_HOOK_RAW(sub_82893E18) {
+  const uint32_t net = ctx.r3.u32;   // (the match net object: r3 doesn't survive the call)
   {
     svr2011::OnlineCpuPadScope pads(base, ctx.r3.u32);  // (online.h)
     __imp__sub_82893E18(ctx, base);
+  }
+  if (net) {   // (each entry's input as this frame applies it: +52)
+    const uint8_t* o = base + net;
+    std::lock_guard lock(g_mutex);
+    for (uint32_t k = 0; k < std::min(Rd32(o + kCount), kMaxEntries); ++k)
+      if (Rd32(o + k * kEntrySize + 52) != 0) ++g_window.applied_pressed[k];
   }
   FILE* f = InputLog();
   const uint32_t obj = Rd32(base + kNetObject);

@@ -1,13 +1,15 @@
-"""Discovery comments and star ratings (docs/DISCOVERY_API.md, "Comments and ratings").
+"""Discovery comments and upvotes (docs/DISCOVERY_API.md, "Comments and upvotes").
 
-Players signed in to an online account comment on a mod's page (plain text, flat, newest first) and rate it 1-5
-stars (one rating per account per mod, changeable; not their own mod). The server checks every comment itself
+Players signed in to an online account comment on a mod's page (plain text, flat, newest first) and upvote it (one
+upvote per account per mod, which they can take back; not their own mod). 2.2.2 replaced 2.2.1's 1-5 stars with
+upvotes (suggestion 65e402: stars invited low ratings on tested work); the old star rows (mod_ratings) are kept,
+unused. A mod's author can turn comments off for it (mods.comments_off): its comments stay, hidden from players. The server checks every comment itself
 (server.py discovery_comment_why: links, the name filter, the comment word list, rate limits); the dashboard's
 Discovery comments tab hides / deletes comments, mutes accounts and clears a mod's ratings.
 
 A comment's state: 0 shown, 1 hidden by the dashboard, 2 deleted by its writer or the mod's owner. Deleted ones are
 kept KEEP_DELETED (the dashboard still sees a reported comment its writer deleted), then removed by prune().
-The mods table keeps rating_sum / rating_count up to date with each rating (the list and its sort stay cheap).
+The mods table keeps its upvote count (upvotes) up to date with each one (the list and its sort stay cheap).
 """
 import collections
 import re
@@ -43,6 +45,12 @@ _INVITE = re.compile(r"(?:discord(?:app)?\s*\.\s*(?:gg|com|me|io)|\.gg\s*/|/invi
 COMMENT_WHY = {
     "comments_off": "Comments are off for now.",
     "ratings_off": "Ratings are off for now.",
+    "upvotes_off": "Upvotes are off for now.",
+    "update_to_upvote": "Mods get upvotes now instead of stars - update the launcher (2.2.2) to upvote.",
+    "author_off": "The author turned comments off for this mod.",
+    "own_mod_upvote": "You can't upvote your own mod.",
+    "upvote_too_fast": "Too many upvotes - wait a while.",
+    "bad_up": "Send {\"up\": true} to upvote, {\"up\": false} to take it back.",
     "sign_in_needed": "Sign in to an online account first: the launcher's Online tab.",
     "muted": "Your account can't comment on Discovery.",
     "muted_ratings": "Your account can't rate mods on Discovery.",
@@ -80,9 +88,13 @@ def init(store):
                 comment INTEGER, account INTEGER, why TEXT, at REAL, PRIMARY KEY (comment, account));
             CREATE TABLE IF NOT EXISTS discovery_mutes (
                 account INTEGER PRIMARY KEY, scope TEXT, note TEXT, at REAL);
+            CREATE TABLE IF NOT EXISTS mod_upvotes (
+                mod INTEGER, account INTEGER, at REAL, PRIMARY KEY (mod, account));
+            CREATE INDEX IF NOT EXISTS mod_upvotes_account ON mod_upvotes (account);
         """)
         have = {r[1] for r in store.db.execute("PRAGMA table_info(mods)")}
-        for col in ("rating_sum", "rating_count"):
+        # (rating_sum / rating_count: 2.2.1's stars, kept unused; upvotes: the count; comments_off: the author's switch)
+        for col in ("rating_sum", "rating_count", "upvotes", "comments_off"):
             if col not in have:
                 store.db.execute("ALTER TABLE mods ADD COLUMN %s INTEGER DEFAULT 0" % col)
         store.db.commit()
@@ -322,6 +334,60 @@ def clear_ratings(store, mod_id):
     return n
 
 
+# -- upvotes (2.2.2) -----------------------------------------------------------------------------------------------
+
+def upvotes(store, mod_id):
+    with store.lock:
+        r = store.db.execute("SELECT upvotes FROM mods WHERE id = ?", (mod_id,)).fetchone()
+    return (r[0] or 0) if r else 0
+
+
+def my_upvote(store, mod_id, account_id):
+    with store.lock:
+        return bool(store.db.execute("SELECT 1 FROM mod_upvotes WHERE mod = ? AND account = ?",
+                                     (mod_id, account_id)).fetchone())
+
+
+def _recount_upvotes(store, mod_id):
+    store.db.execute("UPDATE mods SET upvotes = (SELECT COUNT(*) FROM mod_upvotes WHERE mod = ?) WHERE id = ?",
+                     (mod_id, mod_id))
+
+
+def upvote(store, mod_id, account_id, up):
+    """up True: the account's upvote (again: nothing more); False: taken back. -> the mod's count."""
+    with store.lock:
+        if up:
+            store.db.execute("INSERT OR IGNORE INTO mod_upvotes VALUES (?, ?, ?)", (mod_id, account_id, time.time()))
+        else:
+            store.db.execute("DELETE FROM mod_upvotes WHERE mod = ? AND account = ?", (mod_id, account_id))
+        _recount_upvotes(store, mod_id)
+        store.db.commit()
+    return upvotes(store, mod_id)
+
+
+def clear_upvotes(store, mod_id):
+    with store.lock:
+        n = store.db.execute("DELETE FROM mod_upvotes WHERE mod = ?", (mod_id,)).rowcount
+        _recount_upvotes(store, mod_id)
+        store.db.commit()
+    return n
+
+
+# -- the author's comments switch (2.2.2) -------------------------------------------------------------------------
+
+def author_comments_off(store, mod_id):
+    with store.lock:
+        r = store.db.execute("SELECT comments_off FROM mods WHERE id = ?", (mod_id,)).fetchone()
+    return bool(r and r[0])
+
+
+def set_author_comments(store, mod_id, on):
+    """The author's switch: on = comments shown and open; off = hidden and refused (they stay stored)."""
+    with store.lock:
+        store.db.execute("UPDATE mods SET comments_off = ? WHERE id = ?", (0 if on else 1, mod_id))
+        store.db.commit()
+
+
 # -- mutes ---------------------------------------------------------------------------------------------------------
 
 def muted(store, account_id):
@@ -359,12 +425,14 @@ def drop_mod(store, mod_id):
                          (mod_id,))
         store.db.execute("DELETE FROM mod_comments WHERE mod = ?", (mod_id,))
         store.db.execute("DELETE FROM mod_ratings WHERE mod = ?", (mod_id,))
+        store.db.execute("DELETE FROM mod_upvotes WHERE mod = ?", (mod_id,))
 
 
 def drop_account(store, account_id):
     """A deleted account's comments, ratings (the mods' counts again), reports and mute. Under the store's lock."""
     with store.lock:
         rated = [r[0] for r in store.db.execute("SELECT mod FROM mod_ratings WHERE account = ?", (account_id,))]
+        upped = [r[0] for r in store.db.execute("SELECT mod FROM mod_upvotes WHERE account = ?", (account_id,))]
         store.db.execute("DELETE FROM mod_comment_reports WHERE comment IN (SELECT id FROM mod_comments WHERE"
                          " account = ?)", (account_id,))
         for cid in [r[0] for r in store.db.execute("SELECT comment FROM mod_comment_reports WHERE account = ?",
@@ -374,8 +442,11 @@ def drop_account(store, account_id):
         store.db.execute("DELETE FROM mod_comments WHERE account = ?", (account_id,))
         store.db.execute("DELETE FROM mod_ratings WHERE account = ?", (account_id,))
         store.db.execute("DELETE FROM discovery_mutes WHERE account = ?", (account_id,))
+        store.db.execute("DELETE FROM mod_upvotes WHERE account = ?", (account_id,))
         for mid in rated:
             _recount(store, mid)
+        for mid in upped:
+            _recount_upvotes(store, mid)
 
 
 def prune(store, keep=KEEP_DELETED):

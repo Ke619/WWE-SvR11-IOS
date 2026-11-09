@@ -3,7 +3,8 @@
  * Three views on one page: the grid (search by words, type and order; 24 a page, each with its first picture),
  * a mod's page (its four pictures, what it is, Download and install; Delete for its uploader) and the upload
  * form (name, version, types, tags, description, the .svrmod, four pictures - made 1024 x 768 JPEG here:
- * the server has no image library and only checks them). A mod's page also has its stars (rate it 1-5, signed in)
+ * the server has no image library and only checks them). A mod's page also has its upvotes (one per account, signed
+ * in; 2.2.2 - 2.2.1 had 1-5 stars) and, on the player's own mod, a Comments on/off switch
  * and Comments (N): a fourth view with its comments, newest first (write, delete your own, report) - the server
  * checks every comment (docs/DISCOVERY_API.md "Comments and ratings"). Every request runs on a thread of its own and
  * answers with WM_APP_DISCOVER; a page's late answers (an older search) are dropped by their number. */
@@ -38,14 +39,14 @@ enum {
     U_FILE_L, U_FILE, U_FILE_PICK, U_PICS_L, U_PICS, U_PICS_PICK, U_AUTHOR, U_SEND, U_CANCEL, U_PROGRESS,
     D_EDIT, D_NEWFILE, D_FIRSTPIC,   /* (the uploader's own: Edit..., New version..., Make first) */
     D_DLBAR, D_DLCANCEL,             /* (a download running: its bar and Cancel) */
-    D_RATING, D_STAR0, D_STAR1, D_STAR2, D_STAR3, D_STAR4, D_COMMENTS,   /* (a mod's page: its stars, Comments (N)) */
+    D_RATING, D_UPVOTE, D_AUTHOR_COMMENTS, D_COMMENTS,   /* (a mod's page: its upvotes, the author's switch, Comments) */
     C_TITLE, C_LIST, C_FULL, C_MORE, C_DEL, C_REPORT, C_WRITE_L, C_WRITE, C_SEND, C_BACK,   /* (its comments' view) */
     D_COUNT   /* (the launcher gives Discovery 100 ids: ID_DISCOVER_BASE 1300 .. 1399) */
 };
 enum { V_GRID, V_MOD, V_UPLOAD, V_COMMENTS };
 enum { R_LIST, R_THUMB, R_DETAIL, R_PIC, R_DOWNLOAD, R_UPLOAD, R_DELETE, R_PROGRESS, R_EDIT,
        R_RECONNECT, R_DLPROG,     /* (the server didn't answer: trying again; a download's progress) */
-       R_COMMENTS, R_CPOST, R_CDEL, R_CREPORT, R_RATE,
+       R_COMMENTS, R_CPOST, R_CDEL, R_CREPORT, R_UPVOTE,
        R_FIT };   /* (the grid's size or scale changed: its tiles fitted again) */   /* (comments: a page, a new one, delete, report; a rating) */
 #define MAX_COMMENTS 200   /* (loaded on one page: 20 a request, More for the next) */
 #define COMMENT_MAX 500    /* (characters: the server's limit) */
@@ -61,7 +62,7 @@ typedef struct {
     long long owner;   /* (the uploader's account id) */
     long long size, created, updated, edited;   /* (Unix seconds; updated / edited 0: never) */
     int pics;          /* (goes up with each picture change: img/n?v=pics) */
-    int rating10, rating_count;   /* (the stars: average x 10, how many; 0 0: none, or ratings off) */
+    int upvotes, comments_off;    /* (how many upvoted it - -1: upvotes off; its author turned comments off) */
     WCHAR name[64], author[48], types[80], tags[220], version[24];
 } Mod;
 
@@ -106,7 +107,7 @@ static discover_server_fn s_server;
 static discover_account_fn s_account;
 /* The mod page's stars and comments, from its answer (asked with s_mine_token): the server's switches, the asker's
    own rating and rights; the comments' view: what is loaded of them and their own request counter. */
-static int s_comments_on, s_ratings_on, s_can_rate, s_my_rating, s_n_comments;
+static int s_comments_on, s_upvotes_on, s_can_upvote, s_my_upvote, s_n_comments, s_author_off;
 static Comment s_cms[MAX_COMMENTS];
 static int s_cm_n, s_cm_total, s_cm_page, s_cm_can, s_cm_busy;
 static volatile LONG s_cgen;   /* (a newer comments page, or another mod's, drops an older one's answer) */
@@ -274,14 +275,9 @@ static void parse_mod(const char *p, const char *end, Mod *m)
     jlist(jkey(p, end, "tags"), end, NULL, m->tags, 220);
     m->size = jnum(jkey(p, end, "size"));
     m->downloads = (int)jnum(jkey(p, end, "downloads"));
-    {   /* the stars: "rating": {"avg", "count"} (left out while the server has ratings off) */
-        const char *rt = jkey(p, end, "rating");
-        if (rt && *rt == '{') {
-            const char *re = jobject_end(rt, end);
-            m->rating10 = (int)(jdbl(jkey(rt, re, "avg")) * 10 + 0.5);
-            m->rating_count = (int)jnum(jkey(rt, re, "count"));
-        }
-    }
+    /* the upvotes (left out while the server has them off - an older server has neither) */
+    m->upvotes = jkey(p, end, "upvotes") ? (int)jnum(jkey(p, end, "upvotes")) : -1;
+    m->comments_off = jtrue(jkey(p, end, "comments_off"));
 }
 
 static int parse_comment(const char *p, const char *end, Comment *c)
@@ -865,7 +861,7 @@ static DWORD WINAPI job_thread(LPVOID p)
         st = http(j, L"GET", j->path, NULL, NULL, 0, &data, &n, 1 << 20);
         post(j, st, data, n, j->index, NULL);
         break;
-    case R_CPOST: case R_CREPORT: case R_RATE: {   /* (index: the comment / the stars) */
+    case R_CPOST: case R_CREPORT: case R_UPVOTE: {   /* (index: the comment / up or not) */
         const char *b = j->json ? j->json : "{}";
         st = http(j, L"POST", j->path, "application/json", (const uint8_t *)b, strlen(b), &data, &n, 1 << 16);
         post(j, st, data, n, j->index, NULL);
@@ -1109,31 +1105,31 @@ static void grid_draw(NMLVCUSTOMDRAW *cd)
     SetTextColor(dc, K_TEXT);
     n.top += draw_name(dc, m->name, n) * s_line_h + sc(2);   /* (the stars right under the name) */
     n.bottom = n.top + s_line_h;
-    if (m->rating_count) {   /* (the stars' own line: a gold star, then the average and how many) */
+    if (m->upvotes > 0) {   /* (the upvotes' own line: a gold arrow, then how many) */
         WCHAR rest[48];
         SIZE a, b;
         int x;
         RECT sr = n;
-        swprintf_s(rest, 48, L" %.1f  (%d)", m->rating10 / 10.0, m->rating_count);
-        GetTextExtentPoint32W(dc, L"\x2605", 1, &a);
+        swprintf_s(rest, 48, L" %d", m->upvotes);
+        GetTextExtentPoint32W(dc, L"\x25B2", 1, &a);
         GetTextExtentPoint32W(dc, rest, (int)wcslen(rest), &b);
         x = (n.left + n.right - a.cx - b.cx) / 2;
         SetTextColor(dc, K_GOLD);
         sr.left = x;
-        DrawTextW(dc, L"\x2605", 1, &sr, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+        DrawTextW(dc, L"\x25B2", 1, &sr, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
         SetTextColor(dc, K_MUTED);
         sr.left = x + a.cx;
         DrawTextW(dc, rest, -1, &sr, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
-    } else {
+    } else if (m->upvotes == 0) {
         SetTextColor(dc, K_MUTED);
-        DrawTextW(dc, L"No ratings yet", -1, &n, DT_CENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+        DrawTextW(dc, L"No upvotes yet", -1, &n, DT_CENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
     }
 }
 
 static const int k_grid_ids[] = { D_SEARCH, D_TYPE, D_SORT, D_GO, D_GRID, D_PREV, D_PAGE, D_NEXT, D_UPLOAD };
 static const int k_mod_ids[] = { D_PIC, D_PICPREV, D_PICLBL, D_PICNEXT, D_INFO, D_DESC, D_BACK, D_DOWNLOAD, D_DELETE,
                                  D_EDIT, D_NEWFILE, D_FIRSTPIC, D_DLBAR, D_DLCANCEL,
-                                 D_RATING, D_STAR0, D_STAR1, D_STAR2, D_STAR3, D_STAR4, D_COMMENTS };
+                                 D_RATING, D_UPVOTE, D_AUTHOR_COMMENTS, D_COMMENTS };
 static const int k_cm_ids[] = { C_TITLE, C_LIST, C_FULL, C_MORE, C_DEL, C_REPORT, C_WRITE_L, C_WRITE, C_SEND, C_BACK };
 
 /* The mod's page shows the player's own mod: the server said so ("mine") for the token signed in now - not for one
@@ -1178,9 +1174,10 @@ static void set_view(int v)
         for (k = 0; k < sizeof k_grid_ids / sizeof k_grid_ids[0]; k++) if (k_grid_ids[k] == i) show = v == V_GRID;
         for (k = 0; k < sizeof k_mod_ids / sizeof k_mod_ids[0]; k++) if (k_mod_ids[k] == i) show = v == V_MOD;
         for (k = 0; k < sizeof k_cm_ids / sizeof k_cm_ids[0]; k++) if (k_cm_ids[k] == i) show = v == V_COMMENTS;
-        if (i == D_RATING) show = show && s_ratings_on;
-        if (i >= D_STAR0 && i <= D_STAR4) show = show && s_ratings_on && s_can_rate && token_now();
-        if (i == D_COMMENTS) show = show && s_comments_on;
+        if (i == D_RATING) show = show && s_upvotes_on;
+        if (i == D_UPVOTE) show = show && s_upvotes_on && s_can_upvote && token_now();
+        if (i == D_AUTHOR_COMMENTS) show = show && mine && !s_dl;   /* (the author's own switch) */
+        if (i == D_COMMENTS) show = show && (s_comments_on || s_author_off);   /* (author off: shown greyed, says so) */
         if (i == C_MORE) show = show && s_cm_n < s_cm_total;
         if (i == C_WRITE || i == C_SEND) show = show && s_cm_can && signed_in();
         if (i >= U_TITLE && i <= U_PROGRESS) show = v == V_UPLOAD;
@@ -1192,25 +1189,28 @@ static void set_view(int v)
     }
 }
 
-/* The mod page's stars: the average and count, the asker's own (filled stars), Comments (N). */
+/* The mod page's upvotes: how many, the asker's own (the button), the author's switch, Comments (N). */
 static void show_rating(void)
 {
     WCHAR t[160];
     const Mod *m = s_cur >= 0 ? &s_mods[s_cur] : NULL;
-    int k;
     if (!m) return;
-    if (m->rating_count)
-        swprintf_s(t, 160, L"\x2605 %.1f  (%d rating%s)", m->rating10 / 10.0, m->rating_count, m->rating_count == 1 ? L"" : L"s");
-    else
-        wcscpy_s(t, 160, L"No ratings yet");
-    if (!signed_in()) wcscat_s(t, 160, L"\nSign in to rate it");
-    else if (s_mine) wcscat_s(t, 160, L"\nYour own mod");
-    else if (token_now() && !s_can_rate) wcscat_s(t, 160, L"\nYou can't rate mods");
-    else wcscat_s(t, 160, s_my_rating ? L"\nYour rating:" : L"\nRate it:");
+    t[0] = 0;
+    if (s_upvotes_on) {
+        if (m->upvotes > 0) swprintf_s(t, 160, L"\x25B2 %d upvote%s", m->upvotes, m->upvotes == 1 ? L"" : L"s");
+        else wcscpy_s(t, 160, L"No upvotes yet");
+        if (!signed_in()) wcscat_s(t, 160, L"\nSign in to upvote it");
+        else if (s_mine) wcscat_s(t, 160, L"\nYour own mod");
+        else if (token_now() && !s_can_upvote) wcscat_s(t, 160, L"\nYou can't upvote mods");
+    }
     SetWindowTextW(s_c[D_RATING], t);
-    for (k = 0; k < 5; k++) SetWindowTextW(s_c[D_STAR0 + k], k < s_my_rating ? L"\x2605" : L"\x2606");
-    swprintf_s(t, 160, L"Comments (%d)", s_n_comments);
+    SetWindowTextW(s_c[D_UPVOTE], s_my_upvote ? L"\x25B2 Upvoted" : L"\x25B2 Upvote");
+    SetWindowTextW(s_c[D_AUTHOR_COMMENTS], s_author_off ? L"Comments: off" : L"Comments: on");
+    /* (the author turned them off: the button stays, greyed, and says so) */
+    if (s_author_off) wcscpy_s(t, 160, L"Comments: off (author)");
+    else swprintf_s(t, 160, L"Comments (%d)", s_n_comments);
     SetWindowTextW(s_c[D_COMMENTS], t);
+    EnableWindow(s_c[D_COMMENTS], !s_author_off);
 }
 
 /* The comments loaded, into the list (newest first: the server's order); the title with the count. */
@@ -1343,7 +1343,7 @@ static void social_post(int kind, const WCHAR *path, const char *json, int index
 static void search(void)
 {
     static const char *const types[] = { "", "entrance", "superstar", "arena", "moveset" };
-    static const char *const sorts[] = { "new", "popular", "name", "updated", "rating" };
+    static const char *const sorts[] = { "new", "popular", "name", "updated", "upvotes" };
     WCHAR q[120], qe[400];
     char u[400];
     const char *s;
@@ -1378,7 +1378,7 @@ static void open_mod(int i)
     SetWindowTextW(s_c[D_INFO], L"");
     SetWindowTextW(s_c[D_DESC], L"");
     SetWindowTextW(s_c[D_PICLBL], L"1 / 4");
-    s_comments_on = s_ratings_on = s_can_rate = s_my_rating = s_n_comments = 0;   /* (until its page answers) */
+    s_comments_on = s_upvotes_on = s_can_upvote = s_my_upvote = s_n_comments = s_author_off = 0;   /* (until its page answers) */
     InterlockedIncrement(&s_cgen);
     if (!(j = job(R_DETAIL))) return;
     {   /* the player's own: only when the page's answer says so ("mine", asked with this token) */
@@ -1596,7 +1596,7 @@ void discover_build(HWND wnd, mods_add_fn add, int tab, int id_base, discover_se
                     discover_account_fn account)
 {
     static const WCHAR *const types[] = { L"All types", L"Entrance", L"Superstar", L"Arena", L"Move-set" };
-    static const WCHAR *const sorts[] = { L"Newest", L"Most downloaded", L"By name", L"Recently updated", L"Top rated" };
+    static const WCHAR *const sorts[] = { L"Newest", L"Most downloaded", L"By name", L"Recently updated", L"Most upvoted" };
     int i, y;
 #define C(i, cls, text, style, x, y, w, h) (s_c[i] = add(tab, cls, text, style, x, y, w, h, id_base + (i)))
     s_wnd = wnd;
@@ -1629,10 +1629,10 @@ void discover_build(HWND wnd, mods_add_fn add, int tab, int id_base, discover_se
     C(D_PICLBL, L"Static", L"1 / 4", SS_CENTER, 80, 366, 268, 20);
     C(D_PICNEXT, L"Button", L"\x2192", BS_PUSHBUTTON | WS_TABSTOP, 384, 360, 44, 28);
     C(D_INFO, L"Static", L"", SS_LEFT | SS_NOPREFIX, 442, 54, 146, 206);
-    /* (its stars: the average, then five buttons - the player's own filled; Comments (N) under them) */
+    /* (its upvotes: how many, then the button - or, on the player's own mod, its Comments on/off; Comments (N)) */
     C(D_RATING, L"Static", L"", SS_LEFT | SS_NOPREFIX, 442, 262, 146, 34);
-    for (i = 0; i < 5; i++)
-        C(D_STAR0 + i, L"Button", L"\x2606", BS_PUSHBUTTON | WS_TABSTOP, 442 + i * 29, 298, 28, 26);
+    C(D_UPVOTE, L"Button", L"\x25B2 Upvote", BS_PUSHBUTTON | WS_TABSTOP, 442, 298, 146, 26);
+    C(D_AUTHOR_COMMENTS, L"Button", L"Comments: on", BS_PUSHBUTTON | WS_TABSTOP, 442, 298, 146, 26);
     C(D_COMMENTS, L"Button", L"Comments", BS_PUSHBUTTON | WS_TABSTOP, 442, 328, 146, 26);
     C(D_DESC, L"Edit", L"", ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL | WS_BORDER, 28, 396, 560, 84);
     C(D_BACK, L"Button", L"\x2190 Back", BS_PUSHBUTTON | WS_TABSTOP, 28, 488, 100, 30);
@@ -1841,16 +1841,29 @@ int discover_command(int id, int code)
         social_post(R_CREPORT, path, "{}", s_cms[sel].id);
         return 1;
     }
-    case D_STAR0: case D_STAR1: case D_STAR2: case D_STAR3: case D_STAR4: {
+    case D_UPVOTE: {   /* (upvoted already: taken back) */
         WCHAR path[96];
-        char json[32];
-        int stars = i - D_STAR0 + 1;
-        if (s_cur < 0 || !s_can_rate || !token_now()) return 1;
-        if (stars == s_my_rating) stars = 0;   /* (the same star again: the rating taken back) */
-        sprintf_s(json, 32, "{\"stars\":%d}", stars);
-        swprintf_s(path, 96, L"/api/mods/%d/rating", s_mods[s_cur].id);
-        status(L"Saving your rating\x2026");
-        social_post(R_RATE, path, json, stars);
+        const int up = !s_my_upvote;
+        if (s_cur < 0 || !s_can_upvote || !token_now()) return 1;
+        swprintf_s(path, 96, L"/api/mods/%d/upvote", s_mods[s_cur].id);
+        status(up ? L"Upvoting\x2026" : L"Taking your upvote back\x2026");
+        social_post(R_UPVOTE, path, up ? "{\"up\":true}" : "{\"up\":false}", up);
+        return 1;
+    }
+    case D_AUTHOR_COMMENTS: {
+        Job *j;
+        if (s_cur < 0 || s_busy || !owner_now()) return 1;
+        if (!s_author_off && MessageBoxW(s_wnd, L"Turn comments off for your mod? Its comments are hidden from everyone "
+                                         L"(not deleted) until you turn them on again.", L"Comments",
+                                         MB_OKCANCEL | MB_ICONQUESTION) != IDOK) return 1;
+        if (!(j = job(R_EDIT)) || !(j->json = _strdup(s_author_off ? "{\"comments\":true}" : "{\"comments\":false}"))) {
+            free(j);
+            return 1;
+        }
+        j->index = s_mods[s_cur].id;
+        s_busy = 1;
+        status(s_author_off ? L"Turning comments on\x2026" : L"Turning comments off\x2026");
+        start(j);
         return 1;
     }
     case D_TYPE: case D_SORT:
@@ -2181,20 +2194,30 @@ int discover_message(UINT m, WPARAM wp, LPARAM lp)
         {   /* comments and stars: the switches (an older server says neither: both hidden), the asker's own */
             const char *d0 = (const char *)r->data;
             s_comments_on = jtrue(jkey(d0, end, "comments_on"));
-            s_ratings_on = jtrue(jkey(d0, end, "ratings_on"));
+            s_upvotes_on = jtrue(jkey(d0, end, "upvotes_on"));
+            s_author_off = jtrue(jkey(d0, end, "comments_author_off"));
             s_n_comments = (int)jnum(jkey(d0, end, "comments"));
-            s_can_rate = jtrue(jkey(d0, end, "can_rate"));
-            s_my_rating = (int)jnum(jkey(d0, end, "my_rating"));
+            s_can_upvote = jtrue(jkey(d0, end, "can_upvote"));
+            s_my_upvote = jtrue(jkey(d0, end, "my_upvote"));
             show_rating();
             if (s_view == V_MOD) set_view(V_MOD);
         }
-        {   /* test aids (--capture discover with SVR2011_DISCOVER_OPEN), once: SVR2011_DISCOVER_RATE=<1-5> rates it,
+        {   /* test aids (--capture discover with SVR2011_DISCOVER_OPEN), once: SVR2011_DISCOVER_UPVOTE=1 upvotes it (or
+               takes it back), SVR2011_DISCOVER_AUTHOR_COMMENTS=1 presses the author's switch (no question asked),
                SVR2011_DISCOVER_COMMENTS=1 opens its comments, SVR2011_DISCOVER_COMMENT=<text> posts one there */
             static int social;
-            const char *v = getenv("SVR2011_DISCOVER_RATE"), *cv = getenv("SVR2011_DISCOVER_COMMENT");
+            const char *v = getenv("SVR2011_DISCOVER_UPVOTE"), *cv = getenv("SVR2011_DISCOVER_COMMENT");
             if (!social++) {
-                if (v && *v >= '1' && *v <= '5' && s_can_rate)
-                    PostMessageW(s_wnd, WM_COMMAND, MAKEWPARAM(s_base + D_STAR0 + (*v - '1'), BN_CLICKED), 0);
+                if (v && *v == '1' && s_can_upvote)
+                    PostMessageW(s_wnd, WM_COMMAND, MAKEWPARAM(s_base + D_UPVOTE, BN_CLICKED), 0);
+                if ((v = getenv("SVR2011_DISCOVER_AUTHOR_COMMENTS")) && *v == '1' && owner_now() && !s_busy) {
+                    Job *j = job(R_EDIT);
+                    if (j && (j->json = _strdup(s_author_off ? "{\"comments\":true}" : "{\"comments\":false}"))) {
+                        j->index = s_mods[s_cur].id;
+                        s_busy = 1;
+                        start(j);
+                    } else free(j);
+                }
                 if ((cv && *cv) || ((v = getenv("SVR2011_DISCOVER_COMMENTS")) && *v == '1'))
                     PostMessageW(s_wnd, WM_COMMAND, MAKEWPARAM(s_base + D_COMMENTS, BN_CLICKED), 0);
             }
@@ -2347,22 +2370,15 @@ int discover_message(UINT m, WPARAM wp, LPARAM lp)
         if (r->status != 200) { answer_error(r, L"Report", t, 400); status(t); break; }
         status(L"Reported - the online server's moderators will look at it. Thank you.");
         break;
-    case R_RATE: {
-        const char *d0 = (const char *)r->data, *end = d0 + r->n, *rt;
-        if (r->status != 200 || !r->data) { answer_error(r, L"Rating", t, 400); status(t); break; }
+    case R_UPVOTE: {
+        const char *d0 = (const char *)r->data, *end = d0 + r->n;
+        if (r->status != 200 || !r->data) { answer_error(r, L"Upvote", t, 400); status(t); break; }
         if (s_cur >= 0 && s_mods[s_cur].id == r->mod) {
-            rt = jkey(d0, end, "rating");
-            if (rt && *rt == '{') {
-                const char *re = jobject_end(rt, end);
-                s_mods[s_cur].rating10 = (int)(jdbl(jkey(rt, re, "avg")) * 10 + 0.5);
-                s_mods[s_cur].rating_count = (int)jnum(jkey(rt, re, "count"));
-            }
-            s_my_rating = r->index;
+            s_mods[s_cur].upvotes = (int)jnum(jkey(d0, end, "upvotes"));
+            s_my_upvote = jtrue(jkey(d0, end, "my_upvote"));
             show_rating();
         }
-        if (r->index) swprintf_s(t, 400, L"Rated %d star%s - click the same star again to take it back.", r->index, r->index == 1 ? L"" : L"s");
-        else wcscpy_s(t, 400, L"Your rating was taken back.");
-        status(t);
+        status(r->index ? L"Upvoted - press it again to take it back." : L"Your upvote was taken back.");
         break;
     }
     case R_PIC:

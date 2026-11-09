@@ -369,7 +369,7 @@ td.acts { text-align: right; white-space: nowrap; }
   <section role="tabpanel" id="p-discovery" aria-labelledby="tab-discovery" tabindex="0" hidden>
     <h2>Mods <span class="spacer"></span><input class="filter" id="f-mod" placeholder="Filter" aria-label="Filter mods"></h2>
     <div class="scroll"><table>
-      <thead><tr><th>Name</th><th>Type</th><th>Author</th><th>Version</th><th class="num">Size</th><th class="num">Downloads</th><th class="num">Rating</th><th>Uploaded</th><th></th></tr></thead>
+      <thead><tr><th>Name</th><th>Type</th><th>Author</th><th>Version</th><th class="num">Size</th><th class="num">Downloads</th><th class="num">Upvotes</th><th>Uploaded</th><th></th></tr></thead>
       <tbody id="mods"><tr><td colspan="9" class="empty">Loading&hellip;</td></tr></tbody>
     </table></div>
 
@@ -388,8 +388,9 @@ td.acts { text-align: right; white-space: nowrap; }
     <p class="intro">Comments on Discovery mods, reported ones first. The server refuses links, invites, the name
       filter's words and the comment word list (Names tab) on its own. <b>Hide</b> takes a comment off the mod's page
       (Show puts it back); <b>Delete</b> removes it for good. Comments deleted by their writer or the mod's uploader stay
-      here 30 days. <b>Mute</b> stops an account commenting (or commenting and rating). The switches are on the
-      Settings tab: discovery_comments, discovery_ratings, discovery_rating_min.</p>
+      here 30 days. <b>Mute</b> stops an account commenting (or commenting and upvoting). A mod's author can turn its
+      comments off (Discovery tab: "comments off"): they stay listed here, hidden from players. The switches are on
+      the Settings tab: discovery_comments, discovery_upvotes.</p>
     <div class="scroll"><table>
       <thead><tr><th>Mod</th><th>Writer</th><th>Comment</th><th>State</th><th>Posted</th><th></th></tr></thead>
       <tbody id="comments"><tr><td colspan="6" class="empty">Open this tab to load.</td></tr></tbody>
@@ -1038,14 +1039,15 @@ td.acts { text-align: right; white-space: nowrap; }
     var rows = mods.filter(function (m) { return !f || (m.name + ' ' + m.author + ' ' + m.tags.join(' ')).toLowerCase().indexOf(f) >= 0; });
     el('mods').innerHTML = rows.length ? rows.map(function (m) {
       return '<tr><td>' + esc(m.name) + (m.hidden ? ' <span class="tag bad">hidden</span>' : '') +
+        (m.comments_off ? ' <span class="tag" title="its author turned comments off: they stay here, hidden from players">comments off</span>' : '') +
         (m.updated ? ' <span class="tag on" title="file updated by its owner">updated ' + ago(m.updated) + '</span>' : '') +
         '</td><td>' + esc(m.types.join(', ')) + '</td><td>' + esc(m.author) + '</td><td>' + esc(m.version) +
         '</td><td class="num">' + bytes(m.size) + '</td><td class="num">' + m.downloads + '</td><td class="num">' +
-        (m.rating && m.rating.count ? m.rating.avg.toFixed(1) + ' <span class="note">(' + m.rating.count + ')</span>' : '-') +
+        (m.upvotes ? '\u25B2 ' + m.upvotes : '-') +
         '</td><td>' + ago(m.created) +
         '</td><td class="acts"><button class="btn" data-modview="' + m.id + '">View</button>' +
         '<button class="btn" data-cmmod="' + m.id + '">Comments</button>' +
-        (m.rating && m.rating.count ? '<button class="btn" data-mod="' + m.id + '" data-a="clear-ratings">Clear ratings</button>' : '') +
+        (m.upvotes ? '<button class="btn" data-mod="' + m.id + '" data-a="clear-upvotes">Clear upvotes</button>' : '') +
         '<button class="btn" data-mod="' + m.id + '" data-a="' + (m.hidden ? 'show' : 'hide') + '">' + (m.hidden ? 'Show' : 'Hide') + '</button>' +
         '<button class="btn danger" data-mod="' + m.id + '" data-a="delete">Delete</button></td></tr>';
     }).join('') : '<tr><td colspan="9" class="empty">No mods.</td></tr>';
@@ -1064,7 +1066,7 @@ td.acts { text-align: right; white-space: nowrap; }
     return api(q).then(function (d) {
       cmTotal = d.total;
       el('cm-note').innerHTML = (d.comments_on ? '<span class="tag on">comments on</span>' : '<span class="tag bad">comments off</span>') +
-        ' ' + (d.ratings_on ? '<span class="tag on">ratings on</span>' : '<span class="tag bad">ratings off</span>') +
+        ' ' + (d.upvotes_on ? '<span class="tag on">upvotes on</span>' : '<span class="tag bad">upvotes off</span>') +
         (cmMod ? ' <button class="btn" id="cm-allmods">All mods</button>' : '');
       var reported = d.comments.filter(function (c) { return c.reports > 0 && c.state !== 'deleted'; }).length;
       if (!el('cm-state').value && !el('f-cm').value && !cmMod && cmPage === 0) el('n-comments').textContent = reported || '';
@@ -1082,7 +1084,7 @@ td.acts { text-align: right; white-space: nowrap; }
           (c.reports ? '<button class="btn" data-cm="' + c.id + '" data-a="clear-reports">Clear reports</button>' : '') +
           (c.muted ? '<button class="btn" data-unmute="' + c.account + '">Unmute</button>' :
             '<button class="btn" data-cm="' + c.id + '" data-a="mute-comments">Mute</button>' +
-            '<button class="btn" data-cm="' + c.id + '" data-a="mute-all" title="comments and ratings">Mute all</button>') +
+            '<button class="btn" data-cm="' + c.id + '" data-a="mute-all" title="comments and upvotes">Mute all</button>') +
           '<button class="btn danger" data-cm="' + c.id + '" data-a="delete">Delete</button>';
         return '<tr><td>' + esc(c.mod_name) + ' <span class="note">#' + c.mod + '</span></td><td>' + esc(c.author) +
           (c.muted ? ' <span class="tag bad">muted' + (c.muted === 'all' ? ' (all)' : '') + '</span>' : '') +
@@ -1094,7 +1096,7 @@ td.acts { text-align: right; white-space: nowrap; }
       el('cm-prev').disabled = d.page === 0;
       el('cm-next').disabled = d.page + 1 >= pages;
       el('mutes').innerHTML = d.mutes.length ? d.mutes.map(function (m) {
-        return '<tr><td>' + esc(m.name) + '</td><td>' + (m.scope === 'all' ? 'comments and ratings' : 'comments') +
+        return '<tr><td>' + esc(m.name) + '</td><td>' + (m.scope === 'all' ? 'comments and upvotes' : 'comments') +
           '</td><td class="note">' + esc(m.note) + '</td><td>' + ago(m.at) + '</td><td class="acts">' +
           '<button class="btn" data-unmute="' + m.account + '">Unmute</button></td></tr>';
       }).join('') : '<tr><td colspan="5" class="empty">None.</td></tr>';
@@ -1120,7 +1122,7 @@ td.acts { text-align: right; white-space: nowrap; }
     var a = b.dataset.a;
     if (a === 'delete' && !confirm('Delete this comment for good?')) return;
     if (a === 'mute-comments' && !confirm('Mute this account from commenting on Discovery?')) return;
-    if (a === 'mute-all' && !confirm('Mute this account from commenting and rating on Discovery?')) return;
+    if (a === 'mute-all' && !confirm('Mute this account from commenting and upvoting on Discovery?')) return;
     post('api/admin/discovery/comment/' + b.dataset.cm + '/' + a);
   });
 
@@ -1697,7 +1699,7 @@ td.acts { text-align: right; white-space: nowrap; }
     var id = b.dataset.up || b.dataset.user || b.dataset.mod;
     if (a === 'delete' && !confirm(what === 'user' ? 'Delete this account and everything it uploaded?' :
                                    what === 'mod' ? 'Delete this mod from Discovery?' : 'Delete this upload?')) return;
-    if (a === 'clear-ratings' && !confirm('Clear all of this mod\'s star ratings? Players can rate it again.')) return;
+    if (a === 'clear-upvotes' && !confirm('Clear all of this mod\'s upvotes? Players can upvote it again.')) return;
     if (a === 'reset' && !confirm('Give this account a new random password? Its sessions are signed out.')) return;
     if (a === 'reactivation-code' && !confirm('Make a re-activation code for this account? It shows once; an older one ' +
                                              'it had stops working.')) return;

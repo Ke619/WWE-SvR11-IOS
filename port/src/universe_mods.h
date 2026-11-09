@@ -39,5 +39,10 @@ void UniverseModsTick(uint8_t* base);
 // changed or gone is logged with its members and what was going on (a match running or not), and the whole list
 // when a save comes in.
 void UniverseTeamsTick(uint8_t* base);
+// Test aid SVR2011_TEST_TEAM_ENTRANCE=<team>,...: that team (0-69) for a superstar who is one of its members, else
+// -1 - always -1 outside a test game (the exe in runs\svrtest\). The test match makes those slots the team.
+int TestTeamOf(uint8_t* base, uint32_t id);
+// ... and that team's record in the save's team table (a guest address; 0 outside a test game)
+uint32_t TestTeamRecord(uint8_t* base);
 
 }  // namespace svr2011

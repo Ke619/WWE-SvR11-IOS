@@ -36,7 +36,7 @@ struct Kind {
 const Kind kKinds[] = {
     {"Superstars", L"superstar_port.py", "A whole superstar mod: model, pictures, theme, titantron, ratings, entrance and calls where 2011 has them."},
     {"Moves", L"moves_port.py", "Moves 2011 lacks, as a move pack (the Move pack tab saves it; a superstar mod can carry it)."},
-    {"Entrances", L"entrance_port.py", "An entrance as a move pack with its own number, for a superstar mod's entrance= (and per attire)."},
+    {"Entrances", L"entrance_port.py", "An entrance as a move pack with its own number: a superstar mod's entrance= (and per attire), or a team's tag / trios entrance."},
     {"Arenas", L"arena_port.py", "An arena mod on one of 2011's arena slots, with its banner, loading and VS pictures."},
     {"Attires", L"attire_port.py", "Attires for a superstar - a mod's own, or new ones for 2011's roster."},
     {"Belts", L"belt_port.py", "Title belts' looks, as a texture pack."},
@@ -298,6 +298,12 @@ void List(int k, const std::string& game) {
 }
 
 int g_template = 0;          // moves: --template <2011 move id> (0: the converter's own pick)
+int g_team = 0;              // entrances: 0 automatic, 1 singles, 2 tag, 3 trios (entrance_port --team)
+int g_crowd = 0;             // SvR 2007-2010 / LoW arenas: 0 the source's own crowd, 1 the host's, 2 none (arena_port --crowd)
+const wchar_t* const kCrowdArg[] = {L"own", L"host", L"none"};
+// (the arena games arena_port.py converts itself; WWE '12+ go through the Mod Maker's own converter: other_page)
+bool ArenaPortGame(const std::string& g) { return g.rfind("svr200", 0) == 0 || g == "svr2010" || g == "low"; }
+const wchar_t* const kTeamArg[] = {L"auto", L"singles", L"tag", L"trio"};
 char g_template_find[48] = "";
 
 // A free 2011 move record for a converted move (moves_port --id): a WAZE record with no motion in any m.pac bank and
@@ -471,8 +477,17 @@ void Convert(int k, const std::string& game, const Json& item) {
                                     L"--pac11", backstage ? fs::path(g_game).wstring() : (fs::path(g_game) / L"pac").wstring()};
   if (entrance) args.push_back(L"--entrance"), args.push_back(Wide(key));  // (its own options: --entrance, --number)
   else args.push_back(L"--item"), args.push_back(Wide(key));
+  // (singles / tag / trios: the members it plays and its number's range; automatic = the entrance's own kind, the
+  // converter re-picking the number when the list's guess was wrong - SvR 2007-2009's team rows say only "team")
+  const int team = std::clamp(g_team, 0, 3);
+  const std::string hint = item["team"].Str();
+  const std::wstring team_numbers = team ? kTeamArg[team] : hint == "tag" || hint == "trio" ? Wide(hint) : L"singles";
+  if (entrance) args.push_back(L"--team"), args.push_back(kTeamArg[team]), args.push_back(L"--mods"),
+                args.push_back((fs::path(g_game) / L"Mods").wstring());
   const bool moves = std::wstring(kKinds[k].script) == L"moves_port.py";
   if (moves && g_template > 0) args.push_back(L"--template"), args.push_back(std::to_wstring(g_template));
+  if (std::wstring(kKinds[k].script) == L"arena_port.py" && ArenaPortGame(game))
+    args.push_back(L"--crowd"), args.push_back(kCrowdArg[std::clamp(g_crowd, 0, 2)]);
   if (moves) {  // (a free 2011 record, so packs don't collide: the converter's own pick can't see installed packs)
     if (!anims_page::MovesIndexed()) {
       Status("Reading m.pac's moves first (a few seconds) - press Convert again.");
@@ -537,7 +552,7 @@ void Convert(int k, const std::string& game, const Json& item) {
     return;
   }
   RunToolJson(kKinds[k].script, {L"free-numbers", L"--game-pac", (fs::path(g_game) / L"pac").wstring(), L"--mods",
-                                 (fs::path(g_game) / L"Mods").wstring()},
+                                 (fs::path(g_game) / L"Mods").wstring(), L"--team", team_numbers},
               [run, args](int code, const std::string& text) {
                 Json j;
                 if (code != 0 || !ParseJson(text, j) || j.items.empty()) {
@@ -1340,6 +1355,25 @@ void KindBody(int k) {
   ImGui::InputTextWithHint("Options (advanced)", room ? "e.g. --name \"Parking Lot\" (the row's name)" : "e.g. --height 1.05 --no-moves", g_options, sizeof g_options);
   Hint("Extra options the converter takes (each converter's --help lists them), e.g. --base <id> --height <scale> "
        "--no-moves for superstars. Usually none are needed.");
+  if (std::wstring(kKinds[k].script) == L"arena_port.py" && ArenaPortGame(game)) {
+    const char* names[] = {"Crowd: the source's own", "Crowd: the host's (2011 RAW's)", "Crowd: none"};
+    ImGui::SetNextItemWidth(360 * g_scale);
+    ImGui::Combo("##crowd", &g_crowd, names, 3);
+    Hint("The source's own: the people, pictures and seats of the arena's own game, seated on its own stands. The host's: "
+         "2011's crowd, laid out for 2011's stands (people can float or sink in another arena's seats). None: empty seats. "
+         "Saved in the mod (crowd_source=).");
+  }
+  if (std::wstring(kKinds[k].script) == L"entrance_port.py") {  // singles / tag / trios
+    const std::string hint = item["team"].Str();
+    const std::string autoname = "Automatic (" + std::string(hint == "tag" ? "a tag entrance" : hint == "trio" ? "a trios entrance"
+                                                            : hint == "team" ? "a team entrance: tag or trios" : "singles") + ")";
+    const char* names[] = {autoname.c_str(), "Singles", "Tag team (2 people)", "Trios (3 people)"};
+    ImGui::SetNextItemWidth(360 * g_scale);
+    ImGui::Combo("Entrance kind", &g_team, names, 4);
+    Hint("Singles: a superstar's own entrance (a team motion walks out the first member alone). Tag / Trios: a team "
+         "entrance, with its partners' own motions - give it to a team in TEAM MANAGER (the team, ENTRANCE SETTING, "
+         "MOTION: the MOD row) or in CREATE AN ENTRANCE's tag / trio lists. Automatic: what the entrance itself is.");
+  }
   if (std::wstring(kKinds[k].script) == L"moves_port.py") {  // the 2011 move it is built on
     ImGui::SetNextItemWidth(360 * g_scale);
     const std::string cur = g_template > 0 ? MoveName(g_template) + "  (" + std::to_string(g_template) + ")" : "automatic (the converter picks one of the same kind)";
@@ -1388,6 +1422,10 @@ void KindBody(int k) {
                           MoveName(t).c_str(), t, g_template > 0 ? "" : ", picked automatically", g_result["id"].Str().c_str());
     if (g_result["opens"].Str() == "moves" && std::wstring(kKinds[k].script) != L"entrance_port.py")
       ImGui::TextColored(kWarn, "To use it in matches, put it in a superstar's moveset (the Move pack tab, or a superstar's Moveset section).");
+    if (const std::string t = g_result["team"].Str(); std::wstring(kKinds[k].script) == L"entrance_port.py" && (t == "tag" || t == "trio"))
+      ImGui::TextColored(kWarn, "A %s entrance (number %s): install the pack, then give it to a team in TEAM MANAGER (the "
+                         "team, ENTRANCE SETTING, MOTION: \"MOD: ...\") or pick it in CREATE AN ENTRANCE's %s list.",
+                         t == "tag" ? "tag team" : "trios", g_result["number"].Str().c_str(), t == "tag" ? "tag" : "trio");
     if (std::wstring(kKinds[k].script) == L"entrance_port.py" && std::atoi(g_result["number"].Str().c_str()) > 0) {
       // the ported entrance, played whole before it is installed: its own pack is looked in first
       const StarInfo* w = StarById(g_fp_who);

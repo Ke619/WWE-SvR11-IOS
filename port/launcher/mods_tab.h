@@ -28,6 +28,20 @@ int mods_print_attires(const WCHAR *game);
 /* Installs a .svrmod into <game_dir>/Mods (the + button without its dialog;
    tests: --mods-add <file>). 1 on success; the tab's status says why not. */
 int mods_install(const WCHAR *game_dir, const WCHAR *zip);
+/* The folder the last mods_install put its mod in (full path). */
+const WCHAR *mods_last_installed(void);
+/* Installed mods (manifest.txt) whose name - and author, unless NULL - is the one given, whatever the case: how many;
+   the first's folder and version. (Discovery: copies installed before it kept a record.) */
+int mods_find_installed(const WCHAR *game_dir, const WCHAR *name, const WCHAR *author, WCHAR *folder, size_t folder_n,
+                        WCHAR *version, size_t version_n);
+/* A mod folder's manifest version ("" none). */
+void mods_folder_version(const WCHAR *folder, WCHAR *version, size_t n);
+/* a newer than b (manifest versions: 1.10 > 1.9). */
+int mods_version_newer(const WCHAR *a, const WCHAR *b);
+/* The Installed Mods status line (Discovery's update progress). */
+void mods_set_status(const WCHAR *t);
+/* Discovery learnt which mods have updates: the list shown again (its status line kept). */
+void mods_updates_changed(void);
 /* The Shrink movies button without its window (tests: --mods-shrink <game folder>): every superstar / media
    mod's .bik movie (not the bundled mods') and Custom Movies' .bik -> .mp4; the result on the status line. */
 int mods_shrink(const WCHAR *game_dir);

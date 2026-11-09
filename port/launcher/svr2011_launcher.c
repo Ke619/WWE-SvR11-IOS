@@ -159,6 +159,7 @@ enum {
     ID_ON_SHARE, ID_ON_MODS_FOLD, ID_ON_MODS_GROUP, ID_ON_UP_KBS, ID_ON_UP_PEERS, ID_ON_MOD_MB, ID_ON_MODS_MB,
     ID_ON_MODS_L1, ID_ON_MODS_L2, ID_ON_MODS_L3, ID_ON_MODS_L4, ID_ON_MODS_INFO,
     ID_ON_L_NAME, ID_ON_L_PASS, ID_ON_L_CODE, ID_ON_CODE, ID_ON_STEP, ID_ON_BACK, ID_ON_FORGOT, ID_ON_INFO,
+    ID_ON_PWHINT,   /* (Create account / Forgot password: the password rule, checked as it's typed) */
     /* install */
     ID_IMAGE, ID_IMAGE_BROWSE, ID_TARGET, ID_TARGET_BROWSE, ID_FREE, ID_INSTALL, ID_CANCEL,
     ID_PROGRESS, ID_INSTALL_STATUS, ID_VERIFY, ID_VERIFY_REPAIR, ID_VERIFY_MARK, ID_VERIFY_STATUS,
@@ -1648,11 +1649,75 @@ static int s_test_run;
 
 static void on_place(int id, int x, int y, int w, int h);  /* (below: the layout's X0, as add()) */
 
+/* The server's rule for a new password (server/signup.py password_problem, 2.2.2): at least 8 characters, not the
+   account name, not a very common password, at least two kinds of letters / numbers / symbols. What's missing, as a
+   short line by the field (NULL: it's fine). The server checks it again and says why in full. */
+#define PASSWORD_RULE L"At least 8 characters - use a mix of letters, numbers and symbols; not your name."
+static const char *const k_common_passwords[] = {
+    "password", "passw0rd", "password1", "qwerty", "qwertyuiop", "asdfgh", "asdfghjkl", "zxcvbnm", "12345678",
+    "123456789", "1234567890", "abc123", "abcd1234", "iloveyou", "letmein", "welcome", "monkey", "dragon", "football",
+    "baseball", "basketball", "soccer", "hockey", "master", "shadow", "sunshine", "princess", "superman", "batman",
+    "trustno1", "starwars", "whatever", "freedom", "hello", "hellothere", "secret", "login", "admin", "administrator",
+    "changeme", "default", "computer", "internet", "michael", "jordan", "charlie", "pokemon", "minecraft", "fortnite",
+    "gaming", "gamer", "playstation", "xbox", "xbox360", "nintendo", "wwe", "wrestling", "smackdown", "smackdownvsraw",
+    "raw", "svr", "svr2011", "johncena", "undertaker", "randyorton", "reymysterio", "thebigshow", "kane", "batista",
+    "edge", "triplehhh", "tripleh", "cmpunk", "stonecold", "therock" };
+
+/* Lower case, and the end's digits / symbols cut off ("Password123!" -> "password"). */
+static void pw_core(const WCHAR *w, char *low, size_t n, char *core, size_t cn)
+{
+    size_t k = 0;
+    for (; *w && k + 1 < n; w++) low[k++] = (char)(*w < 128 ? towlower(*w) : '?');
+    low[k] = 0;
+    strcpy_s(core, cn, low);
+    for (k = strlen(core); k && !iswalpha((unsigned char)core[k - 1]); k--) core[k - 1] = 0;
+}
+
+static const WCHAR *password_problem(const WCHAR *pw, const WCHAR *name, WCHAR *buf, size_t n)
+{
+    char low[260], core[260], nlow[64], ncore[64];
+    const size_t len = wcslen(pw);
+    int letters = 0, digits = 0, symbols = 0;
+    size_t i;
+    if (len < 8) { swprintf_s(buf, n, L"%d more character%s needed", (int)(8 - len), 8 - len == 1 ? L"" : L"s"); return buf; }
+    if (len > 128) return L"128 characters at most";
+    pw_core(pw, low, sizeof low, core, sizeof core);
+    pw_core(name, nlow, sizeof nlow, ncore, sizeof ncore);
+    if (nlow[0] && (!strcmp(low, nlow) || !strcmp(core, nlow) || (ncore[0] && !strcmp(core, ncore))))
+        return L"Not your account name";
+    for (i = 0; i < sizeof k_common_passwords / sizeof k_common_passwords[0]; i++)
+        if (!strcmp(low, k_common_passwords[i]) || !strcmp(core, k_common_passwords[i]))
+            return L"Too common - pick another one";
+    for (i = 0; i < len; i++) {
+        if (iswalpha(pw[i])) letters = 1;
+        else if (iswdigit(pw[i])) digits = 1;
+        else symbols = 1;
+    }
+    if (letters + digits + symbols < 2)
+        return letters ? L"Add a number or a symbol" : digits ? L"Add a letter or a symbol" : L"Add a letter or a number";
+    return NULL;
+}
+
+/* The line by the password field, as it's typed. */
+static void online_password_hint(void)
+{
+    WCHAR pw[160], name[64], buf[64];
+    const WCHAR *why;
+    GetWindowTextW(ctl(ID_ON_PASSWORD), pw, 160);
+    GetWindowTextW(ctl(ID_ON_NAME), name, 64);
+    why = password_problem(pw, name, buf, 64);
+    set_text(ID_ON_PWHINT, !pw[0] ? L"8+ characters, a mix, not your name" : why ? why : L"\x2713 Strong enough");
+    SecureZeroMemory(pw, sizeof pw);
+}
+
+/* Before a new password is sent: refused here with what's missing (1), or fine (0). */
+static int online_password_refused(void);
+
 static void online_account_show(void)
 {
     static const int box[] = { ID_ON_L_NAME, ID_ON_NAME, ID_ON_L_PASS, ID_ON_PASSWORD, ID_ON_L_CODE, ID_ON_CODE,
                                ID_ON_SIGNIN, ID_ON_REGISTER, ID_ON_SIGNOUT, ID_ON_STEP, ID_ON_BACK, ID_ON_FORGOT,
-                               ID_ON_INFO };
+                               ID_ON_INFO, ID_ON_PWHINT };
     WCHAR name[64], text[300];
     const WCHAR *info = L"";
     const int signed_in = s_online_token[0] != 0;
@@ -1684,15 +1749,12 @@ static void online_account_show(void)
         if (!signup || s_on_invite != 0)  /* (no code box when the server says it needs none) */
             on_place(ID_ON_L_CODE, 252, 144, 76, 20), on_place(ID_ON_CODE, 330, 140, 216, 24);
         on_place(ID_ON_L_PASS, 16, 174, 90, 20), on_place(ID_ON_PASSWORD, 110, 170, 130, 24);
+        on_place(ID_ON_PWHINT, 252, 174, 294, 20);   /* (the rule, checked as it's typed) */
+        online_password_hint();
         set_text(ID_ON_STEP, signup ? L"Create" : L"Set password");
         on_place(ID_ON_STEP, 346, 199, 108, 24), on_place(ID_ON_BACK, 460, 199, 86, 24), bx = 346;
-        wcscpy_s(text, 300, !signup ? L"Ask the server owner for a reset code for your account (it works once, for 24 "
-                                      L"hours), then choose a new password."
-                            : s_on_invite == 0 ? L"Name: 3-15 characters (what players see); password: 8 or more."
-                            : s_on_invite == 1 ? L"An invite code from the server owner. Name: 3-15 characters (what "
-                                                 L"players see); password: 8 or more."
-                                               : L"*Only if the server asks for one: an invite code from the server "
-                                                 L"owner. Name: 3-15 characters (what players see); password: 8 or more.");
+        /* (the password rule up front - 2.2.2; the code boxes' labels say whose code it is) */
+        wcscpy_s(text, 300, !signup ? L"New password: " PASSWORD_RULE : L"Password: " PASSWORD_RULE);
     } else {
         set_text(ID_ON_L_NAME, L"Name"), set_text(ID_ON_L_PASS, L"Password");
         on_place(ID_ON_L_NAME, 16, 144, 130, 20), on_place(ID_ON_NAME, 150, 140, 220, 24);
@@ -1994,6 +2056,20 @@ static void online_steps_read(const char *answer)
     s_on_needs_code = json_true(answer, "needs_code");
 }
 
+static int online_password_refused(void)
+{
+    WCHAR pw[160], name[64], buf[64], note[300];
+    const WCHAR *why;
+    GetWindowTextW(ctl(ID_ON_PASSWORD), pw, 160);
+    GetWindowTextW(ctl(ID_ON_NAME), name, 64);
+    why = password_problem(pw, name, buf, 64);
+    SecureZeroMemory(pw, sizeof pw);
+    if (!why) return 0;
+    swprintf_s(note, 300, L"Choose another password - %s.", why);   /* (two lines at most: the rule is by the field) */
+    online_note(note);
+    return 1;
+}
+
 /* Sign in (register: create the account - name, password, invite code) with what's typed. */
 static void online_sign_in(int register_account)
 {
@@ -2009,6 +2085,7 @@ static void online_sign_in(int register_account)
                                      : L"Type your account's name and password.");
         return;
     }
+    if (register_account && online_password_refused()) return;   /* (the rule, before anything is sent) */
     json_quote(name, qname, sizeof qname);
     json_quote(password, qpass, sizeof qpass);
     json_quote(code, qcode, sizeof qcode);
@@ -2088,6 +2165,7 @@ static void online_step(void)
             online_note(L"Type your account's name, the reset code and a new password.");
             return;
         }
+        if (online_password_refused()) return;   /* (the rule, before the code is sent) */
         sprintf_s(body, sizeof body, "{\"name\": %s, \"code\": %s, \"password\": %s}", qname, qcode, qpass);
         old = SetCursor(LoadCursor(NULL, IDC_WAIT));
         status = online_post("/api/password/reset", body, NULL, answer, sizeof answer);
@@ -4596,6 +4674,7 @@ static void build_ui(void)
     add(TAB_ONLINE, L"Button", L"Forgot password?", BS_PUSHBUTTON | WS_TABSTOP, X0 + 384, 199, 162, 24, ID_ON_FORGOT);
     add(TAB_ONLINE, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0 + 16, 200, 530, 18, ID_ON_ACCOUNT);
     add(TAB_ONLINE, L"Static", L"", SS_LEFT | SS_NOPREFIX, X0 + 16, 219, 530, 18, ID_ON_INFO);
+    add(TAB_ONLINE, L"Static", L"", SS_LEFT | SS_NOPREFIX | SS_ENDELLIPSIS, X0 + 252, 174, 294, 20, ID_ON_PWHINT);
     add(TAB_ONLINE, L"Button", L"Server", BS_GROUPBOX, X0, 248, 560, 74, 0);
     h = add(TAB_ONLINE, L"ComboBox", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, X0 + 16, 270, 120, 200,
             ID_ON_SERVER_KIND);
@@ -4836,6 +4915,7 @@ static void build_ui(void)
     suggestions_build(s_wnd, add, TAB_SUGGESTIONS, ID_SUGGEST_BASE, discover_server, reports_token, test_run_refuses_url,
                       PORT_VERSION);
     discover_set_ini(s_launcher_ini);
+    discover_set_running(any_game_running);   /* (asked before an update from Discovery replaces a mod) */
     /* Setup: what's needed, found or missing; the Mod Maker's tools (setup_tab.c) */
     setup_build(s_wnd, add, TAB_SETUP, TAB_TOOLS, ID_SETUP_BASE, setup_go_install);
 
@@ -9296,6 +9376,9 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
     switch (m) {
     case WM_NOTIFY: {
         NMHDR *n = (NMHDR *)lp;
+        LRESULT cd;
+        if (n->code == NM_CUSTOMDRAW && discover_custom_draw(n, &cd))   /* (Discovery's tiles) */
+            return cd;
         if (n->idFrom == ID_TAB && n->code == TCN_SELCHANGE)
             show_tab(TabCtrl_GetCurSel(s_tab));
         if (n->idFrom == ID_FR_LIST && n->code == LVN_ITEMCHANGED) {
@@ -9321,6 +9404,9 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             discover_command(LOWORD(wp), HIWORD(wp)) ||
             setup_command(LOWORD(wp), HIWORD(wp)))
             return 0;
+        if (HIWORD(wp) == EN_CHANGE && (LOWORD(wp) == ID_ON_PASSWORD || LOWORD(wp) == ID_ON_NAME) &&
+            (s_on_mode == ON_SIGNUP || s_on_mode == ON_FORGOT) && !s_online_token[0])
+            online_password_hint();   /* (the password rule, as it's typed) */
         switch (LOWORD(wp)) {
         case ID_REPORT:
             report_problem();
@@ -10580,6 +10666,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     icc.dwICC = ICC_TAB_CLASSES | ICC_PROGRESS_CLASS | ICC_STANDARD_CLASSES | ICC_LISTVIEW_CLASSES;
     InitCommonControlsEx(&icc);
     s_dpi = (int)GetDpiForSystem();
+    if (getenv("SVR2011_TEST_DPI") && atoi(getenv("SVR2011_TEST_DPI")) >= 96)   /* (test aid: --capture shots at a scale) */
+        s_dpi = atoi(getenv("SVR2011_TEST_DPI"));
     make_fonts();
     theme_init();
     s_page_brush = CreateSolidBrush(C_PAGE);
@@ -10750,6 +10838,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
             /* (the Online tab: until the Friends list is in, 5 s at most) */
             while (GetTickCount64() - t0 < 400 || (s_fr_busy && GetTickCount64() - t0 < 5000) ||
                    (s_cur_tab == TAB_DISCOVER && GetTickCount64() - t0 < 4000) ||   /* (its list and pictures) */
+                   (s_cur_tab == TAB_MODS && getenv("SVR2011_MODS_UPDATE") && GetTickCount64() - t0 < 60000 &&
+                    (GetTickCount64() - t0 < 3000 || discover_busy())) ||   /* (an update from Installed Mods) */
                    (s_cur_tab == TAB_REPORTS && reports_test_state(NULL, NULL, 0) && GetTickCount64() - t0 < 10000) ||
                    (s_cur_tab == TAB_SUGGESTIONS && suggestions_test_state(NULL, NULL, 0) && GetTickCount64() - t0 < 10000))
                 while (PeekMessageW(&pm, NULL, 0, 0, PM_REMOVE)) {
@@ -10850,9 +10940,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
                 }
             }
             t0 = GetTickCount64();
-            /* (SVR2011_DISCOVER_RATE / _COMMENT / _COMMENTS: the page, then its rating / comments and their
+            /* (SVR2011_DISCOVER_UPVOTE / _AUTHOR_COMMENTS / _COMMENT / _COMMENTS: the page, then its rating / comments and their
                answers - 8 s) */
-            while (GetTickCount64() - t0 < (getenv("SVR2011_DISCOVER_RATE") || getenv("SVR2011_DISCOVER_COMMENT") ||
+            while (GetTickCount64() - t0 < (getenv("SVR2011_DISCOVER_UPVOTE") || getenv("SVR2011_DISCOVER_AUTHOR_COMMENTS") || getenv("SVR2011_DISCOVER_COMMENT") ||
                                             getenv("SVR2011_DISCOVER_COMMENTS") ? 8000u : 600u))
                 while (PeekMessageW(&pm, NULL, 0, 0, PM_REMOVE)) {
                     TranslateMessage(&pm);

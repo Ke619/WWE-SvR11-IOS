@@ -177,10 +177,11 @@ SETTINGS_SPEC = {
     # are refused - what is stored stays)
     "discovery_comments": {"default": "on", "choices": ["on", "off"], "live": True,
                            "help": "Discovery: comments on mods' pages (signed-in accounts; checked for links, the name filter and the Names tab's comment words). Off = hidden and refused, nothing deleted. At once"},
-    "discovery_ratings": {"default": "on", "choices": ["on", "off"], "live": True,
-                          "help": "Discovery: 1-5 star ratings (one per account per mod, not the uploader's own). Off = hidden and refused, nothing deleted. At once"},
-    "discovery_rating_min": {"default": 3, "min": 1, "max": 100, "live": True,
-                             "help": "Discovery: the ratings a mod needs to sort with the rated ones (Sort by rating): mods with fewer come after them, so one 5-star rating doesn't top the list"},
+    # (2.2.2: upvotes replaced 2.2.1's stars - discovery_ratings / discovery_rating_min are gone; a stored value of
+    # theirs is ignored)
+    "discovery_upvotes": {"default": "on", "choices": ["on", "off"], "live": True,
+                          "help": "Discovery: upvotes (one per account per mod, not the uploader's own; Most "
+                                  "upvoted sorts by them). Off = hidden and refused, nothing deleted. At once"},
     "discovery_warn_mb": {"default": 50, "min": 5, "max": 1024, "live": True,
                           "help": "Discovery: mods larger than this (MB) are stored, with a warning in the answer "
                                   "(big entrance movies: an .mp4 is ~10x smaller than a Bink one)"},
@@ -322,8 +323,9 @@ class Accounts:
         if self.names and self.names.check(name):
             gs.log("accounts: sign-up as %r from %s refused: the name filter" % (name, ip))
             return None, "That account name isn't allowed - pick another."
-        if len(password) < 6:
-            return None, "Passwords need at least 6 characters."
+        why = signup.password_problem(password, name)   # (2.2.2: the same rule everywhere; was 6 characters here)
+        if why:
+            return None, why
         salt = secrets.token_hex(16)
         pwhash = self.hash_password(password, salt)
         with self.lock:
@@ -934,8 +936,9 @@ class Service:
             if not self.accounts.check(a["name"], str(b.get("password", "")))[0]:
                 return "Your password isn't right."
             new = str(b.get("new_password", ""))
-            if len(new) < signup.MIN_PASSWORD:
-                return "Passwords need at least %d characters." % signup.MIN_PASSWORD
+            why = signup.password_problem(new, a["name"])
+            if why:
+                return why
             self.signup.set_password(a["id"], new, keep_token=token)
             gs.log("accounts: %s changed its password (its other sessions ended)" % a["name"])
             return ""
@@ -1276,7 +1279,8 @@ class Service:
 
     async def api_status(self, request):
         return web.json_response({"ok": True, "server": "svr2011-community", "version": 1,
-                                  "invite_needed": not self.signup.relaxed()})  # (sign-up asks for a code)
+                                  "invite_needed": not self.signup.relaxed(),  # (sign-up asks for a code)
+                                  "password_rule": signup.PASSWORD_RULE})  # (shown next to password fields)
 
     # the port's logo store
 
@@ -1572,17 +1576,17 @@ class Service:
         except ValueError:
             page = 0
         types = sum(v for k, v in discovery.TYPES.items() if k in q.get("type", "").lower().split(","))
-        ratings_on = SETTINGS["discovery_ratings"] == "on"
+        upvotes_on = SETTINGS["discovery_upvotes"] == "on"
         sort = q.get("sort", "new")
-        if sort == "rating" and not ratings_on:
+        if sort in ("upvotes", "rating") and not upvotes_on:
             sort = "new"
         res = await asyncio.get_running_loop().run_in_executor(
-            None, discovery.search, self.store, q.get("q", "")[:100], types, q.get("tag", "")[:24],
-            sort, page, False, SETTINGS["discovery_rating_min"])
-        if not ratings_on:
+            None, discovery.search, self.store, q.get("q", "")[:100], types, q.get("tag", "")[:24], sort, page)
+        if not upvotes_on:
             for m in res["mods"]:
-                m.pop("rating", None)
-        res["ratings_on"] = ratings_on
+                m.pop("upvotes", None)
+        res["upvotes_on"] = upvotes_on
+        res["ratings_on"] = False  # (2.2.1's stars: gone - its launcher hides them)
         res["comments_on"] = SETTINGS["discovery_comments"] == "on"
         return web.json_response(res)
 
@@ -1679,6 +1683,9 @@ class Service:
             body = None
         if not isinstance(body, dict):
             return web.json_response({"ok": False, "error": "Send a JSON object."}, status=400)
+        comments = body.pop("comments", None)   # (the author's comments switch, 2.2.2)
+        if comments is not None and not isinstance(comments, bool):
+            return web.json_response({"ok": False, "error": "comments: true or false."}, status=400)
         fields, why = self.mod_fields(body)
         order = body.get("picture_order")
         if not why and order is not None:
@@ -1687,7 +1694,7 @@ class Service:
                 why = "picture_order: the numbers 0-3, each once."
             elif order == list(range(discovery.IMAGES)):
                 order = None
-        if not why and not fields and order is None:
+        if not why and not fields and order is None and comments is None:
             why = "Nothing to change."
         if not why:
             why = self.names_why(account, *fields.values())
@@ -1696,10 +1703,16 @@ class Service:
         if why:
             return web.json_response({"ok": False, "error": why}, status=400)
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, discovery.edit, self.store, mid, fields, order)
+        if comments is not None:
+            await loop.run_in_executor(None, discovery_social.set_author_comments, self.store, mid, comments)
+            gs.log("discovery: mod %d: comments turned %s by its owner %s" % (mid, "on" if comments else "off",
+                                                                             account["name"]))
+        if fields or order is not None:
+            await loop.run_in_executor(None, discovery.edit, self.store, mid, fields, order)
         what = [w for w, on in (("info", fields), ("pictures", order is not None)) if on]
-        gs.log("discovery: mod %d updated by its owner (%s)%s" % (
-            mid, " + ".join(what), (": " + ", ".join(sorted(fields))) if fields else ""))
+        if what:
+            gs.log("discovery: mod %d updated by its owner (%s)%s" % (
+                mid, " + ".join(what), (": " + ", ".join(sorted(fields))) if fields else ""))
         info, _ = discovery.get(self.store, mid, True)
         return web.json_response({"ok": True, "mod": info})
 
@@ -1924,20 +1937,24 @@ class Service:
                                   "error": error or discovery_social.COMMENT_WHY.get(code, code)}, status=status)
 
     def social_page(self, request, info):
-        """A mod's page (GET /api/mods/{id}): its rating and comment count, the switches, and with a token the
-        asker's own rating and what it may do. (A worker thread.)"""
-        comments_on, ratings_on = SETTINGS["discovery_comments"] == "on", SETTINGS["discovery_ratings"] == "on"
-        info["comments_on"], info["ratings_on"] = comments_on, ratings_on
+        """A mod's page (GET /api/mods/{id}): its upvotes and comment count, the switches (the server's and the
+        author's), and with a token the asker's own upvote and what it may do. (A worker thread.)"""
+        author_off = bool(info.get("comments_off"))
+        comments_on = SETTINGS["discovery_comments"] == "on" and not author_off
+        upvotes_on = SETTINGS["discovery_upvotes"] == "on"
+        info["comments_on"], info["upvotes_on"], info["ratings_on"] = comments_on, upvotes_on, False
+        info["comments_author_off"] = author_off
         info["comments"] = discovery_social.comment_count(self.store, info["id"]) if comments_on else 0
-        if not ratings_on:
-            info.pop("rating", None)
+        if not upvotes_on:
+            info.pop("upvotes", None)
         account = self.raw_account(request) if request.headers.get("Authorization") else None
         if account:
             mute = discovery_social.muted(self.store, account["id"])
             own = info["owner"] == account["id"]
             info["can_comment"] = comments_on and not mute
-            info["can_rate"] = ratings_on and mute != "all" and not own
-            info["my_rating"] = discovery_social.my_rating(self.store, info["id"], account["id"]) if ratings_on else 0
+            info["can_upvote"] = upvotes_on and mute != "all" and not own
+            info["my_upvote"] = discovery_social.my_upvote(self.store, info["id"], account["id"]) if upvotes_on else False
+            info["can_rate"] = False  # (2.2.1's launcher: no stars to press)
 
     def discovery_comment_why(self, account, text, ip):
         """A comment's checks, in order: (the text as kept, "") or (text, the refusal's code). The rate limits
@@ -1968,10 +1985,12 @@ class Service:
         if not info:
             return self.social_no(404, "no_mod")
         on = SETTINGS["discovery_comments"] == "on"
+        author_off = bool(info.get("comments_off"))
         if request.method in ("GET", "HEAD"):
-            if not on:
-                return web.json_response({"ok": True, "enabled": False, "total": 0, "page": 0,
-                                          "per_page": discovery_social.PAGE, "comments": []})
+            if not on or author_off:
+                return web.json_response({"ok": True, "enabled": False, "author_off": author_off and on,
+                                          "why": discovery_social.COMMENT_WHY["author_off" if on else "comments_off"],
+                                          "total": 0, "page": 0, "per_page": discovery_social.PAGE, "comments": []})
             try:
                 page = max(0, int(request.query.get("page", "0")))
             except ValueError:
@@ -1988,6 +2007,8 @@ class Service:
             return web.Response(status=405)
         if not on:
             return self.social_no(403, "comments_off")
+        if author_off:
+            return self.social_no(403, "author_off")
         account = self.raw_account(request)
         if not account:
             return self.social_no(401, "sign_in_needed")
@@ -2022,7 +2043,7 @@ class Service:
         if not info:
             return None, None, self.social_no(404, "no_mod")
         c = discovery_social.get_comment(self.store, cid)
-        if not c or c["mod"] != mid or c["state"] != "shown":
+        if not c or c["mod"] != mid or c["state"] != "shown" or info.get("comments_off"):
             return None, None, self.social_no(404, "no_comment")
         return info, c, None
 
@@ -2064,9 +2085,13 @@ class Service:
         return web.json_response({"ok": True, "new": new})
 
     async def api_mod_rating(self, request):
-        """POST {stars: 1-5, or 0 to take the rating back} -> {ok, rating: {avg, count}, my_rating}."""
-        if SETTINGS["discovery_ratings"] != "on":
-            return self.social_no(403, "ratings_off")
+        """2.2.1's stars (POST {stars}): gone in 2.2.2 - refused with what to do (its launcher shows the error)."""
+        return self.social_no(410, "update_to_upvote")
+
+    async def api_mod_upvote(self, request):
+        """POST {up: true | false} -> {ok, upvotes, my_upvote}."""
+        if SETTINGS["discovery_upvotes"] != "on":
+            return self.social_no(403, "upvotes_off")
         mid = self._mod_id(request)
         loop = asyncio.get_running_loop()
         info, _ = discovery.get(self.store, mid) if mid is not None else (None, None)
@@ -2078,19 +2103,19 @@ class Service:
         if await loop.run_in_executor(None, discovery_social.muted, self.store, account["id"]) == "all":
             return self.social_no(403, "muted_ratings")
         if info["owner"] == account["id"]:
-            return self.social_no(403, "own_mod")
+            return self.social_no(403, "own_mod_upvote")
         try:
             body = await request.json()
-            stars = body.get("stars") if isinstance(body, dict) else None
-            if isinstance(stars, bool) or not isinstance(stars, int) or not 0 <= stars <= 5:
+            up = body.get("up") if isinstance(body, dict) else None
+            if not isinstance(up, bool):
                 raise ValueError
         except (ValueError, TypeError):
-            return self.social_no(400, "bad_stars")
-        if self.social_limits.check((("rating", account["id"]), 60, 3600)):
-            return self.social_no(429, "rate_too_fast")
-        rating = await loop.run_in_executor(None, discovery_social.rate, self.store, mid, account["id"], stars)
-        gs.log("discovery: mod %d rated %s by %s" % (mid, stars or "(taken back)", account["name"]))
-        return web.json_response({"ok": True, "rating": rating, "my_rating": stars})
+            return self.social_no(400, "bad_up")
+        if self.social_limits.check((("upvote", account["id"]), 60, 3600)):
+            return self.social_no(429, "upvote_too_fast")
+        n = await loop.run_in_executor(None, discovery_social.upvote, self.store, mid, account["id"], up)
+        gs.log("discovery: mod %d %s by %s" % (mid, "upvoted" if up else "upvote taken back", account["name"]))
+        return web.json_response({"ok": True, "upvotes": n, "my_upvote": up})
 
     @admin_only
     async def admin_discovery_comments(self, request):
@@ -2113,7 +2138,7 @@ class Service:
             res["mutes"] = discovery_social.mutes(self.store)
             return res
         res = await asyncio.get_running_loop().run_in_executor(None, work)
-        res.update(comments_on=SETTINGS["discovery_comments"] == "on", ratings_on=SETTINGS["discovery_ratings"] == "on")
+        res.update(comments_on=SETTINGS["discovery_comments"] == "on", upvotes_on=SETTINGS["discovery_upvotes"] == "on")
         return web.json_response(res)
 
     @admin_only
@@ -2810,9 +2835,9 @@ class Service:
             await asyncio.get_running_loop().run_in_executor(None, discovery.delete, self.store, mid)
         elif action in ("hide", "show"):
             discovery.set_hidden(self.store, mid, action == "hide")
-        elif action == "clear-ratings":
-            n = await asyncio.get_running_loop().run_in_executor(None, discovery_social.clear_ratings, self.store, mid)
-            gs.log("admin: mod %d: its %d rating(s) cleared" % (mid, n))
+        elif action in ("clear-upvotes", "clear-ratings"):
+            n = await asyncio.get_running_loop().run_in_executor(None, discovery_social.clear_upvotes, self.store, mid)
+            gs.log("admin: mod %d: its %d upvote(s) cleared" % (mid, n))
             return web.json_response({"ok": True, "cleared": n})
         else:
             return web.json_response({"ok": False}, status=400)
@@ -3499,7 +3524,8 @@ class Service:
         app.router.add_route("*", b + "/api/mods/{id}/comments", self.api_mod_comments)  # (GET; POST)
         app.router.add_delete(b + "/api/mods/{id}/comments/{cid}", self.api_mod_comment_delete)
         app.router.add_post(b + "/api/mods/{id}/comments/{cid}/report", self.api_mod_comment_report)
-        app.router.add_post(b + "/api/mods/{id}/rating", self.api_mod_rating)
+        app.router.add_post(b + "/api/mods/{id}/rating", self.api_mod_rating)  # (2.2.1's stars: refused)
+        app.router.add_post(b + "/api/mods/{id}/upvote", self.api_mod_upvote)
         app.router.add_post(b + "/api/reports", self.api_report)
         app.router.add_post(b + "/api/reports/mods/check", self.api_report_mods_check)
         app.router.add_post(b + "/api/reports/status", self.api_report_status)

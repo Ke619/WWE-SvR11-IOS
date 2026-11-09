@@ -1,4 +1,4 @@
-"""Entrances from other games -> SvR 2011 entrances: one entry point for the Mod Maker.
+r"""Entrances from other games -> SvR 2011 entrances: one entry point for the Mod Maker.
 
   python entrance_port.py games
   python entrance_port.py list --game <id> --src <extract folder or disc image> [--game-pac <2011 pac dir>]
@@ -7,7 +7,12 @@
                                   [--titantron [<movie n>]] [--bink2-tool <path>] [--no-pyro]
   (wwe13 also takes --svrmod <svrmod.exe>: its pacs are xcompressed; default: next to the tools or
    the Mod Maker; missing = exit 2)
-  python entrance_port.py free-numbers [--game-pac <2011 pac dir>] [--mods <Mods dir>]
+  python entrance_port.py free-numbers [--game-pac <2011 pac dir>] [--mods <Mods dir>] [--team singles|tag|trio]
+  --team singles / tag / trio (convert, free-numbers): which members the entrance plays - objects 0 / 0, 4 /
+        0, 4, 5 - at a number of that kind: singles 100-699 / 800-999, tag 700-769, trio 770-799 (TEAM MANAGER and
+        CREATE AN ENTRANCE's tag / trio lists take those). convert without it: the number's kind. A team motion as a
+        singles (or a trio as a tag) entrance: the other members aren't drawn. list rows carry `team` (the kind the
+        source number suggests: singles / tag / trio, or team for SvR 2007-2009 / Legends' ranges)
   --kind victory (list / convert / free-numbers): the victory scenes (pac/evt/Winning*.pac) instead of the
         entrances - SvR 2008, 2009, 2010 and Legends of WrestleMania; --number 6000..7999, written as
         `pacentry evt\Winning0.pac EVPA|EVTA <n>` (a superstar mod picks it with victory=<n>,
@@ -916,10 +921,22 @@ def dlc_props(src, game, evp11, rep):
     found = {}
     for pk in packages:
         for low in pk.matching(r'^pac/(evt/evtobj_dlc\d+|prop/\d+_dlc\d+)\.pac$'):
-            raw = pk.read(low)
-            if raw[:4] == b'\x0f\xf5\x12\xed':
-                raw = E13.xdec(raw, E13.find_svrmod(SVRMOD))
-            for (g, n), b in E13.epk8_entries(raw).items():
+            # (a package pac this reader can't read leaves its props out, not the whole entrance: WWE 2K17's Goldberg
+            # with its packages failed on a table running past the file's end, report 20261108 09187a)
+            try:
+                raw = pk.read(low)
+                if raw[:4] == b'\x0f\xf5\x12\xed':
+                    raw = E13.xdec(raw, E13.find_svrmod(SVRMOD))
+                try:
+                    ents = E13.epk8_entries(raw)
+                except (struct.error, ValueError, IndexError):
+                    if raw[:4] != b'EPAC':
+                        raise
+                    ents = E13.epac16_entries(raw)   # (2K16 / 2K17's per-entry EPAC layout)
+            except Exception as x:
+                rep['notes'].append('%s in DLC package %s: not read (%s) - its props are left out' % (low, pk.display, x))
+                continue
+            for (g, n), b in ents.items():
                 if g == 'SOBJ' and n.isdigit():
                     found.setdefault(int(n), b)
     for pid, warnings in sorted(missing.items()):
@@ -1262,13 +1279,73 @@ def cmd_list(a):
         out = [r for r in out if r['number'] < 7150]
     for r in out:                      # (the Mod Maker contract's item key: what convert --entrance takes)
         r.setdefault('key', str(r['number']))
+        if not VICTORY:                # (singles / tag / trio / team - the Mod Maker's default for --team)
+            r.setdefault('team', team_hint(g, r['number']))
     progress(100, '%d entrances' % len(out))
     return out
 
 
-def free_numbers(game_pac, mods):
+# 2011's team entrances (docs/OTHER_GAMES_ENTRANCES.md, "Tag and trio entrances"): tag 700-769 (stock 700-756), trios
+# 770-799 (stock 770-775) - CREATE AN ENTRANCE's tag / trio lists and TEAM MANAGER take them, a singles slot never
+# should. The members are character objects 0, 4 and 5 (2011's Hardyz 701: 0 Matt, 4 Jeff; MNM 770: 0, 4, 5).
+TEAM_RANGES = {'tag': (700, 769), 'trio': (770, 799)}
+TEAM_OBJECTS = {'singles': (0,), 'tag': (0, 4), 'trio': (0, 4, 5)}
+# (the source games' own team ranges: 2010 / '12-2K17 use 2011's 700-799; SvR 2007 / 2008 4200-4259, 2009 and
+# Legends 4300-4359 - the kind of those comes from the tracked members at convert)
+OLD_TEAM_RANGES = {'svr07': (4200, 4259), 'svr08': (4200, 4259), 'svr09': (4300, 4359), 'low': (4300, 4359)}
+
+
+def team_of_number(n):
+    """'tag' / 'trio' for a 2011 team number, else 'singles'"""
+    return next((k for k, (lo, hi) in TEAM_RANGES.items() if lo <= n <= hi), 'singles')
+
+
+def team_hint(g, n):
+    """the kind a source entrance number suggests: 'tag' / 'trio', 'team' (an old game's team range: tag or trio is
+    known at convert), else 'singles'"""
+    if g in OLD_TEAM_RANGES:
+        lo, hi = OLD_TEAM_RANGES[g]
+        return 'team' if lo <= n <= hi else 'singles'
+    return team_of_number(n) if g not in ('hctp', 'sym', 'svr04', 'svr06', 'jbi') else 'singles'
+
+
+def free_numbers(game_pac, mods, team=None):
+    """free 2011 entrance numbers: team None / 'singles' outside 700-799 (a singles entrance there showed only in the
+    team lists), 'tag' / 'trio' in their range"""
     used = set(stock_2011(game_pac)) | pack_numbers(mods)
-    return [n for lo, hi, f, gl in NYUJYO for n in range(lo, hi + 1) if n not in used]
+    nums = [n for lo, hi, f, gl in NYUJYO for n in range(lo, hi + 1) if n not in used]
+    if team in TEAM_RANGES:
+        lo, hi = TEAM_RANGES[team]
+        return [n for n in nums if lo <= n <= hi]
+    return [n for n in nums if team_of_number(n) == 'singles']
+
+
+def tracked_members(evp, evt):
+    """the team member objects (0, 4, 5) with a track in a converted entrance (track id 25000 + object)"""
+    e = E08.parse_evp(evp, '2011')
+    ids = {x['id'] - 25000 for x in ymks.read_bank(evt).entries if x.get('data')}
+    return [i for i in (0, 4, 5) if i in ids and i < len(e['objs']) and E13.kind(e['objs'][i]) == 'char']
+
+
+def apply_team(evp, evt, team, rep):
+    """-> (evp, evt) for a singles / tag / trio entrance: member objects the kind doesn't have lose their tracks
+    and aren't drawn (as 2011's own track-less characters, place_extras) - a team motion used as a singles one walks
+    out alone instead of beside stand-in bodies"""
+    have = tracked_members(evp, evt)
+    drop = [i for i in have if i not in TEAM_OBJECTS[team]]
+    need = [i for i in TEAM_OBJECTS[team] if i not in have]
+    if need:
+        raise InputError('a %s entrance needs tracks for members %s; this one moves %s (try %s)' % (
+            team, ', '.join(map(str, need)), ', '.join(map(str, have)) or 'none',
+            {1: 'singles', 2: 'tag'}.get(len(have), 'trio')))
+    if not drop:
+        return evp, evt
+    e = E08.parse_evp(evp, '2011')
+    for i in drop:   # (the bank keeps their tracks: entries share data offsets, dropping one could shift another's)
+        o = e['objs'][i]
+        o['slots'] = [s[:2] + b'\0' + s[3:] for s in o['slots']]
+    rep['notes'].append('as a %s entrance: members %s not drawn' % (team, ', '.join(map(str, drop))))
+    return E08.build_evp(e, '2011'), evt
 
 
 def cmd_free(a):
@@ -1279,7 +1356,10 @@ def cmd_free(a):
     if opt(a, '--kind') == 'victory':     # (6300-6999: past the superstars' own 6000 + id)
         used = set(stock_victories(gp)) | pack_victories(mods)
         return [n for n in range(6300, 7000) if n not in used]
-    return free_numbers(gp, mods)
+    team = opt(a, '--team', 'singles')
+    if team not in TEAM_OBJECTS:
+        raise InputError('--team is singles, tag or trio')
+    return free_numbers(gp, mods, team)
 
 
 PYRO_GAMES = ('svr10', 'wwe12', 'wwe13', 'wwe2k14', 'wwe2k15', 'wwe2k16', 'wwe2k17')
@@ -1402,8 +1482,20 @@ def cmd_convert(a):
     gp = find_game_pac(opt(a, '--game-pac'))
     if gp and number in stock_2011(gp):
         raise InputError('2011 already has entrance %d (%s): pick a free number (free-numbers)' % (number, stock_2011(gp)[number]))
+    # --team singles / tag / trio: which members the entrance plays (objects 0 / 0, 4 / 0, 4, 5); the number must be in
+    # its range (free-numbers --team). Without it the number decides: 700-799 tag / trio, else singles - a team
+    # motion ported at a singles number walks its entrant out alone (before: beside the partners' stand-in bodies).
+    team = opt(a, '--team') or team_of_number(number)
+    auto = team == 'auto'   # (the source's own kind - its tracked members - at a number of that kind, re-picked if need be)
+    if auto:
+        team = team_of_number(number)
+    if team not in TEAM_OBJECTS:
+        raise InputError('--team is singles, tag, trio or auto')
+    if team_of_number(number) != team:
+        raise InputError('a %s entrance needs a %s number, not %d (free-numbers --team %s)' % (
+            team, '%d-%d' % TEAM_RANGES[team] if team in TEAM_RANGES else 'singles (not 700-799)', number, team))
     rep = dict(ok=False, game=g, entrance=entrance, number=number, name=opt(a, '--name', ''), files=[],
-               warnings=[], dropped=[], notes=[])
+               warnings=[], dropped=[], notes=[], team=team)
     if lone:
         rep['lone'] = lone
         rep['notes'] += ['lone file %s: %s' % (lone['file'], x) for x in lone['limits']]
@@ -1415,6 +1507,27 @@ def cmd_convert(a):
         conv = CONVERTERS[g]
         kw = {'game_pac': gp} if 'game_pac' in conv.__code__.co_varnames else {}
         evp, evt = conv(src, entrance, number, opt(a, '--name'), '--no-parts' not in a, rep, **kw)
+        members = tracked_members(evp, evt)
+        rep['source_team'] = {1: 'singles', 2: 'tag'}.get(len(members), 'trio')
+        if auto and rep['source_team'] != team:
+            if not gp:
+                raise InputError('--team auto needs the 2011 pac folder (--game-pac) to pick a %s number' % rep['source_team'])
+            free = free_numbers(gp, opt(a, '--mods') or os.path.join(os.path.dirname(gp), 'Mods'), rep['source_team'])
+            if not free:
+                raise InputError('no free %s entrance number left' % rep['source_team'])
+            rep['notes'].append('--team auto: a %s entrance, number %d -> %d' % (rep['source_team'], number, free[0]))
+            team, number = rep['source_team'], free[0]
+            rep.update(team=team, number=number)
+            for k in ('notes', 'warnings', 'dropped'):   # (converted again at the new number: its notes once)
+                keep = [x for x in rep[k] if x.startswith('--team auto')]
+                rep[k] = keep
+            del PROPS[:]
+            evp, evt = conv(src, entrance, number, opt(a, '--name'), '--no-parts' not in a, rep, **kw)
+            members = tracked_members(evp, evt)
+        rep['notes'].append('the source moves members %s (%s)' % (', '.join(map(str, members)) or 'none', rep['source_team']))
+        evp, evt = apply_team(evp, evt, team, rep)
+        if team != 'singles':
+            rep['notes'].append('a %s entrance: TEAM MANAGER -> the team -> ENTRANCE SETTING -> MOTION, the MOD row' % team)
         progress(60, 'checking')
         E08.parse_evp(evp, '2011')
         b = ymks.read_bank(evt)

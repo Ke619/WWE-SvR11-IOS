@@ -22,6 +22,12 @@ struct Lighting {
   float color[3] = {1, 1, 1};     // multiplied into every material colour
   float strength = 1.0f;
   bool crowd = true;              // the people in the seats
+  // the crowd's colour (the arena's aud_lightmap, svrfmt TintAudienceLightmap): 0 as made, 1 neutral, 2 crowd_color;
+  // crowd_bright scales it either way
+  int crowd_mode = 0;
+  float crowd_color[3] = {1, 0.9f, 0.75f};
+  float crowd_bright = 1.0f;
+  bool CrowdDefault() const { return crowd_mode == 0 && crowd_bright == 1.0f; }
   bool Default() const;
   // In the game (manifest light_scale= / match_light=: the game's arena_lights.cpp): the arena's lights x
   // game_scale (with the player's ARENA BRIGHTNESS); match_light 0 the game's, 1 the entrance's in the match,

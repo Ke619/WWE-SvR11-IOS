@@ -27,6 +27,40 @@ import time
 ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"  # (no 0/O, 1/I: read out or typed from a message)
 RESET_LIFE = 24 * 3600
 MIN_PASSWORD = 8
+MAX_PASSWORD = 128
+# What the clients show next to a password field (launcher, Android; GET /api/status password_rule).
+PASSWORD_RULE = "At least 8 characters - use a mix of letters, numbers and symbols; not your name."
+# Very common passwords (lower case; a password matches with digits / symbols added at its end too: "password123!").
+COMMON_PASSWORDS = frozenset("""
+password passw0rd password1 qwerty qwertyuiop asdfgh asdfghjkl zxcvbnm 123456 1234567 12345678 123456789 1234567890
+111111 000000 123123 654321 abc123 abcd1234 iloveyou letmein welcome monkey dragon football baseball basketball
+soccer hockey master shadow sunshine princess superman batman trustno1 starwars whatever freedom hello hellothere
+secret login admin administrator changeme default computer internet michael jordan charlie pokemon minecraft
+fortnite gaming gamer playstation xbox xbox360 nintendo wwe wrestling smackdown smackdownvsraw raw svr svr2011
+johncena undertaker randyorton reymysterio thebigshow kane batista edge triplehhh tripleh cmpunk stonecold therock
+""".split())
+
+
+def password_problem(password, name=""):
+    """Why this password can't be used (a plain sentence to show), or "" - the rule for a new password. Checked
+    where one is set (sign-up, the reset code, a change); passwords set before keep working."""
+    password = str(password or "")
+    if len(password) < MIN_PASSWORD:
+        return "Passwords need at least %d characters (this one has %d)." % (MIN_PASSWORD, len(password))
+    if len(password) > MAX_PASSWORD:
+        return "Passwords can be %d characters at most." % MAX_PASSWORD
+    low = password.lower()
+    core = re.sub(r"[^a-z]+$", "", low)  # (without digits / symbols added at its end)
+    name = str(name or "").strip().lower()
+    if name and (low == name or core == name or core == re.sub(r"[^a-z]+$", "", name)):
+        return "Don't use your account name as your password."
+    if low in COMMON_PASSWORDS or core in COMMON_PASSWORDS:
+        return "That password is too common and easy to guess - pick another one."
+    kinds = sum((any(c.isalpha() for c in password), any(c.isdigit() for c in password),
+                 any(not c.isalnum() for c in password)))
+    if kinds < 2:
+        return "Mix at least two kinds of characters: letters, numbers, symbols."
+    return ""
 KINDS = ("signup", "reactivate", "reset")
 
 # The text an old (2.1.5) launcher or game shows - its sign-in's error, as it is.
@@ -216,8 +250,9 @@ class Signup:
         """(account, error) - an active account (its invite code used)."""
         if not self.open and self.limits.hit(("signup-ip", ip), 5, 3600):  # (test servers make many)
             return None, "Too many sign-ups from here - wait an hour."
-        if not self.open and len(password) < MIN_PASSWORD:
-            return None, "Passwords need at least %d characters." % MIN_PASSWORD
+        why = password_problem(password, name)
+        if not self.open and why:   # (a private test server: as before, any password)
+            return None, why
         with self.lock:
             iid = None
             if not self.open:
@@ -240,8 +275,9 @@ class Signup:
         name = (name or "").strip()
         if self.limits.hit(("reset-ip", ip), 20, 1800) or self.limits.hit(("reset", name.lower()), 10, 1800):
             return "Too many tries - wait half an hour."
-        if len(password) < MIN_PASSWORD:
-            return "Passwords need at least %d characters." % MIN_PASSWORD
+        why = password_problem(password, name)   # (before the code: a refused password doesn't use it up)
+        if why:
+            return why
         with self.lock:
             acc = self.db.execute("SELECT id, name FROM accounts WHERE name = ? COLLATE NOCASE", (name,)).fetchone()
             iid = acc and self._take("reset", code, acc[0])

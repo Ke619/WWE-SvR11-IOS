@@ -90,7 +90,10 @@ focuses the selection, Ctrl+Z undoes.
   corner pads, the low rope's height and the gap between ropes. Fewer ropes
   change the gameplay (the game adapts: no rope breaks, no rebounds with
   none).
-- **Lighting:** presets and a colour / strength, and the crowd in the seats.
+- **Lighting:** presets and a colour / strength, and the crowd in the seats. **Crowd lighting** changes the tint the crowd
+  takes in the game (RAW's red, SmackDown's blue, which arenas built on them keep): as made, neutral or a colour, with a
+  brightness. It's the arena's crowd light picture (`aud_lightmap`); an arena without one has the row greyed out. Seen in
+  the game, not in the 3D view.
 - **Size budget:** file and memory against the original arena.
 - **Test in game:** installs the mod and starts the game.
 

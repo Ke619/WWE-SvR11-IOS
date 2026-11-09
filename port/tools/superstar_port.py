@@ -1599,29 +1599,69 @@ class GameW2K17(GameW2K16):
         import wwe13_entrance as WE
         self.MP, self.WE, self.src = MP, WE, src
         self.svrmod = WE.find_svrmod(svrmod)
-        self.dlc_ids = set()   # (its own constructor: no DLC is read for 2K17, and roster() asks)
-        sets = [[(i, ch_tool.unpack(x)) for i, x in shdc(b)] for _, b in hspc(self.pac_bytes('pac/ch/chEtc.pac'))
-                if b[:4] == b'SHDC']
-        dat = max((s for s in sets if s and len(s[0][1]) == self.dat_size), key=len)
-        pro = max((s for s in sets if s and len(s[0][1]) == 1348), key=len)
-        ids = {i: struct.unpack_from('<H', r, 4)[0] for i, r in dat}
-        self.raw_dat = {ids[i]: r for i, r in dat}
-        self.pro = {ids[i]: r for i, r in pro if i in ids}
-        names = self._names()
-        self.dat = {}
-        for c, r in self.raw_dat.items():   # (laid out as 2011's for the shared helpers)
-            x = bytearray(264)
-            nm = names.get(struct.unpack_from('<H', r, self.dat_name)[0], '').encode('latin1', 'replace')[:31]
-            x[34:34 + len(nm)] = nm
-            x[170:170 + len(nm)] = nm
-            x[28:30] = r[self.dat_scale:self.dat_scale + 2]
-            x[208], x[209] = r[self.dat_gender], r[self.dat_class]
-            self.dat[c] = bytes(x)
+        self.dlc_ids = set()
+        self.raw_dat, self.pro = self.char_tables(self.pac_bytes('pac/ch/chEtc.pac'))
+        self.names = self._names()
+        self.dat = {c: self._shape17(r, self.names) for c, r in self.raw_dat.items()}
         self._ssf = _RawRenders()
         self.theme_missing = 'no theme events'
 
-    def _names(self):
-        for _, b in hspc(self.pac_bytes('pac/string_360.pac')):
+    def char_tables(self, raw):
+        """a (decoded) chEtc - the disc's or a DLC package's, the same form - -> ({id: DAT row}, {id: PRO row})"""
+        sets = [[(i, ch_tool.unpack(x)) for i, x in shdc(b)] for _, b in hspc(raw) if b[:4] == b'SHDC']
+        dat = max((s for s in sets if s and len(s[0][1]) == self.dat_size), key=len)
+        pro = max((s for s in sets if s and len(s[0][1]) == 1348), key=len, default=[])
+        ids = {i: struct.unpack_from('<H', r, 4)[0] for i, r in dat}
+        return {ids[i]: r for i, r in dat}, {ids[i]: r for i, r in pro if i in ids}
+
+    def _shape17(self, r, names):
+        """a DAT row laid out as 2011's for the shared helpers (its name from a string table)"""
+        x = bytearray(264)
+        nm = names.get(struct.unpack_from('<H', r, self.dat_name)[0], '').encode('latin1', 'replace')[:31]
+        x[34:34 + len(nm)] = nm
+        x[170:170 + len(nm)] = nm
+        x[28:30] = r[self.dat_scale:self.dat_scale + 2]
+        x[208], x[209] = r[self.dat_gender], r[self.dat_class]
+        return bytes(x)
+
+    def merge_dlc(self):
+        """--dlc: a package's chEtc is an HSPC as the disc's (GameW.merge_dlc's EPAC / EPK8 reader left every 2K17
+        package out, reports de65e8 / 09187a): read by the disc's own char_tables; names from the package's
+        string_360 pac, else the disc's. A package that doesn't read is left out as before."""
+        dlc = self.src.dlc
+        if not dlc:
+            return
+        for pk in dlc.packages:
+            own = {i for i in pk.models() if not self.src.d.exists(self.chpac_rel(i))}
+            low = pk.etc()
+            if not own or not low:
+                continue
+            try:
+                raw_dat, pro = self.char_tables(self.decode(pk.read(low)))
+            except Exception as e:   # (anything this reader can't make sense of: today's skip)
+                print('DLC package %s: its character table can\'t be read (%s)' % (pk.name, e), file=sys.stderr)
+                __import__('dlc_src').notice('DLC package %s: its character table can\'t be read: its superstars are left out.' % pk.display)
+                continue
+            names = dict(self.names)
+            for s in pk.matching(r'^pac/string[^/]*\.pac$'):
+                try:
+                    names.update(self._names(self.decode(pk.read(s))))
+                except Exception as e:   # (its names unread: the disc's, else the superstar is left out below)
+                    print('DLC package %s: %s not read (%s)' % (pk.name, s, e), file=sys.stderr)
+            for cid, r in raw_dat.items():
+                if cid not in own:
+                    continue
+                x = self._shape17(r, names)
+                if not x[34:66].strip(b'\0'):
+                    continue
+                self.raw_dat[cid], self.dat[cid] = r, x
+                if cid in pro:
+                    self.pro[cid] = pro[cid]
+                self.dlc_ids.add(cid)
+        self.render_ids = {i for (t, i) in self._ssf if t == 'SSFA'}
+
+    def _names(self, raw=None):
+        for _, b in hspc(raw if raw is not None else self.pac_bytes('pac/string_360.pac')):
             if b[:4] != b'SHDC':
                 continue
             u = self.MP.unz(shdc(b)[0][1])

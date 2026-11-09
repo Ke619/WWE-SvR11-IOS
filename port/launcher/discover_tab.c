@@ -3,7 +3,8 @@
  * Three views on one page: the grid (search by words, type and order; 24 a page, each with its first picture),
  * a mod's page (its four pictures, what it is, Download and install; Delete for its uploader) and the upload
  * form (name, version, types, tags, description, the .svrmod, four pictures - made 1024 x 768 JPEG here:
- * the server has no image library and only checks them). A mod's page also has its stars (rate it 1-5, signed in)
+ * the server has no image library and only checks them). A mod's page also has its upvotes (one per account, signed
+ * in; 2.2.2 - 2.2.1 had 1-5 stars) and, on the player's own mod, a Comments on/off switch
  * and Comments (N): a fourth view with its comments, newest first (write, delete your own, report) - the server
  * checks every comment (docs/DISCOVERY_API.md "Comments and ratings"). Every request runs on a thread of its own and
  * answers with WM_APP_DISCOVER; a page's late answers (an older search) are dropped by their number. */
@@ -15,6 +16,8 @@
 #include "test_run.h"
 
 #include <commctrl.h>
+#include <uxtheme.h>
+#include <vssym32.h>
 #include <shobjidl.h>
 #include <wincodec.h>
 #include <winhttp.h>
@@ -27,6 +30,7 @@
 
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "windowscodecs.lib")
+#pragma comment(lib, "uxtheme.lib")
 
 enum {
     D_SEARCH, D_TYPE, D_SORT, D_GO, D_GRID, D_PREV, D_PAGE, D_NEXT, D_UPLOAD, D_STATUS,
@@ -35,14 +39,16 @@ enum {
     U_FILE_L, U_FILE, U_FILE_PICK, U_PICS_L, U_PICS, U_PICS_PICK, U_AUTHOR, U_SEND, U_CANCEL, U_PROGRESS,
     D_EDIT, D_NEWFILE, D_FIRSTPIC,   /* (the uploader's own: Edit..., New version..., Make first) */
     D_DLBAR, D_DLCANCEL,             /* (a download running: its bar and Cancel) */
-    D_RATING, D_STAR0, D_STAR1, D_STAR2, D_STAR3, D_STAR4, D_COMMENTS,   /* (a mod's page: its stars, Comments (N)) */
+    D_RATING, D_UPVOTE, D_AUTHOR_COMMENTS, D_COMMENTS,   /* (a mod's page: its upvotes, the author's switch, Comments) */
     C_TITLE, C_LIST, C_FULL, C_MORE, C_DEL, C_REPORT, C_WRITE_L, C_WRITE, C_SEND, C_BACK,   /* (its comments' view) */
     D_COUNT   /* (the launcher gives Discovery 100 ids: ID_DISCOVER_BASE 1300 .. 1399) */
 };
 enum { V_GRID, V_MOD, V_UPLOAD, V_COMMENTS };
 enum { R_LIST, R_THUMB, R_DETAIL, R_PIC, R_DOWNLOAD, R_UPLOAD, R_DELETE, R_PROGRESS, R_EDIT,
        R_RECONNECT, R_DLPROG,     /* (the server didn't answer: trying again; a download's progress) */
-       R_COMMENTS, R_CPOST, R_CDEL, R_CREPORT, R_RATE };   /* (comments: a page, a new one, delete, report; a rating) */
+       R_COMMENTS, R_CPOST, R_CDEL, R_CREPORT, R_UPVOTE,
+       R_FIT,
+       R_CHECK };   /* (the installed mods from Discovery: one mod's page each, for its version) */   /* (the grid's size or scale changed: its tiles fitted again) */   /* (comments: a page, a new one, delete, report; a rating) */
 #define MAX_COMMENTS 200   /* (loaded on one page: 20 a request, More for the next) */
 #define COMMENT_MAX 500    /* (characters: the server's limit) */
 #define DL_TRIES 6   /* (a download that breaks: resumed / restarted this many times in all) */
@@ -57,7 +63,7 @@ typedef struct {
     long long owner;   /* (the uploader's account id) */
     long long size, created, updated, edited;   /* (Unix seconds; updated / edited 0: never) */
     int pics;          /* (goes up with each picture change: img/n?v=pics) */
-    int rating10, rating_count;   /* (the stars: average x 10, how many; 0 0: none, or ratings off) */
+    int upvotes, comments_off;    /* (how many upvoted it - -1: upvotes off; its author turned comments off) */
     WCHAR name[64], author[48], types[80], tags[220], version[24];
 } Mod;
 
@@ -83,13 +89,37 @@ static WCHAR s_cur_desc[2001], s_ini[MAX_PATH];
 static long long s_last_visit;   /* (the previous visit to Discovery: "Updated" since then) */
 static Mod s_mods[PER_PAGE];
 static HIMAGELIST s_thumbs;
+/* The grid's tiles, drawn here (NM_CUSTOMDRAW): the picture, the name on up to 2 lines, the stars on their own line,
+   UPDATED as a badge on the picture. Their size follows the grid's width and the screen's scale (grid_fit). */
+static int s_tile_w, s_tile_h, s_line_h, s_thumb_w = THUMB_W, s_thumb_h = THUMB_H, s_fit_cw, s_fit_ch;
+static int s_img[PER_PAGE], s_badge[PER_PAGE];   /* (a tile's picture in s_thumbs or -1; 1 UPDATED, 2 NEW VERSION) */
+static uint8_t *s_raw[PER_PAGE];                 /* (the thumbnails as sent: made again at a new size) */
+static size_t s_raw_n[PER_PAGE];
+static HTHEME s_grid_theme;
+/* Installed from Discovery: per tile 0, 1 installed (a tick), 2 installed but older than Discovery's (an Update
+   button on the picture); per installed mod (the Installed Mods list's arrows and Update) its folder and state. */
+static int s_state[PER_PAGE];
+typedef struct { int state; WCHAR folder[MAX_PATH]; Mod m; } Installed;
+static Installed s_inst[128];
+static int s_ninst;
+static int (*s_running)(void);
+static int s_dl_from_mods, s_checking;
+static volatile unsigned long long s_dl_hash;   /* (the downloaded file's FNV-1a 64, from the download's thread) */
+static ULONGLONG s_checked_at;
+#define K_GOOD RGB(52, 199, 89)
+static HFONT s_badge_font;
+#define K_TEXT RGB(236, 237, 241)
+#define K_MUTED RGB(150, 153, 163)
+#define K_ACCENT RGB(214, 22, 44)
+#define K_GOLD RGB(240, 160, 40)
+#define K_CARD RGB(27, 30, 36)
 static HBITMAP s_pics[4];
 static WCHAR s_game[MAX_PATH], s_file_name[MAX_PATH], s_up_file[MAX_PATH], s_up_pics[4][MAX_PATH];
 static discover_server_fn s_server;
 static discover_account_fn s_account;
 /* The mod page's stars and comments, from its answer (asked with s_mine_token): the server's switches, the asker's
    own rating and rights; the comments' view: what is loaded of them and their own request counter. */
-static int s_comments_on, s_ratings_on, s_can_rate, s_my_rating, s_n_comments;
+static int s_comments_on, s_upvotes_on, s_can_upvote, s_my_upvote, s_n_comments, s_author_off;
 static Comment s_cms[MAX_COMMENTS];
 static int s_cm_n, s_cm_total, s_cm_page, s_cm_can, s_cm_busy;
 static volatile LONG s_cgen;   /* (a newer comments page, or another mod's, drops an older one's answer) */
@@ -100,6 +130,14 @@ static const WCHAR *const k_type_names[4] = { L"Entrance", L"Superstar", L"Arena
 /* ── small helpers ─────────────────────────────────────────────────────── */
 
 static void status(const WCHAR *t) { SetWindowTextW(s_c[D_STATUS], t); }
+
+/* A length laid out at 96 dpi, at the launcher's scale now (the status line is laid out 560 wide). */
+static int sc(int v)
+{
+    RECT r;
+    if (!s_c[D_STATUS] || !GetWindowRect(s_c[D_STATUS], &r) || r.right <= r.left) return v;
+    return MulDiv(v, r.right - r.left, 560);
+}
 
 static void fmt_bytes(WCHAR *out, size_t n, long long b)
 {
@@ -140,6 +178,20 @@ static void json_text(char *out, size_t n, const WCHAR *w)
 }
 
 /* The version of a mod downloaded from Discovery (its "updated", else "created", at the download), or 0. */
+/* A file's FNV-1a 64 (the install record's hash). */
+static unsigned long long file_fnv(const WCHAR *path)
+{
+    static unsigned char buf[1 << 16];
+    unsigned long long h = 1469598103934665603ull;
+    FILE *f;
+    size_t got, i;
+    if (_wfopen_s(&f, path, L"rb") || !f) return 0;
+    while ((got = fread(buf, 1, sizeof buf, f)) > 0)
+        for (i = 0; i < got; ++i) h = (h ^ buf[i]) * 1099511628211ull;
+    fclose(f);
+    return h;
+}
+
 static long long downloaded_stamp(int id)
 {
     WCHAR k[32], v[32];
@@ -249,14 +301,9 @@ static void parse_mod(const char *p, const char *end, Mod *m)
     jlist(jkey(p, end, "tags"), end, NULL, m->tags, 220);
     m->size = jnum(jkey(p, end, "size"));
     m->downloads = (int)jnum(jkey(p, end, "downloads"));
-    {   /* the stars: "rating": {"avg", "count"} (left out while the server has ratings off) */
-        const char *rt = jkey(p, end, "rating");
-        if (rt && *rt == '{') {
-            const char *re = jobject_end(rt, end);
-            m->rating10 = (int)(jdbl(jkey(rt, re, "avg")) * 10 + 0.5);
-            m->rating_count = (int)jnum(jkey(rt, re, "count"));
-        }
-    }
+    /* the upvotes (left out while the server has them off - an older server has neither) */
+    m->upvotes = jkey(p, end, "upvotes") ? (int)jnum(jkey(p, end, "upvotes")) : -1;
+    m->comments_off = jtrue(jkey(p, end, "comments_off"));
 }
 
 static int parse_comment(const char *p, const char *end, Comment *c)
@@ -824,6 +871,7 @@ static DWORD WINAPI job_thread(LPVOID p)
         swprintf_s(j->file, MAX_PATH, L"%s\\discovery.svrmod", dir);
         if (download_to(j, part, why) && MoveFileExW(part, j->file, MOVEFILE_REPLACE_EXISTING)) {
             st = 200;
+            s_dl_hash = file_fnv(j->file);   /* (kept with the install's record) */
         } else {
             DeleteFileW(part);
             if (!why[0]) wcscpy_s(why, 200, L"the file couldn't be put in place");
@@ -836,11 +884,22 @@ static DWORD WINAPI job_thread(LPVOID p)
         st = http(j, L"DELETE", j->path, NULL, NULL, 0, &data, &n, 1 << 16);
         post(j, st, data, n, 0, NULL);
         break;
+    case R_CHECK:   /* (each installed mod's page: its version and when it changed) */
+        for (i = 0; i < j->n_ids; i++) {
+            swprintf_s(path, 64, L"/api/mods/%d", j->ids[i]);
+            data = NULL;
+            n = 0;
+            st = http(j, L"GET", path, NULL, NULL, 0, &data, &n, 1 << 20);
+            post(j, st, data, n, j->ids[i], NULL);
+        }
+        post(j, 0, NULL, 0, -1, NULL);   /* (all asked) */
+        data = NULL;
+        break;
     case R_COMMENTS:   /* (a page of comments; index: the page) */
         st = http(j, L"GET", j->path, NULL, NULL, 0, &data, &n, 1 << 20);
         post(j, st, data, n, j->index, NULL);
         break;
-    case R_CPOST: case R_CREPORT: case R_RATE: {   /* (index: the comment / the stars) */
+    case R_CPOST: case R_CREPORT: case R_UPVOTE: {   /* (index: the comment / up or not) */
         const char *b = j->json ? j->json : "{}";
         st = http(j, L"POST", j->path, "application/json", (const uint8_t *)b, strlen(b), &data, &n, 1 << 16);
         post(j, st, data, n, j->index, NULL);
@@ -920,10 +979,398 @@ static Job *job(int kind)
 
 /* ── the views ─────────────────────────────────────────────────────────── */
 
+static int tile_rect(int item, RECT *out);
+static void set_view(int v);
+
+/* The install record (launcher.ini [Discovery]): Mod<id> = the version's time (as before 2.2.2), Mod<id>Dir = its
+   folder under the game folder, Mod<id>Ver = Discovery's version, Mod<id>Hash = the file's FNV-1a 64. */
+static int rec_folder(int id, WCHAR *folder)
+{
+    WCHAR k[48], rel[MAX_PATH], man[MAX_PATH];
+    if (!s_ini[0] || !s_game[0]) return 0;
+    swprintf_s(k, 48, L"Mod%dDir", id);
+    GetPrivateProfileStringW(L"Discovery", k, L"", rel, MAX_PATH, s_ini);
+    if (!rel[0]) return 0;
+    swprintf_s(folder, MAX_PATH, L"%s\\%s", s_game, rel);
+    swprintf_s(man, MAX_PATH, L"%s\\manifest.txt", folder);
+    return GetFileAttributesW(man) != INVALID_FILE_ATTRIBUTES;   /* (removed since: not installed) */
+}
+
+static void rec_write(int id, const WCHAR *folder, const WCHAR *version, unsigned long long hash, long long stamp)
+{
+    WCHAR k[48], v[40];
+    const size_t g = wcslen(s_game);
+    const WCHAR *rel = !_wcsnicmp(folder, s_game, g) && folder[g] == L'\\' ? folder + g + 1 : folder;
+    if (!s_ini[0]) return;
+    swprintf_s(k, 48, L"Mod%dDir", id);
+    WritePrivateProfileStringW(L"Discovery", k, rel, s_ini);
+    swprintf_s(k, 48, L"Mod%dVer", id);
+    WritePrivateProfileStringW(L"Discovery", k, version, s_ini);
+    if (hash) {
+        swprintf_s(k, 48, L"Mod%dHash", id);
+        swprintf_s(v, 40, L"%016llx", hash);
+        WritePrivateProfileStringW(L"Discovery", k, v, s_ini);
+    }
+    if (stamp > 0) {
+        swprintf_s(k, 48, L"Mod%d", id);
+        swprintf_s(v, 40, L"%lld", stamp);
+        WritePrivateProfileStringW(L"Discovery", k, v, s_ini);
+    }
+}
+
+/* Is this Discovery mod installed here, and as its newest version? 0 / 1 / 2 (older). A copy installed before the
+   record (2.2.2) is matched by its manifest: the name - downloaded on this PC (Mod<id>) - or else the name and the
+   author; only one such mod counts, and it is recorded then. */
+static int mod_state(const Mod *m, WCHAR *folder_out)
+{
+    const long long got = downloaded_stamp(m->id), now_v = m->updated ? m->updated : m->created;
+    WCHAR f[MAX_PATH], ver[32] = L"";
+    if (!s_game[0]) return 0;
+    if (!rec_folder(m->id, f)) {
+        if (mods_find_installed(s_game, m->name, got ? NULL : m->author, f, MAX_PATH, ver, 32) != 1) return 0;
+        rec_write(m->id, f, ver, 0, 0);
+    }
+    if (folder_out) wcscpy_s(folder_out, MAX_PATH, f);
+    if (got) return now_v > got ? 2 : 1;
+    mods_folder_version(f, ver, 32);   /* (no time kept: the versions) */
+    return mods_version_newer(m->version, ver) ? 2 : 1;
+}
+
+/* What the Installed Mods list knows: the mod's folder, state and Discovery details. */
+static void inst_note(const Mod *m, int state, const WCHAR *folder)
+{
+    int k;
+    for (k = 0; k < s_ninst && _wcsicmp(s_inst[k].folder, folder); k++)
+        ;
+    if (k == s_ninst) {
+        if (s_ninst >= (int)(sizeof s_inst / sizeof s_inst[0])) return;
+        s_ninst++;
+    }
+    s_inst[k].state = state;
+    s_inst[k].m = *m;
+    wcscpy_s(s_inst[k].folder, MAX_PATH, folder);
+}
+
+/* A line on this side's status and, for an update started there, the Installed Mods one. */
+static void say(const WCHAR *t)
+{
+    status(t);
+    if (s_dl_from_mods) mods_set_status(t);
+}
+
+/* Downloads and installs a mod (its page's Download, a tile's Update, Installed Mods' Update). 1 if it started. */
+static int start_update(const Mod *m, int from_mods)
+{
+    Job *j;
+    WCHAR t[300];
+    s_dl_from_mods = from_mods;
+    if (s_busy || s_dl) { say(L"A download or upload is running - try again when it's done."); return 0; }
+    if (!s_game[0]) { say(L"Install the game first (Setup)."); return 0; }
+    if (s_running && s_running()) {   /* (its files may be in use; a mod loads at the game's start anyway) */
+        swprintf_s(t, 300, L"The game is running. \"%s\" may be in use - close the game first, or install it anyway "
+                           L"(it loads the next time the game starts).\n\nInstall it now?", m->name);
+        if (MessageBoxW(s_wnd, t, L"Discovery", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) {
+            say(L"Not installed - close the game, then try again.");
+            return 0;
+        }
+    }
+    if (!(j = job(R_DOWNLOAD))) return 0;
+    s_busy = 1;
+    s_dl = 1;
+    s_dl_cancel = 0;
+    s_dl_mod = *m;
+    j->index = m->id;
+    swprintf_s(j->path, 700, L"/api/mods/%d/file", m->id);
+    SendMessageW(s_c[D_DLBAR], PBM_SETPOS, 0, 0);
+    EnableWindow(s_c[D_DLCANCEL], TRUE);
+    set_view(s_view);
+    swprintf_s(t, 300, L"Downloading \"%s\"\x2026", m->name);
+    say(t);
+    start(j);
+    return 1;
+}
+
+void discover_set_running(int (*fn)(void)) { s_running = fn; }
+
+int discover_folder_state(const WCHAR *folder)
+{
+    int k;
+    for (k = 0; k < s_ninst; k++)
+        if (!_wcsicmp(s_inst[k].folder, folder)) return s_inst[k].state;
+    return 0;
+}
+
+int discover_update_folder(const WCHAR *folder)
+{
+    int k;
+    for (k = 0; k < s_ninst; k++)
+        if (!_wcsicmp(s_inst[k].folder, folder) && s_inst[k].state == 2) return start_update(&s_inst[k].m, 1);
+    return 0;
+}
+
+int discover_busy(void) { return s_dl || s_checking; }
+
+void discover_check_installed(const WCHAR *game_dir)
+{
+    WCHAR *sec, *p;
+    Job *j;
+    if (!s_server || s_checking || !s_ini[0]) return;
+    if (game_dir && game_dir[0]) wcscpy_s(s_game, MAX_PATH, game_dir);
+    if (s_checked_at && GetTickCount64() - s_checked_at < 60000) return;
+    if (!(sec = (WCHAR *)malloc(32768 * sizeof(WCHAR)))) return;
+    if (!(j = job(R_CHECK))) { free(sec); return; }
+    GetPrivateProfileSectionW(L"Discovery", sec, 32768, s_ini);
+    for (p = sec; *p && j->n_ids < PER_PAGE; p += wcslen(p) + 1) {   /* ("Mod<id>Dir=..." lines: recorded installs) */
+        WCHAR f[MAX_PATH];
+        int id;
+        if (swscanf_s(p, L"Mod%dDir=", &id) == 1 && wcsstr(p, L"Dir=") && rec_folder(id, f)) j->ids[j->n_ids++] = id;
+    }
+    free(sec);
+    if (!j->n_ids) { free(j); return; }
+    s_checking = 1;
+    s_checked_at = GetTickCount64();
+    start(j);
+}
+
+/* A tile's Update button (on the picture's top right corner), or 0 if it has none. */
+static int pill_rect(int item, RECT *out)
+{
+    RECT t;
+    SIZE bs = { 0, 0 };
+    HDC dc;
+    const int pad = sc(6);
+    if (item < 0 || item >= s_n || s_state[item] != 2 || !tile_rect(item, &t)) return 0;
+    dc = GetDC(s_c[D_GRID]);
+    SelectObject(dc, s_badge_font ? (HGDIOBJ)s_badge_font : GetStockObject(DEFAULT_GUI_FONT));
+    GetTextExtentPoint32W(dc, L"\x2191 UPDATE", 8, &bs);
+    ReleaseDC(s_c[D_GRID], dc);
+    out->right = t.left + pad + s_thumb_w - sc(6);
+    out->left = out->right - bs.cx - sc(14);
+    out->top = t.top + pad + sc(6);
+    out->bottom = out->top + bs.cy + sc(8);
+    return 1;
+}
+
+/* A tile's rectangle in the grid (the list centres its icon in the column; the tile hangs from the icon's top). */
+static int tile_rect(int item, RECT *out)
+{
+    RECT ic;
+    int cx;
+    if (!s_c[D_GRID] || item < 0 || !ListView_GetItemRect(s_c[D_GRID], item, &ic, LVIR_ICON)) return 0;
+    cx = (ic.left + ic.right) / 2;
+    out->left = cx - s_tile_w / 2;
+    out->right = out->left + s_tile_w;
+    out->top = ic.top;
+    out->bottom = ic.top + s_tile_h;
+    return 1;
+}
+
+/* The grid's width with its scroll bar (the same whether a page needs it or not: no new fit when it shows). */
+static int grid_width(const RECT *client)
+{
+    const int vs = (GetWindowLongW(s_c[D_GRID], GWL_STYLE) & WS_VSCROLL) != 0;
+    return client->right + (vs ? GetSystemMetricsForDpi(SM_CXVSCROLL, (UINT)sc(96)) : 0);
+}
+
+/* The tiles fitted to the grid: as many columns of at least 150 (at 1x) as fit, the rows spread to fill the height;
+   the thumbnails made again at the new size from the bytes kept. */
+static void grid_fit(void)
+{
+    const HWND g = s_c[D_GRID];
+    RECT rc;
+    int cw, gap, cols, tw, th, rows, vgap, i, pad;
+    HDC dc;
+    HFONT f;
+    TEXTMETRICW tm;
+    LOGFONTW lf;
+    if (!g) return;
+    GetClientRect(g, &rc);
+    s_fit_cw = grid_width(&rc);
+    s_fit_ch = rc.bottom;
+    cw = s_fit_cw - GetSystemMetricsForDpi(SM_CXVSCROLL, (UINT)sc(96));   /* (room for the scroll bar, shown or not) */
+    if (cw < sc(60)) return;
+    gap = sc(12);
+    pad = sc(6);
+    cols = (cw - gap) / (sc(150) + gap);
+    if (cols < 1) cols = 1;
+    s_tile_w = (cw - gap) / cols - gap;
+    tw = s_tile_w - 2 * pad;
+    th = tw * 3 / 4;
+    f = (HFONT)SendMessageW(g, WM_GETFONT, 0, 0);
+    dc = GetDC(g);
+    SelectObject(dc, f ? f : GetStockObject(DEFAULT_GUI_FONT));
+    GetTextMetricsW(dc, &tm);
+    ReleaseDC(g, dc);
+    s_line_h = tm.tmHeight;
+    s_tile_h = pad + th + sc(6) + 2 * s_line_h + sc(2) + s_line_h + sc(8);
+    rows = (rc.bottom - gap) / (s_tile_h + gap);
+    if (rows < 1) rows = 1;
+    vgap = rows ? (rc.bottom - gap - rows * s_tile_h) / rows : gap;
+    if (vgap < gap || vgap > sc(40)) vgap = gap;
+    ListView_SetIconSpacing(g, s_tile_w + gap, s_tile_h + vgap);
+    if (f && GetObjectW(f, sizeof lf, &lf)) {   /* (the badge: small capitals in bold) */
+        lf.lfHeight = lf.lfHeight * 4 / 5;
+        lf.lfWeight = FW_BOLD;
+        if (s_badge_font) DeleteObject(s_badge_font);
+        s_badge_font = CreateFontIndirectW(&lf);
+    }
+    if (!s_grid_theme) s_grid_theme = OpenThemeData(g, L"ListView");
+    if (tw != s_thumb_w || th != s_thumb_h || !s_thumbs) {
+        HIMAGELIST il = ImageList_Create(tw, th, ILC_COLOR32, PER_PAGE, 0);
+        s_thumb_w = tw;
+        s_thumb_h = th;
+        for (i = 0; i < PER_PAGE; i++) {
+            HBITMAP b;
+            s_img[i] = -1;
+            if (il && s_raw[i] && i < s_n && (b = picture_bitmap(s_raw[i], s_raw_n[i], tw, th)) != NULL) {
+                s_img[i] = ImageList_Add(il, b, NULL);
+                DeleteObject(b);
+            }
+        }
+        ListView_SetImageList(g, il, LVSIL_NORMAL);
+        if (s_thumbs) ImageList_Destroy(s_thumbs);
+        s_thumbs = il;
+    }
+    ListView_Arrange(g, LVA_DEFAULT);
+    InvalidateRect(g, NULL, TRUE);
+}
+
+/* A name on up to two lines, centred: broken at a space, the second line cut with an ellipsis -> the lines used. */
+static int draw_name(HDC dc, const WCHAR *s, RECT r)
+{
+    const int n = (int)wcslen(s);
+    int fit = 0, brk;
+    SIZE sz;
+    RECT r2 = r;
+    r.bottom = r.top + s_line_h;
+    GetTextExtentExPointW(dc, s, n, r.right - r.left, &fit, NULL, &sz);
+    if (fit >= n) {
+        DrawTextW(dc, s, n, &r, DT_CENTER | DT_SINGLELINE | DT_NOPREFIX);
+        return 1;
+    }
+    for (brk = fit; brk > 0 && s[brk] != L' '; brk--)
+        ;
+    if (brk == 0) brk = fit > 0 ? fit : 1;   /* (one long word: broken where it stops fitting) */
+    DrawTextW(dc, s, brk, &r, DT_CENTER | DT_SINGLELINE | DT_NOPREFIX);
+    while (s[brk] == L' ') brk++;
+    r2.top = r.bottom;
+    r2.bottom = r2.top + s_line_h;
+    DrawTextW(dc, s + brk, -1, &r2, DT_CENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+    return 2;
+}
+
+static void grid_draw(NMLVCUSTOMDRAW *cd)
+{
+    const HDC dc = cd->nmcd.hdc;
+    const int item = (int)cd->nmcd.dwItemSpec, i = (int)cd->nmcd.lItemlParam, pad = sc(6);
+    const int sel = (ListView_GetItemState(s_c[D_GRID], item, LVIS_SELECTED) & LVIS_SELECTED) != 0;
+    const int hot = (cd->nmcd.uItemState & CDIS_HOT) != 0;
+    RECT t, p, n;
+    const Mod *m;
+    if (i < 0 || i >= s_n || !tile_rect(item, &t)) return;
+    m = &s_mods[i];
+    if (sel || hot) {   /* (the list's own hover / selection look, over the whole tile) */
+        const int st = sel ? (hot ? LISS_HOTSELECTED : (GetFocus() == s_c[D_GRID] ? LISS_SELECTED : LISS_SELECTEDNOTFOCUS))
+                           : LISS_HOT;
+        if (!s_grid_theme || FAILED(DrawThemeBackground(s_grid_theme, dc, LVP_LISTITEM, st, &t, NULL))) {
+            HBRUSH b = CreateSolidBrush(sel ? RGB(52, 58, 70) : RGB(38, 42, 50));
+            FillRect(dc, &t, b);
+            DeleteObject(b);
+        }
+    }
+    p.left = t.left + pad;
+    p.top = t.top + pad;
+    p.right = p.left + s_thumb_w;
+    p.bottom = p.top + s_thumb_h;
+    if (s_img[i] >= 0) {
+        ImageList_Draw(s_thumbs, s_img[i], dc, p.left, p.top, ILD_NORMAL);
+    } else {
+        HBRUSH b = CreateSolidBrush(K_CARD);
+        FillRect(dc, &p, b);
+        DeleteObject(b);
+    }
+    SetBkMode(dc, TRANSPARENT);
+    SelectObject(dc, (HFONT)SendMessageW(s_c[D_GRID], WM_GETFONT, 0, 0));
+    if (s_state[i] == 1) {   /* (installed, the newest: a green tick on the picture's top right) */
+        const int d = s_line_h + sc(6);
+        HBRUSH b = CreateSolidBrush(K_GOOD);
+        HPEN pen = CreatePen(PS_SOLID, sc(2) > 1 ? sc(2) : 1, RGB(255, 255, 255));
+        HGDIOBJ ob = SelectObject(dc, b), op = SelectObject(dc, pen);
+        HGDIOBJ of = SelectObject(dc, s_badge_font ? (HGDIOBJ)s_badge_font : GetStockObject(DEFAULT_GUI_FONT));
+        RECT c;
+        c.right = p.right - sc(6);
+        c.left = c.right - d;
+        c.top = p.top + sc(6);
+        c.bottom = c.top + d;
+        Ellipse(dc, c.left, c.top, c.right, c.bottom);
+        SetTextColor(dc, RGB(255, 255, 255));
+        DrawTextW(dc, L"\x2713", 1, &c, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        SelectObject(dc, of);
+        SelectObject(dc, op);
+        SelectObject(dc, ob);
+        DeleteObject(pen);
+        DeleteObject(b);
+    } else if (s_state[i] == 2) {   /* (installed, an older version: a gold Update button - a click updates) */
+        RECT u;
+        if (pill_rect(item, &u)) {
+            HBRUSH b = CreateSolidBrush(K_GOLD);
+            HGDIOBJ of = SelectObject(dc, s_badge_font ? (HGDIOBJ)s_badge_font : GetStockObject(DEFAULT_GUI_FONT));
+            FillRect(dc, &u, b);
+            DeleteObject(b);
+            SetTextColor(dc, RGB(20, 22, 27));
+            DrawTextW(dc, L"\x2191 UPDATE", -1, &u, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            SelectObject(dc, of);
+        }
+    }
+    if (s_badge[i] && s_state[i] != 2) {   /* (the Update button says more for the player's own copy) */   /* (on the picture's corner) */
+        const WCHAR *bt = L"UPDATED";   /* (changed since the last visit; an update for the player's copy: Update) */
+        HGDIOBJ old = SelectObject(dc, s_badge_font ? (HGDIOBJ)s_badge_font : GetStockObject(DEFAULT_GUI_FONT));
+        SIZE bs;
+        RECT br;
+        HBRUSH b = CreateSolidBrush(K_ACCENT);
+        GetTextExtentPoint32W(dc, bt, (int)wcslen(bt), &bs);
+        br.left = p.left + sc(6);
+        br.top = p.top + sc(6);
+        br.right = br.left + bs.cx + sc(10);
+        br.bottom = br.top + bs.cy + sc(4);
+        FillRect(dc, &br, b);
+        DeleteObject(b);
+        SetTextColor(dc, RGB(255, 255, 255));
+        DrawTextW(dc, bt, -1, &br, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        SelectObject(dc, old);
+    }
+    n.left = t.left + pad;
+    n.right = t.right - pad;
+    n.top = p.bottom + sc(6);
+    n.bottom = n.top + 2 * s_line_h;
+    SetTextColor(dc, K_TEXT);
+    n.top += draw_name(dc, m->name, n) * s_line_h + sc(2);   /* (the stars right under the name) */
+    n.bottom = n.top + s_line_h;
+    if (m->upvotes > 0) {   /* (the upvotes' own line: a gold arrow, then how many) */
+        WCHAR rest[48];
+        SIZE a, b;
+        int x;
+        RECT sr = n;
+        swprintf_s(rest, 48, L" %d", m->upvotes);
+        GetTextExtentPoint32W(dc, L"\x25B2", 1, &a);
+        GetTextExtentPoint32W(dc, rest, (int)wcslen(rest), &b);
+        x = (n.left + n.right - a.cx - b.cx) / 2;
+        SetTextColor(dc, K_GOLD);
+        sr.left = x;
+        DrawTextW(dc, L"\x25B2", 1, &sr, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+        SetTextColor(dc, K_MUTED);
+        sr.left = x + a.cx;
+        DrawTextW(dc, rest, -1, &sr, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+    } else if (m->upvotes == 0) {
+        SetTextColor(dc, K_MUTED);
+        DrawTextW(dc, L"No upvotes yet", -1, &n, DT_CENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+    }
+}
+
 static const int k_grid_ids[] = { D_SEARCH, D_TYPE, D_SORT, D_GO, D_GRID, D_PREV, D_PAGE, D_NEXT, D_UPLOAD };
 static const int k_mod_ids[] = { D_PIC, D_PICPREV, D_PICLBL, D_PICNEXT, D_INFO, D_DESC, D_BACK, D_DOWNLOAD, D_DELETE,
                                  D_EDIT, D_NEWFILE, D_FIRSTPIC, D_DLBAR, D_DLCANCEL,
-                                 D_RATING, D_STAR0, D_STAR1, D_STAR2, D_STAR3, D_STAR4, D_COMMENTS };
+                                 D_RATING, D_UPVOTE, D_AUTHOR_COMMENTS, D_COMMENTS };
 static const int k_cm_ids[] = { C_TITLE, C_LIST, C_FULL, C_MORE, C_DEL, C_REPORT, C_WRITE_L, C_WRITE, C_SEND, C_BACK };
 
 /* The mod's page shows the player's own mod: the server said so ("mine") for the token signed in now - not for one
@@ -968,9 +1415,10 @@ static void set_view(int v)
         for (k = 0; k < sizeof k_grid_ids / sizeof k_grid_ids[0]; k++) if (k_grid_ids[k] == i) show = v == V_GRID;
         for (k = 0; k < sizeof k_mod_ids / sizeof k_mod_ids[0]; k++) if (k_mod_ids[k] == i) show = v == V_MOD;
         for (k = 0; k < sizeof k_cm_ids / sizeof k_cm_ids[0]; k++) if (k_cm_ids[k] == i) show = v == V_COMMENTS;
-        if (i == D_RATING) show = show && s_ratings_on;
-        if (i >= D_STAR0 && i <= D_STAR4) show = show && s_ratings_on && s_can_rate && token_now();
-        if (i == D_COMMENTS) show = show && s_comments_on;
+        if (i == D_RATING) show = show && s_upvotes_on;
+        if (i == D_UPVOTE) show = show && s_upvotes_on && s_can_upvote && token_now();
+        if (i == D_AUTHOR_COMMENTS) show = show && mine && !s_dl;   /* (the author's own switch) */
+        if (i == D_COMMENTS) show = show && (s_comments_on || s_author_off);   /* (author off: shown greyed, says so) */
         if (i == C_MORE) show = show && s_cm_n < s_cm_total;
         if (i == C_WRITE || i == C_SEND) show = show && s_cm_can && signed_in();
         if (i >= U_TITLE && i <= U_PROGRESS) show = v == V_UPLOAD;
@@ -982,32 +1430,48 @@ static void set_view(int v)
     }
 }
 
-/* The mod page's stars: the average and count, the asker's own (filled stars), Comments (N). */
+/* The mod page's upvotes: how many, the asker's own (the button), the author's switch, Comments (N). */
 static void show_rating(void)
 {
     WCHAR t[160];
     const Mod *m = s_cur >= 0 ? &s_mods[s_cur] : NULL;
-    int k;
     if (!m) return;
-    if (m->rating_count)
-        swprintf_s(t, 160, L"\x2605 %.1f  (%d rating%s)", m->rating10 / 10.0, m->rating_count, m->rating_count == 1 ? L"" : L"s");
-    else
-        wcscpy_s(t, 160, L"No ratings yet");
-    if (!signed_in()) wcscat_s(t, 160, L"\nSign in to rate it");
-    else if (s_mine) wcscat_s(t, 160, L"\nYour own mod");
-    else if (token_now() && !s_can_rate) wcscat_s(t, 160, L"\nYou can't rate mods");
-    else wcscat_s(t, 160, s_my_rating ? L"\nYour rating:" : L"\nRate it:");
+    t[0] = 0;
+    if (s_upvotes_on) {
+        if (m->upvotes > 0) swprintf_s(t, 160, L"\x25B2 %d upvote%s", m->upvotes, m->upvotes == 1 ? L"" : L"s");
+        else wcscpy_s(t, 160, L"No upvotes yet");
+        if (!signed_in()) wcscat_s(t, 160, L"\nSign in to upvote it");
+        else if (s_mine) wcscat_s(t, 160, L"\nYour own mod");
+        else if (token_now() && !s_can_upvote) wcscat_s(t, 160, L"\nYou can't upvote mods");
+    }
     SetWindowTextW(s_c[D_RATING], t);
-    for (k = 0; k < 5; k++) SetWindowTextW(s_c[D_STAR0 + k], k < s_my_rating ? L"\x2605" : L"\x2606");
-    swprintf_s(t, 160, L"Comments (%d)", s_n_comments);
+    SetWindowTextW(s_c[D_UPVOTE], s_my_upvote ? L"\x25B2 Upvoted" : L"\x25B2 Upvote");
+    SetWindowTextW(s_c[D_AUTHOR_COMMENTS], s_author_off ? L"Comments: off" : L"Comments: on");
+    /* (the author turned them off: the button stays, greyed, and says so) */
+    if (s_author_off) wcscpy_s(t, 160, L"Comments: off (author)");
+    else swprintf_s(t, 160, L"Comments (%d)", s_n_comments);
     SetWindowTextW(s_c[D_COMMENTS], t);
+    EnableWindow(s_c[D_COMMENTS], !s_author_off);
 }
 
 /* The comments loaded, into the list (newest first: the server's order); the title with the count. */
+static void comments_fit(void)
+{
+    RECT lr;
+    int w0 = sc(112), w1 = sc(84), w2;
+    GetClientRect(s_c[C_LIST], &lr);
+    w2 = lr.right - w0 - w1 - GetSystemMetrics(SM_CXVSCROLL) - 2;
+    if (w2 < sc(120)) w2 = sc(120);
+    ListView_SetColumnWidth(s_c[C_LIST], 0, w0);
+    ListView_SetColumnWidth(s_c[C_LIST], 1, w1);
+    ListView_SetColumnWidth(s_c[C_LIST], 2, w2);
+}
+
 static void fill_comments(void)
 {
     int i;
     WCHAR t[200];
+    comments_fit();
     ListView_DeleteAllItems(s_c[C_LIST]);
     for (i = 0; i < s_cm_n; i++) {
         LVITEMW it;
@@ -1120,7 +1584,7 @@ static void social_post(int kind, const WCHAR *path, const char *json, int index
 static void search(void)
 {
     static const char *const types[] = { "", "entrance", "superstar", "arena", "moveset" };
-    static const char *const sorts[] = { "new", "popular", "name", "updated", "rating" };
+    static const char *const sorts[] = { "new", "popular", "name", "updated", "upvotes" };
     WCHAR q[120], qe[400];
     char u[400];
     const char *s;
@@ -1144,6 +1608,22 @@ static void search(void)
     start(j);
 }
 
+/* The page's details with the installed line on top (one line: the box's height): "✓ Installed" / "↑ Update waiting". */
+static void info_mark(int st)
+{
+    WCHAR t[600], out[700];
+    const WCHAR *body = t;
+    GetWindowTextW(s_c[D_INFO], t, 600);
+    if (t[0] == 0x2713 || t[0] == 0x2191) {   /* (a mark from before: replaced) */
+        const WCHAR *nlp = wcschr(t, L'\n');
+        body = nlp ? nlp + 1 : L"";
+    }
+    if (st == 1) swprintf_s(out, 700, L"\x2713 Installed\n%s", body);
+    else if (st == 2) swprintf_s(out, 700, L"\x2191 Update waiting\n%s", body);
+    else wcscpy_s(out, 700, body);
+    SetWindowTextW(s_c[D_INFO], out);
+}
+
 static void open_mod(int i)
 {
     Job *j;
@@ -1155,7 +1635,7 @@ static void open_mod(int i)
     SetWindowTextW(s_c[D_INFO], L"");
     SetWindowTextW(s_c[D_DESC], L"");
     SetWindowTextW(s_c[D_PICLBL], L"1 / 4");
-    s_comments_on = s_ratings_on = s_can_rate = s_my_rating = s_n_comments = 0;   /* (until its page answers) */
+    s_comments_on = s_upvotes_on = s_can_upvote = s_my_upvote = s_n_comments = s_author_off = 0;   /* (until its page answers) */
     InterlockedIncrement(&s_cgen);
     if (!(j = job(R_DETAIL))) return;
     {   /* the player's own: only when the page's answer says so ("mine", asked with this token) */
@@ -1373,7 +1853,7 @@ void discover_build(HWND wnd, mods_add_fn add, int tab, int id_base, discover_se
                     discover_account_fn account)
 {
     static const WCHAR *const types[] = { L"All types", L"Entrance", L"Superstar", L"Arena", L"Move-set" };
-    static const WCHAR *const sorts[] = { L"Newest", L"Most downloaded", L"By name", L"Recently updated", L"Top rated" };
+    static const WCHAR *const sorts[] = { L"Newest", L"Most downloaded", L"By name", L"Recently updated", L"Most upvoted" };
     int i, y;
 #define C(i, cls, text, style, x, y, w, h) (s_c[i] = add(tab, cls, text, style, x, y, w, h, id_base + (i)))
     s_wnd = wnd;
@@ -1406,10 +1886,10 @@ void discover_build(HWND wnd, mods_add_fn add, int tab, int id_base, discover_se
     C(D_PICLBL, L"Static", L"1 / 4", SS_CENTER, 80, 366, 268, 20);
     C(D_PICNEXT, L"Button", L"\x2192", BS_PUSHBUTTON | WS_TABSTOP, 384, 360, 44, 28);
     C(D_INFO, L"Static", L"", SS_LEFT | SS_NOPREFIX, 442, 54, 146, 206);
-    /* (its stars: the average, then five buttons - the player's own filled; Comments (N) under them) */
+    /* (its upvotes: how many, then the button - or, on the player's own mod, its Comments on/off; Comments (N)) */
     C(D_RATING, L"Static", L"", SS_LEFT | SS_NOPREFIX, 442, 262, 146, 34);
-    for (i = 0; i < 5; i++)
-        C(D_STAR0 + i, L"Button", L"\x2606", BS_PUSHBUTTON | WS_TABSTOP, 442 + i * 29, 298, 28, 26);
+    C(D_UPVOTE, L"Button", L"\x25B2 Upvote", BS_PUSHBUTTON | WS_TABSTOP, 442, 298, 146, 26);
+    C(D_AUTHOR_COMMENTS, L"Button", L"Comments: on", BS_PUSHBUTTON | WS_TABSTOP, 442, 298, 146, 26);
     C(D_COMMENTS, L"Button", L"Comments", BS_PUSHBUTTON | WS_TABSTOP, 442, 328, 146, 26);
     C(D_DESC, L"Edit", L"", ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL | WS_BORDER, 28, 396, 560, 84);
     C(D_BACK, L"Button", L"\x2190 Back", BS_PUSHBUTTON | WS_TABSTOP, 28, 488, 100, 30);
@@ -1426,7 +1906,7 @@ void discover_build(HWND wnd, mods_add_fn add, int tab, int id_base, discover_se
     /* a mod's comments (newest first; the one selected in full under them; write one at the bottom) */
     C(C_TITLE, L"Static", L"Comments", SS_LEFT | SS_NOPREFIX | SS_ENDELLIPSIS, 28, 56, 560, 20);
     C(C_LIST, WC_LISTVIEWW, L"", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER | WS_BORDER | WS_TABSTOP,
-      28, 80, 560, 192);
+      28, 80, 560, 140);
     ListView_SetExtendedListViewStyle(s_c[C_LIST], LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
     {   /* (From and When at the screen's scale; Comment the rest of the width, the scroll bar left out) */
         static const WCHAR *const cols[3] = { L"From", L"When", L"Comment" };
@@ -1447,13 +1927,14 @@ void discover_build(HWND wnd, mods_add_fn add, int tab, int id_base, discover_se
             ListView_InsertColumn(s_c[C_LIST], i, &c);
         }
     }
-    C(C_FULL, L"Edit", L"", ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL | WS_BORDER, 28, 278, 560, 58);
-    C(C_MORE, L"Button", L"More comments", BS_PUSHBUTTON | WS_TABSTOP, 28, 342, 140, 26);
-    C(C_DEL, L"Button", L"Delete", BS_PUSHBUTTON | WS_TABSTOP, 380, 342, 100, 26);
-    C(C_REPORT, L"Button", L"Report", BS_PUSHBUTTON | WS_TABSTOP, 488, 342, 100, 26);
-    C(C_WRITE_L, L"Static", L"", SS_LEFT | SS_NOPREFIX, 28, 376, 560, 18);
+    /* (the selected comment in full: 500 characters fit at 1x without scrolling) */
+    C(C_FULL, L"Edit", L"", ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL | WS_BORDER, 28, 228, 560, 112);
+    C(C_MORE, L"Button", L"More comments", BS_PUSHBUTTON | WS_TABSTOP, 28, 348, 140, 28);
+    C(C_DEL, L"Button", L"Delete", BS_PUSHBUTTON | WS_TABSTOP, 380, 348, 100, 28);
+    C(C_REPORT, L"Button", L"Report", BS_PUSHBUTTON | WS_TABSTOP, 488, 348, 100, 28);
+    C(C_WRITE_L, L"Static", L"", SS_LEFT | SS_NOPREFIX, 28, 388, 560, 18);
     C(C_WRITE, L"Edit", L"", ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL | WS_BORDER | WS_TABSTOP,
-      28, 396, 560, 82);
+      28, 408, 560, 68);
     SendMessageW(s_c[C_WRITE], EM_LIMITTEXT, COMMENT_MAX, 0);
     C(C_BACK, L"Button", L"\x2190 Back", BS_PUSHBUTTON | WS_TABSTOP, 28, 488, 100, 30);
     C(C_SEND, L"Button", L"Send", BS_DEFPUSHBUTTON | WS_TABSTOP, 488, 486, 100, 32);
@@ -1479,6 +1960,11 @@ void discover_build(HWND wnd, mods_add_fn add, int tab, int id_base, discover_se
     C(U_DESC_L, L"Static", L"Description", SS_LEFT, 28, y + 4, 90, 20);
     C(U_DESC, L"Edit", L"", ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL | WS_BORDER | WS_TABSTOP, 120, y, 468, 76);
     SendMessageW(s_c[U_DESC], EM_LIMITTEXT, 2000, 0);
+    /* (the boxes that scroll: dark scroll bars) */
+    SetWindowTheme(s_c[D_DESC], L"DarkMode_Explorer", NULL);
+    SetWindowTheme(s_c[C_FULL], L"DarkMode_Explorer", NULL);
+    SetWindowTheme(s_c[C_WRITE], L"DarkMode_Explorer", NULL);
+    SetWindowTheme(s_c[U_DESC], L"DarkMode_Explorer", NULL);
     y += 86;
     C(U_FILE_L, L"Static", L".svrmod", SS_LEFT, 28, y + 6, 90, 20);
     C(U_FILE, L"Static", L"(none chosen)", SS_LEFT | SS_NOPREFIX | SS_PATHELLIPSIS, 120, y + 6, 330, 20);
@@ -1612,16 +2098,29 @@ int discover_command(int id, int code)
         social_post(R_CREPORT, path, "{}", s_cms[sel].id);
         return 1;
     }
-    case D_STAR0: case D_STAR1: case D_STAR2: case D_STAR3: case D_STAR4: {
+    case D_UPVOTE: {   /* (upvoted already: taken back) */
         WCHAR path[96];
-        char json[32];
-        int stars = i - D_STAR0 + 1;
-        if (s_cur < 0 || !s_can_rate || !token_now()) return 1;
-        if (stars == s_my_rating) stars = 0;   /* (the same star again: the rating taken back) */
-        sprintf_s(json, 32, "{\"stars\":%d}", stars);
-        swprintf_s(path, 96, L"/api/mods/%d/rating", s_mods[s_cur].id);
-        status(L"Saving your rating\x2026");
-        social_post(R_RATE, path, json, stars);
+        const int up = !s_my_upvote;
+        if (s_cur < 0 || !s_can_upvote || !token_now()) return 1;
+        swprintf_s(path, 96, L"/api/mods/%d/upvote", s_mods[s_cur].id);
+        status(up ? L"Upvoting\x2026" : L"Taking your upvote back\x2026");
+        social_post(R_UPVOTE, path, up ? "{\"up\":true}" : "{\"up\":false}", up);
+        return 1;
+    }
+    case D_AUTHOR_COMMENTS: {
+        Job *j;
+        if (s_cur < 0 || s_busy || !owner_now()) return 1;
+        if (!s_author_off && MessageBoxW(s_wnd, L"Turn comments off for your mod? Its comments are hidden from everyone "
+                                         L"(not deleted) until you turn them on again.", L"Comments",
+                                         MB_OKCANCEL | MB_ICONQUESTION) != IDOK) return 1;
+        if (!(j = job(R_EDIT)) || !(j->json = _strdup(s_author_off ? "{\"comments\":true}" : "{\"comments\":false}"))) {
+            free(j);
+            return 1;
+        }
+        j->index = s_mods[s_cur].id;
+        s_busy = 1;
+        status(s_author_off ? L"Turning comments on\x2026" : L"Turning comments off\x2026");
+        start(j);
         return 1;
     }
     case D_TYPE: case D_SORT:
@@ -1667,24 +2166,9 @@ int discover_command(int id, int code)
         InvalidateRect(s_c[D_PIC], NULL, TRUE);
         return 1;
     }
-    case D_DOWNLOAD: {
-        Job *j;
-        if (s_cur < 0 || s_busy) return 1;
-        if (!s_game[0]) { status(L"Install the game first (Setup)."); return 1; }
-        if (!(j = job(R_DOWNLOAD))) return 1;
-        s_busy = 1;
-        s_dl = 1;
-        s_dl_cancel = 0;
-        s_dl_mod = s_mods[s_cur];
-        j->index = s_dl_mod.id;
-        swprintf_s(j->path, 700, L"/api/mods/%d/file", s_dl_mod.id);
-        SendMessageW(s_c[D_DLBAR], PBM_SETPOS, 0, 0);
-        EnableWindow(s_c[D_DLCANCEL], TRUE);
-        set_view(s_view);
-        status(L"Downloading\x2026");
-        start(j);
+    case D_DOWNLOAD:
+        if (s_cur >= 0 && !s_busy) start_update(&s_mods[s_cur], 0);
         return 1;
-    }
     case D_DLCANCEL:
         if (s_dl) {
             InterlockedExchange(&s_dl_cancel, 1);
@@ -1743,9 +2227,26 @@ int discover_notify(const NMHDR *nm)
         return 1;
     }
     if (!s_c[D_GRID] || nm->hwndFrom != s_c[D_GRID]) return 0;
+    if (nm->code == NM_CLICK) {   /* (a tile's Update button: the update, not the page) */
+        const POINT pt = ((const NMITEMACTIVATE *)nm)->ptAction;
+        int k;
+        RECT ur;
+        for (k = 0; k < s_n; k++)
+            if (pill_rect(k, &ur) && PtInRect(&ur, pt)) {
+                start_update(&s_mods[k], 0);
+                return 1;
+            }
+    }
     if (nm->code == NM_CLICK || nm->code == NM_RETURN) {
-        const int i = nm->code == NM_CLICK ? ((const NMITEMACTIVATE *)nm)->iItem
-                                           : ListView_GetNextItem(s_c[D_GRID], -1, LVNI_SELECTED);
+        int i = nm->code == NM_CLICK ? ((const NMITEMACTIVATE *)nm)->iItem
+                                     : ListView_GetNextItem(s_c[D_GRID], -1, LVNI_SELECTED);
+        if (i < 0 && nm->code == NM_CLICK) {
+            const POINT pt = ((const NMITEMACTIVATE *)nm)->ptAction;
+            int k;
+            RECT tr;
+            for (k = 0; k < ListView_GetItemCount(s_c[D_GRID]); k++)
+                if (tile_rect(k, &tr) && PtInRect(&tr, pt)) { i = k; break; }
+        }
         if (i >= 0) {
             LVITEMW it;
             ZeroMemory(&it, sizeof it);
@@ -1756,6 +2257,25 @@ int discover_notify(const NMHDR *nm)
         return 1;
     }
     return 0;
+}
+
+/* The grid drawn: each tile as grid_fit sized it (CDRF_SKIPDEFAULT: the list's own drawing left out). */
+int discover_custom_draw(const NMHDR *nm, LRESULT *result)
+{
+    NMLVCUSTOMDRAW *cd = (NMLVCUSTOMDRAW *)nm;
+    if (!s_c[D_GRID] || nm->hwndFrom != s_c[D_GRID] || nm->code != NM_CUSTOMDRAW) return 0;
+    if (cd->nmcd.dwDrawStage == CDDS_PREPAINT) {
+        RECT rc;
+        GetClientRect(s_c[D_GRID], &rc);
+        if (grid_width(&rc) != s_fit_cw || rc.bottom != s_fit_ch) PostMessageW(s_wnd, WM_APP_DISCOVER, R_FIT, 0);
+        *result = CDRF_NOTIFYITEMDRAW;
+    } else if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
+        grid_draw(cd);
+        *result = CDRF_SKIPDEFAULT;
+    } else {
+        *result = CDRF_DODEFAULT;
+    }
+    return 1;
 }
 
 int discover_draw(const DRAWITEMSTRUCT *d)
@@ -1794,6 +2314,10 @@ int discover_message(UINT m, WPARAM wp, LPARAM lp)
     Result *r;
     WCHAR t[400];
     if (m != WM_APP_DISCOVER) return 0;
+    if (wp == R_FIT) {
+        grid_fit();
+        return 1;
+    }
     if (wp == R_PROGRESS) {
         SendMessageW(s_c[U_PROGRESS], PBM_SETPOS, (WPARAM)lp, 0);
         return 1;
@@ -1814,7 +2338,7 @@ int discover_message(UINT m, WPARAM wp, LPARAM lp)
         if (s_dl) {
             const char *v = getenv("SVR2011_DISCOVER_CANCEL_AT");   /* (test aid: Cancel at that many 0.1 %) */
             SendMessageW(s_c[D_DLBAR], PBM_SETPOS, (WPARAM)r->status, 0);
-            if (!s_dl_cancel) status(r->text);
+            if (!s_dl_cancel) say(r->text);
             if (v && *v && r->status >= atoi(v) && !s_dl_cancel)
                 SendMessageW(s_wnd, WM_COMMAND, MAKEWPARAM(s_base + D_DLCANCEL, BN_CLICKED), 0);
         }
@@ -1823,7 +2347,16 @@ int discover_message(UINT m, WPARAM wp, LPARAM lp)
         const char *p, *end = (const char *)r->data + r->n;
         ListView_DeleteAllItems(s_c[D_GRID]);
         ImageList_RemoveAll(s_thumbs);
+        for (int q = 0; q < PER_PAGE; q++) {
+            free(s_raw[q]);
+            s_raw[q] = NULL;
+            s_raw_n[q] = 0;
+            s_img[q] = -1;
+            s_badge[q] = 0;
+            s_state[q] = 0;
+        }
         s_n = 0;
+        grid_fit();
         if (r->status != 200 || !r->data) { answer_error(r, L"Discovery", t, 400); status(t); break; }
         s_total = (int)jnum(jkey((const char *)r->data, end, "total"));
         p = jkey((const char *)r->data, end, "mods");
@@ -1834,18 +2367,10 @@ int discover_message(UINT m, WPARAM wp, LPARAM lp)
             parse_mod(p, e, &s_mods[s_n]);
             {
                 const Mod *m = &s_mods[s_n];
-                const long long got = downloaded_stamp(m->id), now_v = m->updated ? m->updated : m->created;
-                if (got && now_v > got)
-                    swprintf_s(label, 140, L"\x2191 Update: %s", m->name);   /* (downloaded here; newer now) */
-                else if (m->updated && s_last_visit && m->updated > s_last_visit)
-                    swprintf_s(label, 140, L"\x2022 Updated: %s", m->name);
-                else
-                    wcscpy_s(label, 140, m->name);
-                if (m->rating_count) {   /* (the stars first - a long name's end is cut off: "★4.3  Name") */
-                    WCHAR st[180];
-                    swprintf_s(st, 180, L"\x2605%.1f  %s", m->rating10 / 10.0, label);
-                    wcscpy_s(label, 140, st);
-                }
+                WCHAR folder[MAX_PATH];
+                if (m->updated && s_last_visit && m->updated > s_last_visit) s_badge[s_n] = 1;
+                if ((s_state[s_n] = mod_state(m, folder)) != 0) inst_note(m, s_state[s_n], folder);
+                wcscpy_s(label, 140, m->name);   /* (the tile draws its stars and badge: grid_draw) */
             }
             ZeroMemory(&it, sizeof it);
             it.mask = LVIF_TEXT | LVIF_PARAM | LVIF_IMAGE;
@@ -1868,7 +2393,9 @@ int discover_message(UINT m, WPARAM wp, LPARAM lp)
         if (!tested++) {   /* test aids (--capture discover), after the first list only: SVR2011_DISCOVER_OPEN=<n> opens
                               the n-th mod's page, SVR2011_DISCOVER_UPLOAD=1 the upload form */
             const char *v = getenv("SVR2011_DISCOVER_OPEN");
-            if (v && *v && atoi(v) < s_n) open_mod(atoi(v));
+            const char *uv = getenv("SVR2011_DISCOVER_UPDATE");   /* (=<n>: the n-th tile's Update, as a click) */
+            if (uv && *uv && atoi(uv) < s_n && s_state[atoi(uv)] == 2) start_update(&s_mods[atoi(uv)], 0);
+            else if (v && *v && atoi(v) < s_n) open_mod(atoi(v));
             else if ((v = getenv("SVR2011_DISCOVER_UPLOAD")) && *v == '1') upload_view();
             else if ((v = getenv("SVR2011_DISCOVER_SEND")) && *v && !s_busy) {
                 /* SVR2011_DISCOVER_SEND=<file.svrmod>|<picture>: the form filled (the picture four times), sent */
@@ -1891,14 +2418,16 @@ int discover_message(UINT m, WPARAM wp, LPARAM lp)
         break;
     }
     case R_THUMB: {
-        HBITMAP b = picture_bitmap(r->data, r->n, THUMB_W, THUMB_H);
-        if (b && r->index < s_n) {
-            LVITEMW it;
-            ZeroMemory(&it, sizeof it);
-            it.mask = LVIF_IMAGE;
-            it.iItem = r->index;
-            it.iImage = ImageList_Add(s_thumbs, b, NULL);
-            ListView_SetItem(s_c[D_GRID], &it);
+        HBITMAP b = picture_bitmap(r->data, r->n, s_thumb_w, s_thumb_h);
+        if (b && r->index >= 0 && r->index < s_n) {
+            RECT tr;
+            free(s_raw[r->index]);
+            if ((s_raw[r->index] = (uint8_t *)malloc(r->n)) != NULL) {   /* (kept: a new size makes it again) */
+                memcpy(s_raw[r->index], r->data, r->n);
+                s_raw_n[r->index] = r->n;
+            }
+            s_img[r->index] = ImageList_Add(s_thumbs, b, NULL);
+            if (tile_rect(r->index, &tr)) InvalidateRect(s_c[D_GRID], &tr, FALSE);
         }
         if (b) DeleteObject(b);
         break;
@@ -1918,27 +2447,39 @@ int discover_message(UINT m, WPARAM wp, LPARAM lp)
         {   /* comments and stars: the switches (an older server says neither: both hidden), the asker's own */
             const char *d0 = (const char *)r->data;
             s_comments_on = jtrue(jkey(d0, end, "comments_on"));
-            s_ratings_on = jtrue(jkey(d0, end, "ratings_on"));
+            s_upvotes_on = jtrue(jkey(d0, end, "upvotes_on"));
+            s_author_off = jtrue(jkey(d0, end, "comments_author_off"));
             s_n_comments = (int)jnum(jkey(d0, end, "comments"));
-            s_can_rate = jtrue(jkey(d0, end, "can_rate"));
-            s_my_rating = (int)jnum(jkey(d0, end, "my_rating"));
+            s_can_upvote = jtrue(jkey(d0, end, "can_upvote"));
+            s_my_upvote = jtrue(jkey(d0, end, "my_upvote"));
             show_rating();
             if (s_view == V_MOD) set_view(V_MOD);
         }
-        {   /* test aids (--capture discover with SVR2011_DISCOVER_OPEN), once: SVR2011_DISCOVER_RATE=<1-5> rates it,
+        {   /* test aids (--capture discover with SVR2011_DISCOVER_OPEN), once: SVR2011_DISCOVER_UPVOTE=1 upvotes it (or
+               takes it back), SVR2011_DISCOVER_AUTHOR_COMMENTS=1 presses the author's switch (no question asked),
                SVR2011_DISCOVER_COMMENTS=1 opens its comments, SVR2011_DISCOVER_COMMENT=<text> posts one there */
             static int social;
-            const char *v = getenv("SVR2011_DISCOVER_RATE"), *cv = getenv("SVR2011_DISCOVER_COMMENT");
+            const char *v = getenv("SVR2011_DISCOVER_UPVOTE"), *cv = getenv("SVR2011_DISCOVER_COMMENT");
             if (!social++) {
-                if (v && *v >= '1' && *v <= '5' && s_can_rate)
-                    PostMessageW(s_wnd, WM_COMMAND, MAKEWPARAM(s_base + D_STAR0 + (*v - '1'), BN_CLICKED), 0);
+                if (v && *v == '1' && s_can_upvote)
+                    PostMessageW(s_wnd, WM_COMMAND, MAKEWPARAM(s_base + D_UPVOTE, BN_CLICKED), 0);
+                if ((v = getenv("SVR2011_DISCOVER_AUTHOR_COMMENTS")) && *v == '1' && owner_now() && !s_busy) {
+                    Job *j = job(R_EDIT);
+                    if (j && (j->json = _strdup(s_author_off ? "{\"comments\":true}" : "{\"comments\":false}"))) {
+                        j->index = s_mods[s_cur].id;
+                        s_busy = 1;
+                        start(j);
+                    } else free(j);
+                }
                 if ((cv && *cv) || ((v = getenv("SVR2011_DISCOVER_COMMENTS")) && *v == '1'))
                     PostMessageW(s_wnd, WM_COMMAND, MAKEWPARAM(s_base + D_COMMENTS, BN_CLICKED), 0);
             }
         }
-        {
-            const long long got = downloaded_stamp(md->id), now_v = md->updated ? md->updated : md->created;
-            SetWindowTextW(s_c[D_DOWNLOAD], got && now_v > got ? L"Download the update" : L"Download and install");
+        {   /* (installed here: a tick - or an arrow, an update waiting - over its details; the button says so) */
+            WCHAR folder[MAX_PATH];
+            const int st = mod_state(md, folder);
+            if (st) inst_note(md, st, folder);
+            SetWindowTextW(s_c[D_DOWNLOAD], st == 2 ? L"Download the update" : st == 1 ? L"Reinstall" : L"Download and install");
         }
         {   /* test aid (--capture discover with SVR2011_DISCOVER_OPEN), once: SVR2011_DISCOVER_DOWNLOAD=1 downloads it
                (the capture waits for the download: discover_test_state) */
@@ -1985,6 +2526,7 @@ int discover_message(UINT m, WPARAM wp, LPARAM lp)
                        md->tags[0] ? L"\n\nTags: " : L"", md->tags);
         }
         SetWindowTextW(s_c[D_INFO], t);
+        info_mark(mod_state(md, NULL));   /* (installed here: its line on top) */
         {   /* (the description's line ends as the edit control wants them) */
             WCHAR crlf[4100];
             size_t a = 0, b2 = 0;
@@ -2084,22 +2626,15 @@ int discover_message(UINT m, WPARAM wp, LPARAM lp)
         if (r->status != 200) { answer_error(r, L"Report", t, 400); status(t); break; }
         status(L"Reported - the online server's moderators will look at it. Thank you.");
         break;
-    case R_RATE: {
-        const char *d0 = (const char *)r->data, *end = d0 + r->n, *rt;
-        if (r->status != 200 || !r->data) { answer_error(r, L"Rating", t, 400); status(t); break; }
+    case R_UPVOTE: {
+        const char *d0 = (const char *)r->data, *end = d0 + r->n;
+        if (r->status != 200 || !r->data) { answer_error(r, L"Upvote", t, 400); status(t); break; }
         if (s_cur >= 0 && s_mods[s_cur].id == r->mod) {
-            rt = jkey(d0, end, "rating");
-            if (rt && *rt == '{') {
-                const char *re = jobject_end(rt, end);
-                s_mods[s_cur].rating10 = (int)(jdbl(jkey(rt, re, "avg")) * 10 + 0.5);
-                s_mods[s_cur].rating_count = (int)jnum(jkey(rt, re, "count"));
-            }
-            s_my_rating = r->index;
+            s_mods[s_cur].upvotes = (int)jnum(jkey(d0, end, "upvotes"));
+            s_my_upvote = jtrue(jkey(d0, end, "my_upvote"));
             show_rating();
         }
-        if (r->index) swprintf_s(t, 400, L"Rated %d star%s - click the same star again to take it back.", r->index, r->index == 1 ? L"" : L"s");
-        else wcscpy_s(t, 400, L"Your rating was taken back.");
-        status(t);
+        status(r->index ? L"Upvoted - press it again to take it back." : L"Your upvote was taken back.");
         break;
     }
     case R_PIC:
@@ -2113,29 +2648,49 @@ int discover_message(UINT m, WPARAM wp, LPARAM lp)
         s_busy = 0;
         s_dl = 0;
         set_view(s_view);
-        if (r->status == -2) { swprintf_s(t, 400, L"Download of \"%s\" cancelled - nothing was installed.", s_dl_mod.name); status(t); break; }
+        if (r->status == -2) { swprintf_s(t, 400, L"Download of \"%s\" cancelled - nothing was installed.", s_dl_mod.name); say(t); break; }
         if (r->status != 200) {
             swprintf_s(t, 400, L"Download of \"%s\" failed (%s) - nothing was installed. Try again in a moment.",
                        s_dl_mod.name, r->text);
-            status(t);
+            say(t);
             break;
         }
         if (mods_install(s_game, r->text)) {
-            if (s_ini[0]) {
-                WCHAR k[32], v[32];
-                swprintf_s(k, 32, L"Mod%d", s_dl_mod.id);
-                swprintf_s(v, 32, L"%lld", s_dl_mod.updated ? s_dl_mod.updated : s_dl_mod.created);
-                WritePrivateProfileStringW(L"Discovery", k, v, s_ini);
-                if (s_view == V_MOD && s_cur >= 0 && s_mods[s_cur].id == s_dl_mod.id)
-                    SetWindowTextW(s_c[D_DOWNLOAD], L"Download and install");
+            const WCHAR *folder = mods_last_installed();
+            int k;
+            rec_write(s_dl_mod.id, folder, s_dl_mod.version, s_dl_hash, s_dl_mod.updated ? s_dl_mod.updated : s_dl_mod.created);
+            inst_note(&s_dl_mod, 1, folder);
+            for (k = 0; k < s_n; k++)   /* (its tile: the tick) */
+                if (s_mods[k].id == s_dl_mod.id) s_state[k] = 1;
+            InvalidateRect(s_c[D_GRID], NULL, FALSE);
+            if (s_view == V_MOD && s_cur >= 0 && s_mods[s_cur].id == s_dl_mod.id) {
+                SetWindowTextW(s_c[D_DOWNLOAD], L"Reinstall");
+                info_mark(1);
             }
             swprintf_s(t, 400, L"Installed \"%s\" - it's on the Installed Mods tab and loads the next time the game starts.",
                        s_dl_mod.name);
             status(t);
+            if (s_dl_from_mods) mods_set_status(t);
+            mods_updates_changed();
         } else {
-            status(L"Downloaded, but it could not be installed - the Installed Mods tab says why.");
+            say(L"Downloaded, but it could not be installed - the Installed Mods tab says why.");
         }
         DeleteFileW(r->text);
+        break;
+    case R_CHECK:
+        if (r->index < 0) {   /* (all asked) */
+            s_checking = 0;
+            mods_updates_changed();
+            break;
+        }
+        if (r->status == 200 && r->data) {
+            Mod m;
+            WCHAR folder[MAX_PATH];
+            int st;
+            ZeroMemory(&m, sizeof m);
+            parse_mod((const char *)r->data, (const char *)r->data + r->n, &m);
+            if (m.id == r->index && (st = mod_state(&m, folder)) != 0) inst_note(&m, st, folder);
+        }
         break;
     case R_DELETE:
         if (r->status != 200) { answer_error(r, L"Delete", t, 400); status(t); break; }

@@ -33,6 +33,7 @@
 #include "fast_start.h"
 #include "pad_icons.h"
 #include "pad_map.h"
+#include "pad_types.h"
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -441,6 +442,8 @@ bool g_extra_update = false;  // (see below: an extra update of this frame)
 // A pin's count is on: the pin judge's hook (sub_822446E0) sets it each update - the pinner's +516 is 2 and the
 // referee is in his count motion (190).
 std::atomic<bool> g_pin_counting{false};
+std::atomic<bool> g_pin_cpu{false};  // (the man pinned is a CPU: one update a frame while counted - see the judge's hook)
+std::atomic<uint32_t> g_pin_cpu_frame{0};  // (the match frame the judge last saw it: a judge gone quiet after a 3 ends the rule)
 
 // The characters' job's hand-offs, the last 512 (all threads), dumped with a
 // stuck world update - for the "stuck in pass 20" freeze (Android, 4+ people
@@ -673,6 +676,19 @@ REX_HOOK_RAW(sub_8269D768) {
   // world down below 60 fps. The count's lost step is put right at its cause now: sub_822EB8D8, below.)
   if (static const bool one = std::getenv("SVR2011_TEST_PIN_ONE_UPDATE") != nullptr; one && g_pin_counting.load())
     g_world_ticks = 1, g_world_acc = 0;
+  // A CPU pinned: one update a frame while the count runs (report bead2e; see the judge's hook). The count is then
+  // slower in real time below 60 fps - only while a CPU is pinned; a human pinned keeps full speed.
+  if (static const bool off = std::getenv("SVR2011_TEST_PIN_CPU_RULE_OFF") != nullptr;
+      !off && g_pin_counting.load() && g_pin_cpu.load() && g_world_ticks > 1 &&
+      G32(base, kMatchFrames) <= g_pin_cpu_frame.load() + 2) {
+    static uint32_t told_frame = 0, told = 0;
+    if (const uint32_t f = G32(base, kMatchFrames); f > told_frame + 300 && (++told <= 20 || told % 100 == 0)) {
+      told_frame = f;
+      REXLOG_INFO("pin count: a CPU is pinned - one update a frame until the count ends (was {}; {} times)",
+                  g_world_ticks, told);
+    }
+    g_world_ticks = 1, g_world_acc = 0;
+  }
 #if SVR2011_DEBUG_SUITE
   if (const int n = svr2011::dbg::SpeedTicks(); n && !g_lockstep) g_world_ticks = n, g_world_acc = 0;  // (dbg_speed)
 #endif
@@ -1657,6 +1673,31 @@ REX_HOOK_RAW(sub_822446E0) {
   const bool pin_on = pinner && Rd32(base + pinner + 516) == 2;
   const bool counting = ref && (Rd32(base + ref + 212) & 0x7FFF) == 190;
   g_pin_counting = pin_on && counting;
+  // Who is pinned: the pinner's target (+96) if it is one of the match's people, else the nearest other wrestler. A
+  // CPU (its player +1152 has no local controller) can only kick out at one update a frame: its AI's timed tap needs
+  // every step, and the characters' job runs once a frame (report bead2e, Android 30 fps: 60 fps 4 of 4 kick-outs,
+  // 30 fps none, 30 fps at one update a frame 5 of 5).
+  if (g_pin_counting.load()) {
+    uint32_t pinned = 0;
+    const uint32_t target = Rd32(base + pinner + 96);
+    float best = 1e9f;
+    for (uint32_t i = 0; i < 6; ++i) {
+      const uint32_t ch = Rd32(base + kChars + i * 4);
+      if (!ch || ch == pinner || ch < 0x40000000u || (ch & 3)) continue;
+      if (ch == target) {
+        pinned = ch;
+        break;
+      }
+      const auto f32 = [&](uint32_t a) { const uint32_t v = Rd32(base + a); float x; std::memcpy(&x, &v, 4); return x; };
+      const float dx = f32(ch + 288) - f32(pinner + 288), dz = f32(ch + 296) - f32(pinner + 296), d = dx * dx + dz * dz;
+      if (d < best) best = d, pinned = ch;
+    }
+    const uint32_t port = pinned ? Rd32(base + pinned + 1152) : 0;
+    g_pin_cpu = pinned && (port >= svr2011::kMaxPlayers || svr2011::PlayerPadType(port) == svr2011::PadType::kNone);
+    g_pin_cpu_frame = frame;
+  } else {
+    g_pin_cpu = false;
+  }
   // (a new match - its frame count starts again, the judge object is the same: nothing from the last one's pins)
   static uint32_t last_frame = 0;
   if (frame < last_frame) g_pin = PinGuard{}, g_drop = DropWatch{}, g_pin_log = PinLog{};

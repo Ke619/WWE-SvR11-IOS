@@ -29,7 +29,8 @@ Every list and detail answer uses this shape:
 | `pics` | a counter that goes up on every picture change; put it in the picture URL (`img/{n}?v=<pics>`) |
 | `hidden` | the dashboard hid it (only its owner and the dashboard ever see a hidden row) |
 | `description`, `file_name` | in the detail answer only |
-| `rating` | `{"avg": 4.33, "count": 3}`: the mod's star rating (avg 0 when count is 0). Left out while ratings are off (`ratings_on: false`) |
+| `upvotes` | how many accounts upvoted it (2.2.2). Left out while upvotes are off (`upvotes_on: false`) |
+| `comments_off` | its author turned comments off for it (2.2.2) |
 
 ## Public
 
@@ -40,10 +41,10 @@ Every list and detail answer uses this shape:
     - `updated`: the most recently updated first, by the time of its last file update or else its upload;
     - `popular`: most downloaded first;
     - `name`;
-    - `rating`: mods with at least `discovery_rating_min` ratings (a server setting, 3 by default) first, by their
-      average and then by how many ratings they have; the rest after them, the same way. So one 5-star rating
-      doesn't top the list. While ratings are off, `rating` sorts as `new`.
-  - The answer also has `ratings_on` and `comments_on` (the server's two switches).
+    - `upvotes` ("Most upvoted", 2.2.2): the most upvoted first, then the newest. 2.2.1's `rating` sorts the same.
+      While upvotes are off, both sort as `new`.
+  - The answer also has `upvotes_on` and `comments_on` (the server's two switches), and `ratings_on: false` (2.2.1's
+    launcher then hides its stars).
 - `GET /api/mods/{id}`: the row with `description` and `file_name`; 404 when it doesn't exist or is hidden. Send the
   Bearer token when signed in and the answer has `mine` (see the row). Sign-in (`/api/login`, `/api/register`) also
   answers the account's `id` now.
@@ -110,13 +111,22 @@ The dashboard can still hide, show or delete any mod. A hidden mod stays hidden 
 
 An admin can store a new version of any mod (the 30 Oct bulk .bik -> .mp4 movie shrink): the same `PUT /api/mods/{id}/file` with the storage node's key (`X-Storage-Key`, a core with a node only) instead of a Bearer token, or `PUT /api/admin/mods/{id}/file` from the dashboard. The checks are the owner's (a new version, the file checked, `needs` from its manifest) without the quota. The owner, author, id and downloads stay; `updated` becomes now, so players see UPDATE. An optional `why` part goes in the log. The key route goes through the `/svr/api/mods/{id}/file` nginx location, which takes big bodies; `/svr-admin/` takes 1 MB.
 
-## Comments and ratings
+## Comments and upvotes
 
-The server side is `port/server/discovery_social.py` plus the `api_mod_comment*` / `api_mod_rating` handlers in
-`server.py`. Comments are plain text, flat (no replies), newest first. Ratings are 1-5 stars: one per account per
-mod, which the player can change or take back. A mod's uploader can't rate their own mod.
+The server side is `port/server/discovery_social.py` plus the `api_mod_comment*` / `api_mod_upvote` handlers in
+`server.py`. Comments are plain text, flat (no replies), newest first. Upvotes (2.2.2): one per account per mod,
+which the player can take back. A mod's uploader can't upvote their own mod.
 
-Reading needs no account. Posting, deleting, reporting and rating need a signed-in account: the Bearer token, the
+2.2.2 replaced 2.2.1's 1-5 stars with upvotes (suggestion 65e402: stars invited low ratings on tested work). The old
+star rows stay in the database, unused and not shown. 2.2.1's launcher still sends stars to `POST
+/api/mods/{id}/rating`: it gets `410`, code `update_to_upvote`, "Mods get upvotes now instead of stars - update the
+launcher (2.2.2) to upvote." Its pages hide the stars, because every answer says `ratings_on: false`.
+
+A mod's author can turn comments off for their own mod (2.2.2): `PATCH /api/mods/{id}` with `{"comments": false}`
+(and `true` to turn them back on). Its comments stay on the server, hidden from players; the dashboard still sees
+them. The switch is not an info edit: `edited` doesn't change.
+
+Reading needs no account. Posting, deleting, reporting and upvoting need a signed-in account: the Bearer token, the
 same as uploads. An account that `account_checks` keeps off online can still comment; a banned account's sessions are
 gone, so it gets `401`.
 
@@ -129,12 +139,15 @@ Use `code` only to decide what to do next (for example, `sign_in_needed`: offer 
 
 | Field | Meaning |
 |---|---|
-| `comments_on`, `ratings_on` | the server's switches. Off: hide that part of the page |
+| `comments_on` | comments are shown and open: the server's switch is on and the author hasn't turned them off |
+| `comments_author_off` | the author turned comments off for this mod (show "The author turned comments off") |
+| `upvotes_on` | the server's upvote switch. Off: hide the upvotes |
 | `comments` | how many comments are shown on it |
-| `rating` | see the row (left out while ratings are off) |
-| `my_rating` | with a token: the asker's own stars, 0 = not rated |
-| `can_rate` | with a token: ratings on, not the asker's own mod, not muted from ratings |
+| `upvotes` | see the row (left out while upvotes are off) |
+| `my_upvote` | with a token: the asker upvoted it |
+| `can_upvote` | with a token: upvotes on, not the asker's own mod, not muted from upvotes |
 | `can_comment` | with a token: comments on, not muted |
+| `ratings_on`, `can_rate` | always `false` (2.2.1's launcher: no stars) |
 
 ### Endpoints
 
@@ -143,7 +156,8 @@ Use `code` only to decide what to do next (for example, `sign_in_needed`: offer 
   - A comment: `{"id", "author" (the account's online name), "text", "created" (Unix seconds)}`. With a token, also
     `"mine"` (the asker wrote it) and `"can_delete"` (the asker wrote it, or uploaded the mod).
   - `can_comment` is there only with a token.
-  - Comments off: `{"ok": true, "enabled": false, "comments": [], ...}`.
+  - Comments off (the server's switch, or the author's): `{"ok": true, "enabled": false, "author_off": true|false,
+    "why": "<text to show>", "comments": [], ...}`.
   - Text keeps its new lines (8 lines at most). Show it as plain text, never as markup or links.
 - `POST /api/mods/{id}/comments` `{"text": "..."}` -> `{"ok": true, "comment": comment, "total"}`.
 - `DELETE /api/mods/{id}/comments/{cid}` -> `{"ok": true}`. Allowed for the comment's writer, or the mod's uploader on
@@ -151,17 +165,19 @@ Use `code` only to decide what to do next (for example, `sign_in_needed`: offer 
 - `POST /api/mods/{id}/comments/{cid}/report` `{"why": "optional, 200 characters"}` -> `{"ok": true, "new": true|false}`.
   It goes to the dashboard. The same account reporting the same comment again isn't counted twice; `new: false` is
   still a success: say "Reported".
-- `POST /api/mods/{id}/rating` `{"stars": 1-5}` (0 takes the rating back) -> `{"ok": true, "rating": {"avg", "count"},
-  "my_rating"}`. `stars` must be a JSON number, not a string.
+- `POST /api/mods/{id}/upvote` `{"up": true}` (or `false` to take it back) -> `{"ok": true, "upvotes", "my_upvote"}`.
+  `up` must be a JSON `true` / `false`. Upvoting again changes nothing.
+- `PATCH /api/mods/{id}` `{"comments": true | false}`: the author's switch (owner only, as the other owner edits).
 
 A hidden or missing mod is `404` (`no_mod`) on all of these; a missing, hidden or deleted comment is `404`
-(`no_comment`).
+(`no_comment`), and so is any comment on a mod whose author turned comments off.
 
 ### The server's checks on a comment (in this order)
 
 | `code` | Status | When |
 |---|---|---|
 | `comments_off` | 403 | the dashboard turned comments off |
+| `author_off` | 403 | the mod's author turned comments off for it |
 | `sign_in_needed` | 401 | no token, an ended session or a banned account |
 | `muted` | 403 | the dashboard muted the account from comments |
 | `empty` | 400 | nothing but spaces |
@@ -174,40 +190,43 @@ A hidden or missing mod is `404` (`no_mod`) on all of these; a missing, hidden o
 | `repeat` | 400 | the same text (any capitals) from this account in the last 10 minutes |
 | `too_fast` | 429 | over 5 comments a minute or 30 an hour per account, or 60 an hour per address |
 
-Ratings: `ratings_off` 403, `sign_in_needed` 401, `muted_ratings` 403 (muted from comments and ratings),
-`own_mod` 403, `bad_stars` 400, `rate_too_fast` 429 (60 an hour). Reports: `report_too_fast` 429 (20 an hour).
-Deleting: `not_yours` 403.
+Upvotes: `upvotes_off` 403, `sign_in_needed` 401, `muted_ratings` 403 (muted from comments and upvotes),
+`own_mod_upvote` 403, `bad_up` 400, `upvote_too_fast` 429 (60 an hour). 2.2.1's stars: `update_to_upvote` 410.
+Reports: `report_too_fast` 429 (20 an hour). Deleting: `not_yours` 403.
 
 Clients may check the length (500) and lines (8) before sending. Leave every other check to the server and show its
 `error`.
 
 ### Clients
 
-- **The page:** under the description, the stars (`rating.avg` to one decimal, and `rating.count`), then the
-  comments. Hide each part when its switch is off.
-- **Rating:** five stars the player taps; theirs shows from `my_rating`. Show them only when `can_rate`. A signed-out
-  player sees the average only, with "Sign in to rate".
+- **The page:** under the description, the upvote count ("▲ 12"), then the comments. Hide each part when its switch
+  is off; when `comments_author_off`, say "The author turned comments off for this mod" instead of the comments.
+- **Upvoting:** one button: "▲ Upvote", or "▲ Upvoted" (pressed again: taken back) from `my_upvote`. Show it only when
+  `can_upvote`. A signed-out player sees the count only, with "Sign in to upvote".
+- **The author's switch:** on their own mod (`mine`), "Comments: on" / "Comments: off", which sends the PATCH.
 - **Writing:** a box with a 500-character counter and Send, shown when `can_comment`. Signed out: "Sign in to
   comment" (the Online tab). After a send, put the returned `comment` at the top and use the returned `total`.
 - **Each comment:** the author, the age ("3 h ago"), the text; Delete when `can_delete` (ask first); Report on other
   people's comments when signed in.
 - **Paging:** "More comments" asks for the next page while `(page + 1) * per_page < total`.
-- **Lists:** the row's stars and count (for example "4.3 (12)"); a "Top rated" sort entry (`sort=rating`), shown
-  while `ratings_on`.
+- **Lists:** the row's upvotes (for example "▲ 12"); a "Most upvoted" sort entry (`sort=upvotes`), shown while
+  `upvotes_on`.
 - Never put comment text into anything that runs it: no markup, no links. It is plain text.
 
 ### Dashboard
 
 - The **Comments** tab (`GET /api/admin/discovery/comments?page&q&state&mod&account`): reported comments first, then
-  the latest, each with its mod, writer, state and reports (who and why). It also lists the mutes.
+  the latest, each with its mod, writer, state and reports (who and why). It also lists the mutes. Comments on a mod
+  whose author turned them off are still listed.
   - Actions: `POST /api/admin/discovery/comment/{cid}/{hide|show|delete|clear-reports|mute-comments|mute-all}`.
     `delete` removes it for good. A writer's or uploader's delete only takes it from the players' view.
   - `POST /api/admin/discovery/mute` `{"account": id, "scope": "comments" | "all" | ""}` (`""` lifts the mute).
-- The **Discovery** tab: each mod's rating, and **Clear ratings** (`POST /api/admin/mod/{id}/clear-ratings`).
+- The **Discovery** tab: each mod's upvotes, "comments off" when its author turned them off, and **Clear upvotes**
+  (`POST /api/admin/mod/{id}/clear-upvotes`).
 - The **Names** tab: the comment word list, below the name filter's (`/api/admin/names?list=comments`, the same
   rules). It's used at once.
-- **Settings:** `discovery_comments` and `discovery_ratings` (on / off, at once; nothing stored is deleted) and
-  `discovery_rating_min` (1-100, default 3).
+- **Settings:** `discovery_comments` and `discovery_upvotes` (on / off, at once; nothing stored is deleted). 2.2.1's
+  `discovery_ratings` and `discovery_rating_min` are gone.
 
 ## Server log lines
 
@@ -224,11 +243,12 @@ discovery: comment 40 on mod 12 by Player (57 characters)
 discovery: comment on mod 12 from Player refused (piracy)
 discovery: comment 40 on mod 12 deleted by its writer Player      (or: its owner Uploader)
 discovery: comment 40 on mod 12 reported by Player
-discovery: mod 12 rated 4 by Player                               (or: rated (taken back))
+discovery: mod 12 upvoted by Player                               (or: upvote taken back by Player)
+discovery: mod 12: comments turned off by its owner Player
 discovery: 3 deleted comment(s) over 30 days old removed
 admin: discovery comment 40 (mod 12, by Player): hide
 admin: discovery mute of Player: comments
-admin: mod 12: its 5 rating(s) cleared
+admin: mod 12: its 5 upvote(s) cleared
 ```
 
 ## Clients

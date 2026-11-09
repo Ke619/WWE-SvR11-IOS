@@ -155,6 +155,40 @@ SVR2007 = {
 # SvR 2007-2010 lack: without it he stands in the bind pose in the intro)
 HOST_ENTRIES = (0x192, 0x4E20, 0x4E21, 0x4E22, 0x4E23, 0x4E2A, 0x7922, 0xEE48, 0xEA6C)
 MOTION_BANK = 0x7922
+# The crowd (--crowd): 'own' the source arena's (2007-2010, LOWM: 2011's format), 'host' 2011 RAW's / the host's,
+# 'none' no one in the seats (its people emptied, manifest crowd=0 - the Mod Maker's "Crowd in the seats" off).
+# SVR2011_PORT_HOST_CROWD=1: 'host'
+CROWD_MODE = 'host' if os.environ.get('SVR2011_PORT_HOST_CROWD') == '1' else 'own'
+OWN_CROWD = CROWD_MODE == 'own'
+
+
+def set_crowd_mode(mode):
+    global CROWD_MODE, OWN_CROWD
+    CROWD_MODE = mode if mode in ('own', 'host', 'none') else 'own'
+    OWN_CROWD = CROWD_MODE == 'own'
+
+
+def crowd_lines():
+    """the manifest's crowd notes: crowd=0 when there's no crowd (the game, the Mod Maker), crowd_source= always"""
+    return ('crowd=0\n' if CROWD_MODE == 'none' else '') + 'crowd_source=%s\n' % CROWD_MODE
+
+
+def empty_crowd(pack):
+    """a crowd pack (0x4E20 / 0x4E2A) with its people's triangles taken out - no one in the seats (the game still finds
+    each model), as the Mod Maker's HideCrowd"""
+    import jboy
+    unp = lambda b: svrfmt.bpe_decode(b) if b[:4] == b'BPE ' else b  # noqa: E731
+    subs = []
+    for i, x in svrfmt.pach_read(unp(pack)):
+        r = unp(x)
+        if r[:4] == b'JBOY':
+            m = jboy.read(r)
+            for s in m.meshes:
+                s.strips = [(prim, []) for prim, idx in s.strips]
+            r = jboy.write(m)
+            x = bpe(r) if x[:4] == b'BPE ' else r
+        subs.append((i, x))
+    return bpe(svrfmt.pach_write(subs))
 # SvR 2007-2009 turnbuckle covers (ar_cover10-13): a black logo pad (rin_tb00) inside a white taped
 # shell (rin_tb10) that 2011 draws over the pad - the "white turnbuckles". 2011 RAW's covers are the
 # same black logo pads with no shell, on the same ring.
@@ -357,11 +391,28 @@ def svr2010_convert(disc, key, out, base=None, name=None, pac11=None, year='2010
             bank = dict(svrfmt.pach_read(graw[0][1][0][1])).get(MOTION_BANK)
             ha, ga, ta = svrfmt.epac_read(arena)
             ents = dict(svrfmt.pach_read(ga[0][1][0][1]))
+            changed = False
             if bank is not None and MOTION_BANK in ents:
                 ents[MOTION_BANK] = bank
+                changed = True
+                notes.append("motion bank (crowd, ring crew, the announcer's intro) from 2011 RAW")
+            # (its own crowd is 2011's format and stays - unless --crowd says the host's (2011 RAW's) or none)
+            if CROWD_MODE == 'host':
+                eb = dict(svrfmt.pach_read(graw[0][1][0][1]))
+                for i in (0x4E20, 0x4E21, 0x4E22, 0x4E23, 0x4E2A):
+                    if i in eb:
+                        ents[i] = eb[i]
+                changed = True
+                notes.append("crowd from 2011 RAW (--crowd host)")
+            elif CROWD_MODE == 'none':
+                for i in (0x4E20, 0x4E2A):
+                    if i in ents:
+                        ents[i] = empty_crowd(ents[i])
+                changed = True
+                notes.append('no crowd: the seats are empty (--crowd none)')
+            if changed:
                 g = [(ga[0][0], [(ga[0][1][0][0], svrfmt.pach_write(sorted(ents.items())))])] + list(ga[1:])
                 arena = svrfmt.epac_write(ha, g, ta)
-                notes.append("motion bank (crowd, ring crew, the announcer's intro) from 2011 RAW")
         except Exception as e:  # (the arena as it is - logged)
             warnings.append('motion bank not replaced: %s' % e)
     with open(os.path.join(mod, 'arena.pac'), 'wb') as f:
@@ -442,7 +493,7 @@ def svr2010_convert(disc, key, out, base=None, name=None, pac11=None, year='2010
     with open(os.path.join(mod, 'manifest.txt'), 'w', newline='\n') as f:
         f.write('type=arena\nid=%s\nname=%s\nauthor=SvR %s arena %s, ported by port tools\nversion=1.0\nbase=%s\n'
                 % (mod_id, name, year, 'bg%02d' % n, BASE_NAMES[base]) + needs_line(arena, host_size)
-                + ('vs_theme=%s\n' % vs_theme if vs_theme else '') + crowd_area_line(arena))
+                + ('vs_theme=%s\n' % vs_theme if vs_theme else '') + crowd_area_line(arena) + crowd_lines())
     progress(80, 'packing')
     import wwe13_pack
     svrmod = os.path.join(out, mod_id + '.svrmod')
@@ -640,18 +691,52 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
         _, ga, _ = svrfmt.epac_read(disc.read('pac/bg/bg%02d.pac' % n))
         stage = ga[0][1][0][1]
     ents = {}
+    loose_crowd = []
     for i, x in svrfmt.pach_read(stage):
-        # (2007: its crowd is loose models and seat files 0x4E20-0x52FF, plus 0x9C40-0x9CFF)
+        # (2007: its crowd is loose models and seat files 0x4E20-0x52FF, plus 0x9C40-0x9CFF - the parts of 2011's crowd
+        # pack, the same ids as SvR 2008's audience.pac, unpacked into the stage: gathered into one below)
         if game == 'svr2007' and (0x4E20 <= i <= 0x52FF or 0x9C40 <= i <= 0x9CFF):
+            loose_crowd.append((i, x))
             continue
         ents[{0xC8: 0x190, 0xC9: 0x191}.get(i, i)] = x
     if 0x190 not in ents:
         raise RuntimeError('bg%02d: no texture set (0xC8)' % n)
+    # (SvR 2009's crowd pack 0x4E20 is 2011's format - its people, textures and seat tables for its own stands - with
+    # no low-detail copy 0x4E2A: kept, as both. Its 0x4E21 / 0x4E22 / 0x4E23 / 0x7922 - animation, areas, motions - are
+    # the host's, the same in every 2011 arena)
+    # SvR 2008 keeps its one crowd for every arena in pac/audience.pac (AUDE/BASE: the same pack - people, pictures, seat
+    # tables and the seat areas with their heights for 2008's stands). With 2011 RAW's in its place the people sat at
+    # RAW's stand heights: sunk behind 2008's seats, on its stairs (One Night Stand)
+    # (Legends of WrestleMania: each arena its own pack, as SvR 2009 - its audience.pac holds only BORD)
+    own_crowd = ents.get(0x4E20) if game in ('svr2009', 'low') and OWN_CROWD else None
+    if game == 'svr2008' and OWN_CROWD:
+        try:
+            import moves_port
+            aude = {nm: b for typ, es in moves_port.read_pac(disc.read('pac/audience.pac')) if typ == b'AUDE' for nm, b in es}
+            own_crowd = aude.get(b'BASE')
+        except Exception as e:  # (no audience.pac - a lone arena file: the host's crowd)
+            notes.append('SvR 2008 crowd not read (%s): the host\'s' % e)
+    if game == 'svr2007' and OWN_CROWD and any((svrfmt.bpe_decode(x) if x[:4] == b'BPE ' else x)[:3] == b'; \x90'
+                                               for i, x in loose_crowd):   # (a seat table among them: a whole crowd)
+        own_crowd = bpe(svrfmt.pach_write(sorted(loose_crowd)))
+    if own_crowd is not None and (svrfmt.bpe_decode(own_crowd) if own_crowd[:4] == b'BPE ' else own_crowd)[:4] != b'PACH':
+        own_crowd = None
     for i in (0x4E20, 0x4E21, 0x4E22, 0x4E23, 0x4E2A, 0x7922):  # older crowd / motion formats
         ents.pop(i, None)
     for i in HOST_ENTRIES + HOST_COVERS:
         if i in eb:
             ents[i] = eb[i]
+    if own_crowd is not None:
+        if own_crowd[:4] == b'PACH':   # (SvR 2008's audience.pac keeps it unpacked: 2 MB twice, the file 1 MB past its old size)
+            own_crowd = bpe(own_crowd)
+        ents[0x4E20] = ents[0x4E2A] = own_crowd
+        notes.append("its own crowd (people, pictures and seats for its stands%s), as both crowd packs"
+                     % (', from pac/audience.pac' if game == 'svr2008' else ', gathered from the stage' if game == 'svr2007' else ''))
+    if CROWD_MODE == 'none':
+        for i in (0x4E20, 0x4E2A):
+            if i in ents:
+                ents[i] = empty_crowd(ents[i])
+        notes.append('no crowd: the seats are empty (--crowd none)')
     unp = lambda b: svrfmt.bpe_decode(b) if b[:4] == b'BPE ' else b  # noqa: E731
     have = None
     progress(8, 'lights')
@@ -679,7 +764,8 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
         if moved:
             ents[0xC351] = bpe(flags)
             notes.append('light sets missing from the arena, moved: ' + ', '.join('%d -> %d' % kv for kv in sorted(moved.items())))
-    notes.append('crowd, announce table pictures and card from 2011 RAW')
+    notes.append('announce table pictures and card from 2011 RAW' if own_crowd is not None else
+                 'crowd, announce table pictures and card from 2011 RAW')
 
     def build(tex_blob):
         e = dict(ents)
@@ -777,7 +863,7 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
     with open(os.path.join(mod, 'manifest.txt'), 'w', newline='\n') as f:
         f.write('type=arena\nid=%s\nname=%s\nauthor=%s arena bg%02d, ported by port tools\nversion=1.0\nbase=%s\n'
                 % (mod_id, name, label, n, BASE_NAMES[base]) + needs_line(data, len(host))
-                + (crowd_area_line(data) if game == 'svr2008' else ''))
+                + (crowd_area_line(data) if game == 'svr2008' else '') + crowd_lines())
     progress(92, 'packing the mod')
     import wwe13_pack
     svrmod = os.path.join(out, mod_id + '.svrmod')
@@ -1129,6 +1215,7 @@ def main(argv):
     p.add_argument('--pac11')
     for k in ('list', 'scan', 'convert'):   # (the source game's DLC packages: read beside the disc)
         sub.choices[k].add_argument('--dlc')
+    sub.choices['convert'].add_argument('--crowd', choices=('own', 'host', 'none'))   # (see CROWD_MODE)
     try:
         a = ap.parse_args(argv)
     except SystemExit:
@@ -1136,6 +1223,8 @@ def main(argv):
         return 2
     if getattr(a, 'dlc', None):
         os.environ['SVR2011_PORT_DLC'] = a.dlc
+    if getattr(a, 'crowd', None):
+        set_crowd_mode(a.crowd)
     if a.cmd == 'games':
         print(json.dumps(GAMES))
         return 0

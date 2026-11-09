@@ -355,6 +355,48 @@ low 16 bits of +0x40 (the high half is kept). This also round-trips 2011's own 4
   e.g. Austin x5, Rey x5-x20) differ, as expected. Not converted: boned/cloth prop motion, pyro,
   Bink 2 titantrons, themes.
 
+## Tag and trio entrances (9 Nov, suggestion b9a775)
+
+- **2011:** numbers 700-799 - tag 700-756 (mixed tags 750-756, generics 720-723), trios 770-775. CREATE AN
+  ENTRANCE's MOTION lists split them by category (2 singles, 3 tag, 4 trio). Every script has 8 character objects;
+  a team's members are objects **0, 4 and 5** (Hardyz 701: 0 Matt, 4 Jeff; MNM 770: 0, 4, 5), the rest are extras
+  without tracks. The scripts keep stand-in models on 4 / 5 (General Tag 720: Edge's).
+- **A team's entrance:** the save's team table (+0xF5C8, 70 x 270 B) has a tag block (+0x14 entrance, +0x16 /
+  +0x18) and a trio block (+0x1A, +0x1C / +0x1E), set in TEAM MANAGER (ENTRANCE SETTING). The match slot record
+  (`*(0x82E3DDFC) + 132 + idx * 52`) has a team index at +48 (-1 none; the select screen's slot +40). With it set,
+  the slot asks no singles number (sub_82756538) - but `sub_823373A8`, which reads the team's entrance, was never
+  called in a test match: +48 seems to index the match's own team list (sub_823370D0 -> sub_828B9520), which the
+  select screen fills when a team is picked. Not worked out yet.
+- **The sources:** 2010, '12-2K17 use 2011's 700-799 (2010 36, '12 42, '13 50, 2K14 58, 2K15 14, 2K16 31, 2K17 48);
+  SvR 2007 / 2008 4200-4259, 2009 / Legends 4300-4359. Every converter keeps the members on objects 0 / 4 / 5 with
+  their tracks (checked: '13 Too Cool 741 and The Brood 778, 2007 MNM 4250, 2008 MNM Trio 4230 and Cade & Murdoch
+  4211, 2009 4313, 2010 MNM 770).
+- **entrance_port `--team singles|tag|trio|auto`** (convert, free-numbers): the members played and the number's
+  range (singles never 700-799; tag 700-769, trio 770-799). Without it the number decides. `auto`: the source's kind
+  (its tracked members), the number re-picked when it doesn't fit. A team motion as a singles entrance (or a trio
+  as a tag one) doesn't draw the other members - their slots' draw flag off, their tracks kept (the bank's entries
+  share data offsets). List rows carry `team`. The Mod Maker's From another game -> Entrances has an Entrance kind
+  (Automatic / Singles / Tag team / Trios); the superstar paths (superstar_port, the superstar page, Simple) stay
+  singles.
+- **Game:** a mod's tag number shows in CREATE AN ENTRANCE's tag list, a trio number in the trio list
+  (cae_mod_motions `TeamKind`; before, both lists showed every mod 7xx number).
+- **Test aid** `SVR2011_TEST_TEAM_ENTRANCE=<team>,<tag>[,<trio>]` (test games only - the exe in runs\svrtest\, its
+  private UserData; memory only): the team's entrance blocks, and the test match's slots of its members as that team.
+  `SVR2011_TEST_CAE_LOG=1` logs each slot's entrance number and, when asked, a team's (sub_823373A8).
+- **Seen in game (9 Nov, hidden, scripted menus):**
+  - CREATE AN ENTRANCE -> TEAM -> The Hart Dynasty -> TAG -> MOTION: the tag list (category 3, 35 stock rows)
+    ends with `MOD: TOO COOL (TEST)` (page 4/4); -> TRIO -> MOTION: the trio list (category 4, 6 stock rows) ends
+    with `MOD: THE BROOD (TEST)` - each mod row in its own list only.
+  - PREVIEW (X) on those rows: WWE '13's Too Cool (712) played by the Hart Dynasty's two members (Smith, Kidd) with
+    its moves, The Brood (776) by all three (Natalya, Smith, Kidd), stage to ring - the members on objects 0 / 4 / 5.
+  - The Brood at singles number 699 as a superstar mod's entrance: the entrant walked out alone, no stand-ins.
+- **Not seen yet: a team entrance in a match.** A test match's people are picked one by one. Marking the members'
+  slots (+40 -> +48), the game block's team slot (+9968) and filling the match screen's team copy (+0xFA6C) made
+  the team's slots ask no singles number, but the match then played no entrance for them at all (only the first
+  opponent's): the select screen's team pick sets more than that. A player's path is the game's own - TEAM MANAGER or
+  CREATE AN ENTRANCE (TEAM) picks the MOD row, the team is then picked as a team in the select screen - but it
+  wasn't played in a match here. The test aid does those three writes (test games only), for a later look.
+
 ## Per-attire entrances and entrance outfits (game side)
 
 docs/ENTRANCE_ATTIRES.md: `attire<N>_entrance=<n>` (Rey Mysterio's "Evil" style), entrance

@@ -17,6 +17,10 @@
 #include "universe_mods.h"
 
 #include <algorithm>
+#include <array>
+#include <cctype>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <map>
@@ -24,6 +28,7 @@
 #include <vector>
 
 #include <fmt/format.h>
+#include <rex/filesystem.h>
 #include <rex/logging.h>
 #include <rex/system/xmemory.h>
 
@@ -357,6 +362,46 @@ void DropRepeatedMembers(uint8_t* base, uint32_t save) {
 }
 }  // namespace
 
+namespace {
+// SVR2011_TEST_TEAM_ENTRANCE=<team>,<tag entrance>[,<trio entrance>] (UniverseTeamsTick, TestTeamOf)
+const std::array<int, 3>& TestTeamEntrance() {
+  static const std::array<int, 3> v = [] {
+    std::array<int, 3> r{-1, 0, 0};
+    if (const char* e = std::getenv("SVR2011_TEST_TEAM_ENTRANCE")) std::sscanf(e, "%d,%d,%d", &r[0], &r[1], &r[2]);
+    return r;
+  }();
+  return v;
+}
+
+// a test game: the exe in runs\svrtest\ (its UserData is svrtest's private copy)
+bool TestGame() {
+  static const bool test = [] {
+    std::string exe = rex::filesystem::GetExecutableFolder().string();
+    std::replace(exe.begin(), exe.end(), '/', '\\');
+    std::transform(exe.begin(), exe.end(), exe.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+    return exe.find("\\runs\\svrtest\\") != std::string::npos;
+  }();
+  return test;
+}
+}  // namespace
+
+uint32_t TestTeamRecord(uint8_t* base) {
+  const std::array<int, 3>& te = TestTeamEntrance();
+  if (te[0] < 0 || te[0] >= int(kTeamCount) || !TestGame()) return 0;
+  const uint32_t save = Rd32(base + kSavePtr);
+  return save ? save + kTeams + uint32_t(te[0]) * kTeamSize : 0;
+}
+
+int TestTeamOf(uint8_t* base, uint32_t id) {
+  const std::array<int, 3>& te = TestTeamEntrance();
+  if (te[0] < 0 || te[0] >= int(kTeamCount) || !TestGame()) return -1;
+  const uint32_t save = Rd32(base + kSavePtr);
+  if (!save) return -1;
+  const Team team = ReadTeam(base + save + kTeams + uint32_t(te[0]) * kTeamSize);
+  if (team.members.size() < 2 || std::find(team.members.begin(), team.members.end(), id) == team.members.end()) return -1;
+  return te[0];
+}
+
 void UniverseTeamsTick(uint8_t* base) {
   static uint32_t frames = 0, save_seen = 0, grace = 0;  // (grace: ticks after a list - a save still coming in)
   static std::vector<Team> seen;
@@ -364,6 +409,30 @@ void UniverseTeamsTick(uint8_t* base) {
   const uint32_t save = Rd32(base + kSavePtr);
   if (!save) return;
   DropRepeatedMembers(base, save);
+  // Test aid: SVR2011_TEST_TEAM_ENTRANCE=<team>,<tag entrance>[,<trio entrance>] - that team's (0-69) entrances in
+  // TEAM MANAGER's two blocks, +0x14 tag / +0x1A trio (each followed by its music and movie, left alone; stock e.g.
+  // Hart Dynasty 720 / 774): a team entrance a test can play without the menus. Only in a test game - the exe in
+  // runs\svrtest\, whose UserData is svrtest's private copy - and only in memory; a save the game writes then goes
+  // to that copy, never a player's.
+  // The members' match slots are made that team by the test match (TestTeamOf), before the match builds its
+  // entrance order: marked here, during the entrances, only the other team's first entrant walked out (9 Nov).
+  const std::array<int, 3>& team_entrance = TestTeamEntrance();
+  static bool team_entrance_done = false;
+  if (!team_entrance_done && team_entrance[0] >= 0 && team_entrance[0] < int(kTeamCount)) {
+    if (!TestGame()) {
+      team_entrance_done = true;
+      REXLOG_WARN("[svr2011] test: SVR2011_TEST_TEAM_ENTRANCE ignored - not a test game (runs\\svrtest\\)");
+    } else if (uint8_t* t = base + save + kTeams + uint32_t(team_entrance[0]) * kTeamSize; ReadTeam(t).members.size() >= 2) {
+      team_entrance_done = true;
+      const auto put = [&](uint32_t off, int n) {
+        if (n > 0) t[off] = uint8_t(n >> 8), t[off + 1] = uint8_t(n);
+      };
+      put(0x14, team_entrance[1]);
+      put(0x1A, team_entrance[2]);
+      REXLOG_INFO("[svr2011] test: team {} ({}) entrances tag {} trio {}", team_entrance[0], ReadTeam(t).name,
+                  uint32_t(t[0x14]) << 8 | t[0x15], uint32_t(t[0x1A]) << 8 | t[0x1B]);
+    }
+  }
   std::vector<Team> now;
   for (uint32_t k = 0; k < kTeamCount; ++k) now.push_back(ReadTeam(base + save + kTeams + k * kTeamSize));
   const auto in_use = [](const Team& t) { return !t.members.empty() || !t.name.empty(); };

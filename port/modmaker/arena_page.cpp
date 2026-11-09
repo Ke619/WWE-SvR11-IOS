@@ -239,6 +239,11 @@ bool PrepareBuild(BuildJob& job) {
     Status("The arena file could not be read.");
     return false;
   }
+  // (a reopened mod's arena.pac has its crowd tint baked in: the stock picture back first, or a second save tints it twice)
+  if (g_proj.edited && editor::Light().crowd && !editor::Light().CrowdDefault()) {
+    Arena stock;
+    if (stock.Load(ArenaPath(g_proj.arena)) && CopyAudienceLightmap(*job.arena, stock)) Log("  crowd lighting: from the stock arena's picture");
+  }
   editor::ApplyBuild(*job.arena);
   job.banner = g_proj.banner.image;
   job.load = g_proj.load.image;

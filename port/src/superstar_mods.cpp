@@ -2955,6 +2955,16 @@ REX_HOOK_RAW(sub_82756538) {
     REXLOG_INFO("[svr2011] cae: slot {} part {} plays {} (created {})", idx, part, ctx.r3.u32,
                 base[mgr + 36 + idx * 280 + 195]);
 }
+// (test aid SVR2011_TEST_CAE_LOG: a team's entrance as the match asks it - sub_823373A8(mgr, idx) reads the team
+// record's tag or trio entrance (TEAM MANAGER's ENTRANCE SETTING); its slots ask no singles number then)
+REX_EXTERN(__imp__sub_823373A8);
+REX_HOOK_RAW(sub_823373A8) {
+  const uint32_t idx = ctx.r4.u32;
+  __imp__sub_823373A8(ctx, base);
+  static const bool on = std::getenv("SVR2011_TEST_CAE_LOG") != nullptr;
+  static int told = 0;
+  if (on && told++ < 24) REXLOG_INFO("[svr2011] cae: slot {} team entrance {}", idx, ctx.r3.u32 & 0xFFFF);
+}
 REX_EXTERN(__imp__sub_82756718);
 REX_HOOK_RAW(sub_82756718) {
   const uint32_t mgr = ctx.r3.u32, idx = ctx.r4.u32;

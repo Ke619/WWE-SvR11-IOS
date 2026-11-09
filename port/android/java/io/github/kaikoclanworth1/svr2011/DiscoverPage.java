@@ -65,7 +65,7 @@ final class DiscoverPage {
     static final String[] kTypeNames = {"All types", "Entrance", "Superstar", "Arena", "Move-set"};
     static final String[] kSorts = {"new", "updated", "popular", "name"};
     static final String[] kSortNames = {"Newest", "Recently updated", "Most downloaded", "Name"};
-    static final String[] kSortNamesRated = {"Newest", "Recently updated", "Most downloaded", "Name", "Top rated"};  // (+ sort=rating while ratings are on)
+    static final String[] kSortNamesRated = {"Newest", "Recently updated", "Most downloaded", "Name", "Most upvoted"};  // (+ sort=upvotes while upvotes are on)
 
     private final LauncherActivity a_;
     private final ModsPage mods_;
@@ -90,12 +90,13 @@ final class DiscoverPage {
     private boolean mine_, busy_;                   // (the server said it's the player's; a change is being sent)
     private String mineToken_ = "";                 // (the token the page was asked with)
     private String note_;                           // (what a change said: kept over the next page's "Looking…")
-    private DiscoverSocial social_;                 // (the mod's stars and comments)
-    private boolean sortsRated_;                    // (the order list has "Top rated": the server's ratings are on)
+    private DiscoverSocial social_;                 // (the mod's upvotes and comments)
+    private boolean sortsRated_;                    // (the order list has "Most upvoted": the server's upvotes are on)
 
     DiscoverPage(LauncherActivity a, ModsPage mods) {
         a_ = a;
         mods_ = mods;
+        mods.setDiscover(this);
     }
 
     SharedPreferences prefs() { return a_.getSharedPreferences("discovery", android.content.Context.MODE_PRIVATE); }
@@ -130,7 +131,7 @@ final class DiscoverPage {
         find.addView(words_, a_.fullWidth(6));
         type_ = spinner(kTypeNames);
         a_.row(find, "Type", null, type_);
-        sort_ = spinner(kSortNames);  // (sorts(): "Top rated" while the server has ratings on)
+        sort_ = spinner(kSortNames);  // (sorts(): "Most upvoted" while the server has upvotes on)
         a_.row(find, "Order", null, sort_);
         Button go = a_.button("Search", LauncherActivity.kRed);
         go.setOnClickListener(v -> {
@@ -183,7 +184,7 @@ final class DiscoverPage {
         desc_.setPadding(0, 0, 0, a_.dp(10));
         about2.addView(desc_);
         social_ = new DiscoverSocial(a_, this);
-        social_.buildRating(page_);  // (the stars under the description; the comments under the buttons)
+        social_.buildRating(page_);  // (the upvotes under the description; the comments under the buttons)
         buttons_ = new LinearLayout(a_);
         buttons_.setOrientation(LinearLayout.VERTICAL);
         page_.addView(buttons_);
@@ -234,7 +235,7 @@ final class DiscoverPage {
         return ad;
     }
 
-    // "Top rated" in the order list only while the server has ratings on (the list's ratings_on).
+    // "Most upvoted" in the order list only while the server has upvotes on (the list's upvotes_on).
     void sorts(boolean rated) {
         if (rated == sortsRated_) return;
         sortsRated_ = rated;
@@ -245,7 +246,7 @@ final class DiscoverPage {
 
     String sortKey() {
         int pos = sort_.getSelectedItemPosition();
-        return pos >= 0 && pos < kSorts.length ? kSorts[pos] : pos == kSorts.length && sortsRated_ ? "rating" : "new";
+        return pos >= 0 && pos < kSorts.length ? kSorts[pos] : pos == kSorts.length && sortsRated_ ? "upvotes" : "new";
     }
 
     int genNow() { return gen_; }
@@ -384,7 +385,7 @@ final class DiscoverPage {
         }
         JSONObject j = json(r);
         total_ = j.optInt("total", 0);
-        sorts(j.optBoolean("ratings_on", false));
+        sorts(j.optBoolean("upvotes_on", false));
         JSONArray mods = j.optJSONArray("mods");
         final List<ImageView> thumbs = new ArrayList<>();
         for (int i = 0; mods != null && i < mods.length() && i < kPerPage; i++) {
@@ -422,12 +423,142 @@ final class DiscoverPage {
         }, null);
     }
 
-    // The version downloaded here (its "updated", else "created", then), when its folder is still installed; 0: none.
-    long downloaded(int id) {
-        SharedPreferences p = prefs();
-        long got = p.getLong("mod" + id, 0);
-        String dir = p.getString("dir" + id, "");
-        return got != 0 && (dir.isEmpty() || new File(dir).isDirectory()) ? got : 0;
+    // ── installed from Discovery ──────────────────────────────────────────
+    // The install record (prefs "discovery"): mod<id> = Discovery's time of the version downloaded here (its "updated",
+    // else "created"), dir<id> = the folder it went to, ver<id> = its version, hash<id> = the file's FNV-1a 64. A mod
+    // counts as installed while that folder's manifest is there (launcher/discover_tab.c, the PC's record).
+
+    // The recorded folder of mod `id` while its manifest is there; null otherwise.
+    File recFolder(int id) {
+        String dir = prefs().getString("dir" + id, "");
+        if (dir.isEmpty()) return null;
+        File f = new File(dir);
+        return new File(f, "manifest.txt").isFile() || new File(f, "info.txt").isFile() ? f : null;
+    }
+
+    // Installed here, and as Discovery's newest? 0 not installed, 1 installed, 2 an older copy. A copy installed before
+    // the record (2.2.2) is matched once by its manifest: by name if this phone downloaded the mod, else by name and
+    // author; only when exactly one mod matches, and it's recorded then. A recorded time older than Discovery's
+    // updated / created - or, with no time, an older version - is out of date.
+    int state(JSONObject m) {
+        int id = m.optInt("id");
+        if (id <= 0 || !InstallActivity.installed()) return 0;
+        File f = recFolder(id);
+        long got = prefs().getLong("mod" + id, 0);
+        if (f == null) {
+            File match = null;
+            int n = 0;
+            for (File d : ModsPage.modFolders()) {
+                java.util.Map<String, String> man = ModsPage.manifest(d);
+                if (!m.optString("name").equalsIgnoreCase(man.getOrDefault("name", ""))) continue;
+                if (got == 0 && !m.optString("author").equalsIgnoreCase(man.getOrDefault("author", ""))) continue;
+                match = d;
+                n++;
+            }
+            if (n != 1) return 0;
+            f = match;
+            prefs().edit().putString("dir" + id, f.getAbsolutePath())
+                .putString("ver" + id, ModsPage.manifest(f).getOrDefault("version", "")).apply();
+        }
+        if (got != 0) return version(m) > got ? 2 : 1;
+        String mine = ModsPage.manifest(f).getOrDefault("version", ""), theirs = m.optString("version");
+        return !mine.isEmpty() && !theirs.isEmpty() && Updater.newer(theirs, mine) ? 2 : 1;
+    }
+
+    static long fnv(File f) {  // (FNV-1a 64, as the launcher's file_fnv)
+        long h = 0xcbf29ce484222325L;
+        try (InputStream in = new FileInputStream(f)) {
+            byte[] buf = new byte[1 << 16];
+            for (int n; (n = in.read(buf)) > 0; )
+                for (int i = 0; i < n; i++) {
+                    h ^= buf[i] & 0xff;
+                    h *= 0x100000001b3L;
+                }
+        } catch (IOException e) {
+            return 0;
+        }
+        return h;
+    }
+
+    // The Mods tab: each recorded install's state, from its Discovery page (GET /api/mods/<id>, at most once a minute).
+    private final java.util.Map<String, Object[]> inst_ = new java.util.HashMap<>();  // (folder -> {state, mod})
+    private long checkedAt_;
+    private boolean checking_;
+
+    int folderState(File d) {
+        synchronized (inst_) {
+            Object[] s = inst_.get(d.getAbsolutePath());
+            return s == null ? 0 : (Integer) s[0];
+        }
+    }
+
+    void updateFolder(File d) {
+        Object[] s;
+        synchronized (inst_) {
+            s = inst_.get(d.getAbsolutePath());
+        }
+        if (s == null || (Integer) s[0] != 2) return;
+        if (downloading_) {
+            a_.status("A download is running - try again when it's done.");
+            return;
+        }
+        a_.status("Updating \"" + ((JSONObject) s[1]).optString("name") + "\" from Discovery…");
+        download((JSONObject) s[1]);
+    }
+
+    private boolean retryQueued_;
+
+    void checkInstalled() {
+        long now = System.currentTimeMillis();
+        if (checking_ || !InstallActivity.installed()) return;
+        if (now - checkedAt_ < 60000) {  // (asked again within the minute: once, when it's up)
+            if (!retryQueued_) {
+                retryQueued_ = true;
+                new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+                    retryQueued_ = false;
+                    checkInstalled();
+                }, 60000 - (now - checkedAt_) + 500);
+            }
+            return;
+        }
+        final java.util.List<Integer> ids = new ArrayList<>();
+        for (String k : prefs().getAll().keySet())
+            if (k.startsWith("dir")) {
+                try {
+                    int id = Integer.parseInt(k.substring(3));
+                    if (recFolder(id) != null) ids.add(id);
+                } catch (NumberFormatException ignored) {
+                }
+            }
+        if (ids.isEmpty()) return;
+        checking_ = true;
+        checkedAt_ = now;
+        final int gen = gen_;
+        final java.util.Map<String, Object[]> found = new java.util.HashMap<>();
+        a_.background(() -> {
+            for (int id : ids) {
+                Answer r = get("/api/mods/" + id, 1 << 20, gen);
+                if (r.status != 200) continue;  // (gone from Discovery, or no answer: no arrow)
+                JSONObject m = json(r);
+                File f = recFolder(id);
+                if (f != null) found.put(f.getAbsolutePath(), new Object[] {state(m), m});
+            }
+        }, () -> {
+            checking_ = false;
+            boolean changed;
+            synchronized (inst_) {
+                changed = !sameStates(inst_, found);
+                inst_.clear();
+                inst_.putAll(found);
+            }
+            if (changed) mods_.refresh();
+        });
+    }
+
+    static boolean sameStates(java.util.Map<String, Object[]> a, java.util.Map<String, Object[]> b) {
+        if (!a.keySet().equals(b.keySet())) return false;
+        for (String k : a.keySet()) if (!a.get(k)[0].equals(b.get(k)[0])) return false;
+        return true;
     }
 
     static long version(JSONObject m) {
@@ -450,10 +581,11 @@ final class DiscoverPage {
         return s.toString();
     }
 
-    // A row's stars, "★ 4.3 (12)"; nothing while it has no ratings (or ratings are off: no "rating").
-    static String starsText(JSONObject r) {
-        if (r == null || r.optInt("count", 0) <= 0) return "";
-        return "★ " + String.format(java.util.Locale.US, "%.1f", r.optDouble("avg", 0)) + " (" + r.optInt("count") + ")";
+    // A row's upvotes, "▲ 12" or "No upvotes yet"; nothing while upvotes are off (the row has no "upvotes").
+    static String upvotesText(JSONObject m) {
+        if (!m.has("upvotes")) return "";
+        int n = m.optInt("upvotes", 0);
+        return n > 0 ? "\u25B2 " + n : "No upvotes yet";
     }
 
     ImageView listRow(JSONObject m, int index) {
@@ -464,14 +596,43 @@ final class DiscoverPage {
         thumb.setScaleType(ImageView.ScaleType.CENTER_CROP);
         thumb.setBackground(a_.rounded(LauncherActivity.kLine, 6));
         thumb.setClipToOutline(true);
-        r.addView(thumb, new LinearLayout.LayoutParams(a_.dp(112), a_.dp(84)));
+        // (installed here: a green tick on the picture's top right; an older copy: a gold ↑ UPDATE there - a tap
+        // updates it without opening the page; discover_tab.c)
+        final int st = state(m);
+        android.widget.FrameLayout pic = new android.widget.FrameLayout(a_);
+        pic.addView(thumb, new android.widget.FrameLayout.LayoutParams(a_.dp(112), a_.dp(84)));
+        if (st == 1) {
+            TextView tick = a_.text("\u2713", 14, 0xFFFFFFFF);
+            tick.setTypeface(Typeface.DEFAULT_BOLD);
+            tick.setGravity(Gravity.CENTER);
+            android.graphics.drawable.GradientDrawable dot = new android.graphics.drawable.GradientDrawable();
+            dot.setShape(android.graphics.drawable.GradientDrawable.OVAL);
+            dot.setColor(0xFF2EA043);
+            dot.setStroke(a_.dp(1), 0xFFFFFFFF);
+            tick.setBackground(dot);
+            android.widget.FrameLayout.LayoutParams lp = new android.widget.FrameLayout.LayoutParams(a_.dp(24), a_.dp(24),
+                Gravity.TOP | Gravity.END);
+            lp.setMargins(0, a_.dp(4), a_.dp(4), 0);
+            pic.addView(tick, lp);
+        } else if (st == 2) {
+            TextView up = a_.text("\u2191 UPDATE", 11, 0xFF1B1D21);
+            up.setTypeface(Typeface.DEFAULT_BOLD);
+            up.setGravity(Gravity.CENTER);
+            up.setPadding(a_.dp(6), a_.dp(2), a_.dp(6), a_.dp(2));
+            up.setBackground(a_.rounded(0xFFE3B341, 6));
+            up.setOnClickListener(v -> download(m));
+            android.widget.FrameLayout.LayoutParams lp = new android.widget.FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, a_.dp(26), Gravity.TOP | Gravity.END);
+            lp.setMargins(0, a_.dp(4), a_.dp(4), 0);
+            pic.addView(up, lp);
+        }
+        r.addView(pic, new LinearLayout.LayoutParams(a_.dp(112), a_.dp(84)));
         LinearLayout texts = new LinearLayout(a_);
         texts.setOrientation(LinearLayout.VERTICAL);
         texts.setPadding(a_.dp(12), 0, 0, 0);
-        long got = downloaded(m.optInt("id")), now = version(m);
-        String badge = got != 0 && now > got ? "UPDATE  "
-            : m.optLong("updated", 0) != 0 && lastVisit_ != 0 && m.optLong("updated") > lastVisit_ ? "UPDATED  "
-            : got != 0 ? "INSTALLED  " : "";
+        // (UPDATED: changed since the last visit - not where the gold Update shows; installed: the tick says so)
+        String badge = st != 2 && m.optLong("updated", 0) != 0 && lastVisit_ != 0 && m.optLong("updated") > lastVisit_
+            ? "UPDATED  " : "";
         TextView name = a_.text("", 16, LauncherActivity.kText);
         name.setTypeface(Typeface.DEFAULT_BOLD);
         android.text.SpannableStringBuilder s = new android.text.SpannableStringBuilder();
@@ -489,8 +650,8 @@ final class DiscoverPage {
         texts.addView(a_.text("v" + m.optString("version") + " - " + FileOps.human(m.optLong("size")) + " - " + dl
             + " download" + (dl == 1 ? "" : "s") + " - " + (m.optLong("updated", 0) != 0 ? "updated " : "new ")
             + date(version(m)), 13, LauncherActivity.kDim));
-        String stars = starsText(m.optJSONObject("rating"));
-        if (!stars.isEmpty()) texts.addView(a_.text(stars, 13, 0xFFFFC83D));
+        String ups = upvotesText(m);
+        if (!ups.isEmpty()) texts.addView(a_.text(ups, 13, m.optInt("upvotes", 0) > 0 ? 0xFFFFC83D : LauncherActivity.kDim));
         r.addView(texts, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         r.setOnClickListener(v -> open(index));
         if (list_.getChildCount() > 0) {
@@ -605,22 +766,26 @@ final class DiscoverPage {
             s.append("\n\nTags: ");
             for (int i = 0; i < tags.length(); i++) s.append(i > 0 ? ", " : "").append(tags.optString(i));
         }
-        info_.setText(s.toString());
+        final int st = state(m);  // (installed here: a line on top; the button says so)
+        info_.setText((st == 1 ? "\u2713 Installed\n" : st == 2 ? "\u2191 Update waiting\n" : "") + s);
         desc_.setText(desc.isEmpty() ? "" : desc);
-        long got = downloaded(m.optInt("id"));
-        download_.setText(got != 0 && version(m) > got ? "Download the update" : got != 0 ? "Download and install again"
-            : "Download and install");
+        download_.setText(st == 2 ? "Download the update" : st == 1 ? "Reinstall" : "Download and install");
     }
 
     // ── the download ─────────────────────────────────────────────────────
 
     void download() {
-        if (cur_ == null || downloading_) return;
+        if (cur_ != null) download(cur_);
+    }
+
+    // Downloads and installs `m` (its page's button, a tile's ↑ UPDATE, the Mods tab's Update). An update keeps the
+    // mod's on / off; the install is recorded (its folder, Discovery's version and time, the file's hash).
+    void download(final JSONObject m) {
+        if (m == null || downloading_) return;
         if (!InstallActivity.installed()) {
             a_.status("Install the game first.");
             return;
         }
-        final JSONObject m = cur_;
         final int id = m.optInt("id");
         final String name = m.optString("name");
         downloading_ = true;
@@ -645,9 +810,17 @@ final class DiscoverPage {
                 return;
             }
             a_.runOnUiThread(() -> progressText_.setText("Installing \"" + name + "\"…"));
+            final long hash = fnv(file);
+            File had = recFolder(id);
+            final boolean wasOff = had != null && new File(had, "disabled").exists();
             try (InputStream in = new FileInputStream(file)) {
                 ModsPage.Installed r = ModsPage.install(a_, in, false, mods_::askMoves);
-                prefs().edit().putLong("mod" + id, version(m)).putString("dir" + id, r.dest.getAbsolutePath()).apply();
+                if (wasOff) new java.io.FileOutputStream(new File(r.dest, "disabled")).close();  // (its on / off kept)
+                prefs().edit().putLong("mod" + id, version(m)).putString("dir" + id, r.dest.getAbsolutePath())
+                    .putString("ver" + id, m.optString("version")).putString("hash" + id, Long.toHexString(hash)).apply();
+                synchronized (inst_) {
+                    inst_.put(r.dest.getAbsolutePath(), new Object[] {1, m});
+                }
                 installed[0] = true;
                 result[0] = "Installed \"" + r.name + "\" - it's on the Mods tab and loads the next time the game starts."
                     + (r.note.isEmpty() ? "" : " " + r.note);
@@ -1030,6 +1203,12 @@ final class DiscoverPage {
                 .setNegativeButton("Cancel", null)
                 .show();
         });
+    }
+
+    // The author's comments switch (DiscoverSocial): PATCH {"comments": on}; then the page again.
+    void setComments(boolean on) {
+        change(on ? "Turning comments on" : "Turning comments off", "PATCH", "", "application/json",
+            ("{\"comments\":" + on + "}").getBytes(StandardCharsets.UTF_8));
     }
 
     void deleteMine() {

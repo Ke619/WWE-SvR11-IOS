@@ -121,6 +121,10 @@ plume::RenderComponentMapping ComponentMapping(uint32_t swizzle, uint32_t compon
 
 // At the start of a frame, before any render pass: uploads the textures that change all the time.
 void UploadChanging(const Context& ctx);
+// At the start of a frame, every few seconds: lets go of the textures no draw has used for a minute or more (each
+// match's arena, superstars and menus otherwise stay in memory for good; a used one is uploaded again).
+// Phones only (memory); SVR2011_TEST_TEXTURE_EVICT=1 / 0 turns it on or off anywhere (tests).
+void EvictUnused(const Context& ctx);
 
 struct Stats {
   uint32_t textures = 0;     // resident

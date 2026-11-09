@@ -18,6 +18,7 @@
  *   +  installs a .svrmod/.zip   -  sends a mod's folder to the Recycle Bin
  */
 #include "mods_tab.h"
+#include "discover_tab.h"
 
 #include <commctrl.h>
 #include <shellapi.h>
@@ -50,11 +51,14 @@ typedef struct {
 static Mod s_mods[MODS_MAX];
 static int s_nmods;
 static int s_base;                 /* first control id */
-static HWND s_list, s_status, s_wnd;
+static HWND s_list, s_status, s_wnd, s_update;
+static int s_n_updates;            /* (rows with an update on Discovery: the Update button shows) */
+static int s_installed_dirty = 1;
+static WCHAR s_installed[MAX_PATH];  /* (defined with install_file below) */  /* (mods_find_installed's list made again) */
 static WCHAR s_game[MAX_PATH];
 static int s_filling;              /* (checkbox notifications while filling the list) */
 
-enum { M_LIST, M_ADD, M_REMOVE, M_FOLDER, M_MAKER, M_STATUS, M_BACKGROUND, M_ON, M_OFF, M_SHRINK, M_LEVEL };
+enum { M_LIST, M_ADD, M_REMOVE, M_FOLDER, M_MAKER, M_STATUS, M_BACKGROUND, M_ON, M_OFF, M_SHRINK, M_LEVEL, M_UPDATE };
 
 static void status(const WCHAR *t)
 {
@@ -191,6 +195,7 @@ static void scan(void)
                                          L"Backgrounds", L"Attires", L"Titles", L"CawParts" };
     int t;
     s_nmods = 0;
+    s_installed_dirty = 1;
     if (!s_game[0]) return;
     for (t = 0; t < (int)(sizeof types / sizeof types[0]); t++) {
         WCHAR pat[MAX_PATH];
@@ -231,19 +236,44 @@ static int version_newer(const WCHAR *a, const WCHAR *b);
    launcher installs the game of its own release, so its version is the game's. */
 static int needs_newer(const Mod *m) { return m->needs[0] && version_newer(m->needs, PORT_VERSION); }
 
+/* The Update button: shown while a row has an update; on when a selected row has one. */
+static void update_button(void)
+{
+    int k, on = 0;
+    if (!s_update) return;
+    for (k = -1; (k = ListView_GetNextItem(s_list, k, LVNI_SELECTED)) >= 0;) {
+        LVITEMW it;
+        ZeroMemory(&it, sizeof it);
+        it.mask = LVIF_PARAM;
+        it.iItem = k;
+        if (ListView_GetItem(s_list, &it) && it.lParam >= 0 && it.lParam < s_nmods &&
+            discover_folder_state(s_mods[it.lParam].folder) == 2)
+            on = 1;
+    }
+    ShowWindow(s_update, s_n_updates && IsWindowVisible(s_list) ? SW_SHOW : SW_HIDE);
+    EnableWindow(s_update, on);
+}
+
 static void fill(void)
 {
     int i;
     s_filling = 1;
     superstar_limit();
     ListView_DeleteAllItems(s_list);
+    s_n_updates = 0;
     for (i = 0; i < s_nmods; i++) {
         LVITEMW it;
-        WCHAR size[32];
+        WCHAR size[32], shown[140];
         ZeroMemory(&it, sizeof it);
         it.mask = LVIF_TEXT | LVIF_PARAM;
         it.iItem = i;
-        it.pszText = s_mods[i].name;
+        if (discover_folder_state(s_mods[i].folder) == 2) {   /* (a newer version on Discovery: the arrow) */
+            swprintf_s(shown, 140, L"\x2191 %s", s_mods[i].name);
+            s_n_updates++;
+        } else {
+            wcsncpy_s(shown, 140, s_mods[i].name, _TRUNCATE);
+        }
+        it.pszText = shown;
         it.lParam = i;
         ListView_InsertItem(s_list, &it);
         WCHAR type[96];
@@ -269,12 +299,18 @@ static void fill(void)
             swprintf_s(t, 160, L"%d of %d superstar mods fit - %d aren't in the game (%d is the limit). Switch some "
                                L"off to choose which play.", s_stars_on - s_stars_out, s_stars_on, s_stars_out, s_star_ids);
             status(t);
+        } else if (s_n_updates) {
+            swprintf_s(t, 160, L"%d mod%s. %d %s a newer version on Discovery (\x2191) - select %s, then Update.", s_nmods,
+                       s_nmods == 1 ? L"" : L"s", s_n_updates, s_n_updates == 1 ? L"has" : L"have",
+                       s_n_updates == 1 ? L"it" : L"one");
+            status(t);
         } else {
             swprintf_s(t, 160, L"%d mod%s. They load the next time the game starts; your Game Files are never "
                                L"changed.", s_nmods, s_nmods == 1 ? L"" : L"s");
             status(t);
         }
     }
+    update_button();
 }
 
 void mods_show(const WCHAR *game_dir)
@@ -282,6 +318,98 @@ void mods_show(const WCHAR *game_dir)
     wcsncpy_s(s_game, MAX_PATH, game_dir ? game_dir : L"", _TRUNCATE);
     scan();
     fill();
+    discover_check_installed(s_game);   /* (which came from Discovery, and which have a newer version there) */
+}
+
+void mods_set_status(const WCHAR *t) { status(t); }
+
+void mods_updates_changed(void)
+{
+    WCHAR keep[600];
+    static int tested;
+    if (!s_list || !s_game[0]) return;
+    GetWindowTextW(s_status, keep, 600);
+    scan();
+    fill();
+    if (keep[0] && !s_n_updates) SetWindowTextW(s_status, keep);   /* (an install's own line stays) */
+    if (s_n_updates && getenv("SVR2011_MODS_UPDATE") && !tested) {   /* (test aid: the first row with an update,
+                                                                         selected and updated as a click does) */
+        int k;
+        for (k = 0; k < s_nmods; k++)
+            if (discover_folder_state(s_mods[k].folder) == 2) {
+                tested = 1;
+                ListView_SetItemState(s_list, k, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+                update_button();
+                if (getenv("SVR2011_MODS_UPDATE")[0] == '1') PostMessageW(s_wnd, WM_COMMAND, MAKEWPARAM(s_base + M_UPDATE, BN_CLICKED), 0);
+                break;
+            }
+    }
+}
+
+const WCHAR *mods_last_installed(void) { return s_installed; }
+
+int mods_version_newer(const WCHAR *a, const WCHAR *b) { return version_newer(a, b); }
+
+void mods_folder_version(const WCHAR *folder, WCHAR *version, size_t n)
+{
+    WCHAR man[MAX_PATH];
+    Mod m;
+    ZeroMemory(&m, sizeof m);
+    swprintf_s(man, MAX_PATH, L"%s\\manifest.txt", folder);
+    read_manifest(man, &m);
+    wcsncpy_s(version, n, m.version, _TRUNCATE);
+}
+
+/* (the installed mods' names, authors and versions: made again after a scan or for another game folder) */
+typedef struct { WCHAR folder[MAX_PATH], name[128], author[64], version[32]; } Known;
+static Known *s_known;
+static int s_nknown;
+static WCHAR s_known_game[MAX_PATH];
+
+int mods_find_installed(const WCHAR *game_dir, const WCHAR *name, const WCHAR *author, WCHAR *folder, size_t folder_n,
+                        WCHAR *version, size_t version_n)
+{
+    static const WCHAR *const types[] = { L"Arenas", L"Superstars", L"Signs", L"Media", L"Backstage", L"Moves", L"MatchTypes",
+                                         L"Backgrounds", L"Attires", L"Titles", L"CawParts" };
+    int k, found = 0;
+    if (!game_dir || !game_dir[0] || !name || !name[0]) return 0;
+    if (s_installed_dirty || _wcsicmp(s_known_game, game_dir) || !s_known) {
+        int t;
+        if (!s_known && !(s_known = (Known *)calloc(MODS_MAX, sizeof *s_known))) return 0;
+        s_nknown = 0;
+        wcsncpy_s(s_known_game, MAX_PATH, game_dir, _TRUNCATE);
+        for (t = 0; t < (int)(sizeof types / sizeof types[0]); t++) {
+            WCHAR pat[MAX_PATH];
+            WIN32_FIND_DATAW fd;
+            HANDLE h;
+            swprintf_s(pat, MAX_PATH, L"%s\\Mods\\%s\\*", game_dir, types[t]);
+            if ((h = FindFirstFileW(pat, &fd)) == INVALID_HANDLE_VALUE) continue;
+            do {
+                WCHAR man[MAX_PATH];
+                Mod m;
+                if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || fd.cFileName[0] == L'.' || s_nknown >= MODS_MAX)
+                    continue;
+                ZeroMemory(&m, sizeof m);
+                swprintf_s(s_known[s_nknown].folder, MAX_PATH, L"%s\\Mods\\%s\\%s", game_dir, types[t], fd.cFileName);
+                swprintf_s(man, MAX_PATH, L"%s\\manifest.txt", s_known[s_nknown].folder);
+                if (!read_manifest(man, &m) || !m.name[0]) continue;
+                wcsncpy_s(s_known[s_nknown].name, 128, m.name, _TRUNCATE);
+                wcsncpy_s(s_known[s_nknown].author, 64, m.author, _TRUNCATE);
+                wcsncpy_s(s_known[s_nknown].version, 32, m.version, _TRUNCATE);
+                s_nknown++;
+            } while (FindNextFileW(h, &fd));
+            FindClose(h);
+        }
+        s_installed_dirty = 0;
+    }
+    for (k = 0; k < s_nknown; k++) {
+        if (_wcsicmp(s_known[k].name, name) || (author && _wcsicmp(s_known[k].author, author))) continue;
+        if (!found++) {
+            if (folder) wcsncpy_s(folder, folder_n, s_known[k].folder, _TRUNCATE);
+            if (version) wcsncpy_s(version, version_n, s_known[k].version, _TRUNCATE);
+        }
+    }
+    return found;
 }
 
 int mods_delete_tree(const WCHAR *dir)
@@ -2272,7 +2400,10 @@ void mods_build(HWND wnd, mods_add_fn add, int tab, int id_base, HFONT title_fon
         add(tab, L"Button", L"Shrink movies", BS_PUSHBUTTON | WS_TABSTOP, 346, 386, 118, 32, id_base + M_SHRINK);
         add(tab, L"Button", L"Level music", BS_PUSHBUTTON | WS_TABSTOP, 470, 386, 118, 32, id_base + M_LEVEL);
     }
-    s_status = add(tab, L"Static", L"", SS_LEFT, 28, 428, 560, 40, id_base + M_STATUS);
+    s_status = add(tab, L"Static", L"", SS_LEFT, 28, 428, 440, 60, id_base + M_STATUS);
+    /* (a mod from Discovery with a newer version there: the selected one updated - shown only while one has) */
+    s_update = add(tab, L"Button", L"\x2191 Update", BS_PUSHBUTTON | WS_TABSTOP, 476, 428, 112, 30, id_base + M_UPDATE);
+    ShowWindow(s_update, SW_HIDE);
 }
 
 int mods_command(int id, int code)
@@ -2286,6 +2417,16 @@ int mods_command(int id, int code)
     if (id == s_base + M_BACKGROUND) { add_background(); return 1; }
     if (id == s_base + M_SHRINK) { shrink_start(L""); return 1; }
     if (id == s_base + M_LEVEL) { level_start(); return 1; }
+    if (id == s_base + M_UPDATE) {   /* (the selected row's mod, from Discovery: the download and install as its page's) */
+        const int k = selected();
+        LVITEMW it;
+        ZeroMemory(&it, sizeof it);
+        it.mask = LVIF_PARAM;
+        it.iItem = k;
+        if (k >= 0 && ListView_GetItem(s_list, &it) && it.lParam >= 0 && it.lParam < s_nmods)
+            discover_update_folder(s_mods[it.lParam].folder);
+        return 1;
+    }
     return 0;
 }
 
@@ -2377,6 +2518,7 @@ int mods_notify(const NMHDR *nm)
     }
     if (nm->code == LVN_ITEMCHANGED) {
         const NMLISTVIEW *lv = (const NMLISTVIEW *)nm;
+        if ((lv->uChanged & LVIF_STATE) && ((lv->uNewState ^ lv->uOldState) & LVIS_SELECTED)) update_button();
         if ((lv->uChanged & LVIF_STATE) && ((lv->uNewState ^ lv->uOldState) & LVIS_STATEIMAGEMASK))
         {
             const int i = (int)lv->lParam, was = s_mods[i].enabled;

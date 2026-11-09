@@ -1250,7 +1250,9 @@ void LoadMoveset() {
     for (int b = 0; b < 128 && n; ++b)
       if (count[b] * 10 >= n * 9 && b != 121 && b != 124 && b != 127) rule.bits[b / 8] |= uint8_t(1 << (b % 8));
     for (const auto& [sit, c] : sits)
-      if ((sit == 13 || sit == 14) && c * 10 >= n * 9) rule.situation = sit;  // (opponent seated on the top turnbuckle)
+      // (13 / 14: opponent seated on the top turnbuckle; 18: a corner double team or a team finisher - the tag team
+      // slots 0x196-0x19C - where a standing double team, situation 0, would start in the wrong place)
+      if ((sit == 13 || sit == 14 || sit == 18) && c * 10 >= n * 9) rule.situation = sit;
   }
   for (const auto& [id, m] : g_move_infos)
     for (int s = 0; s < kMoveSlots; ++s)
@@ -2010,6 +2012,8 @@ int ArenaPacNumber(const std::string& name) {  // (the last "bg" followed by exa
       found = (l[at + 2] - '0') * 10 + (l[at + 3] - '0');
   return found;
 }
+
+bool SpecialStage(const std::string& name) { return ArenaPacNumber(name) >= 60 && Lower(name).find("_dlc") == std::string::npos; }
 
 void ViewFooter() {
   ImGui::PushID("viewfooter");

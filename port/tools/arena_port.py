@@ -655,7 +655,8 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
     # SvR 2008 keeps its one crowd for every arena in pac/audience.pac (AUDE/BASE: the same pack - people, pictures, seat
     # tables and the seat areas with their heights for 2008's stands). With 2011 RAW's in its place the people sat at
     # RAW's stand heights: sunk behind 2008's seats, on its stairs (One Night Stand)
-    own_crowd = ents.get(0x4E20) if game == 'svr2009' and OWN_CROWD else None
+    # (Legends of WrestleMania: each arena its own pack, as SvR 2009 - its audience.pac holds only BORD)
+    own_crowd = ents.get(0x4E20) if game in ('svr2009', 'low') and OWN_CROWD else None
     if game == 'svr2008' and OWN_CROWD:
         try:
             import moves_port

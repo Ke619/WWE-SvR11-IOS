@@ -293,6 +293,7 @@ LoadCustomArenas`). Older mods may have `info.txt` in place of
 | `match_light=entrance` / `entrance_spot` | the match lights (light sets 10-14) take the entrance set 200's channels (`_spot` also its key light) |
 | `titantron=live` | keep the match camera on the arena's screens (models 800-899); default: entrances only ([5.8](#58-media-theme-titantron)) |
 | `source=` | Mod Maker: where the arena came from (not read by the game) |
+| `crowd_source=own` / `host` / `none` | arena_port (SvR 2007-2010, LoW ports): whose crowd the arena carries - the source game's own, 2011 RAW's, or none (`crowd=0` too). A note, not read by the game |
 | `ring.tints=`, `ring.turnbuckles=`, `ring.pads=`, `light.color=`, `light.strength=`, `crowd=0`, `crowd.light=neutral | as made | <r g b>`, `crowd.bright=` | Mod Maker notes. Already baked into `arena.pac`, read back when the mod reopens (`modmaker/svrfmt/ring_kit.cpp`, `modmaker/editor.cpp`) |
 
 ### 3.4 type=backstage

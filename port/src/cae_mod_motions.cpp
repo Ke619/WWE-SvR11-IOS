@@ -83,16 +83,19 @@ int AddRow(PPCContext& ctx, uint8_t* base, uint32_t list, uint32_t value, uint32
   return int(n - 1);
 }
 
-// The kind of motion list a category is: the CAE part k (0-4), or -2 singles, -3 teams; -1 none.
+// The kind of motion list a category is: the CAE part k (0-4), or -2 singles, -3 tag teams, -4 trios; -1 none.
 int ListKind(uint32_t category) {
   for (int k = 0; k < 5; ++k)
     if (category == kPartCategories[k]) return k;
   if (category == 2 || category == 16 || category == 17) return -2;
-  if (category == 3 || category == 4) return -3;
+  if (category == 3) return -3;
+  if (category == 4) return -4;
   return -1;
 }
 
-bool TeamNumber(int n) { return n >= 700 && n < 800; }  // (2011's tag / trio entrances: 700-799)
+// 2011's tag entrances are 700-769 (stock 700-756), its trios 770-799 (770-775): a mod number goes in its own list - a
+// mod trio showed in the tag list too (entrance_port --team picks the number by the kind).
+int TeamKind(int n) { return n >= 700 && n < 770 ? -3 : n >= 770 && n < 800 ? -4 : -2; }
 
 }  // namespace
 
@@ -125,7 +128,7 @@ void CaeModRows(PPCContext& ctx, uint8_t* base, uint32_t list, uint32_t category
       if (!(e.parts >> kind & 1)) continue;
       value = uint32_t(10000 + 1000 * kind + e.number);
     } else {
-      if ((kind == -3) != TeamNumber(e.number)) continue;
+      if (TeamKind(e.number) != kind) continue;
       value = uint32_t(e.number);
     }
     if (IndexOf(base, list, value) >= 0) continue;  // (a mod replacing a listed entrance: its own row)
@@ -141,7 +144,7 @@ void CaeModRows(PPCContext& ctx, uint8_t* base, uint32_t list, uint32_t category
         value = uint32_t(10000 + 1000 * kind + n);
         if (IndexOf(base, list, value) < 0 && !EntranceScriptExists(int(value))) continue;
       } else {
-        if ((kind == -3) != TeamNumber(n)) continue;
+        if (TeamKind(n) != kind) continue;
         value = uint32_t(n);
       }
       const std::string label = "MOD: " + m.name;

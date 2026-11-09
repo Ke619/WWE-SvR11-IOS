@@ -1,7 +1,9 @@
 #include "arena_build.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <cstring>
 #include <cstdio>
 #include <set>
 
@@ -63,6 +65,75 @@ void MakeEmpty(Arena& a, const EmptyOptions& opt, EmptyReport& rep) {
       b.changed = true;
       ++rep.textures_shrunk;
     }
+}
+
+namespace {
+bool IsAudienceLightmap(const BundleTexture& t) {
+  std::string n = t.name;
+  for (char& c : n) c = char(std::tolower(uint8_t(c)));
+  return n == "aud_lightmap" && t.data.size() > 128 && !std::memcmp(t.data.data(), "DDS ", 4) &&
+         (!std::memcmp(&t.data[84], "DXT1", 4) || !std::memcmp(&t.data[84], "DXT5", 4));
+}
+}  // namespace
+
+bool HasAudienceLightmap(const Arena& a) {
+  for (const auto& b : a.bundles)
+    for (const auto& t : b.textures)
+      if (IsAudienceLightmap(t)) return true;
+  return false;
+}
+
+bool TintAudienceLightmap(Arena& a, const float rgb[3], float bright) {
+  bool done = false;
+  auto to565 = [&](uint16_t c) {
+    const float r = float(c >> 11) / 31, g = float((c >> 5) & 63) / 63, b = float(c & 31) / 31;
+    const float y = 0.299f * r + 0.587f * g + 0.114f * b;
+    const float o[3] = {rgb ? y * rgb[0] : r, rgb ? y * rgb[1] : g, rgb ? y * rgb[2] : b};  // (null: its own colour)
+    auto q = [&](float v, int top) { return int(std::lround(std::clamp(v * bright, 0.0f, 1.0f) * top)); };
+    return uint16_t(q(o[0], 31) << 11 | q(o[1], 63) << 5 | q(o[2], 31));
+  };
+  for (auto& b : a.bundles)
+    for (auto& t : b.textures) {
+      if (!IsAudienceLightmap(t)) continue;
+      const bool dxt5 = !std::memcmp(&t.data[84], "DXT5", 4);
+      const size_t step = dxt5 ? 16 : 8, at = dxt5 ? 8 : 0;  // (DXT5: the colour half after the alpha half)
+      for (size_t p = 128; p + step <= t.data.size(); p += step) {
+        uint8_t* blk = &t.data[p + at];
+        const uint16_t c0 = uint16_t(blk[0] | blk[1] << 8), c1 = uint16_t(blk[2] | blk[3] << 8);
+        uint16_t g0 = to565(c0), g1 = to565(c1);
+        if (c0 > c1) {  // (4-colour mode needs c0 > c1 still: equal would make index 3 transparent black)
+          if (g0 < g1) std::swap(g0, g1), blk[4] ^= 0x55, blk[5] ^= 0x55, blk[6] ^= 0x55, blk[7] ^= 0x55;
+          if (g0 == g1) g0 < 0xFFFF ? ++g0 : --g1;
+        } else if (g0 > g1) {  // (3-colour mode: c0 <= c1; swapping the ends swaps indices 0 and 1)
+          std::swap(g0, g1);
+          for (int k = 4; k < 8; ++k) {
+            uint8_t v = blk[k], o = 0;
+            for (int s = 0; s < 8; s += 2) {
+              const uint8_t i = (v >> s) & 3;
+              o |= uint8_t((i == 0 ? 1 : i == 1 ? 0 : i) << s);
+            }
+            blk[k] = o;
+          }
+        }
+        blk[0] = uint8_t(g0), blk[1] = uint8_t(g0 >> 8), blk[2] = uint8_t(g1), blk[3] = uint8_t(g1 >> 8);
+      }
+      b.changed = true;
+      done = true;
+    }
+  return done;
+}
+
+bool CopyAudienceLightmap(Arena& to, const Arena& from) {
+  const BundleTexture* src = nullptr;
+  for (const auto& b : from.bundles)
+    for (const auto& t : b.textures)
+      if (IsAudienceLightmap(t)) src = &t;
+  if (!src) return false;
+  bool done = false;
+  for (auto& b : to.bundles)
+    for (auto& t : b.textures)
+      if (IsAudienceLightmap(t) && t.data.size() == src->data.size()) t.data = src->data, b.changed = true, done = true;
+  return done;
 }
 
 int HideCrowd(Arena& a) {

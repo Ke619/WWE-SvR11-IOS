@@ -323,8 +323,9 @@ class Accounts:
         if self.names and self.names.check(name):
             gs.log("accounts: sign-up as %r from %s refused: the name filter" % (name, ip))
             return None, "That account name isn't allowed - pick another."
-        if len(password) < 6:
-            return None, "Passwords need at least 6 characters."
+        why = signup.password_problem(password, name)   # (2.2.2: the same rule everywhere; was 6 characters here)
+        if why:
+            return None, why
         salt = secrets.token_hex(16)
         pwhash = self.hash_password(password, salt)
         with self.lock:
@@ -935,8 +936,9 @@ class Service:
             if not self.accounts.check(a["name"], str(b.get("password", "")))[0]:
                 return "Your password isn't right."
             new = str(b.get("new_password", ""))
-            if len(new) < signup.MIN_PASSWORD:
-                return "Passwords need at least %d characters." % signup.MIN_PASSWORD
+            why = signup.password_problem(new, a["name"])
+            if why:
+                return why
             self.signup.set_password(a["id"], new, keep_token=token)
             gs.log("accounts: %s changed its password (its other sessions ended)" % a["name"])
             return ""
@@ -1277,7 +1279,8 @@ class Service:
 
     async def api_status(self, request):
         return web.json_response({"ok": True, "server": "svr2011-community", "version": 1,
-                                  "invite_needed": not self.signup.relaxed()})  # (sign-up asks for a code)
+                                  "invite_needed": not self.signup.relaxed(),  # (sign-up asks for a code)
+                                  "password_rule": signup.PASSWORD_RULE})  # (shown next to password fields)
 
     # the port's logo store
 

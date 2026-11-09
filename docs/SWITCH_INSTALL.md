@@ -8,9 +8,20 @@ Your console must already be able to install and run NSP files that don't come f
 
 ## What you need
 
-- The PC version of this port, version 2.2.1 or later, already set up from your own copy of the game.
+- The PC version of this port, already set up from your own copy of the game, at the same version as the Switch download.
+- The Switch download from the same release, `SvR2011-Switch-v<version>.nsp`.
 - DBI on the console, to install the NSP.
 - About 6 GB free on the SD card, plus anything you add. Our card is 64 GB, formatted FAT32.
+
+## Put the Switch download in place
+
+In the folder with `SvR2011 Launcher.exe`, make a folder called `Switch`. Put the download in it, renamed to `svr2011.nsp`:
+
+```
+SvR2011 Launcher.exe
+Switch
+└── svr2011.nsp
+```
 
 ## Make the SD card from the PC launcher
 
@@ -67,7 +78,7 @@ Measured at the 60 fps setting, in handheld, on a test build before 2.2.1:
 
 ## Updating
 
-Delete the old copy from the console, then install the new NSP with DBI. To get the new NSP and any changed files on the card, run **Setup → Switch** again. Your saves on the card stay unless you tick your saves.
+Put the new release's Switch download in the `Switch` folder as `svr2011.nsp`, replacing the old one. Run **Setup → Switch** again to copy it and any changed files to the card. Then delete the old copy from the console and install the new NSP with DBI. Your saves on the card stay unless you tick your saves.
 
 ## Report a problem
 

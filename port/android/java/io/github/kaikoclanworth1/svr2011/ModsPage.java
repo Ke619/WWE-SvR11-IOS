@@ -108,6 +108,24 @@ final class ModsPage {
         return m;
     }
 
+    // (DiscoverPage: which installed mods have an update on Discovery - the rows' ↑ and Update)
+    private DiscoverPage discover_;
+    void setDiscover(DiscoverPage d) { discover_ = d; }
+
+    // Every installed mod's folder (each kind's folders with a manifest) - Discovery matches a copy installed before
+    // its install record by these.
+    static java.util.List<File> modFolders() {
+        java.util.List<File> out = new java.util.ArrayList<>();
+        File[] kinds = {titlesFolder(), cawPartsFolder(), arenasFolder(), superstarsFolder(), signsFolder(), mediaFolder(),
+            backstageFolder(), matchTypesFolder(), backgroundsFolder(), attiresFolder()};
+        for (File k : kinds) {
+            File[] ds = k == null ? null : k.listFiles(f -> f.isDirectory() && !f.getName().startsWith(".")
+                && (new File(f, "manifest.txt").isFile() || new File(f, "info.txt").isFile()));
+            if (ds != null) out.addAll(Arrays.asList(ds));
+        }
+        return out;
+    }
+
     void refresh() {
         installed_.removeAllViews();
         File[] arenas = arenasFolder().listFiles(f -> f.isDirectory() && new File(f, "arena.pac").isFile());
@@ -152,7 +170,8 @@ final class ModsPage {
         }
         for (File d : dirs) {
             Map<String, String> m = manifest(d);
-            String name = m.containsKey("name") ? m.get("name") : d.getName();
+            final int dstate = discover_ != null ? discover_.folderState(d) : 0;  // (2: Discovery has a newer version)
+            String name = (dstate == 2 ? "\u2191 " : "") + (m.containsKey("name") ? m.get("name") : d.getName());
             boolean star = new File(d, "ch.pac").isFile();
             boolean signPack = d.getParentFile().getName().equals("Signs");
             boolean mediaPack = d.getParentFile().getName().equals("Media");
@@ -209,10 +228,16 @@ final class ModsPage {
                 a_.status("Removed " + name + ".");
                 refresh();
             });
+            if (dstate == 2) {  // (Discovery's newer version: the same download and install as its page, on / off kept)
+                Button update = a_.button("Update", 0xFFB8860B);
+                update.setOnClickListener(v -> discover_.updateFolder(d));
+                controls.addView(update);
+            }
             controls.addView(on);
             controls.addView(remove);
-            a_.row(installed_, name, hint, controls);
+            a_.row(installed_, name, (dstate == 2 ? "Update waiting on Discovery. " : "") + hint, controls);
         }
+        if (discover_ != null) discover_.checkInstalled();  // (at most once a minute: each installed mod's page)
     }
 
     // A background mod's folder has its picture(s): picture.dds or a pack's *.dds.

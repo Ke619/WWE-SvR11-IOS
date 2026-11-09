@@ -213,8 +213,9 @@ void ScriptInputDriver::ParseLine(const std::string& line) {
     std::getline(in >> std::ws, step.text);
     step.ms = 100;
     queue_.push_back(step);
-  } else if (verb == "touch" || verb == "drag") {
+  } else if (verb == "touch" || verb == "drag" || verb == "click") {
     step.touch = true;
+    step.mouse = verb == "click";
     in >> step.x0 >> step.y0;
     step.x1 = step.x0, step.y1 = step.y0;
     if (verb == "drag") in >> step.x1 >> step.y1;
@@ -368,7 +369,7 @@ ScriptInputDriver::Step ScriptInputDriver::CurrentStep() {
     }
     if (running_ && now < step_end_) return current_;
     constexpr uint32_t kFinger = 7;
-    if (running_ && current_.touch) TouchInject(kFinger, 2, current_.x1, current_.y1);
+    if (running_ && current_.touch) TouchInject(current_.mouse ? kTouchMousePointer : kFinger, 2, current_.x1, current_.y1);
     running_ = !queue_.empty();
     if (!running_) {
       current_ = Step{};
@@ -393,9 +394,9 @@ ScriptInputDriver::Step ScriptInputDriver::CurrentStep() {
     else if (!current_.text.empty()) TypeText(current_.text);
     if (current_.key) TypeKey(current_.key);
     if (current_.touch) {
-      TouchInject(kFinger, 0, current_.x0, current_.y0);
+      TouchInject(current_.mouse ? kTouchMousePointer : kFinger, 0, current_.x0, current_.y0);
       if (current_.x1 != current_.x0 || current_.y1 != current_.y0) {
-        TouchInject(kFinger, 1, current_.x1, current_.y1);
+        TouchInject(current_.mouse ? kTouchMousePointer : kFinger, 1, current_.x1, current_.y1);
       }
     }
     return current_;

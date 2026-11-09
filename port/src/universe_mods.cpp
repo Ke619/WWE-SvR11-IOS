@@ -17,6 +17,10 @@
 #include "universe_mods.h"
 
 #include <algorithm>
+#include <array>
+#include <cctype>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <map>
@@ -24,6 +28,7 @@
 #include <vector>
 
 #include <fmt/format.h>
+#include <rex/filesystem.h>
 #include <rex/logging.h>
 #include <rex/system/xmemory.h>
 
@@ -364,6 +369,55 @@ void UniverseTeamsTick(uint8_t* base) {
   const uint32_t save = Rd32(base + kSavePtr);
   if (!save) return;
   DropRepeatedMembers(base, save);
+  // Test aid: SVR2011_TEST_TEAM_ENTRANCE=<team>,<tag entrance>[,<trio entrance>] - that team's (0-69) entrances in
+  // TEAM MANAGER's two blocks, +0x14 tag / +0x1A trio (each followed by its music and movie, left alone; stock e.g.
+  // Hart Dynasty 720 / 774): a team entrance a test can play without the menus. Only in a test game - the exe in
+  // runs\svrtest\, whose UserData is svrtest's private copy - and only in memory; a save the game writes then goes
+  // to that copy, never a player's.
+  static const std::array<int, 3> team_entrance = [] {
+    std::array<int, 3> v{-1, 0, 0};
+    if (const char* e = std::getenv("SVR2011_TEST_TEAM_ENTRANCE")) std::sscanf(e, "%d,%d,%d", &v[0], &v[1], &v[2]);
+    return v;
+  }();
+  static bool team_entrance_done = false;
+  if (!team_entrance_done && team_entrance[0] >= 0 && team_entrance[0] < int(kTeamCount)) {
+    std::string exe = rex::filesystem::GetExecutableFolder().string();
+    std::replace(exe.begin(), exe.end(), '/', '\\');
+    std::transform(exe.begin(), exe.end(), exe.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+    if (exe.find("\\runs\\svrtest\\") == std::string::npos) {
+      team_entrance_done = true;
+      REXLOG_WARN("[svr2011] test: SVR2011_TEST_TEAM_ENTRANCE ignored - not a test game (runs\\svrtest\\)");
+    } else if (uint8_t* t = base + save + kTeams + uint32_t(team_entrance[0]) * kTeamSize; ReadTeam(t).members.size() >= 2) {
+      team_entrance_done = true;
+      const auto put = [&](uint32_t off, int n) {
+        if (n > 0) t[off] = uint8_t(n >> 8), t[off + 1] = uint8_t(n);
+      };
+      put(0x14, team_entrance[1]);
+      put(0x1A, team_entrance[2]);
+      REXLOG_INFO("[svr2011] test: team {} ({}) entrances tag {} trio {}", team_entrance[0], ReadTeam(t).name,
+                  uint32_t(t[0x14]) << 8 | t[0x15], uint32_t(t[0x1A]) << 8 | t[0x1B]);
+    }
+  }
+  // (and the match's slots of that team's members as the team, as the select screen's team pick makes them: a test
+  // match's people are picked one by one, so each walked out with his own entrance. The match slot record -
+  // *(0x82E3DDFC) + 132 + idx * 52, +16 the costume key - has the team index at +48, -1 none: sub_82756260 asks
+  // sub_82336DE0 (+48 != -1), then sub_823370D0 that team's record for the entrance blocks above)
+  if (team_entrance_done && team_entrance[0] >= 0 && team_entrance[0] < int(kTeamCount))
+    if (const uint32_t table = Rd32(base + 0x82E3DDFC)) {
+      const Team team = ReadTeam(base + save + kTeams + uint32_t(team_entrance[0]) * kTeamSize);
+      static uint32_t marked = 0;
+      for (uint32_t idx = 0; idx < 8 && team.members.size() >= 2; ++idx) {
+        uint8_t* rec = base + table + 132 + idx * 52;
+        const uint32_t id = Rd32(rec + 16) / 100;
+        if (!id || std::find(team.members.begin(), team.members.end(), id) == team.members.end()) continue;
+        if (rec[48] != uint8_t(team_entrance[0])) {
+          rec[48] = uint8_t(team_entrance[0]);
+          if (!(marked >> idx & 1))
+            REXLOG_INFO("[svr2011] test: match slot {} (superstar {}) as team {}", idx, id, team_entrance[0]);
+          marked |= 1u << idx;
+        }
+      }
+    }
   std::vector<Team> now;
   for (uint32_t k = 0; k < kTeamCount; ++k) now.push_back(ReadTeam(base + save + kTeams + k * kTeamSize));
   const auto in_use = [](const Team& t) { return !t.members.empty() || !t.name.empty(); };

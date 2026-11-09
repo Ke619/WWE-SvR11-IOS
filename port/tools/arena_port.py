@@ -642,9 +642,12 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
         _, ga, _ = svrfmt.epac_read(disc.read('pac/bg/bg%02d.pac' % n))
         stage = ga[0][1][0][1]
     ents = {}
+    loose_crowd = []
     for i, x in svrfmt.pach_read(stage):
-        # (2007: its crowd is loose models and seat files 0x4E20-0x52FF, plus 0x9C40-0x9CFF)
+        # (2007: its crowd is loose models and seat files 0x4E20-0x52FF, plus 0x9C40-0x9CFF - the parts of 2011's crowd
+        # pack, the same ids as SvR 2008's audience.pac, unpacked into the stage: gathered into one below)
         if game == 'svr2007' and (0x4E20 <= i <= 0x52FF or 0x9C40 <= i <= 0x9CFF):
+            loose_crowd.append((i, x))
             continue
         ents[{0xC8: 0x190, 0xC9: 0x191}.get(i, i)] = x
     if 0x190 not in ents:
@@ -664,6 +667,9 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
             own_crowd = aude.get(b'BASE')
         except Exception as e:  # (no audience.pac - a lone arena file: the host's crowd)
             notes.append('SvR 2008 crowd not read (%s): the host\'s' % e)
+    if game == 'svr2007' and OWN_CROWD and any((svrfmt.bpe_decode(x) if x[:4] == b'BPE ' else x)[:3] == b'; \x90'
+                                               for i, x in loose_crowd):   # (a seat table among them: a whole crowd)
+        own_crowd = bpe(svrfmt.pach_write(sorted(loose_crowd)))
     if own_crowd is not None and (svrfmt.bpe_decode(own_crowd) if own_crowd[:4] == b'BPE ' else own_crowd)[:4] != b'PACH':
         own_crowd = None
     for i in (0x4E20, 0x4E21, 0x4E22, 0x4E23, 0x4E2A, 0x7922):  # older crowd / motion formats
@@ -674,7 +680,7 @@ def svr2008_convert(disc, key, out, pac11, base=None, name=None, game='svr2008')
     if own_crowd is not None:
         ents[0x4E20] = ents[0x4E2A] = own_crowd
         notes.append("its own crowd (people, pictures and seats for its stands%s), as both crowd packs"
-                     % (', from pac/audience.pac' if game == 'svr2008' else ''))
+                     % (', from pac/audience.pac' if game == 'svr2008' else ', gathered from the stage' if game == 'svr2007' else ''))
     unp = lambda b: svrfmt.bpe_decode(b) if b[:4] == b'BPE ' else b  # noqa: E731
     have = None
     progress(8, 'lights')

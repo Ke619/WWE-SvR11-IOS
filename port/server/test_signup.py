@@ -104,13 +104,19 @@ def main():
         check(st == 200 and r.get("ticket"), "checks off: the game's online sign-in works")
         st, r = call(server, "GET", "/api/friends", token=tok)
         check(st == 200 and r.get("config", {}).get("netcode") == "lockstep", "checks off: presence; config netcode lockstep")
-        st, r = call(server, "POST", "/api/register", {"name": "oldstyle", "password": "pw1234"})
-        check(st == 200 and r.get("token"), "checks off: a 2.1.5 launcher's sign-up as before")
+        # (2.2.2: the password rule on this sign-up too - each refusal says what's wrong)
+        for pw, said in (("pw1234", "8 characters"), ("oldstyle", "account name"), ("OldStyle2024", "account name"),
+                         ("password123!", "too common"), ("abcdefghij", "Mix at least two"), ("x" * 129, "at most")):
+            st, r = call(server, "POST", "/api/register", {"name": "oldstyle", "password": pw})
+            check(st == 403 and said in r.get("error", ""), "rule: %r refused - %s" % (pw[:16], r.get("error")))
+        st, r = call(server, "POST", "/api/register", {"name": "oldstyle", "password": "pw1234-old"})
+        check(st == 200 and r.get("token"), "checks off: a 2.1.5 launcher's sign-up as before (a password the rule takes)")
         st, r = call(server, "POST", "/api/register", {"name": "newstyle", "password": "longpass1", "client": 2,
                                                         "invite": "WRONG-CODE"})
         check(st == 403 and "invite" in r.get("error", ""), "checks off: a wrong invite code typed is still refused")
         st, r = call(server, "GET", "/api/status")
         check(st == 200 and r.get("invite_needed") is False, "checks off: status says no invite code needed")
+        check("8 characters" in r.get("password_rule", ""), "status: the password rule to show (%s)" % r.get("password_rule"))
         st, m = call(server, "GET", "/api/admin/checks")
         check(st == 200 and m["checks"] == "off" and m["would_block"] == 2 and m["accounts"] == 3,
               "the ON switch's numbers: 2 of 3 accounts would be blocked (Old_Two: --admin-account)")
@@ -118,7 +124,7 @@ def main():
         check(st == 400, "netcode: an unknown value refused")
         st, r = call(server, "POST", "/api/admin/settings", {"account_checks": "on"})
         check(st == 200, "account_checks on (live, no restart)")
-        st, r = call(server, "POST", "/api/login", {"name": "oldstyle", "password": "pw1234"})
+        st, r = call(server, "POST", "/api/login", {"name": "oldstyle", "password": "pw1234-old"})
         check(st == 403 and "re-activation" in r.get("error", ""), "checks on: the account made while off needs a code")
 
         # -- invite sign-up --
@@ -189,9 +195,13 @@ def main():
         check(st == 403, "reset: another account's code refused")
         st, r = call(server, "POST", "/api/password/reset", {"name": "newbie", "code": rs["code"], "password": "short"})
         check(st == 403 and "8 characters" in r.get("error", ""), "reset: a short password refused")
+        st, r = call(server, "POST", "/api/password/reset", {"name": "newbie", "code": rs["code"], "password": "Newbie99"})
+        check(st == 403 and "account name" in r.get("error", ""), "reset: the account's name refused (%s)" % r.get("error"))
+        st, r = call(server, "POST", "/api/password/reset", {"name": "newbie", "code": rs["code"], "password": "letmein!!"})
+        check(st == 403 and "too common" in r.get("error", ""), "reset: a common password refused")
         st, r = call(server, "POST", "/api/password/reset", {"name": "NEWBIE", "code": rs["code"],
                                                              "password": "newpass99"})
-        check(st == 200, "reset: the code sets the password (the name in any case)")
+        check(st == 200, "reset: the code sets the password (the name in any case; refused tries didn't use it up)")
         check(call(server, "GET", "/api/account", token=bob)[0] == 401 and
               call(server, "GET", "/api/account", token=other.get("token", ""))[0] == 401,
               "reset: every session of the account ended")
@@ -210,6 +220,9 @@ def main():
         # -- password change: the other sessions end --
         st, r = call(server, "POST", "/api/password/change", {"password": "wrong", "new_password": "x" * 9}, token=bob)
         check(st == 403, "change: the old password is asked")
+        st, r = call(server, "POST", "/api/password/change", {"password": "newpass99", "new_password": "qwerty123"},
+                     token=bob)
+        check(st == 403 and "too common" in r.get("error", ""), "change: the rule too (%s)" % r.get("error"))
         st, r = call(server, "POST", "/api/password/change", {"password": "newpass99", "new_password": "third999"},
                      token=bob)
         check(st == 200, "change: done")
@@ -232,7 +245,7 @@ def main():
         db_codes = [r[0] for r in sqlite3.connect(os.path.join(data, "community.db")).execute("SELECT hash FROM invites")]
         check(all(len(h) == 64 and "-" not in h for h in db_codes), "codes kept as hashes only")
         st, rc2 = call(server, "POST", "/api/admin/user/%d/reactivation-code" % ids["oldstyle"])
-        st, r = call(server, "POST", "/api/login", {"name": "oldstyle", "password": "pw1234", "client": 2})
+        st, r = call(server, "POST", "/api/login", {"name": "oldstyle", "password": "pw1234-old", "client": 2})
         tries = [call(server, "POST", "/api/reactivate", {"code": "3333-4444-5555"}, token=r.get("token", ""))[1]
                  for _ in range(10)]
         check("Too many" in tries[-1].get("error", ""), "re-activation: rate limited per account")
@@ -240,7 +253,7 @@ def main():
         check(u["old_one"]["activated"] and not u["oldstyle"]["activated"], "dashboard: the accounts' state")
         check(call(server, "GET", "/api/admin/checks")[1]["would_block"] == 1, "the ON switch's numbers follow")
         st, r = call(server, "POST", "/api/admin/settings", {"account_checks": "off"})
-        st, r = call(server, "POST", "/api/login", {"name": "oldstyle", "password": "pw1234"})
+        st, r = call(server, "POST", "/api/login", {"name": "oldstyle", "password": "pw1234-old"})
         check(st == 200, "account_checks off again: the blocked account plays as before (live)")
         st, r = call(server, "POST", "/api/register", {"name": "nocode216", "password": "longpass1", "client": 2})
         check(st == 200 and r.get("token"), "checks off: a 2.1.6 sign-up with no invite code is made")

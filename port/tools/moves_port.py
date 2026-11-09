@@ -245,6 +245,7 @@ class Game12:
         g = read_pac(self.pac_bytes('pac/misc.pac'))
         raw = unz(dict(((t, n), b) for t, es in g for n, b in es)[(b'MOVS', b'WAZE')])
         self.waze = waze_records(raw)
+        self.situation = waze_situations(raw)
         self._m = None
         self._index = None
         self.merge_dlc_waze()
@@ -422,6 +423,7 @@ class Game14(Game13):
         g = read_pac(self.pac_bytes('pac/createmode.pac'))
         raw = unz(next(b for t, es in g if t == b'MOVS' for n, b in es if n == b'WAZE'))
         self.waze = waze_records(raw)
+        self.situation = waze_situations(raw)
         self._m = None
         self._index = None
         self.merge_dlc_waze()
@@ -443,6 +445,7 @@ class Game2K16(Game14):
         g = self._read(self.pac_bytes('pac/createmode.pac'))
         raw = unz(next(b for t, es in g if t == b'MOVS' for n, b in es if n.strip(b'\0 ') == b'WAZE'))
         self.waze = waze_records(raw)
+        self.situation = waze_situations(raw)
         self._m = None
         self._index = None
         self.merge_dlc_waze()
@@ -961,18 +964,33 @@ def fix_track(data, T, packed, old, new, keep, cues=None):
     return ymks.build_stream(ymks.Stream(items)) if changed else data
 
 
-def waze_records(raw):
-    """{move id: name} from a MOVS/WAZE table: 160-byte records (name +0x10, id +0x90) on a grid whose
-    start differs by game ('12 0x430): the start where the most records hold a readable name"""
+def _waze_start(raw):
+    """where a MOVS/WAZE table's 160-byte grid starts: the start where the most records hold a readable name"""
     def score(s):
         ok = 0
         for k in range(64):
             nm = raw[s + 160 * k + 0x10: s + 160 * k + 0x30].split(b'\0')[0]
             ok += bool(nm) and all(32 <= c < 127 for c in nm)
         return ok
-    start = max(range(0x10, 0x1000, 8), key=score)
+    return max(range(0x10, 0x1000, 8), key=score)
+
+
+def waze_situations(raw):
+    """{move id: where it starts (+0x73)} from a MOVS/WAZE table - as 2011's: '12-2K16 tag team moves are 0 (standing
+    double teams) or 18 (from the corner and the team finishers), as 2011's 26xx / 24xx"""
     out = {}
-    for s in range(start, len(raw) - 159, 160):
+    for s in range(_waze_start(raw), len(raw) - 159, 160):
+        r = raw[s:s + 160]
+        if r.strip(b'\0'):
+            out.setdefault(struct.unpack_from('<H', r, 0x90)[0], r[0x73])
+    return out
+
+
+def waze_records(raw):
+    """{move id: name} from a MOVS/WAZE table: 160-byte records (name +0x10, id +0x90) on a grid whose
+    start differs by game ('12 0x430): the start where the most records hold a readable name"""
+    out = {}
+    for s in range(_waze_start(raw), len(raw) - 159, 160):
         r = raw[s:s + 160]
         if not r.strip(b'\0'):
             continue
@@ -1518,14 +1536,15 @@ def template_travel(g11, tid):
     return None
 
 
-def template_start(g11, tid):
-    """a 2011 move's attacker (x 0 y 0) root at its first key, None if unread - the anchor the ported attacker starts on"""
+def template_start(g11, tid, y=0):
+    """a 2011 move's attacker (x 0 y 0; y: another person's) root at its first key, None if unread - the anchor the
+    ported attacker starts on"""
     import ymks
     for path, kind, ks in g11.banks_of(tid):
-        if kind != 'YMKs' or (0, 0) not in ks:
+        if kind != 'YMKs' or (0, y) not in ks:
             continue
         pac, bank = g11.bank(path)
-        e = bank.find(tid, 0, 0)
+        e = bank.find(tid, 0, y)
         if e is None:
             continue
         r = next((k['root'] for k in ymks.body_keys(e['data'], bank.T, path.startswith('MOTP')) if k.get('root')), None)
@@ -1573,11 +1592,25 @@ def heading_turn(st, tt, min_travel=200.0, min_angle=0.35):
     return M, a
 
 
+# A tag team slot's kind -> where its moves start (WAZE +0x73): the 265 stock movesets hold standing double teams
+# (situation 0, 26xx) in slots 0x18E-0x194 and corner ones (situation 18, 24xx) in 0x196-0x19C
+TAG_KIND_SIT = {'standing': 0, 'corner': 18}
+TAG_LAYOUT_LIMIT = 1000   # (a corner-kind tag move's start this far from its template's: not ported yet)
+TAG_IDS = {18: (2400, 2600), 0: (2600, 2800)}   # (2011's tag team records by kind: 2412-2484 / 2600-2700 have motions)
+
+
+def team_move(g11, mid):
+    """a 2011 tag team move: in MVMT/TEAM with a third person (x 0 y 2)"""
+    return any(p.startswith('MVMT/TEAM') for p, kd, ks in g11.banks_of(mid)) and \
+        any((0, 2) in ks for p, kd, ks in g11.banks_of(mid) if kd == 'YMKs')
+
+
 def choose_template(g11, cat, frames, gap=None, allowed=None, paired=True, attacker_end_y=None, reversals=True,
-                    with_score=False, need_x=(), ringside=True):
+                    with_score=False, need_x=(), ringside=True, people=2, sit=None):
     """the 2011 move in MVMT/<cat> (YMKs only, x0 y0 and x0 y1 both there) most like the source:
     the attacker / victim start distance (a running move needs a running template), for a dive where the
-    attacker ends (low: on a lying victim) and the length"""
+    attacker ends (low: on a lying victim) and the length. people=3: a tag team move's (x0 y2 there too);
+    sit: only moves that start there (WAZE +0x73)"""
     import ymks
     best = None
     cats = [c.strip() for c in cat] if isinstance(cat, (list, tuple)) else [cat.strip() if cat else '']
@@ -1585,6 +1618,10 @@ def choose_template(g11, cat, frames, gap=None, allowed=None, paired=True, attac
         if not any(path.startswith('MVMT/' + c) for c in cats) or kind != 'YMKs':
             continue
         ids = {k[0] for k in keys if k[1] == 0 and k[2] == 0} & {k[0] for k in keys if k[1] == 0 and k[2] == 1}
+        if people >= 3:
+            ids &= {k[0] for k in keys if k[1] == 0 and k[2] == 2}
+        if sit is not None:
+            ids = {i for i in ids if g11.situation.get(i) == sit}
         if not paired:   # (a one-person move - a strike, a dive: the victim reacts with its own motion - a dive's
             # reaction is a branch of its own, x 50 y 1: only x 0 counts)
             ids = {k[0] for k in keys if k[1] == 0 and k[2] == 0} - {k[0] for k in keys if k[1] == 0 and k[2] == 1}
@@ -1835,9 +1872,11 @@ def convert(a, rep):
     flight = by['0000'][0] if ('0000' in by and 0 in by['0000'] and 1 not in by['0000'] and
                                by['0000'][0]['frames'] > 2 and any(30 <= int(p) < 90 for p in pairs if p.isdigit())) else None
     branched_dive = False
+    par = None   # (a tag team move's partner, person 2: set below once the category is the tag team's)
     if pairs:
         phase = pairs[0]
         att, vic = by[phase][0], by[phase][1]
+        par = by[phase].get(2)
         rep['notes'].append('source blocks %s0000 / %s0001 (%d frames at 60 Hz)' % (phase, phase, att['frames']))
     else:
         att = max(bl, key=lambda b: b['frames'])
@@ -1898,6 +1937,29 @@ def convert(a, rep):
             cat11 = coded_category(g, g11, cat0)
             if cat11:
                 rep['notes'].append('category %s = 2011 %s (by the moves both games name alike)' % (cat0.strip(), '/'.join(cat11)))
+    # A tag team move: 2011's (MVMT/TEAM, x 0 only) drive three people - y 0 attacker, y 1 victim, y 2 partner - and
+    # keep the source's layout: fitted on the 50 WWE '13 tag moves 2011 also has, its victim and partner match 2011's
+    # as stored (0 degrees, ~100 root units off) and its attacker only turned 180 degrees, with no gap (2600 Double
+    # Suplex: attacker 33, -865 stored, 2011 -657, 994). Before, the partner was the template's own - another move's.
+    cats_now = cat11 if isinstance(cat11, list) else ([cat11.strip()] if cat11 else [])
+    tag = par is not None and vic is not None and (cats_now == ['TEAM'] or bool(tid and team_move(g11, tid)))
+    if par is not None and vic is not None and not tag:
+        rep['notes'].append("source person 2 left out (not a tag team move here: the template's own third person, if any)")
+    if tag:
+        face = WR.facing_frame(0)
+        rep['notes'] = [n for n in rep['notes'] if not n.startswith(('attacker turned into', 'attacker as stored'))]
+        k0 = R0.keys(att, 2, face)
+        gap = ((k0[0][0][0] - k1[0][0][0]) ** 2 + (k0[0][0][2] - k1[0][0][2]) ** 2) ** 0.5
+        sit = TAG_KIND_SIT.get(a.get('tag_kind'))
+        if sit is None and getattr(g, 'situation', {}).get(mid) in (0, 18):   # (the source's own record: the same values)
+            sit = g.situation[mid]
+            a = dict(a, tag_kind='standing' if sit == 0 else 'corner')
+        if not tid:
+            tid = (choose_template(g11, ['TEAM'], nf, gap, people=3, sit=sit) or
+                   choose_template(g11, ['TEAM'], nf, gap, people=3))
+        rep['notes'].append("a tag team move: three people (the partner is the source's person 2), the attacker turned "
+                            "180 degrees, the victim and partner as stored%s" % (
+                                '; a %s double team (situation %d)' % (a['tag_kind'], sit) if sit is not None else ''))
     vic_y = k1[0][0][1] if vic is not None else None
     # A dive from the top rope onto a lying victim (a corner move, the victim lying, the attacker's root up high -
     # 2K15's starts on the turnbuckle), or one laid out as 2011's (branched_dive): 2011's dives (Frog Splash 3555 ...)
@@ -2022,6 +2084,17 @@ def convert(a, rep):
                 new_id, why = nid, why2
     else:
         new_id, why = g11.free_record(name, tid if ymb else None, lim)
+    lo_hi = TAG_IDS.get(g11.situation.get(tid)) if tag else None
+    if lo_hi and not (lo_hi[0] <= (new_id or 0) < lo_hi[1]):
+        # (a tag team move on one of 2011's cut tag team records of its kind - 24xx from the corner, 26xx-27xx
+        # standing - as its own are: whether the game tells double teams by id, as it tells submissions by
+        # 21000-21499, isn't known - the safe side)
+        tfree = [i for i in g11.free_ids(lim, avoid=a.get('_avoid') or ()) if lo_hi[0] <= i < lo_hi[1]]
+        if tfree:
+            nid = tfree[zlib.crc32((name or '').encode('utf-8')) % len(tfree)]
+            rep['notes'].append('id %s -> %d: a free record among the tag team moves (%d-%d, %d free)' % (
+                new_id, nid, lo_hi[0], lo_hi[1] - 1, len(tfree)))
+            new_id, why = nid, 'a free tag team record'
     if not new_id:
         raise RuntimeError('no free 2011 move record')
     rep['notes'].append('template %d %s (%s)' % (tid, g11.waze[tid][1], 'option' if a.get('template') else
@@ -2049,7 +2122,23 @@ def convert(a, rep):
     # source) had his victim's travel mirrored, and a turned one (the Mandible Claw) his victim 2 x the anchor off
     offset = None
     victim_placed = False
-    r0 = template_start(g11, tid) if vic is not None and vface is None else None
+    r0 = template_start(g11, tid) if vic is not None and vface is None and not tag else None
+    if tag:   # (the three keep the source's relation: no anchor shift, no singles pair layout)
+        offset = (0.0, 0.0, 0.0)
+        keys_of[0].append(R.keys(par, nf, None))
+        # A corner-kind move (18: corner double teams and team finishers) that starts its people elsewhere than 2011's
+        # corner layout isn't placed yet: 2K15 / 2K16's Batista Bomb & RKO starts its partner on the other side (719,
+        # -360 against 2011's ~-1150, -720) and, forced in a tag match, its attacker walked out of the ring and ended
+        # on the floor (9 Nov). Of the '12-2K16 tag moves only it is this far off (> 1000 root units); the rest -
+        # Doomsday Device, Uso Splash among them - start as 2011's and played right. The slot keeps its base move.
+        if g11.situation.get(tid) == 18:
+            for who, y, mine in (('attacker', 0, keys_of[0][0]), ('partner', 2, keys_of[0][2])):
+                r_t = template_start(g11, tid, y)
+                if r_t and mine:
+                    d = math.hypot(mine[0][0][0] - r_t[0], mine[0][0][2] - r_t[2])
+                    if d > TAG_LAYOUT_LIMIT:
+                        raise BadInput("tag team finisher-style moves aren't ported yet: its %s starts %.0f root units "
+                                       "from where 2011's corner double teams start theirs" % (who, d))
     if r0:
         import numpy as np
         a0 = keys_of[0][0][0][0]
@@ -2108,9 +2197,9 @@ def convert(a, rep):
             ka, kv = R.keys(ax, nx, face), R.keys(vx, nx, vface) if vx is not None else None
             if os.environ.get('MOVES_PORT_TRACE'):   # (debug: a phase's attacker root heights)
                 log('trace x%d %s' % (x, [round(k[0][1]) for k in ka]))
-            keys_of[x] = [ka, kv]
+            keys_of[x] = [ka, kv, None]
         if branched_dive and x >= 30 and x not in keys_of:   # (a branch the source lacks: the template's own)
-            return [None, None]
+            return [None, None, None]
         if x in keys_of and travel_k != 1.0 and x not in scaled_x:   # (the branches too, from their own start)
             keys_of[x][0] = scale_travel(keys_of[x][0], travel_k)
             scaled_x.add(x)
@@ -2194,7 +2283,7 @@ def convert(a, rep):
             e = bank.find(tid, x, y)
             if e is None:
                 continue
-            src_keys = phase_keys(x)[y] if y in (0, 1) and x < 90 else None
+            src_keys = phase_keys(x)[y] if (y in (0, 1) or (tag and y == 2)) and x < 90 else None
             if src_keys:
                 tk = ymks.body_keys(e['data'], bank.T, packed)
                 if offset is None and y == 0:   # (anchor: the template attacker's start, x / z)

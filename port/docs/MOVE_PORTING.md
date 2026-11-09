@@ -63,6 +63,30 @@ wrestlers stand still in it. A template search with no category skips them (`cho
 elimination slots (0x026-0x02A, 0x088 and kin, bank RUMB) ask for RUMB by name and rightly get them, so a move in such a
 slot can't be tested with a forced start in a normal match.
 
+### 2.3d Tag team moves (double teams, 9 Nov)
+
+- **2011's own:** 75 moves in `MVMT/TEAM/14` (plus `MOT/BM00/5`, `MOT/RR00`, `MOTP/GAME/c`), all keyframe motions at
+  x 0. Each drives three people: y 0 the attacker, y 1 the victim, y 2 the partner (2700 drives four). Where they start
+  (WAZE +0x73): 0 the standing double teams (26xx, WAZE byte 12 0x20), 18 the corner ones and the team finishers (24xx,
+  0x48 / 0x58). The moveset holds 8: 0x18E-0x194 standing, 0x196-0x19C corner (all 265 stock movesets).
+  `sub_822E35E8` picks the slot as base + `fighter+1808` (1-4); which stick direction that is isn't known.
+- **How the game starts one:** the paired start `sub_82191AA8(attacker, victim, move)`, then
+  `sub_82396E80(partner, move, 0, 2)` (the partner on track y 2). The standing ones call `sub_82191420` and
+  `sub_821EFA98` first, the corner ones `sub_821F0F90(attacker, partner)`. The game's text says: standing = drag a
+  groggy opponent to your corner, tag, then attack the one your partner holds; corner = Irish whip him into your
+  corner. They play in tag matches (rule 03): a tornado tag (0x0F) never asked for the slots in a 150 s CPU match.
+- **The source games** ('12, '13, 2K14-2K16: categories TEAM / M090; 2K17's tag category wasn't found) store the
+  three as block persons 0 / 1 / 2. Fitted on the 50 WWE '13 tag moves 2011 also has, the victim and partner match
+  2011's as stored (0 degrees, ~100 root units off) and the attacker only turned 180 degrees, with no 1500 gap. The
+  porter (`moves_port`, `tag`): the attacker turned with `facing_frame(0)`, the victim and partner as stored, no anchor
+  shift, no singles pair layout; the template a 2011 TEAM move with a y 2 track of the same kind (the slot's - moveset
+  `tag_kind` - else the source's own WAZE +0x73, the same values); the id a cut tag team record of that kind
+  (2400-2599 corner, 2600-2799 standing). Before, the partner was the template's own: another move's.
+- **moveset_port:** a tag slot takes 2011's own of the same name and kind even when no stock superstar has it, and a
+  tag team move goes in no other slot. A port whose template came out of the other kind keeps the base.
+- The tag-team finisher isn't one of the 8 slots: it is set per partner (CREATE A MOVE-SET, "Tag Team Finishers with
+  this partner"), standing or corner; where it is stored isn't known yet.
+
 ### 2.4 Ids
 
 - **Below every template bank's last id.** A bank's directory is sorted and ends at its highest id (16000 in
@@ -188,6 +212,11 @@ slot can't be tested with a forced start in a normal match.
   base, body and facing every 4th frame after a motion change.
 - **Ending a match**: `SVR2011_TEST_LOSE=<person>,<s>` - at <s> seconds the person loses to person 0 (victory
   scenes). `SVR2011_TEST_EVP_LOG=1` logs every scene script the game opens (`/EVPx/<n>`, with the caller).
+- **Tag team moves**: `SVR2011_TEST_FORCE_PARTNER=<person>[,<place>[,<setup>]]` with `FORCE_MOVE` - after the paired
+  start that person plays the move's y 2 track as the partner (place 0: the attacker's base and facing first). Test in
+  a tag match (`--rule 03`) with the move in the attacker's moveset: a move no one in the match has stays in its
+  first pose for good (the black box: "motion 2600 missed by every bank"), with or without the partner. 2011's own
+  Body Blow 2625 (Randy Orton's) played through with it, the three out at 286-343 frames.
 - **Hidden test games**: `SVR2011_WINDOW_HIDDEN=1` (tools/test_guard.ps1 sets it) - the window is never shown;
   use frame shots, window screenshots of a hidden window are black.
 
@@ -216,7 +245,16 @@ slot can't be tested with a forced start in a normal match.
   (`SVR2011_TEST_MATCH=people=CAW0,...`): the F-5 played 9 times, the victim down each time, no stuck pair.
   The moveset keeps the id, so every pack move saves alike; menu shots of a hidden game come from
   `SVR2011_TEST_SHOT_REQUEST`.
-- Needs a tag match: Batista Bomb & RKO (a double-team move) - not tested in a singles match.
+- Batista Bomb & RKO (a double-team move, 9 Nov, 2.3d): forced in a tag match (`FORCE_PARTNER`) all three played it to
+  its end, but the attacker walked out of the ring and ended on the floor (area 1). Its source starts its people off
+  2011's corner layout (the partner at 719, -360). The porter now keeps it back: a corner-kind tag move whose attacker
+  or partner starts over 1000 root units from its template's raises "tag team finisher-style moves aren't ported yet"
+  and moveset_port keeps the slot's base move with that warning. Of the '12-2K16 tag moves only it trips this (2K16:
+  54 of its 55 corner-kind moves port); the placement waits for the team finisher work.
+- Tag team moves seen playing to their end in a forced tag match (9 Nov, the partner the source's own): WWE '13's Double
+  Suplex (standing, the pair suplexes the victim), WWE '12's Doomsday Device (the partner off the top rope, the victim
+  ends lying, 448), 2K14's Uso Splash (the victim thrown, the partner dives at him from the corner; the landing wasn't
+  in the shots). Seen in forced starts only - the game's own trigger (a tag, a whip into the corner) wasn't played.
 
 ### WWE '12
 - Disc `WWE 12.iso`; its categories are 2011's names (CATS). Its STAT group 60051-60067 (G.T.S., Pedigree, World's

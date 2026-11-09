@@ -21,6 +21,7 @@
 #include "pad_types.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
@@ -2333,6 +2334,28 @@ REX_HOOK_RAW(sub_82216C58) {
           PutFighter(base, tgt, place[4], place.size() > 6 ? place[6] : -12.0f, place[5], place.size() > 7 ? uint8_t(place[7]) : 0);
       }
       const auto saved = ctx;
+      // SVR2011_TEST_FORCE_PARTNER=<person>[,<place>[,<setup>]] - a tag team move: that person (the attacker's partner)
+      // plays the move's third track (y 2), as the game's own double teams do after the paired start (sub_822E35E8:
+      // the corner and standing ones both end sub_82396E80(partner, move, 0, 2)). <place>: 0 the attacker's base and
+      // facing (default), 1 the target's, 2 where he is. <setup>: the game's own calls before its paired start - 1 the
+      // corner double team's sub_821F0F90(attacker, partner), 2 the standing one's sub_82191420(target) +
+      // sub_821EFA98(target, attacker), 0 none (the pair froze in the move, with or without the partner, 9 Nov).
+      static const std::array<int, 3> partner = [] {
+        std::array<int, 3> v{-1, 0, 0};
+        if (const char* e = std::getenv("SVR2011_TEST_FORCE_PARTNER")) std::sscanf(e, "%d,%d,%d", &v[0], &v[1], &v[2]);
+        return v;
+      }();
+      const uint32_t par = partner[0] >= 0 && partner[0] < 6 ? Rd32(base + kChars + uint32_t(partner[0]) * 4) : 0;
+      const bool with_partner = par && par != att && par != tgt;
+      if (with_partner && partner[2] == 1) {
+        ctx.r3.u64 = att, ctx.r4.u64 = par;
+        sub_821F0F90(ctx, base);
+      } else if (with_partner && partner[2] == 2) {
+        ctx.r3.u64 = tgt;
+        sub_82191420(ctx, base);
+        ctx.r3.u64 = tgt, ctx.r4.u64 = att;
+        sub_821EFA98(ctx, base);
+      }
       ctx.r3.u64 = att;
       ctx.r4.u64 = tgt;
       ctx.r5.u64 = motion;
@@ -2349,6 +2372,16 @@ REX_HOOK_RAW(sub_82216C58) {
       }
       REXLOG_INFO("match types: test - person {} starts motion {} on person {} ({} -> state {})", force[0], motion,
                   force[1], frames, Rd32(base + att + 212));
+      if (with_partner) {
+        const uint32_t from = partner[1] == 1 ? tgt : partner[1] == 0 ? att : 0;
+        if (from)
+          WrF(base + par + 288, RdF(base + from + 288)), WrF(base + par + 292, RdF(base + from + 292)),
+              WrF(base + par + 296, RdF(base + from + 296)), WrF(base + par + 276, RdF(base + from + 276));
+        ctx.r3.u64 = par, ctx.r4.u64 = motion, ctx.r5.u64 = 0, ctx.r6.u64 = 2;
+        sub_82396E80(ctx, base);
+        REXLOG_INFO("match types: test - person {} plays motion {} as the partner (place {}, set-up {}, state {})",
+                    partner[0], motion, partner[1], partner[2], Rd32(base + par + 212));
+      }
       ctx = saved;
     }
   }

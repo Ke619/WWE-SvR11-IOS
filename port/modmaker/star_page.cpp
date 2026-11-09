@@ -850,6 +850,11 @@ void MovesetSection() {
   ImGui::SameLine();
   if (changed && ImGui::SmallButton("Back to the style's moves")) g_star.moveset.clear(), Touch();
   ImGui::SameLine();
+  if (ImGui::SmallButton("Tag team moves")) std::snprintf(g_moveset_find, sizeof g_moveset_find, "%s", "tag team");
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("The 8 double-team slots: 4 standing, 4 from the corner. They play only in tag matches, with a "
+                      "partner. Pick 2011's own, or port one from another game (the Port moves menu).");
+  ImGui::SameLine();
   if (ImGui::SmallButton("Import a whole moveset...")) g_imp_src = g_imp_src < 0 ? 0 : -1;
   if (ImGui::IsItemHovered())
     ImGui::SetTooltip("Every move of a 2011 superstar, of one of your superstar mods (with its own move pack), or of a "
@@ -888,6 +893,12 @@ void MovesetSection() {
       ImGui::TableNextRow();
       ImGui::TableNextColumn();
       ImGui::TextUnformatted(label.c_str());
+      if (s * 2 >= 0x18E && s * 2 <= 0x19C && ImGui::IsItemHovered())  // (the tag team slots: how the game starts them)
+        ImGui::SetTooltip(s * 2 <= 0x194
+                              ? "A standing double team, in tag matches: drag a groggy opponent to your corner, tag "
+                                "in, then attack the one your partner is holding."
+                              : "A corner double team, in tag matches: Irish whip the opponent into your corner, "
+                                "where your partner waits.");
       MoveNoteTag(s);
       ImGui::TableNextColumn();
       ImGui::TextDisabled("%s", was_name.empty() ? (was ? std::to_string(was).c_str() : "-") : was_name.c_str());

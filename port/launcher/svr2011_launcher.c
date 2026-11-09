@@ -24,6 +24,7 @@
  *                          (slot 1-200: 1-20 page 1, 21-40 page 2, ...)
  *                        --install <image> <folder>   (no window; exit code)
  *                        --apk-package <game folder> <out folder>   (Create APK Package, no window)
+ *                        --switch-package <game folder> <out folder> [--saves] [--mods] [--music]   (the Switch export, no window)
  *                        --report <game folder> [description]   (Report a problem: the zip, no window)
  *                        --report-send <game folder> <answers file>   (Report a problem: zip + send to the server, no window)
  *                        --reports-status <game folder> <server>   (the Reports tab's list and states, no window)
@@ -65,6 +66,7 @@
 #include <wchar.h>
 
 #include "apk_package.h"
+#include "switch_package.h"
 #include "report_urls.h"
 #include "mods_tab.h"
 #include "report_receipts.h"
@@ -130,7 +132,7 @@ static void setup_console_progress(int permille, const WCHAR *text);
 
 /* ── state ─────────────────────────────────────────────────────────────── */
 
-enum { TAB_PLAY, TAB_SETTINGS, TAB_ONLINE, TAB_INSTALL, TAB_DLC, TAB_SAVES, TAB_PAINT, TAB_MOVIES, TAB_ANDROID, TAB_MODS, TAB_MUSIC, TAB_ROSTER, TAB_TEXPACKS, TAB_SETUP, TAB_DISCOVER, TAB_TOOLS, TAB_REPORTS, TAB_SUGGESTIONS, TAB_COUNT };
+enum { TAB_PLAY, TAB_SETTINGS, TAB_ONLINE, TAB_INSTALL, TAB_DLC, TAB_SAVES, TAB_PAINT, TAB_MOVIES, TAB_ANDROID, TAB_MODS, TAB_MUSIC, TAB_ROSTER, TAB_TEXPACKS, TAB_SETUP, TAB_DISCOVER, TAB_TOOLS, TAB_REPORTS, TAB_SUGGESTIONS, TAB_SWITCH, TAB_COUNT };
 #define ID_MODS_BASE 900  /* the Mods tab's controls (mods_tab.c) */
 #define ID_MUSIC_BASE 950 /* the Music tab's (music_tab.c) */
 #define ID_ROSTER_BASE 1000 /* the Roster tab's (roster_tab.c) */
@@ -163,6 +165,8 @@ enum {
     ID_PROGRESS, ID_INSTALL_STATUS, ID_VERIFY, ID_VERIFY_REPAIR, ID_VERIFY_MARK, ID_VERIFY_STATUS,
     /* android */
     ID_ADB_INSTALL, ID_ANDROID_CANCEL, ID_APK_CREATE, ID_APK_PROGRESS, ID_APK_STATUS,
+    /* switch */
+    ID_NX_CREATE, ID_NX_CANCEL, ID_NX_SAVES, ID_NX_MODS, ID_NX_MUSIC, ID_NX_PROGRESS, ID_NX_STATUS,
     /* dlc */
     ID_DLC_DIR, ID_DLC_BROWSE, ID_DLC_INSTALL, ID_DLC_STATUS, ID_DLC_LIST,
     /* saves */
@@ -190,6 +194,7 @@ enum {
 #define WM_APP_UPD_REPAIR (WM_APP + 9)   /* the missing files fetched by themselves */
 #define UPLOG_DIR (s_game_dir[0] ? s_game_dir : s_launcher_dir)   /* (update_log.h: where the updater logs too) */
 #define UPDATER_EXE L"SvR2011 Updater.exe"   /* (launcher/updater_main.c: installs updates for the launcher) */
+#define WM_APP_NX       (WM_APP + 73)    /* as WM_APP_APK: the Switch export */
 #define WM_APP_APK      (WM_APP + 10)    /* wParam permille, or APK_OK / APK_FAILED; lParam heap WCHAR* or 0 */
 #define WM_APP_UPD_FINISHED (WM_APP + 13) /* wParam 1 ok, lParam heap error text */
 #define WM_APP_VERIFY   (WM_APP + 12)    /* wParam permille, or 1001: done (s_verify) */
@@ -3219,8 +3224,8 @@ static int mods_tab_of(int tab)
 
 /* Setup, step by step: this PC (TAB_SETUP), the game (TAB_INSTALL), DLC, the Mod Maker's tools, Android - one
    sidebar entry; a step bar on top of each (paint_steps). The step of a page, or -1. */
-static const int k_steps[] = { TAB_SETUP, TAB_INSTALL, TAB_DLC, TAB_TOOLS, TAB_ANDROID };
-#define N_STEPS 5
+static const int k_steps[] = { TAB_SETUP, TAB_INSTALL, TAB_DLC, TAB_TOOLS, TAB_ANDROID, TAB_SWITCH };
+#define N_STEPS 6
 static int setup_step(int tab)
 {
     int i;
@@ -3270,7 +3275,7 @@ static int is_primary_id(int id)
 {
     return id == ID_PLAY || id == ID_INSTALL || id == ID_SAVE || id == ID_DLC_INSTALL || id == ID_ON_SIGNIN ||
            id == ID_ON_STEP ||
-           id == ID_MV_CREATE || id == ID_APK_CREATE || id == ID_ADB_INSTALL;
+           id == ID_MV_CREATE || id == ID_APK_CREATE || id == ID_ADB_INSTALL || id == ID_NX_CREATE;
 }
 
 static LRESULT CALLBACK btn_proc(HWND h, UINT m, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR ref)
@@ -4493,7 +4498,7 @@ static void build_ui(void)
     HWND h;
     WCHAR v[64];
     int i;
-    static const WCHAR *names[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Install", L"DLC", L"Saves", L"Paint Tool", L"Movies", L"Android Install", L"Mods", L"Music", L"Roster", L"Texture packs", L"Setup", L"Discovery", L"Tools", L"Reports", L"Suggestions" };
+    static const WCHAR *names[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Install", L"DLC", L"Saves", L"Paint Tool", L"Movies", L"Android Install", L"Mods", L"Music", L"Roster", L"Texture packs", L"Setup", L"Discovery", L"Tools", L"Reports", L"Suggestions", L"Switch" };
 
     /* The tabs (never shown: the sidebar picks them; --capture and show_tab
        still use its selection). */
@@ -4776,6 +4781,27 @@ static void build_ui(void)
     add(TAB_ANDROID, PROGRESS_CLASSW, L"", PBS_SMOOTH, X0, 434, 560, 20, ID_APK_PROGRESS);
     SendMessageW(ctl(ID_APK_PROGRESS), PBM_SETRANGE32, 0, 1000);
     add(TAB_ANDROID, L"Static", L"", SS_LEFT | SS_NOPREFIX | SS_PATHELLIPSIS, X0, 462, 560, 56, ID_APK_STATUS);
+
+    /* Switch */
+    add(TAB_SWITCH, L"Static", L"Play on a modded Nintendo Switch (experimental). This puts the small program and the game "
+                               L"on the SD card as loose files, so you can add saves, mods and music later.",
+        SS_LEFT, X0, 50, 560, 36, 0);
+    add(TAB_SWITCH, L"Button", L"Make the SD card", BS_GROUPBOX, X0, 92, 560, 250, 0);
+    add(TAB_SWITCH, L"Static",
+        L"1.  Connect the SD card to this PC. It needs about 6 GB free, plus anything you tick below.\n"
+        L"2.  Choose what to add, click Make Switch files, and pick the top of the SD card (or a folder to copy later).\n"
+        L"3.  In DBI on the console, open Browse SD card and install svr2011.nsp.",
+        SS_LEFT | SS_NOPREFIX, X0 + 16, 114, 528, 76, 0);
+    add(TAB_SWITCH, L"Button", L"My saves (they replace the card's; the card's are kept in SvR2011\\SaveBackups)",
+        BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 16, 196, 528, 20, ID_NX_SAVES);
+    add(TAB_SWITCH, L"Button", L"My mods", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 16, 220, 528, 20, ID_NX_MODS);
+    add(TAB_SWITCH, L"Button", L"My music and custom movies", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 16, 244, 528, 20, ID_NX_MUSIC);
+    add(TAB_SWITCH, L"Button", L"Make Switch files\x2026", BS_DEFPUSHBUTTON | WS_TABSTOP, X0 + 16, 276, 170, 34, ID_NX_CREATE);
+    add(TAB_SWITCH, L"Button", L"Cancel", BS_PUSHBUTTON | WS_TABSTOP | WS_DISABLED, X0 + 196, 276, 100, 34, ID_NX_CANCEL);
+    add(TAB_SWITCH, L"Static", L"Doing it again only copies what changed.", SS_LEFT, X0 + 16, 316, 528, 20, 0);
+    add(TAB_SWITCH, PROGRESS_CLASSW, L"", PBS_SMOOTH, X0, 356, 560, 20, ID_NX_PROGRESS);
+    SendMessageW(ctl(ID_NX_PROGRESS), PBM_SETRANGE32, 0, 1000);
+    add(TAB_SWITCH, L"Static", L"", SS_LEFT | SS_NOPREFIX | SS_PATHELLIPSIS, X0, 384, 560, 56, ID_NX_STATUS);
 
     /* DLC */
     add(TAB_DLC, L"Static", L"Downloadable content (DLC) and title updates as downloaded on the Xbox 360: "
@@ -7516,13 +7542,14 @@ static void saves_import_caw(void)
 
 static void set_busy(int busy)
 {
-    int ids[] = { ID_IMAGE, ID_IMAGE_BROWSE, ID_TARGET, ID_TARGET_BROWSE, ID_INSTALL, ID_GAMEDIR_CHANGE, ID_APK_CREATE, ID_ADB_INSTALL };
+    int ids[] = { ID_IMAGE, ID_IMAGE_BROWSE, ID_TARGET, ID_TARGET_BROWSE, ID_INSTALL, ID_GAMEDIR_CHANGE, ID_APK_CREATE, ID_ADB_INSTALL, ID_NX_CREATE };
     int i;
     s_busy = busy;
     for (i = 0; i < (int)(sizeof ids / sizeof ids[0]); i++)
         EnableWindow(ctl(ids[i]), !busy);
     EnableWindow(ctl(ID_CANCEL), busy);
     EnableWindow(ctl(ID_ANDROID_CANCEL), busy);
+    EnableWindow(ctl(ID_NX_CANCEL), busy);
     if (busy)
         EnableWindow(ctl(ID_PLAY), FALSE);
     else
@@ -7710,6 +7737,83 @@ static void apk_message(WPARAM wp, WCHAR *msg)
         SendMessageW(ctl(ID_APK_PROGRESS), PBM_SETPOS, wp, 0);
         if (msg && !s_cancel)
             set_text(ID_APK_STATUS, msg);
+    }
+    free(msg);
+}
+
+/* -- Switch step (switch_package.h) -- */
+
+static WCHAR s_nx_nsp[MAX_PATH], s_nx_out[MAX_PATH], s_nx_saves[MAX_PATH];
+static SwitchOptions s_nx_opt;
+
+static void nx_progress(int permille, const WCHAR *msg)
+{
+    PostMessageW(s_wnd, WM_APP_NX, (WPARAM)permille, msg ? (LPARAM)wdup(msg) : 0);
+}
+
+static DWORD WINAPI nx_thread(LPVOID unused)
+{
+    WCHAR err[600];
+    int ok;
+    (void)unused;
+    err[0] = 0;
+    ok = switch_package(s_game_dir, s_nx_nsp, s_nx_out, &s_nx_opt, &s_cancel, nx_progress, err, 600);
+    PostMessageW(s_wnd, WM_APP_NX, ok ? APK_OK : APK_FAILED, (LPARAM)wdup(err));
+    return 0;
+}
+
+static void start_switch(void)
+{
+    WCHAR xex[MAX_PATH];
+    if (s_busy)
+        return;
+    swprintf_s(xex, MAX_PATH, L"%s\\default.xex", s_game_dir);
+    if (!s_game_dir[0] || !file_exists(xex)) {
+        set_text(ID_NX_STATUS, L"Install the game on this PC first (The game step): the card gets a copy of it.");
+        return;
+    }
+    if (!switch_find(s_game_dir, s_launcher_dir, s_nx_nsp, MAX_PATH)) {
+        set_text(ID_NX_STATUS, L"This release has no Switch program (Switch\\svr2011.nsp beside the launcher).");
+        return;
+    }
+    if (!pick_folder(L"Choose the top of the SD card, or a folder to copy to the card later", s_nx_out))
+        return;
+    ZeroMemory(&s_nx_opt, sizeof s_nx_opt);
+    s_nx_opt.saves = SendMessageW(ctl(ID_NX_SAVES), BM_GETCHECK, 0, 0) == BST_CHECKED;
+    s_nx_opt.mods = SendMessageW(ctl(ID_NX_MODS), BM_GETCHECK, 0, 0) == BST_CHECKED;
+    s_nx_opt.music = SendMessageW(ctl(ID_NX_MUSIC), BM_GETCHECK, 0, 0) == BST_CHECKED;
+    if (s_nx_opt.saves && saves_dir(s_nx_saves))
+        s_nx_opt.saves_dir = s_nx_saves;
+    s_cancel = 0;
+    set_busy(1);
+    SendMessageW(ctl(ID_NX_PROGRESS), PBM_SETPOS, 0, 0);
+    set_text(ID_NX_STATUS, L"Starting\x2026");
+    if (s_worker)
+        CloseHandle(s_worker);
+    s_worker = CreateThread(NULL, 0, nx_thread, NULL, 0, NULL);
+    if (!s_worker) {
+        set_busy(0);
+        set_text(ID_NX_STATUS, L"It could not be started.");
+    }
+}
+
+static void nx_message(WPARAM wp, WCHAR *msg)
+{
+    WCHAR t[800];
+    if (wp == APK_OK) {
+        set_busy(0);
+        SendMessageW(ctl(ID_NX_PROGRESS), PBM_SETPOS, 1000, 0);
+        swprintf_s(t, 800, L"Done. Now install svr2011.nsp with DBI (see \"Install on Switch.txt\" in %s).", s_nx_out);
+        set_text(ID_NX_STATUS, t);
+    } else if (wp == APK_FAILED) {
+        set_busy(0);
+        SendMessageW(ctl(ID_NX_PROGRESS), PBM_SETPOS, 0, 0);
+        swprintf_s(t, 800, L"Not finished. %s", msg ? msg : L"");
+        set_text(ID_NX_STATUS, t);
+    } else {
+        SendMessageW(ctl(ID_NX_PROGRESS), PBM_SETPOS, wp, 0);
+        if (msg && !s_cancel)
+            set_text(ID_NX_STATUS, msg);
     }
     free(msg);
 }
@@ -9003,6 +9107,7 @@ static void steps_refresh(void)
     }
     s_step_done[3] = -1;
     s_step_done[4] = -1;
+    s_step_done[5] = -1;
 }
 
 /* Setup's first step still to do (all done: the first). */
@@ -9031,8 +9136,8 @@ static int step_at(POINT pt)
    page's own underlined in red. */
 static void paint_steps(HDC dc)
 {
-    static const WCHAR *const names[N_STEPS] = { L"This PC", L"The game", L"DLC", L"Tools", L"Android" };
-    const int cur = setup_step(s_cur_tab), x0 = SB_W + PAD + X0, w = 112;
+    static const WCHAR *const names[N_STEPS] = { L"This PC", L"Game", L"DLC", L"Tools", L"Android", L"Switch" };
+    const int cur = setup_step(s_cur_tab), x0 = SB_W + PAD + X0, w = 93;
     int i;
     RECT line = { S(x0), S(DY + 42), S(x0 + 560), S(DY + 43) };
     HBRUSH b = CreateSolidBrush(C_CARD_LINE);
@@ -9128,7 +9233,7 @@ static void paint_window(HDC dc)
     static const WCHAR *const titles[TAB_COUNT] = { L"Play", L"Settings", L"Online", L"Setup", L"Setup",
                                                     L"Saves", L"Paint Tool", L"Movies", L"Setup", L"Mods",
                                                     L"Music", L"Roster: sort categories", L"Mods",
-                                                    L"Setup", L"Mods", L"Setup", L"Reports", L"Suggestions" };
+                                                    L"Setup", L"Mods", L"Setup", L"Reports", L"Suggestions", L"Setup" };
     RECT cl, r;
     HBRUSH sb = CreateSolidBrush(C_SIDEBAR);
     HGDIOBJ old;
@@ -9492,6 +9597,15 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         case ID_APK_CREATE:
             start_apk();
             break;
+        case ID_NX_CREATE:
+            start_switch();
+            break;
+        case ID_NX_CANCEL:
+            if (s_busy) {
+                InterlockedExchange(&s_cancel, 1);
+                set_text(ID_NX_STATUS, L"Cancelling\x2026");
+            }
+            break;
         case ID_ADB_INSTALL:
             start_adb();
             break;
@@ -9584,6 +9698,9 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         break;
     case WM_APP_APK:
         apk_message(wp, (WCHAR *)lp);
+        return 0;
+    case WM_APP_NX:
+        nx_message(wp, (WCHAR *)lp);
         return 0;
     case WM_APP_UPD_CHECKED:
         up_checked((int)wp, (WCHAR *)lp);
@@ -10334,6 +10451,27 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         wprintf(L"%s\n", msg);
         return n ? 0 : 1;
     }
+    if (argv && argc >= 4 && !wcscmp(argv[1], L"--switch-package")) {   /* <game folder> <out folder> [--saves] [--mods] [--music] */
+        WCHAR err[600] = L"";
+        SwitchOptions o;
+        int ok, k;
+        console_setup();
+        ZeroMemory(&o, sizeof o);
+        wcscpy_s(s_game_dir, MAX_PATH, argv[2]);
+        for (k = 4; k < argc; k++) {
+            if (!wcscmp(argv[k], L"--saves")) o.saves = 1;
+            if (!wcscmp(argv[k], L"--mods")) o.mods = 1;
+            if (!wcscmp(argv[k], L"--music")) o.music = 1;
+        }
+        if (!switch_find(s_game_dir, s_launcher_dir, s_nx_nsp, MAX_PATH)) {
+            wprintf(L"failed: no Switch\\svr2011.nsp\n");
+            return 1;
+        }
+        if (o.saves && saves_dir(s_nx_saves)) o.saves_dir = s_nx_saves;
+        ok = switch_package(s_game_dir, s_nx_nsp, argv[3], &o, &s_cancel, apk_console_progress, err, 600);
+        wprintf(ok ? L"ok\n" : L"failed: %s\n", err);
+        return ok ? 0 : 1;
+    }
     if (argv && argc >= 4 && !wcscmp(argv[1], L"--apk-package")) {   /* <game folder> <out folder> */
         WCHAR err[600] = L"";
         int ok;
@@ -10465,7 +10603,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         return 0;
     }
     if (argv && argc >= 4 && !wcscmp(argv[1], L"--capture")) {
-        static const WCHAR *names[TAB_COUNT] = { L"play", L"settings", L"online", L"install", L"dlc", L"saves", L"paint", L"movies", L"android", L"mods", L"music", L"roster", L"texpacks", L"setup", L"discover", L"tools", L"reports", L"suggestions" };
+        static const WCHAR *names[TAB_COUNT] = { L"play", L"settings", L"online", L"install", L"dlc", L"saves", L"paint", L"movies", L"android", L"mods", L"music", L"roster", L"texpacks", L"setup", L"discover", L"tools", L"reports", L"suggestions", L"switch" };
         int i;
         const WCHAR *p = argv[2];
         /* A comma list: each tab is shown in turn (after 300 ms), the last captured. */

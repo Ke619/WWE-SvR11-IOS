@@ -12,6 +12,7 @@
 // So the worker's wait returns at once while its queue still holds commands,
 // as a counting semaphore would.
 
+#include "caller_nv.h"
 #include <cstdint>
 
 #include <rex/hook.h>
@@ -30,12 +31,12 @@ uint32_t Rd32(const uint8_t* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) <
 // sub_8215A8C0(handle, timeout): wait for an object (0 = signaled).
 REX_EXTERN(__imp__sub_8215A8C0);
 REX_HOOK_RAW(sub_8215A8C0) {
-  if (uint32_t(ctx.lr) == kWorkerWaitReturn && ctx.r31.u32 &&
-      int32_t(Rd32(base + ctx.r31.u32 + kQueueCount)) > 0) {
+  if (uint32_t(ctx.lr) == kWorkerWaitReturn && SVR_CALLER_NV(ctx, r31) &&
+      int32_t(Rd32(base + SVR_CALLER_NV(ctx, r31) + kQueueCount)) > 0) {
     static uint32_t logged = 0;
     if (logged++ < 8) {
       REXLOG_INFO("[svr2011] replay worker: {} command(s) still queued - running them without waiting",
-                  Rd32(base + ctx.r31.u32 + kQueueCount));
+                  Rd32(base + SVR_CALLER_NV(ctx, r31) + kQueueCount));
     }
     ctx.r3.u64 = 0;  // (signaled)
     return;

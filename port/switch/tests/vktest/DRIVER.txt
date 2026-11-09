@@ -1,0 +1,2 @@
+Vulkan driver used by the Switch tests: mesa-switch GitHub Actions artifact 11781503719 (commit 0ff52079ca9e), unpacked to C:/msys64/work/nvk-sdk.
+sha256 of the zip: b6af7db8417f8ce8a2eb7f308915aaf9553d99c55b9c5ec121b30a99662f859d

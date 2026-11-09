@@ -63,7 +63,7 @@ static uint32_t crc_update(uint32_t crc, const uint8_t *p, size_t n)
 /* Left out of the package: the Windows programs and the PC's own state. */
 static int skipped(const Pack *p, const WCHAR *rel, int dir)
 {
-    static const WCHAR *dirs[] = { L"logs", L"SaveBackups", L"Android", L"platform-tools", L"$SystemUpdate",
+    static const WCHAR *dirs[] = { L"logs", L"SaveBackups", L"Android", L"Switch", L"platform-tools", L"$SystemUpdate",
                                    L"UserData/cache", L"UserData/crashes",
                                    L"Mods/ArenaOverlay" /* (the game makes it: links to pac/bg) */,
                                    L"Mods/SuperstarOverlay" /* (the game makes it from Mods/Superstars) */,

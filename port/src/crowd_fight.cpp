@@ -471,6 +471,7 @@ void BoxHunt(const char* name, void (*imp)(PPCContext&, uint8_t*), PPCContext& c
 
 }  // namespace
 
+#if !defined(__SWITCH__)
 #define SVR_BOX_HUNT(fn)                                     \
   REX_EXTERN(__imp__##fn);                                   \
   REX_HOOK_RAW(fn) { BoxHunt(#fn, __imp__##fn, ctx, base); }
@@ -491,6 +492,7 @@ SVR_BOX_HUNT(sub_8281FAE0)
 SVR_BOX_HUNT(sub_82BB8348)
 SVR_BOX_HUNT(sub_82BB83A0)
 #undef SVR_BOX_HUNT
+#endif
 
 // -- Into the crowd: the climb over the barricade --------------------------------------------------------------------
 //

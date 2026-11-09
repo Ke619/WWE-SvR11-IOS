@@ -1,0 +1,15 @@
+diff --git a/config.h b/config.h
+index b6a504a..9067b67 100644
+--- a/config.h
++++ b/config.h
+@@ -16,6 +16,10 @@
+ #else
+ #include "config_linux_x86_64.h"
+ #endif
++#elif defined(__SWITCH__)
++#include "config_android_aarch64.h"
++#undef HAVE_MMAP
++#define HAVE_MMAP 0
+ #elif defined(__ANDROID__)
+ #if defined(__aarch64__)
+ #include "config_android_aarch64.h"

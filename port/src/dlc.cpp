@@ -279,9 +279,25 @@ void ApplyUnlockChoice(const std::filesystem::path& installed) {
 }  // namespace
 
 void PatchOnlineStrings(const std::filesystem::path& file) {
+#if defined(__SWITCH__)
+  // 30 MB to read and search at every start: once, unless the file's size changes.
+  std::error_code size_ec;
+  const std::string stamp_value = std::to_string(std::filesystem::file_size(file, size_ec));
+  const auto stamp = std::filesystem::path(file).concat(".patched");
+  {
+    std::ifstream old_stamp(stamp);
+    std::string seen;
+    if (old_stamp && (old_stamp >> seen) && seen == stamp_value) return;
+  }
+#endif
   std::ifstream in(file, std::ios::binary);
   if (!in) return;
-  std::vector<char> data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  std::vector<char> data;
+  {
+    std::error_code ec;
+    data.resize(static_cast<size_t>(std::filesystem::file_size(file, ec)));
+    if (ec || !in.read(data.data(), std::streamsize(data.size()))) return;
+  }
   in.close();
   int count = 0;
   const std::string_view all(data.data(), data.size());
@@ -318,7 +334,18 @@ void PatchOnlineStrings(const std::filesystem::path& file) {
       at = all.find(trigger, end);
     }
   }
-  if (!count) return;
+#if defined(__SWITCH__)
+  auto write_stamp = [&] {
+    std::ofstream out(stamp, std::ios::trunc);
+    out << stamp_value;
+  };
+#else
+  auto write_stamp = [] {};
+#endif
+  if (!count) {
+    write_stamp();
+    return;
+  }
   const auto tmp = file.string() + ".tmp";
   {
     std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
@@ -327,8 +354,10 @@ void PatchOnlineStrings(const std::filesystem::path& file) {
   }
   std::error_code ec;
   std::filesystem::rename(tmp, file, ec);
-  if (!ec)
+  if (!ec) {
+    write_stamp();
     REXLOG_INFO("{}: {} strings rewritten for the PC", file.string(), count);
+  }
 }
 
 void InstallDlc(rex::system::KernelState* kernel_state, const std::filesystem::path& dlc_dir,

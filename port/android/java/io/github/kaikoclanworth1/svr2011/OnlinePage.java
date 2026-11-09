@@ -47,6 +47,7 @@ final class OnlinePage {
     private Spinner kind_;
     private LinearLayout addressBox_, signedIn_, nameRow_, passwordRow_, codeRow_;
     private EditText address_, name_, password_, code_;
+    private TextView pwRule_, pwCheck_;  // (a new password: the rule, and the first problem as the player types)
     private TextView who_, accountStatus_;
     private Button signIn_, create_, signOut_, forgot_;
     private boolean busy_;
@@ -162,8 +163,22 @@ final class OnlinePage {
         account.addView(signedIn_);
         name_ = a_.field("Name", 15, InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
         nameRow_ = fieldRow(account, "Name", name_);
-        password_ = a_.field("Password", 100, InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        // (room past the rule's 128, so "128 characters at most" can show)
+        password_ = a_.field("Password", 200, InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         passwordRow_ = fieldRow(account, "Password", password_);
+        pwRule_ = a_.text(PasswordRule.kRule, 12, LauncherActivity.kDim);
+        pwRule_.setPadding(0, a_.dp(2), 0, 0);
+        account.addView(pwRule_);
+        pwCheck_ = a_.text("", 13, LauncherActivity.kDim);
+        pwCheck_.setPadding(0, a_.dp(2), 0, a_.dp(4));
+        account.addView(pwCheck_);
+        android.text.TextWatcher recheck = new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
+            @Override public void onTextChanged(CharSequence s, int a, int b, int c) {}
+            @Override public void afterTextChanged(android.text.Editable s) { checkPassword(); }
+        };
+        password_.addTextChangedListener(recheck);
+        name_.addTextChangedListener(recheck);
         code_ = a_.field("Code", 20, InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
             | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
         codeRow_ = fieldRow(account, "Code", code_);
@@ -344,6 +359,23 @@ final class OnlinePage {
 
     static void show(View v, boolean on) { v.setVisibility(on ? View.VISIBLE : View.GONE); }
 
+    // A new password (Create account, Forgot password): the rule next to the field and, as the player types, its
+    // first problem or "✓ Strong enough" (PasswordRule, the server's order). Sign in: neither.
+    boolean settingPassword() { return !signedIn() && (mode_ == kSignUp || mode_ == kForgot); }
+
+    void checkPassword() {
+        if (pwRule_ == null) return;
+        boolean on = settingPassword();
+        show(pwRule_, on);
+        String pw = password_.getText().toString();
+        String problem = on && !pw.isEmpty() ? PasswordRule.problem(pw, name_.getText().toString()) : null;
+        show(pwCheck_, problem != null);
+        if (problem != null) {
+            pwCheck_.setText(problem.isEmpty() ? PasswordRule.kOk : problem);
+            pwCheck_.setTextColor(problem.isEmpty() ? 0xFF4AC26B : 0xFFFF8A80);
+        }
+    }
+
     void refreshAccount() {
         boolean in = signedIn(), steps = steps();
         String name = settings().getString("online_name", "");
@@ -356,6 +388,7 @@ final class OnlinePage {
         show(codeRow_, (!in && mode_ != kSignIn && !(mode_ == kSignUp && invite_ == 0)) || steps);
         name_.setHint(mode_ == kSignUp ? "3-15 characters" : "Name");
         password_.setHint(mode_ == kSignIn ? "Password" : "8 or more characters");
+        checkPassword();
         code_.setHint(steps ? "Re-activation code" : mode_ == kSignUp ? (invite_ == 1 ? "Invite code" : "Invite code (if the server asks)") : "Reset code");
         String primary = "Sign in", secondary = "Create account";
         if (steps) {
@@ -480,9 +513,14 @@ final class OnlinePage {
             refreshAccount();
             return;
         }
-        if (create && (password.length() < 8 || (invite_ == 1 && invite.isEmpty()))) {
-            note_ = invite_ == 1 ? "Type a password (8 or more characters) and your invite code."
-                                 : "Type a password (8 or more characters).";
+        final String problem = create ? PasswordRule.problem(password, name) : "";
+        if (!problem.isEmpty()) {  // (nothing sent while the new password breaks the rule)
+            note_ = "Password: " + problem + ". " + PasswordRule.kRule;
+            refreshAccount();
+            return;
+        }
+        if (create && invite_ == 1 && invite.isEmpty()) {
+            note_ = "Type your invite code.";
             refreshAccount();
             return;
         }
@@ -570,6 +608,12 @@ final class OnlinePage {
         final String password = password_.getText().toString();
         if (name.isEmpty() || code.isEmpty() || password.isEmpty()) {
             note_ = "Type your account's name, the reset code and a new password.";
+            refreshAccount();
+            return;
+        }
+        final String problem = PasswordRule.problem(password, name);
+        if (!problem.isEmpty()) {  // (nothing sent while the new password breaks the rule)
+            note_ = "Password: " + problem + ". " + PasswordRule.kRule;
             refreshAccount();
             return;
         }

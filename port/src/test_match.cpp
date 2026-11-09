@@ -41,6 +41,7 @@
 #include "rtwm_streak.h"
 #include "script_input.h"
 #include "superstar_mods.h"
+#include "universe_mods.h"
 #include "../modmaker/svrfmt/bytes.h"
 #include "util.h"
 
@@ -256,6 +257,13 @@ REX_HOOK_RAW(sub_828BC5E8) {
         slot[5] = uint8_t(i);  // (a team of its own)
         slot[4] = 0;           // (kind: a wrestler)
         slot[-8] = 1;          // (controller: the CPU)
+      }
+      // (test aid SVR2011_TEST_TEAM_ENTRANCE, test games only: a member of that team is in it as the select screen's
+      // team pick makes him - the slot's +40, the match slot record's +48 (its +16 key is this +8), -1 none - so the
+      // match plays the team's entrance; picked one by one, each walked out with his own)
+      if (const int team = svr2011::TestTeamOf(base, id); team >= 0) {
+        slot[40] = uint8_t(team);
+        REXLOG_INFO("test match: person {} (superstar {}) as team {}", i, id, team);
       }
       // (a CPU: slot -8 1 and slot -4's low bits 6 - the character's +1152, the pad that plays him; the select
       // screen's CPU picks have 6. With -8 alone person 0 kept pad 0: an idle player in "CPU vs CPU" tests)

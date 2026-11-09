@@ -2546,7 +2546,8 @@ int discover_message(UINT m, WPARAM wp, LPARAM lp)
         if (r->status != 200 || !r->data) { answer_error(r, L"Comments", t, 400); status(t); break; }
         if (jkey(d0, end, "enabled") && !jtrue(jkey(d0, end, "enabled"))) {
             s_comments_on = 0;
-            status(L"Comments are off on the online server for now.");
+            status(s_author_off ? L"The author turned comments off for this mod."
+                                : L"Comments are off on the online server for now.");
             set_view(V_MOD);
             show_rating();
             break;

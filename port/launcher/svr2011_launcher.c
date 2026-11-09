@@ -4889,6 +4889,7 @@ static void build_ui(void)
     suggestions_build(s_wnd, add, TAB_SUGGESTIONS, ID_SUGGEST_BASE, discover_server, reports_token, test_run_refuses_url,
                       PORT_VERSION);
     discover_set_ini(s_launcher_ini);
+    discover_set_running(any_game_running);   /* (asked before an update from Discovery replaces a mod) */
     /* Setup: what's needed, found or missing; the Mod Maker's tools (setup_tab.c) */
     setup_build(s_wnd, add, TAB_SETUP, TAB_TOOLS, ID_SETUP_BASE, setup_go_install);
 
@@ -10699,6 +10700,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
             /* (the Online tab: until the Friends list is in, 5 s at most) */
             while (GetTickCount64() - t0 < 400 || (s_fr_busy && GetTickCount64() - t0 < 5000) ||
                    (s_cur_tab == TAB_DISCOVER && GetTickCount64() - t0 < 4000) ||   /* (its list and pictures) */
+                   (s_cur_tab == TAB_MODS && getenv("SVR2011_MODS_UPDATE") && GetTickCount64() - t0 < 60000 &&
+                    (GetTickCount64() - t0 < 3000 || discover_busy())) ||   /* (an update from Installed Mods) */
                    (s_cur_tab == TAB_REPORTS && reports_test_state(NULL, NULL, 0) && GetTickCount64() - t0 < 10000) ||
                    (s_cur_tab == TAB_SUGGESTIONS && suggestions_test_state(NULL, NULL, 0) && GetTickCount64() - t0 < 10000))
                 while (PeekMessageW(&pm, NULL, 0, 0, PM_REMOVE)) {

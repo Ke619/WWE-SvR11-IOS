@@ -47,7 +47,8 @@ enum { V_GRID, V_MOD, V_UPLOAD, V_COMMENTS };
 enum { R_LIST, R_THUMB, R_DETAIL, R_PIC, R_DOWNLOAD, R_UPLOAD, R_DELETE, R_PROGRESS, R_EDIT,
        R_RECONNECT, R_DLPROG,     /* (the server didn't answer: trying again; a download's progress) */
        R_COMMENTS, R_CPOST, R_CDEL, R_CREPORT, R_UPVOTE,
-       R_FIT };   /* (the grid's size or scale changed: its tiles fitted again) */   /* (comments: a page, a new one, delete, report; a rating) */
+       R_FIT,
+       R_CHECK };   /* (the installed mods from Discovery: one mod's page each, for its version) */   /* (the grid's size or scale changed: its tiles fitted again) */   /* (comments: a page, a new one, delete, report; a rating) */
 #define MAX_COMMENTS 200   /* (loaded on one page: 20 a request, More for the next) */
 #define COMMENT_MAX 500    /* (characters: the server's limit) */
 #define DL_TRIES 6   /* (a download that breaks: resumed / restarted this many times in all) */
@@ -95,6 +96,17 @@ static int s_img[PER_PAGE], s_badge[PER_PAGE];   /* (a tile's picture in s_thumb
 static uint8_t *s_raw[PER_PAGE];                 /* (the thumbnails as sent: made again at a new size) */
 static size_t s_raw_n[PER_PAGE];
 static HTHEME s_grid_theme;
+/* Installed from Discovery: per tile 0, 1 installed (a tick), 2 installed but older than Discovery's (an Update
+   button on the picture); per installed mod (the Installed Mods list's arrows and Update) its folder and state. */
+static int s_state[PER_PAGE];
+typedef struct { int state; WCHAR folder[MAX_PATH]; Mod m; } Installed;
+static Installed s_inst[128];
+static int s_ninst;
+static int (*s_running)(void);
+static int s_dl_from_mods, s_checking;
+static volatile unsigned long long s_dl_hash;   /* (the downloaded file's FNV-1a 64, from the download's thread) */
+static ULONGLONG s_checked_at;
+#define K_GOOD RGB(52, 199, 89)
 static HFONT s_badge_font;
 #define K_TEXT RGB(236, 237, 241)
 #define K_MUTED RGB(150, 153, 163)
@@ -166,6 +178,20 @@ static void json_text(char *out, size_t n, const WCHAR *w)
 }
 
 /* The version of a mod downloaded from Discovery (its "updated", else "created", at the download), or 0. */
+/* A file's FNV-1a 64 (the install record's hash). */
+static unsigned long long file_fnv(const WCHAR *path)
+{
+    static unsigned char buf[1 << 16];
+    unsigned long long h = 1469598103934665603ull;
+    FILE *f;
+    size_t got, i;
+    if (_wfopen_s(&f, path, L"rb") || !f) return 0;
+    while ((got = fread(buf, 1, sizeof buf, f)) > 0)
+        for (i = 0; i < got; ++i) h = (h ^ buf[i]) * 1099511628211ull;
+    fclose(f);
+    return h;
+}
+
 static long long downloaded_stamp(int id)
 {
     WCHAR k[32], v[32];
@@ -845,6 +871,7 @@ static DWORD WINAPI job_thread(LPVOID p)
         swprintf_s(j->file, MAX_PATH, L"%s\\discovery.svrmod", dir);
         if (download_to(j, part, why) && MoveFileExW(part, j->file, MOVEFILE_REPLACE_EXISTING)) {
             st = 200;
+            s_dl_hash = file_fnv(j->file);   /* (kept with the install's record) */
         } else {
             DeleteFileW(part);
             if (!why[0]) wcscpy_s(why, 200, L"the file couldn't be put in place");
@@ -856,6 +883,17 @@ static DWORD WINAPI job_thread(LPVOID p)
     case R_DELETE:
         st = http(j, L"DELETE", j->path, NULL, NULL, 0, &data, &n, 1 << 16);
         post(j, st, data, n, 0, NULL);
+        break;
+    case R_CHECK:   /* (each installed mod's page: its version and when it changed) */
+        for (i = 0; i < j->n_ids; i++) {
+            swprintf_s(path, 64, L"/api/mods/%d", j->ids[i]);
+            data = NULL;
+            n = 0;
+            st = http(j, L"GET", path, NULL, NULL, 0, &data, &n, 1 << 20);
+            post(j, st, data, n, j->ids[i], NULL);
+        }
+        post(j, 0, NULL, 0, -1, NULL);   /* (all asked) */
+        data = NULL;
         break;
     case R_COMMENTS:   /* (a page of comments; index: the page) */
         st = http(j, L"GET", j->path, NULL, NULL, 0, &data, &n, 1 << 20);
@@ -940,6 +978,178 @@ static Job *job(int kind)
 }
 
 /* ── the views ─────────────────────────────────────────────────────────── */
+
+static int tile_rect(int item, RECT *out);
+static void set_view(int v);
+
+/* The install record (launcher.ini [Discovery]): Mod<id> = the version's time (as before 2.2.2), Mod<id>Dir = its
+   folder under the game folder, Mod<id>Ver = Discovery's version, Mod<id>Hash = the file's FNV-1a 64. */
+static int rec_folder(int id, WCHAR *folder)
+{
+    WCHAR k[48], rel[MAX_PATH], man[MAX_PATH];
+    if (!s_ini[0] || !s_game[0]) return 0;
+    swprintf_s(k, 48, L"Mod%dDir", id);
+    GetPrivateProfileStringW(L"Discovery", k, L"", rel, MAX_PATH, s_ini);
+    if (!rel[0]) return 0;
+    swprintf_s(folder, MAX_PATH, L"%s\\%s", s_game, rel);
+    swprintf_s(man, MAX_PATH, L"%s\\manifest.txt", folder);
+    return GetFileAttributesW(man) != INVALID_FILE_ATTRIBUTES;   /* (removed since: not installed) */
+}
+
+static void rec_write(int id, const WCHAR *folder, const WCHAR *version, unsigned long long hash, long long stamp)
+{
+    WCHAR k[48], v[40];
+    const size_t g = wcslen(s_game);
+    const WCHAR *rel = !_wcsnicmp(folder, s_game, g) && folder[g] == L'\\' ? folder + g + 1 : folder;
+    if (!s_ini[0]) return;
+    swprintf_s(k, 48, L"Mod%dDir", id);
+    WritePrivateProfileStringW(L"Discovery", k, rel, s_ini);
+    swprintf_s(k, 48, L"Mod%dVer", id);
+    WritePrivateProfileStringW(L"Discovery", k, version, s_ini);
+    if (hash) {
+        swprintf_s(k, 48, L"Mod%dHash", id);
+        swprintf_s(v, 40, L"%016llx", hash);
+        WritePrivateProfileStringW(L"Discovery", k, v, s_ini);
+    }
+    if (stamp > 0) {
+        swprintf_s(k, 48, L"Mod%d", id);
+        swprintf_s(v, 40, L"%lld", stamp);
+        WritePrivateProfileStringW(L"Discovery", k, v, s_ini);
+    }
+}
+
+/* Is this Discovery mod installed here, and as its newest version? 0 / 1 / 2 (older). A copy installed before the
+   record (2.2.2) is matched by its manifest: the name - downloaded on this PC (Mod<id>) - or else the name and the
+   author; only one such mod counts, and it is recorded then. */
+static int mod_state(const Mod *m, WCHAR *folder_out)
+{
+    const long long got = downloaded_stamp(m->id), now_v = m->updated ? m->updated : m->created;
+    WCHAR f[MAX_PATH], ver[32] = L"";
+    if (!s_game[0]) return 0;
+    if (!rec_folder(m->id, f)) {
+        if (mods_find_installed(s_game, m->name, got ? NULL : m->author, f, MAX_PATH, ver, 32) != 1) return 0;
+        rec_write(m->id, f, ver, 0, 0);
+    }
+    if (folder_out) wcscpy_s(folder_out, MAX_PATH, f);
+    if (got) return now_v > got ? 2 : 1;
+    mods_folder_version(f, ver, 32);   /* (no time kept: the versions) */
+    return mods_version_newer(m->version, ver) ? 2 : 1;
+}
+
+/* What the Installed Mods list knows: the mod's folder, state and Discovery details. */
+static void inst_note(const Mod *m, int state, const WCHAR *folder)
+{
+    int k;
+    for (k = 0; k < s_ninst && _wcsicmp(s_inst[k].folder, folder); k++)
+        ;
+    if (k == s_ninst) {
+        if (s_ninst >= (int)(sizeof s_inst / sizeof s_inst[0])) return;
+        s_ninst++;
+    }
+    s_inst[k].state = state;
+    s_inst[k].m = *m;
+    wcscpy_s(s_inst[k].folder, MAX_PATH, folder);
+}
+
+/* A line on this side's status and, for an update started there, the Installed Mods one. */
+static void say(const WCHAR *t)
+{
+    status(t);
+    if (s_dl_from_mods) mods_set_status(t);
+}
+
+/* Downloads and installs a mod (its page's Download, a tile's Update, Installed Mods' Update). 1 if it started. */
+static int start_update(const Mod *m, int from_mods)
+{
+    Job *j;
+    WCHAR t[300];
+    s_dl_from_mods = from_mods;
+    if (s_busy || s_dl) { say(L"A download or upload is running - try again when it's done."); return 0; }
+    if (!s_game[0]) { say(L"Install the game first (Setup)."); return 0; }
+    if (s_running && s_running()) {   /* (its files may be in use; a mod loads at the game's start anyway) */
+        swprintf_s(t, 300, L"The game is running. \"%s\" may be in use - close the game first, or install it anyway "
+                           L"(it loads the next time the game starts).\n\nInstall it now?", m->name);
+        if (MessageBoxW(s_wnd, t, L"Discovery", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) {
+            say(L"Not installed - close the game, then try again.");
+            return 0;
+        }
+    }
+    if (!(j = job(R_DOWNLOAD))) return 0;
+    s_busy = 1;
+    s_dl = 1;
+    s_dl_cancel = 0;
+    s_dl_mod = *m;
+    j->index = m->id;
+    swprintf_s(j->path, 700, L"/api/mods/%d/file", m->id);
+    SendMessageW(s_c[D_DLBAR], PBM_SETPOS, 0, 0);
+    EnableWindow(s_c[D_DLCANCEL], TRUE);
+    set_view(s_view);
+    swprintf_s(t, 300, L"Downloading \"%s\"\x2026", m->name);
+    say(t);
+    start(j);
+    return 1;
+}
+
+void discover_set_running(int (*fn)(void)) { s_running = fn; }
+
+int discover_folder_state(const WCHAR *folder)
+{
+    int k;
+    for (k = 0; k < s_ninst; k++)
+        if (!_wcsicmp(s_inst[k].folder, folder)) return s_inst[k].state;
+    return 0;
+}
+
+int discover_update_folder(const WCHAR *folder)
+{
+    int k;
+    for (k = 0; k < s_ninst; k++)
+        if (!_wcsicmp(s_inst[k].folder, folder) && s_inst[k].state == 2) return start_update(&s_inst[k].m, 1);
+    return 0;
+}
+
+int discover_busy(void) { return s_dl || s_checking; }
+
+void discover_check_installed(const WCHAR *game_dir)
+{
+    WCHAR *sec, *p;
+    Job *j;
+    if (!s_server || s_checking || !s_ini[0]) return;
+    if (game_dir && game_dir[0]) wcscpy_s(s_game, MAX_PATH, game_dir);
+    if (s_checked_at && GetTickCount64() - s_checked_at < 60000) return;
+    if (!(sec = (WCHAR *)malloc(32768 * sizeof(WCHAR)))) return;
+    if (!(j = job(R_CHECK))) { free(sec); return; }
+    GetPrivateProfileSectionW(L"Discovery", sec, 32768, s_ini);
+    for (p = sec; *p && j->n_ids < PER_PAGE; p += wcslen(p) + 1) {   /* ("Mod<id>Dir=..." lines: recorded installs) */
+        WCHAR f[MAX_PATH];
+        int id;
+        if (swscanf_s(p, L"Mod%dDir=", &id) == 1 && wcsstr(p, L"Dir=") && rec_folder(id, f)) j->ids[j->n_ids++] = id;
+    }
+    free(sec);
+    if (!j->n_ids) { free(j); return; }
+    s_checking = 1;
+    s_checked_at = GetTickCount64();
+    start(j);
+}
+
+/* A tile's Update button (on the picture's top right corner), or 0 if it has none. */
+static int pill_rect(int item, RECT *out)
+{
+    RECT t;
+    SIZE bs = { 0, 0 };
+    HDC dc;
+    const int pad = sc(6);
+    if (item < 0 || item >= s_n || s_state[item] != 2 || !tile_rect(item, &t)) return 0;
+    dc = GetDC(s_c[D_GRID]);
+    SelectObject(dc, s_badge_font ? (HGDIOBJ)s_badge_font : GetStockObject(DEFAULT_GUI_FONT));
+    GetTextExtentPoint32W(dc, L"\x2191 UPDATE", 8, &bs);
+    ReleaseDC(s_c[D_GRID], dc);
+    out->right = t.left + pad + s_thumb_w - sc(6);
+    out->left = out->right - bs.cx - sc(14);
+    out->top = t.top + pad + sc(6);
+    out->bottom = out->top + bs.cy + sc(8);
+    return 1;
+}
 
 /* A tile's rectangle in the grid (the list centres its icon in the column; the tile hangs from the icon's top). */
 static int tile_rect(int item, RECT *out)
@@ -1081,8 +1291,39 @@ static void grid_draw(NMLVCUSTOMDRAW *cd)
     }
     SetBkMode(dc, TRANSPARENT);
     SelectObject(dc, (HFONT)SendMessageW(s_c[D_GRID], WM_GETFONT, 0, 0));
-    if (s_badge[i]) {   /* (on the picture's corner) */
-        const WCHAR *bt = s_badge[i] == 2 ? L"NEW VERSION" : L"UPDATED";
+    if (s_state[i] == 1) {   /* (installed, the newest: a green tick on the picture's top right) */
+        const int d = s_line_h + sc(6);
+        HBRUSH b = CreateSolidBrush(K_GOOD);
+        HPEN pen = CreatePen(PS_SOLID, sc(2) > 1 ? sc(2) : 1, RGB(255, 255, 255));
+        HGDIOBJ ob = SelectObject(dc, b), op = SelectObject(dc, pen);
+        HGDIOBJ of = SelectObject(dc, s_badge_font ? (HGDIOBJ)s_badge_font : GetStockObject(DEFAULT_GUI_FONT));
+        RECT c;
+        c.right = p.right - sc(6);
+        c.left = c.right - d;
+        c.top = p.top + sc(6);
+        c.bottom = c.top + d;
+        Ellipse(dc, c.left, c.top, c.right, c.bottom);
+        SetTextColor(dc, RGB(255, 255, 255));
+        DrawTextW(dc, L"\x2713", 1, &c, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        SelectObject(dc, of);
+        SelectObject(dc, op);
+        SelectObject(dc, ob);
+        DeleteObject(pen);
+        DeleteObject(b);
+    } else if (s_state[i] == 2) {   /* (installed, an older version: a gold Update button - a click updates) */
+        RECT u;
+        if (pill_rect(item, &u)) {
+            HBRUSH b = CreateSolidBrush(K_GOLD);
+            HGDIOBJ of = SelectObject(dc, s_badge_font ? (HGDIOBJ)s_badge_font : GetStockObject(DEFAULT_GUI_FONT));
+            FillRect(dc, &u, b);
+            DeleteObject(b);
+            SetTextColor(dc, RGB(20, 22, 27));
+            DrawTextW(dc, L"\x2191 UPDATE", -1, &u, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            SelectObject(dc, of);
+        }
+    }
+    if (s_badge[i] && s_state[i] != 2) {   /* (the Update button says more for the player's own copy) */   /* (on the picture's corner) */
+        const WCHAR *bt = L"UPDATED";   /* (changed since the last visit; an update for the player's copy: Update) */
         HGDIOBJ old = SelectObject(dc, s_badge_font ? (HGDIOBJ)s_badge_font : GetStockObject(DEFAULT_GUI_FONT));
         SIZE bs;
         RECT br;
@@ -1365,6 +1606,22 @@ static void search(void)
                sorts[si > 0 && si < 5 ? si : 0], s_page);
     status(L"Looking\x2026");
     start(j);
+}
+
+/* The page's details with the installed line on top (one line: the box's height): "✓ Installed" / "↑ Update waiting". */
+static void info_mark(int st)
+{
+    WCHAR t[600], out[700];
+    const WCHAR *body = t;
+    GetWindowTextW(s_c[D_INFO], t, 600);
+    if (t[0] == 0x2713 || t[0] == 0x2191) {   /* (a mark from before: replaced) */
+        const WCHAR *nlp = wcschr(t, L'\n');
+        body = nlp ? nlp + 1 : L"";
+    }
+    if (st == 1) swprintf_s(out, 700, L"\x2713 Installed\n%s", body);
+    else if (st == 2) swprintf_s(out, 700, L"\x2191 Update waiting\n%s", body);
+    else wcscpy_s(out, 700, body);
+    SetWindowTextW(s_c[D_INFO], out);
 }
 
 static void open_mod(int i)
@@ -1909,24 +2166,9 @@ int discover_command(int id, int code)
         InvalidateRect(s_c[D_PIC], NULL, TRUE);
         return 1;
     }
-    case D_DOWNLOAD: {
-        Job *j;
-        if (s_cur < 0 || s_busy) return 1;
-        if (!s_game[0]) { status(L"Install the game first (Setup)."); return 1; }
-        if (!(j = job(R_DOWNLOAD))) return 1;
-        s_busy = 1;
-        s_dl = 1;
-        s_dl_cancel = 0;
-        s_dl_mod = s_mods[s_cur];
-        j->index = s_dl_mod.id;
-        swprintf_s(j->path, 700, L"/api/mods/%d/file", s_dl_mod.id);
-        SendMessageW(s_c[D_DLBAR], PBM_SETPOS, 0, 0);
-        EnableWindow(s_c[D_DLCANCEL], TRUE);
-        set_view(s_view);
-        status(L"Downloading\x2026");
-        start(j);
+    case D_DOWNLOAD:
+        if (s_cur >= 0 && !s_busy) start_update(&s_mods[s_cur], 0);
         return 1;
-    }
     case D_DLCANCEL:
         if (s_dl) {
             InterlockedExchange(&s_dl_cancel, 1);
@@ -1985,6 +2227,16 @@ int discover_notify(const NMHDR *nm)
         return 1;
     }
     if (!s_c[D_GRID] || nm->hwndFrom != s_c[D_GRID]) return 0;
+    if (nm->code == NM_CLICK) {   /* (a tile's Update button: the update, not the page) */
+        const POINT pt = ((const NMITEMACTIVATE *)nm)->ptAction;
+        int k;
+        RECT ur;
+        for (k = 0; k < s_n; k++)
+            if (pill_rect(k, &ur) && PtInRect(&ur, pt)) {
+                start_update(&s_mods[k], 0);
+                return 1;
+            }
+    }
     if (nm->code == NM_CLICK || nm->code == NM_RETURN) {
         int i = nm->code == NM_CLICK ? ((const NMITEMACTIVATE *)nm)->iItem
                                      : ListView_GetNextItem(s_c[D_GRID], -1, LVNI_SELECTED);
@@ -2086,7 +2338,7 @@ int discover_message(UINT m, WPARAM wp, LPARAM lp)
         if (s_dl) {
             const char *v = getenv("SVR2011_DISCOVER_CANCEL_AT");   /* (test aid: Cancel at that many 0.1 %) */
             SendMessageW(s_c[D_DLBAR], PBM_SETPOS, (WPARAM)r->status, 0);
-            if (!s_dl_cancel) status(r->text);
+            if (!s_dl_cancel) say(r->text);
             if (v && *v && r->status >= atoi(v) && !s_dl_cancel)
                 SendMessageW(s_wnd, WM_COMMAND, MAKEWPARAM(s_base + D_DLCANCEL, BN_CLICKED), 0);
         }
@@ -2101,6 +2353,7 @@ int discover_message(UINT m, WPARAM wp, LPARAM lp)
             s_raw_n[q] = 0;
             s_img[q] = -1;
             s_badge[q] = 0;
+            s_state[q] = 0;
         }
         s_n = 0;
         grid_fit();
@@ -2114,11 +2367,9 @@ int discover_message(UINT m, WPARAM wp, LPARAM lp)
             parse_mod(p, e, &s_mods[s_n]);
             {
                 const Mod *m = &s_mods[s_n];
-                const long long got = downloaded_stamp(m->id), now_v = m->updated ? m->updated : m->created;
-                if (got && now_v > got)
-                    s_badge[s_n] = 2;   /* (downloaded here; newer now) */
-                else if (m->updated && s_last_visit && m->updated > s_last_visit)
-                    s_badge[s_n] = 1;
+                WCHAR folder[MAX_PATH];
+                if (m->updated && s_last_visit && m->updated > s_last_visit) s_badge[s_n] = 1;
+                if ((s_state[s_n] = mod_state(m, folder)) != 0) inst_note(m, s_state[s_n], folder);
                 wcscpy_s(label, 140, m->name);   /* (the tile draws its stars and badge: grid_draw) */
             }
             ZeroMemory(&it, sizeof it);
@@ -2142,7 +2393,9 @@ int discover_message(UINT m, WPARAM wp, LPARAM lp)
         if (!tested++) {   /* test aids (--capture discover), after the first list only: SVR2011_DISCOVER_OPEN=<n> opens
                               the n-th mod's page, SVR2011_DISCOVER_UPLOAD=1 the upload form */
             const char *v = getenv("SVR2011_DISCOVER_OPEN");
-            if (v && *v && atoi(v) < s_n) open_mod(atoi(v));
+            const char *uv = getenv("SVR2011_DISCOVER_UPDATE");   /* (=<n>: the n-th tile's Update, as a click) */
+            if (uv && *uv && atoi(uv) < s_n && s_state[atoi(uv)] == 2) start_update(&s_mods[atoi(uv)], 0);
+            else if (v && *v && atoi(v) < s_n) open_mod(atoi(v));
             else if ((v = getenv("SVR2011_DISCOVER_UPLOAD")) && *v == '1') upload_view();
             else if ((v = getenv("SVR2011_DISCOVER_SEND")) && *v && !s_busy) {
                 /* SVR2011_DISCOVER_SEND=<file.svrmod>|<picture>: the form filled (the picture four times), sent */
@@ -2222,9 +2475,11 @@ int discover_message(UINT m, WPARAM wp, LPARAM lp)
                     PostMessageW(s_wnd, WM_COMMAND, MAKEWPARAM(s_base + D_COMMENTS, BN_CLICKED), 0);
             }
         }
-        {
-            const long long got = downloaded_stamp(md->id), now_v = md->updated ? md->updated : md->created;
-            SetWindowTextW(s_c[D_DOWNLOAD], got && now_v > got ? L"Download the update" : L"Download and install");
+        {   /* (installed here: a tick - or an arrow, an update waiting - over its details; the button says so) */
+            WCHAR folder[MAX_PATH];
+            const int st = mod_state(md, folder);
+            if (st) inst_note(md, st, folder);
+            SetWindowTextW(s_c[D_DOWNLOAD], st == 2 ? L"Download the update" : st == 1 ? L"Reinstall" : L"Download and install");
         }
         {   /* test aid (--capture discover with SVR2011_DISCOVER_OPEN), once: SVR2011_DISCOVER_DOWNLOAD=1 downloads it
                (the capture waits for the download: discover_test_state) */
@@ -2271,6 +2526,7 @@ int discover_message(UINT m, WPARAM wp, LPARAM lp)
                        md->tags[0] ? L"\n\nTags: " : L"", md->tags);
         }
         SetWindowTextW(s_c[D_INFO], t);
+        info_mark(mod_state(md, NULL));   /* (installed here: its line on top) */
         {   /* (the description's line ends as the edit control wants them) */
             WCHAR crlf[4100];
             size_t a = 0, b2 = 0;
@@ -2392,29 +2648,49 @@ int discover_message(UINT m, WPARAM wp, LPARAM lp)
         s_busy = 0;
         s_dl = 0;
         set_view(s_view);
-        if (r->status == -2) { swprintf_s(t, 400, L"Download of \"%s\" cancelled - nothing was installed.", s_dl_mod.name); status(t); break; }
+        if (r->status == -2) { swprintf_s(t, 400, L"Download of \"%s\" cancelled - nothing was installed.", s_dl_mod.name); say(t); break; }
         if (r->status != 200) {
             swprintf_s(t, 400, L"Download of \"%s\" failed (%s) - nothing was installed. Try again in a moment.",
                        s_dl_mod.name, r->text);
-            status(t);
+            say(t);
             break;
         }
         if (mods_install(s_game, r->text)) {
-            if (s_ini[0]) {
-                WCHAR k[32], v[32];
-                swprintf_s(k, 32, L"Mod%d", s_dl_mod.id);
-                swprintf_s(v, 32, L"%lld", s_dl_mod.updated ? s_dl_mod.updated : s_dl_mod.created);
-                WritePrivateProfileStringW(L"Discovery", k, v, s_ini);
-                if (s_view == V_MOD && s_cur >= 0 && s_mods[s_cur].id == s_dl_mod.id)
-                    SetWindowTextW(s_c[D_DOWNLOAD], L"Download and install");
+            const WCHAR *folder = mods_last_installed();
+            int k;
+            rec_write(s_dl_mod.id, folder, s_dl_mod.version, s_dl_hash, s_dl_mod.updated ? s_dl_mod.updated : s_dl_mod.created);
+            inst_note(&s_dl_mod, 1, folder);
+            for (k = 0; k < s_n; k++)   /* (its tile: the tick) */
+                if (s_mods[k].id == s_dl_mod.id) s_state[k] = 1;
+            InvalidateRect(s_c[D_GRID], NULL, FALSE);
+            if (s_view == V_MOD && s_cur >= 0 && s_mods[s_cur].id == s_dl_mod.id) {
+                SetWindowTextW(s_c[D_DOWNLOAD], L"Reinstall");
+                info_mark(1);
             }
             swprintf_s(t, 400, L"Installed \"%s\" - it's on the Installed Mods tab and loads the next time the game starts.",
                        s_dl_mod.name);
             status(t);
+            if (s_dl_from_mods) mods_set_status(t);
+            mods_updates_changed();
         } else {
-            status(L"Downloaded, but it could not be installed - the Installed Mods tab says why.");
+            say(L"Downloaded, but it could not be installed - the Installed Mods tab says why.");
         }
         DeleteFileW(r->text);
+        break;
+    case R_CHECK:
+        if (r->index < 0) {   /* (all asked) */
+            s_checking = 0;
+            mods_updates_changed();
+            break;
+        }
+        if (r->status == 200 && r->data) {
+            Mod m;
+            WCHAR folder[MAX_PATH];
+            int st;
+            ZeroMemory(&m, sizeof m);
+            parse_mod((const char *)r->data, (const char *)r->data + r->n, &m);
+            if (m.id == r->index && (st = mod_state(&m, folder)) != 0) inst_note(&m, st, folder);
+        }
         break;
     case R_DELETE:
         if (r->status != 200) { answer_error(r, L"Delete", t, 400); status(t); break; }

@@ -129,6 +129,17 @@ def port_moveset(c):
         else:
             cand = sorted(by11.get(_norm(nm), set())) if nm else []
         fit = [x for x in cand if x in moved and MP.usable11(w11, x) and (to in in_slot[x] or menu_of.get(to, '') in in_menu[x])]
+        # (a tag team slot takes a move of its own kind only - standing or corner, where 2011's move starts - and a tag
+        # team move goes in no other slot: it needs a partner, and its third person's motion waits for one)
+        if to in TAG_SLOTS:   # (2011's own of that name even when no stock superstar has it: Clothesline & Chop Block 2626)
+            fit = [x for x in cand if x in moved and MP.usable11(w11, x) and MP.team_move(g11m, x) and
+                   g11m.situation.get(x) == MP.TAG_KIND_SIT[TAG_SLOTS[to]]]
+        src_cat = (src_index[v][min(src_index[v])][0].strip() if v in src_index and src_index[v] and
+                   isinstance(src_index[v][min(src_index[v])], tuple) else '')
+        if to not in TAG_SLOTS and (src_cat in TAG_CATS or any(MP.team_move(g11m, x) for x in fit)):
+            rows.append((so, to, v, nm, 'base kept (a tag team move in a %s slot)' % (menu_of.get(to) or 'move'),
+                         base[to // 2]))
+            continue
         # (a signature / finisher slot also takes 2011's own move of the same id when its record has the signature /
         # finisher categories - 2007-2009 share 2011's ids: SvR 2008's Dragonrana Pin is 2011's Dragonrana 3506, SvR
         # 2009's Hunting RKO 2011's Viper RKO 6863 - both "ported" before, copies that didn't play, reports
@@ -224,6 +235,8 @@ def port_moveset(c):
                 a['template'] = str(templ[v])
             a['cat'] = (slots.get(tos[0]) or {}).get('bank') or ''   # (template categories: the slot's - moves_port)
             a['special'] = any(to in SPECIAL_SLOTS for to in tos)   # (a signature / finisher: 2011's as templates first)
+            if tos[0] in TAG_SLOTS:   # (standing or corner: the template starts where the slot's moves do)
+                a['tag_kind'] = TAG_SLOTS[tos[0]]
             lo, hi = getattr(c, 'prog', (70, 85))
             nport = min(len(to_port), c.max_port if c.max_port is not None else len(to_port))
             kinds = ['taunt' if x in templ else 'move' for x in list(to_port)[:nport]]
@@ -252,6 +265,11 @@ def port_moveset(c):
                 used.discard(new_id)
                 new_id = r['id']
                 used.add(new_id)
+            if tos[0] in TAG_SLOTS and g11m.situation.get(int(r.get('template') or 0)) != MP.TAG_KIND_SIT[TAG_SLOTS[tos[0]]]:
+                for to in tos:   # (no 2011 tag team template of the slot's kind: the move would start in the wrong place)
+                    rows.append((None, to, v, nm, 'base kept (no %s tag team template)' % TAG_SLOTS[tos[0]], base[to // 2]))
+                used.discard(new_id)
+                continue
             for to in tos:
                 area[to // 2] = new_id
                 rows.append((None, to, v, nm, 'ported (template %s)' % r.get('template'), new_id))
@@ -280,6 +298,10 @@ def port_moveset(c):
 
 
 SPECIAL_SLOTS = (0x1E, 0x20, 0x22, 0x24)   # (2011's signature 1/2 and finisher 1/2 - pro_slots.json)
+# 2011's tag team slots (pro_slots.json 199-206): standing double teams, then corner ones - all 265 stock movesets
+TAG_SLOTS = {0x18E: 'standing', 0x190: 'standing', 0x192: 'standing', 0x194: 'standing',
+             0x196: 'corner', 0x198: 'corner', 0x19A: 'corner', 0x19C: 'corner'}
+TAG_CATS = ('TEAM', 'M090')   # (the source games' tag team move categories: '12 / '13 TEAM, 2K14-2K16 M090)
 
 
 def other_pack_ids(pac11, source=None):

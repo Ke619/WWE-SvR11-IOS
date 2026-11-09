@@ -299,6 +299,10 @@ void List(int k, const std::string& game) {
 
 int g_template = 0;          // moves: --template <2011 move id> (0: the converter's own pick)
 int g_team = 0;              // entrances: 0 automatic, 1 singles, 2 tag, 3 trios (entrance_port --team)
+int g_crowd = 0;             // SvR 2007-2010 / LoW arenas: 0 the source's own crowd, 1 the host's, 2 none (arena_port --crowd)
+const wchar_t* const kCrowdArg[] = {L"own", L"host", L"none"};
+// (the arena games arena_port.py converts itself; WWE '12+ go through the Mod Maker's own converter: other_page)
+bool ArenaPortGame(const std::string& g) { return g.rfind("svr200", 0) == 0 || g == "svr2010" || g == "low"; }
 const wchar_t* const kTeamArg[] = {L"auto", L"singles", L"tag", L"trio"};
 char g_template_find[48] = "";
 
@@ -482,6 +486,8 @@ void Convert(int k, const std::string& game, const Json& item) {
                 args.push_back((fs::path(g_game) / L"Mods").wstring());
   const bool moves = std::wstring(kKinds[k].script) == L"moves_port.py";
   if (moves && g_template > 0) args.push_back(L"--template"), args.push_back(std::to_wstring(g_template));
+  if (std::wstring(kKinds[k].script) == L"arena_port.py" && ArenaPortGame(game))
+    args.push_back(L"--crowd"), args.push_back(kCrowdArg[std::clamp(g_crowd, 0, 2)]);
   if (moves) {  // (a free 2011 record, so packs don't collide: the converter's own pick can't see installed packs)
     if (!anims_page::MovesIndexed()) {
       Status("Reading m.pac's moves first (a few seconds) - press Convert again.");
@@ -1349,6 +1355,14 @@ void KindBody(int k) {
   ImGui::InputTextWithHint("Options (advanced)", room ? "e.g. --name \"Parking Lot\" (the row's name)" : "e.g. --height 1.05 --no-moves", g_options, sizeof g_options);
   Hint("Extra options the converter takes (each converter's --help lists them), e.g. --base <id> --height <scale> "
        "--no-moves for superstars. Usually none are needed.");
+  if (std::wstring(kKinds[k].script) == L"arena_port.py" && ArenaPortGame(game)) {
+    const char* names[] = {"Crowd: the source's own", "Crowd: the host's (2011 RAW's)", "Crowd: none"};
+    ImGui::SetNextItemWidth(360 * g_scale);
+    ImGui::Combo("##crowd", &g_crowd, names, 3);
+    Hint("The source's own: the people, pictures and seats of the arena's own game, seated on its own stands. The host's: "
+         "2011's crowd, laid out for 2011's stands (people can float or sink in another arena's seats). None: empty seats. "
+         "Saved in the mod (crowd_source=).");
+  }
   if (std::wstring(kKinds[k].script) == L"entrance_port.py") {  // singles / tag / trios
     const std::string hint = item["team"].Str();
     const std::string autoname = "Automatic (" + std::string(hint == "tag" ? "a tag entrance" : hint == "trio" ? "a trios entrance"

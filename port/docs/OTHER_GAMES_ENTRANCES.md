@@ -383,9 +383,19 @@ low 16 bits of +0x40 (the high half is kept). This also round-trips 2011's own 4
 - **Test aid** `SVR2011_TEST_TEAM_ENTRANCE=<team>,<tag>[,<trio>]` (test games only - the exe in runs\svrtest\, its
   private UserData; memory only): the team's entrance blocks, and the test match's slots of its members as that team.
   `SVR2011_TEST_CAE_LOG=1` logs each slot's entrance number and, when asked, a team's (sub_823373A8).
-- **Seen in game (9 Nov):** The Brood (WWE '13 778, a trio) at singles number 699 as a superstar mod's entrance:
-  the entrant walked out alone, stage to ring, no stand-ins. **Not seen yet:** a ported tag or trio entrance played
-  by a team in a tag / 6-man match, and the TEAM MANAGER / CREATE AN ENTRANCE lists showing the MOD rows.
+- **Seen in game (9 Nov, hidden, scripted menus):**
+  - CREATE AN ENTRANCE -> TEAM -> The Hart Dynasty -> TAG -> MOTION: the tag list (category 3, 35 stock rows)
+    ends with `MOD: TOO COOL (TEST)` (page 4/4); -> TRIO -> MOTION: the trio list (category 4, 6 stock rows) ends
+    with `MOD: THE BROOD (TEST)` - each mod row in its own list only.
+  - PREVIEW (X) on those rows: WWE '13's Too Cool (712) played by the Hart Dynasty's two members (Smith, Kidd) with
+    its moves, The Brood (776) by all three (Natalya, Smith, Kidd), stage to ring - the members on objects 0 / 4 / 5.
+  - The Brood at singles number 699 as a superstar mod's entrance: the entrant walked out alone, no stand-ins.
+- **Not seen yet: a team entrance in a match.** A test match's people are picked one by one. Marking the members'
+  slots (+40 -> +48), the game block's team slot (+9968) and filling the match screen's team copy (+0xFA6C) made
+  the team's slots ask no singles number, but the match then played no entrance for them at all (only the first
+  opponent's): the select screen's team pick sets more than that. A player's path is the game's own - TEAM MANAGER or
+  CREATE AN ENTRANCE (TEAM) picks the MOD row, the team is then picked as a team in the select screen - but it
+  wasn't played in a match here. The test aid does those three writes (test games only), for a later look.
 
 ## Per-attire entrances and entrance outfits (game side)
 

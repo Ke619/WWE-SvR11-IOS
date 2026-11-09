@@ -36,7 +36,7 @@ struct Kind {
 const Kind kKinds[] = {
     {"Superstars", L"superstar_port.py", "A whole superstar mod: model, pictures, theme, titantron, ratings, entrance and calls where 2011 has them."},
     {"Moves", L"moves_port.py", "Moves 2011 lacks, as a move pack (the Move pack tab saves it; a superstar mod can carry it)."},
-    {"Entrances", L"entrance_port.py", "An entrance as a move pack with its own number, for a superstar mod's entrance= (and per attire)."},
+    {"Entrances", L"entrance_port.py", "An entrance as a move pack with its own number: a superstar mod's entrance= (and per attire), or a team's tag / trios entrance."},
     {"Arenas", L"arena_port.py", "An arena mod on one of 2011's arena slots, with its banner, loading and VS pictures."},
     {"Attires", L"attire_port.py", "Attires for a superstar - a mod's own, or new ones for 2011's roster."},
     {"Belts", L"belt_port.py", "Title belts' looks, as a texture pack."},

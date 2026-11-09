@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -263,7 +264,22 @@ REX_HOOK_RAW(sub_828BC5E8) {
       // match plays the team's entrance; picked one by one, each walked out with his own)
       if (const int team = svr2011::TestTeamOf(base, id); team >= 0) {
         slot[40] = uint8_t(team);
-        REXLOG_INFO("test match: person {} (superstar {}) as team {}", i, id, team);
+        // (and the game block's +9968, the slot of the team whose entrance and theme play together - -1 none; read
+        // by sub_82322DA0 before sub_823373A8 asks the team record: the team's first member's slot)
+        uint8_t& lead = base[0x82E3DE00u + 9968];
+        const int was = int8_t(lead);
+        if (was < 0 || was >= int(kMaxPeople)) lead = uint8_t(i);
+        REXLOG_INFO("test match: person {} (superstar {}) as team {} (team slot {} -> {})", i, id, team, was, int8_t(lead));
+        // (and the match screen's copy of that team's record - sub_828B9520: *(0x82EDEB48) + 0xFA6C + team * 270, the
+        // save's layout: +20 tag / +26 trio entrance, read by the entrance getter sub_82756538 - which the select
+        // screen fills when a team is picked: a test match's was empty, and the team's members asked no entrance)
+        if (const uint32_t ms = Rd32(base + 0x82EDEB48), rec = svr2011::TestTeamRecord(base); ms && rec) {
+          uint8_t* t = base + ms + 0xFA6C + uint32_t(team) * 270;
+          std::memcpy(t, base + rec, 270);
+          REXLOG_INFO("test match: match team {} copy: count {} members {} {} entrances {} / {} name '{}'", team,
+                      Rd16(t), Rd16(t + 2), Rd16(t + 4), Rd16(t + 20), Rd16(t + 26),
+                      std::string(reinterpret_cast<const char*>(t + 0x50), strnlen(reinterpret_cast<const char*>(t + 0x50), 32)));
+        }
       }
       // (a CPU: slot -8 1 and slot -4's low bits 6 - the character's +1152, the pad that plays him; the select
       // screen's CPU picks have 6. With -8 alone person 0 kept pad 0: an idle player in "CPU vs CPU" tests)

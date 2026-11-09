@@ -385,6 +385,13 @@ bool TestGame() {
 }
 }  // namespace
 
+uint32_t TestTeamRecord(uint8_t* base) {
+  const std::array<int, 3>& te = TestTeamEntrance();
+  if (te[0] < 0 || te[0] >= int(kTeamCount) || !TestGame()) return 0;
+  const uint32_t save = Rd32(base + kSavePtr);
+  return save ? save + kTeams + uint32_t(te[0]) * kTeamSize : 0;
+}
+
 int TestTeamOf(uint8_t* base, uint32_t id) {
   const std::array<int, 3>& te = TestTeamEntrance();
   if (te[0] < 0 || te[0] >= int(kTeamCount) || !TestGame()) return -1;

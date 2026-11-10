@@ -21,6 +21,12 @@ Fixes marked "potential" couldn't be fully proven here, so please report it if t
 - **Tag team moves** in the porters: a ported double-team move now plays the partner's own part (potential - tested with forced moves, Doomsday Device, Uso Splash and others). The Mod Maker names the slots Standing / Corner double team. Tag-team finisher-style moves are kept back for now.
 - **Tag and trios entrances** in the entrance porter: choose Singles, Tag team or Trios. Team entrances go in CREATE AN ENTRANCE's tag and trio lists and play in its preview with the team's members (potential - not yet seen in a real tag match). A team entrance can also be used as a singles one.
 - **WWE 2K17 DLC** superstars list in the porter (potential).
+- **Created Superstars: a face per attire**: eyes, eyebrows, eyelashes and lips can now differ on ATTIRE 1-3 (teeth and head templates stay shared). An attire you don't change keeps the Original's face; old saves look as before. Online, the other player should see it too (potential - not yet tried in an online match).
+- **Mods with the same entrance number no longer overwrite each other**: when you install a mod whose entrance or victory number another mod already uses for a different entrance, it moves to a free number and both play their own. You're told the new number, and an update keeps it. PC launcher and Android app.
+- **Remove attires** in the Mod Maker: take attires 2-4 out of a superstar mod.
+- **Vibration switch** in the PC launcher's and the Android app's settings.
+- **F12 opens REPORT A PROBLEM** straight away in the game (not while you're typing).
+- **Report a problem** button on the launcher's **Reports** tab too (it was only on Play).
 
 ## ⭐ Discovery
 - **Upvotes instead of stars**: one upvote per player per mod, and a **Most upvoted** sort. Older versions can't rate any more - update.
@@ -37,6 +43,12 @@ Fixes marked "potential" couldn't be fully proven here, so please report it if t
 - **Freeze after a match** (the known hang while the next match loads) - potential fix.
 - **Android: slowdown from the second match on** (memory filling up on some phones) - potential fix.
 - **Mod Maker**: a WWE 2K17 DLC prop file no longer stops an entrance port (Goldberg); WWE 2K16 DLC arenas port again instead of being taken for backstage rooms.
+- **Created Superstar title belt too big** round the waist: our bigger-belts setting stretched it; waist belts keep their own size now (shoulder and hand belts stay bigger).
+- **Universe**: a mod superstar set as a free agent stays a free agent.
+- **Freeze when quitting a match** (PC) and **after a match in a modded arena** (Android): a game memory area made bigger, with a guard when it runs out - potential fix.
+- **Gauntlet / Elimination with Extreme Rules**: wrestlers can leave the ring again, and count-outs are off in the gauntlet - potential fix.
+- **Android touch controls**: in a match START and BACK moved to the top, so they no longer cover the submission meter and momentum bar - potential fix.
+- **Online DLC**: a refused match now says which DLC volume is missing and how to install it, and a notice counts the sessions hidden because of DLC.
 - **Online**: new checks log whether the two games in a match stay in step, and show "THE TWO GAMES ARE OUT OF STEP" if they don't - so the "playing against a bot" reports can be tracked down.
 
 ☕ Enjoying the port? **Support me:** https://ko-fi.com/kaikoclanworth · https://www.paypal.com/donate/?hosted_button_id=MS4C2WC38N3W2

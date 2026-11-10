@@ -444,6 +444,13 @@ bool g_extra_update = false;  // (see below: an extra update of this frame)
 std::atomic<bool> g_pin_counting{false};
 std::atomic<bool> g_pin_cpu{false};  // (the man pinned is a CPU: one update a frame while counted - see the judge's hook)
 std::atomic<uint32_t> g_pin_cpu_frame{0};  // (the match frame the judge last saw it: a judge gone quiet after a 3 ends the rule)
+// The frames the world-update hook has started (g_frame_serial) and the one in which the judge last saw a CPU's count
+// (g_pin_cpu_serial). The one-update rule holds only while the judge keeps running: a 3 that ends the match leaves
+// the judge silent with g_pin_counting / g_pin_cpu still set, and the match clock then stands (the replay, the
+// highlights) or starts again at 0 (the menus' match, the next match) - "clock <= the pin's frame + 2" stayed true,
+// every frame below 60 fps held to one update: slow motion after the pin, in the replays, the menus and the next
+// match until its clock passed the old pin's frame (report 752e29, Android 2.2.2).
+std::atomic<uint64_t> g_frame_serial{0}, g_pin_cpu_serial{0};
 
 // The characters' job's hand-offs, the last 512 (all threads), dumped with a
 // stuck world update - for the "stuck in pass 20" freeze (Android, 4+ people
@@ -678,8 +685,28 @@ REX_HOOK_RAW(sub_8269D768) {
     g_world_ticks = 1, g_world_acc = 0;
   // A CPU pinned: one update a frame while the count runs (report bead2e; see the judge's hook). The count is then
   // slower in real time below 60 fps - only while a CPU is pinned; a human pinned keeps full speed.
+  // (the judge seen in this frame or the last two: else the count is over, whatever the flags last said. Test aid
+  // SVR2011_TEST_PIN_RULE_STALE=1: 2.2.2's way, the clock test alone)
+  static const bool stale_way = std::getenv("SVR2011_TEST_PIN_RULE_STALE") != nullptr;
+  const uint64_t serial = ++g_frame_serial;
+  const bool judge_quiet = serial > g_pin_cpu_serial.load() + 2;
+  const bool judge_live = stale_way || !judge_quiet;
+  if (g_pin_counting.load() && g_pin_cpu.load() && judge_quiet) {
+    if (!stale_way) {
+      g_pin_counting = false, g_pin_cpu = false;  // (the judge went quiet: the count is over)
+      static int told = 0;
+      if (++told <= 20 || told % 100 == 0)
+        REXLOG_INFO("pin count: the judge went quiet (match frame {}, the pin's {}) - one-update rule over ({} times)",
+                    G32(base, kMatchFrames), g_pin_cpu_frame.load(), told);
+    } else if (g_world_ticks > 1 && G32(base, kMatchFrames) <= g_pin_cpu_frame.load() + 2) {
+      static uint64_t held = 0;  // (the old way: frames held to one update with no count going)
+      if (++held == 1 || held % 600 == 0)
+        REXLOG_INFO("pin count: test (2.2.2's way) - {} frames held to one update with the judge quiet (match frame "
+                    "{}, the pin's {})", held, G32(base, kMatchFrames), g_pin_cpu_frame.load());
+    }
+  }
   if (static const bool off = std::getenv("SVR2011_TEST_PIN_CPU_RULE_OFF") != nullptr;
-      !off && g_pin_counting.load() && g_pin_cpu.load() && g_world_ticks > 1 &&
+      !off && g_pin_counting.load() && g_pin_cpu.load() && g_world_ticks > 1 && judge_live &&
       G32(base, kMatchFrames) <= g_pin_cpu_frame.load() + 2) {
     static uint32_t told_frame = 0, told = 0;
     if (const uint32_t f = G32(base, kMatchFrames); f > told_frame + 300 && (++told <= 20 || told % 100 == 0)) {
@@ -1470,9 +1497,13 @@ REX_HOOK_RAW(sub_826DF610) {
 // object's address isn't a heap's, its vtable isn't in the game's image, or its
 // vtable[6] isn't a game function. Logged; a live object is never skipped.
 namespace {
-// A guest address in the heaps or the image (where a game object can be).
+// A guest address in the heaps or the image (where a game object can be) - or in a fallback block (caw_limits.h): a
+// full stage heap's objects live in the system heap at 0x3xxxxxxx, and were skipped as gone every frame (report
+// 752e29, a mod arena on Android: thousands of "object was gone (object 30E93000, vtable 00000000)" - the vtable
+// never read).
 bool GuestObjectAddress(uint32_t a) {
-  return (a >= 0x40000000u && a < 0x60000000u) || (a >= 0x70000000u && a < 0x90000000u) || a >= 0xA0000000u;
+  return (a >= 0x40000000u && a < 0x60000000u) || (a >= 0x70000000u && a < 0x90000000u) || a >= 0xA0000000u ||
+         (a >= 0x00010000u && a < 0x40000000u && svr2011::InFallbackBlock(a));
 }
 }  // namespace
 
@@ -1501,6 +1532,18 @@ REX_HOOK_RAW(sub_8269B2D0) {
   const uint32_t ptr = ctx.r3.u32;
   if (svr2011::MemTraceOn()) svr2011::MemTraceDelete(ptr, uint32_t(ctx.lr));  // (test aid: mem_trace.h)
   if (svr2011::CawHeapFree(ptr)) return;  // (a CAW editor part from the fallback memory: caw_limits.h)
+  // A pointer below the game heaps (0x40000000) that isn't a fallback block's start: the game's free (sub_8269AAD8)
+  // reads its heap from the 16 bytes before it - garbage there, a crash (reports 752e29 / af80fa, Android 2.2.2: a
+  // mod arena's stage torn down after the match, sub_826E5328, fault at guest 70310000). Skipped and logged.
+  if (ptr >= 0x00010000u && ptr < 0x40000000u) {
+    static int told = 0;
+    if (++told <= 20 || told % 1000 == 0)
+      REXLOG_WARN("[svr2011] model memory: a free of {:08X} - not a game heap's block nor a fallback block's start "
+                  "({}) - skipped (lr {:08X}, {} times)", ptr,
+                  svr2011::InFallbackBlock(ptr) ? "inside a fallback block" : "no fallback block holds it",
+                  uint32_t(ctx.lr), told);
+    return;
+  }
   if (ptr && !g_frame_commands.empty() && std::this_thread::get_id() == g_logic_thread.load()) {
     constexpr uint32_t kWithin = 0x4000;  // (the object: at or just after the block's start)
     for (const uint32_t cmd : g_frame_commands) {
@@ -1695,6 +1738,7 @@ REX_HOOK_RAW(sub_822446E0) {
     const uint32_t port = pinned ? Rd32(base + pinned + 1152) : 0;
     g_pin_cpu = pinned && (port >= svr2011::kMaxPlayers || svr2011::PlayerPadType(port) == svr2011::PadType::kNone);
     g_pin_cpu_frame = frame;
+    g_pin_cpu_serial = g_frame_serial.load();
   } else {
     g_pin_cpu = false;
   }

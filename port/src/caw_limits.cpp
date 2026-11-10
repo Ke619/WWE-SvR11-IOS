@@ -255,6 +255,14 @@ uint32_t FallbackBytesInUse() {
   return g_fallback_bytes;
 }
 
+bool InFallbackBlock(uint32_t address) {
+  if (!address || !g_fallback_blocks.load(std::memory_order_relaxed)) return false;
+  std::lock_guard lock(g_fallback_mutex);
+  for (const auto& [ptr, size] : g_fallback)
+    if (address >= ptr && address - ptr < size) return true;
+  return false;
+}
+
 bool CawHeapFree(uint32_t ptr) {
   if (!ptr || !g_fallback_blocks.load(std::memory_order_relaxed)) return false;
   std::lock_guard lock(g_fallback_mutex);

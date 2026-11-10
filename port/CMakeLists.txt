@@ -65,6 +65,7 @@ set(SVR2011_SOURCES
     src/match_box.cpp
     src/match_record.cpp
     src/caw_check.cpp
+    src/caw_face.cpp
     src/caw_limits.cpp
     src/match_hud.cpp
     src/slobber_knocker.cpp

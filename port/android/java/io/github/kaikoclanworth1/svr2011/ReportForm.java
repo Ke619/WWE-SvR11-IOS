@@ -584,7 +584,9 @@ final class ReportForm {
                 if (ReportSend.authToken.isEmpty()) ReportSend.authToken = a.settings().getString("online_token", "");
                 if (bad == null) out.append("signed in: ").append(ReportSend.authToken.isEmpty() ? "no" : "yes").append('\n');
             }
-            if (out.length() == 0) {
+            // (sends when nothing above said "not sent" - the "signed in" line isn't a refusal: with the
+            // out.length() test the hook stopped there and never sent)
+            if (out.indexOf("not sent") < 0) {
                 File match = null;
                 if (matchArg.equals("latest")) {
                     List<File> all = ReportSend.matches(game);

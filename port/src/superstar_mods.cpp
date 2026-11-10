@@ -3080,6 +3080,13 @@ REX_HOOK_RAW(sub_82BEC030) {
         return;
       }
     }
+    // Test aid SVR2011_TEST_MUSIC_LOG=1 (tests are muted): each music / entrance sound event by name, with the
+    // match frame - a mod's theme at a Royal Rumble entry (2.2.1 report 6dcc92: a mid-match entrant posts Play_MUS_<its
+    // entrance music, 4 digits>; a USER PLAYLIST one (254) calls XMPPlayUserPlaylist instead - "user music: playing")
+    if (static const bool music_log = std::getenv("SVR2011_TEST_MUSIC_LOG") != nullptr;
+        music_log && (std::strstr(e, "MUS") || std::strstr(e, "Mus") || std::strstr(e, "Theme") || std::strstr(e, "Entr") ||
+                      std::strstr(e, "Pause")))
+      REXLOG_INFO("[svr2011] music event: {:.60} (object {:08X}, frame {})", e, ctx.r4.u32, Rd32(base + 0x82E3CD0C));
     uint32_t id = 0;
     if (svr2011::JukeboxEvent(base, e, ctx.r4.u32)) {  // (jukebox.h: every menu song off)
       ctx.r3.u64 = 0x7E000001u;  // (a playing id: not 0)

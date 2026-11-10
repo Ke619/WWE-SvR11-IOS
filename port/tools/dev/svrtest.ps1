@@ -4,6 +4,7 @@
 #   svrtest.ps1 match --p1 EDGE --p2 KANE [--p3 ..] [--attire 2,1] [--arena 9] [--rule 3C] [--entrances]
 #                     [--shot 5s] [--shots every:2s:5] [--state 8s] [--fast 2] [--until "<log text>"] [--quit 15s]
 #                     [--boot] [--cpu all]   (--boot, dbg only: straight into the match - no title, no menus)
+#                     [--rumble 2:111,6:114]  (with --rule 0x14..0x18: those list positions get those superstar ids)
 #   svrtest.ps1 entrance --p1 EDGE [--attire 2] [--shots every:6s:20]        (until "entrances over")
 #   svrtest.ps1 route <name> [--shot 3s] [--quit 10s]                       (script_input.cpp kRoutes)
 #   svrtest.ps1 lan --p1 EDGE --p2 KANE [--arena 1] [--rule 3C] [--pad1 <file>] [--pad2 <file>] [--clock 600,1200]
@@ -66,6 +67,7 @@ for ($i = 0; $i -lt $Rest.Count; $i++) {
         '^--attire$' { $o.attire = $v; $i++; continue }
         '^--arena$' { $o.arena = $v; $i++; continue }
         '^--rule$' { $o.rule = $v; $i++; continue }
+        '^--rumble$' { $env:SVR2011_TEST_RUMBLE_ENTRANTS = $v; $i++; continue }  # ("<pos>:<id>,..": a Royal Rumble's entrants - slobber_knocker.cpp)
         '^--entrances$' { $o.entrances = $true; continue }
         '^--shot$' { $o.shot += $v; $i++; continue }
         '^--shots$' { $o.every = $v; $i++; continue }

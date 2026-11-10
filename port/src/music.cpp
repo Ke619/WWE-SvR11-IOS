@@ -886,6 +886,7 @@ void InstallUserMusic(const std::filesystem::path& folder) {
         return true;
       }
     }
+    REXLOG_INFO("user music: no playlist named \"{}\" - nothing plays", std::filesystem::path(name).string());
     return false;
   };
   music.stop = [] {

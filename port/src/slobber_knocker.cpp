@@ -291,6 +291,41 @@ thread_local uint32_t t_update_pair = 0;  // (inside sub_8280CFD0 for this pair)
 thread_local bool t_stand_in = false;    // (+8 / +12 / +16 / +20 given the character this update: logged)
 constexpr uint32_t kLooksAt[] = {8, 12, 16, 20};  // (+16 too: an empty one read at its +304 - guest 0x130 - in a stalled rumble, 3 Nov)
 }  // namespace
+// Test aid SVR2011_TEST_RUMBLE_ENTRANTS="<pos>:<id>,<pos>:<id>" (svrtest --rumble): the selection's entrant list
+// (u32[30] at +13544, count +13664 - docs/MATCH_TYPES_RESEARCH.md) as sub_82736020(selection) copies it into the
+// match: those positions (0-29; 0 and 1 start in the ring) get those superstar ids - a Royal Rumble's entrants are
+// the game's own random ones otherwise (a mod's theme at a Rumble entry, 2.2.1 report 6dcc92). Logs the list.
+REX_EXTERN(__imp__sub_82736020);
+REX_HOOK_RAW(sub_82736020) {
+  static const std::vector<std::pair<uint32_t, uint32_t>> forced = [] {
+    std::vector<std::pair<uint32_t, uint32_t>> v;
+    if (const char* e = std::getenv("SVR2011_TEST_RUMBLE_ENTRANTS"))
+      for (const char* p = e; *p;) {
+        unsigned pos = 0, id = 0;
+        int n = 0;
+        if (std::sscanf(p, "%u:%u%n", &pos, &id, &n) != 2) break;
+        if (pos < 30) v.emplace_back(pos, id);
+        p += n;
+        if (*p == ',') ++p;
+      }
+    return v;
+  }();
+  if (const uint32_t sel = ctx.r3.u32; sel && !forced.empty()) {
+    const uint32_t count = Rd32(base + sel + 13664);
+    const auto list = [&] {
+      std::string s;
+      for (uint32_t k = 0; k < 30 && k < std::max<uint32_t>(count, 2); ++k) s += fmt::format(" {}", Rd32(base + sel + 13544 + k * 4));
+      return s;
+    };
+    REXLOG_INFO("rumble entrants: test - count {}, list{}", count, list());
+    if (count >= 10) {
+      for (const auto& [pos, id] : forced) Wr32(base + sel + 13544 + pos * 4, id);
+      REXLOG_INFO("rumble entrants: test - forced, list{}", list());
+    }
+  }
+  __imp__sub_82736020(ctx, base);
+}
+
 // The Royal Rumble's manager, sub_8224C1B8(object): a state machine on +92 (0-16; 13, sub_8224BF08, unloads the
 // eliminated one's slot at +112). Research aid (with SVR2011_TEST_PEOPLE_LOG): each change of its state.
 REX_EXTERN(__imp__sub_8224C1B8);

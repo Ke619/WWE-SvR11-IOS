@@ -18,6 +18,7 @@
  *   +  installs a .svrmod/.zip   -  sends a mod's folder to the Recycle Bin
  */
 #include "mods_tab.h"
+#include "entrance_clash.h"
 #include "discover_tab.h"
 
 #include <commctrl.h>
@@ -2026,6 +2027,8 @@ static int swap_in(const WCHAR *tmp, const WCHAR *dst, const WCHAR *kind, const 
     return 1;
 }
 
+static WCHAR s_clash_note[2048];   /* (the last install's moved entrance numbers, said with its status) */
+
 static int install_file(const WCHAR *zip)
 {
     WCHAR tmp[MAX_PATH], man[MAX_PATH], dst[MAX_PATH], parent[MAX_PATH], t[512], kind[32];
@@ -2147,6 +2150,16 @@ place:
             return 1;
         }
     }
+    {   /* (its entrance / victory numbers another installed mod uses for a different one: moved to free ones,
+           kept on an update - entrance_clash.h; said on the status line, in the log and, with a window, a box) */
+        static WCHAR moved[2048];
+        if (entrance_clash_fix(s_game, tmp, dst, m.name[0] ? m.name : m.id, moved, 2048) > 0) {
+            install_log(s_game, moved);
+            wcscpy_s(s_clash_note, 2048, moved);
+        } else {
+            s_clash_note[0] = 0;
+        }
+    }
     {
         WCHAR off[MAX_PATH];
         int was_off;
@@ -2213,6 +2226,12 @@ place:
             wcsncat_s(t, 512, clash, _TRUNCATE);
             if (s_wnd) MessageBoxW(s_wnd, clash, L"Attire mods", MB_OK | MB_ICONINFORMATION);
         }
+    }
+    if (s_clash_note[0]) {
+        const HWND top = s_wnd ? GetAncestor(s_wnd, GA_ROOT) : NULL;
+        wcsncat_s(t, 512, L" ", _TRUNCATE);
+        wcsncat_s(t, 512, s_clash_note, _TRUNCATE);
+        if (top && IsWindowVisible(top) && !s_bundle_install) MessageBoxW(top, s_clash_note, L"Entrance numbers", MB_OK | MB_ICONINFORMATION);
     }
     status(t);
     if (shrink_now) shrink_start(dst);

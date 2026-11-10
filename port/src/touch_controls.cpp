@@ -219,14 +219,21 @@ Control Special(const char* id, Kind kind, uint32_t action, float anchor, float 
   return c;
 }
 
+// START and BACK: either side of the centre; the menus' row at the bottom, a match's at the top (the row of
+// MATCH and EDIT).
+constexpr float kStartBackDx = 0.12f, kOldStartBackY = 0.94f, kMatchStartBackY = 0.06f;
+
 std::vector<Control> DefaultLayout(int layout) {
   constexpr float L = 0, R = 1, C = 0.5f;
   std::vector<Control> v;
-  // Both: the layout switch, the editor, START and BACK.
+  // Both: the layout switch, the editor, START and BACK - at the bottom in the menus, at the top in a match
+  // (kMatchStartBackY): the game draws its momentum bar and the submission meter at the bottom centre, under
+  // them (report 73b7e5: "the make-them-give-up meter doesn't appear").
   v.push_back(Special("layout", Kind::kLayout, 0, L, 0.10f, 0.06f, 0.09f));
   v.push_back(Special("edit", Kind::kEdit, 0, R, -0.06f, 0.06f, 0.09f));
-  v.push_back(Button("back", X_INPUT_GAMEPAD_BACK, C, -0.12f, 0.94f, 0.08f, true));
-  v.push_back(Button("start", X_INPUT_GAMEPAD_START, C, 0.12f, 0.94f, 0.08f, true));
+  const float sb = layout == kMatch ? kMatchStartBackY : kOldStartBackY;
+  v.push_back(Button("back", X_INPUT_GAMEPAD_BACK, C, -kStartBackDx, sb, 0.08f, true));
+  v.push_back(Button("start", X_INPUT_GAMEPAD_START, C, kStartBackDx, sb, 0.08f, true));
   if (layout == kMenu) {
     v.push_back(Special("dpad", Kind::kDpad, 0, L, 0.24f, 0.64f, 0.36f));
     v.push_back(Button("a", X_INPUT_GAMEPAD_A, R, -0.21f, 0.80f, 0.16f));
@@ -348,6 +355,11 @@ void Load() {
         c.size = std::clamp(size, 0.04f, 0.6f);
         c.visible = vis != 0;
         if (c.kind == Kind::kButton) c.action = uint32_t(std::strtoul(action.c_str(), nullptr, 16));
+        // (a match's START / BACK saved where they used to be by default - every layout file the editor wrote
+        // has them - go to the new place; moved by the player, they stay)
+        if (l == kMatch && (id == "back" || id == "start") && std::abs(c.anchor - 0.5f) < 0.001f &&
+            std::abs(std::abs(c.dx) - kStartBackDx) < 0.001f && std::abs(c.y - kOldStartBackY) < 0.001f)
+          c.y = kMatchStartBackY;
       }
     } else if (key == "icon") {
       // icon <layout> <control id> <file name in UserData/touch_icons>

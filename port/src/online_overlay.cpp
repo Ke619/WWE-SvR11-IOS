@@ -447,6 +447,71 @@ const RelayTexts kRelayTexts[] = {
      {"CONTINUA", "NON MOSTRARE PI\xC3\x99", "INDIETRO"}},
 };
 
+// The match can't start (P2PRelayPathInfo::kNoRoute: direct failed on match network p2p - the server's matches
+// don't go through the relay; report 01a0ae): what happened, then what can help - nothing about port forwarding or
+// UPnP behind a carrier NAT, where they can't (that player was sent to UPnP by the relay warning).
+struct NoRouteTexts {
+  uint32_t language;
+  const char *title, *lead, *side0, *side1, *cgnat, *side2;
+  const char* buttons[2];  // (BACK: the lobby's exit; STAY)
+};
+const NoRouteTexts kNoRouteTexts[] = {
+    {1,
+     "CAN'T CONNECT TO THE OTHER PLAYER",
+     "A direct connection between you and the other player didn't work, and the online server doesn't send matches through the relay right now, so this match can't start.",
+     " Opening UDP port {port} on your router (port forward) or turning on ROUTER PORT (UPNP) in OPTIONS > GRAPHICS can help, on either side.",
+     " Your router blocks direct connections. Open UDP port {port} on your router (port forward) or turn on ROUTER PORT (UPNP) in OPTIONS > GRAPHICS, then try again.",
+     " Your internet provider shares your internet address with other customers (carrier NAT), so port forwarding and ROUTER PORT (UPNP) can't open it. You can usually still play with players whose UDP port is open.",
+     " Your port is open: the other player's router blocks direct connections. They can open the game's UDP port on their router or turn on ROUTER PORT (UPNP).",
+     {"BACK", "STAY"}},
+    {4,
+     "CONNEXION IMPOSSIBLE AVEC L'AUTRE JOUEUR",
+     "La connexion directe entre vous et l'autre joueur n'a pas march\xC3\xA9, et le serveur en ligne ne fait pas passer les matchs par le relais en ce moment : ce match ne peut pas commencer.",
+     " Ouvrir le port UDP {port} sur votre routeur (redirection de port) ou activer ROUTER PORT (UPNP) dans OPTIONS > GRAPHISMES peut aider, chez l'un ou l'autre joueur.",
+     " Votre routeur bloque les connexions directes. Ouvrez le port UDP {port} sur votre routeur (redirection de port) ou activez ROUTER PORT (UPNP) dans OPTIONS > GRAPHISMES, puis r\xC3\xA9" "essayez.",
+     " Votre fournisseur d'acc\xC3\xA8s partage votre adresse internet avec d'autres clients (NAT op\xC3\xA9rateur) : la redirection de port et ROUTER PORT (UPNP) ne peuvent pas l'ouvrir. Vous pouvez en g\xC3\xA9n\xC3\xA9ral jouer avec les joueurs dont le port UDP est ouvert.",
+     " Votre port est ouvert : le routeur de l'autre joueur bloque les connexions directes. Il peut ouvrir le port UDP du jeu sur son routeur ou activer ROUTER PORT (UPNP).",
+     {"RETOUR", "RESTER"}},
+    {3,
+     "KEINE VERBINDUNG ZUM ANDEREN SPIELER",
+     "Die direkte Verbindung zwischen dir und dem anderen Spieler hat nicht geklappt, und der Online-Server leitet Matches gerade nicht \xC3\xBC" "ber den Relay: Dieses Match kann nicht starten.",
+     " UDP-Port {port} am Router \xC3\xB6" "ffnen (Portweiterleitung) oder ROUTER PORT (UPNP) unter OPTIONEN > GRAFIK einschalten kann helfen, bei dir oder beim anderen Spieler.",
+     " Dein Router blockiert direkte Verbindungen. \xC3\x96" "ffne UDP-Port {port} an deinem Router (Portweiterleitung) oder schalte ROUTER PORT (UPNP) unter OPTIONEN > GRAFIK ein und versuche es dann erneut.",
+     " Dein Internetanbieter teilt deine Internetadresse mit anderen Kunden (Carrier-NAT), daher k\xC3\xB6nnen Portweiterleitung und ROUTER PORT (UPNP) sie nicht \xC3\xB6" "ffnen. Mit Spielern, deren UDP-Port offen ist, kannst du meistens trotzdem spielen.",
+     " Dein Port ist offen: Der Router des anderen Spielers blockiert direkte Verbindungen. Er kann den UDP-Port des Spiels an seinem Router \xC3\xB6" "ffnen oder ROUTER PORT (UPNP) einschalten.",
+     {"ZUR\xC3\x9C" "CK", "BLEIBEN"}},
+    {5,
+     "NO SE PUEDE CONECTAR CON EL OTRO JUGADOR",
+     "La conexi\xC3\xB3n directa entre t\xC3\xBA y el otro jugador no ha funcionado, y el servidor en l\xC3\xADnea no env\xC3\xAD" "a ahora las partidas por el rel\xC3\xA9, as\xC3\xAD que esta partida no puede empezar.",
+     " Abrir el puerto UDP {port} en el router (redirecci\xC3\xB3n de puertos) o activar ROUTER PORT (UPNP) en OPCIONES > GR\xC3\x81" "FICOS puede ayudar, en tu lado o en el del otro jugador.",
+     " Tu router bloquea las conexiones directas. Abre el puerto UDP {port} en tu router (redirecci\xC3\xB3n de puertos) o activa ROUTER PORT (UPNP) en OPCIONES > GR\xC3\x81" "FICOS y vuelve a intentarlo.",
+     " Tu proveedor de internet comparte tu direcci\xC3\xB3n de internet con otros clientes (NAT del operador), as\xC3\xAD que la redirecci\xC3\xB3n de puertos y ROUTER PORT (UPNP) no pueden abrirla. Normalmente puedes jugar igualmente con jugadores que tengan el puerto UDP abierto.",
+     " Tu puerto est\xC3\xA1 abierto: el router del otro jugador bloquea las conexiones directas. Puede abrir el puerto UDP del juego en su router o activar ROUTER PORT (UPNP).",
+     {"ATR\xC3\x81S", "QUEDARSE"}},
+    {6,
+     "IMPOSSIBILE CONNETTERSI ALL'ALTRO GIOCATORE",
+     "La connessione diretta tra te e l'altro giocatore non ha funzionato, e il server online ora non fa passare le partite dal relay, quindi questa partita non pu\xC3\xB2 iniziare.",
+     " Aprire la porta UDP {port} sul router (port forwarding) o attivare ROUTER PORT (UPNP) in OPZIONI > GRAFICA pu\xC3\xB2 aiutare, da te o dall'altro giocatore.",
+     " Il tuo router blocca le connessioni dirette. Apri la porta UDP {port} sul tuo router (port forwarding) o attiva ROUTER PORT (UPNP) in OPZIONI > GRAFICA, poi riprova.",
+     " Il tuo provider condivide il tuo indirizzo internet con altri clienti (NAT dell'operatore), quindi il port forwarding e ROUTER PORT (UPNP) non possono aprirlo. Di solito puoi comunque giocare con i giocatori che hanno la porta UDP aperta.",
+     " La tua porta \xC3\xA8 aperta: il router dell'altro giocatore blocca le connessioni dirette. Pu\xC3\xB2 aprire la porta UDP del gioco sul suo router o attivare ROUTER PORT (UPNP).",
+     {"INDIETRO", "RIMANI"}},
+};
+
+const NoRouteTexts& NoRouteWords() {
+  const uint32_t language = rex::cvar::Query<uint32_t>("user_language");
+  for (const NoRouteTexts& t : kNoRouteTexts)
+    if (t.language == language) return t;
+  return kNoRouteTexts[0];
+}
+
+std::string NoRouteBody(const P2PRelayPathInfo& info) {
+  const NoRouteTexts& t = NoRouteWords();
+  std::string more = info.side == 2 ? t.side2 : info.carrier_nat ? t.cgnat : info.side == 1 ? t.side1 : t.side0;
+  if (const size_t at = more.find("{port}"); at != std::string::npos) more.replace(at, 6, std::to_string(info.port));
+  return t.lead + more;
+}
+
 const RelayTexts& RelayWords() {
   const uint32_t language = rex::cvar::Query<uint32_t>("user_language");
   for (const RelayTexts& t : kRelayTexts)
@@ -510,6 +575,7 @@ class OnlineOverlay final : public rex::ui::ImGuiDialog {
   std::string toast_, toast_line2_;
   Clock::time_point toast_until_{};
   bool relay_open_ = false, relay_wait_ = false;
+  bool relay_no_route_ = false;  // (the box says the match can't start: kNoRoute)
   int relay_sel_ = 0;
   uint16_t relay_prev_ = 0;
   uint64_t relay_warned_ = 0;  // (the session it was shown for: once each)
@@ -576,24 +642,36 @@ void OnlineOverlay::Toast(ImGuiIO& io) {
 bool OnlineOverlay::RelayDialog(ImGuiIO& io) {
   using namespace rex::input;
   if (!relay_open_) {
-    if (g_open || !REXCVAR_GET(online_relay_warning)) return false;
+    if (g_open) return false;
     const P2PRelayPathInfo info = P2PRelayPath();
-    if ((info.kind != P2PRelayPathInfo::kRelayed && info.kind != P2PRelayPathInfo::kForced) || !info.session ||
-        info.session == relay_warned_)
+    // (can't connect: shown even with the relay warning turned off - not a warning, the reason the match won't start)
+    const bool no_route = info.kind == P2PRelayPathInfo::kNoRoute;
+    if (!no_route && !REXCVAR_GET(online_relay_warning)) return false;
+    if ((info.kind != P2PRelayPathInfo::kRelayed && info.kind != P2PRelayPathInfo::kForced && !no_route) ||
+        !info.session || info.session == relay_warned_)
       return false;
     relay_warned_ = info.session;
-    relay_body_ = RelayBody(info);
+    relay_no_route_ = no_route;
+    relay_body_ = no_route ? NoRouteBody(info) : RelayBody(info);
     relay_sel_ = 0;
     relay_open_ = true;
     g_relay_dialog = true;
     relay_wait_ = true;
     relay_opened_at_ = Clock::now();
-    REXLOG_INFO("online overlay: relay warning shown (session {:016X}, {}, side {}, port {})", info.session,
-                info.kind == P2PRelayPathInfo::kForced ? (info.forced_by_server ? "the server's relay" : "forced")
-                                                       : "direct failed",
-                info.side, info.port);
+    REXLOG_INFO("online overlay: relay warning shown (session {:016X}, {}, side {}, port {}{})", info.session,
+                no_route ? "can't connect: direct failed, no relay on this server"
+                : info.kind == P2PRelayPathInfo::kForced ? (info.forced_by_server ? "the server's relay" : "forced")
+                                                         : "direct failed",
+                info.side, info.port, info.carrier_nat ? ", carrier NAT" : "");
   }
   const RelayTexts& t = RelayWords();
+  const NoRouteTexts& nr = NoRouteWords();
+  // (the buttons and what each does: 0 continue, 1 don't show again, 2 back - can't connect: BACK, STAY)
+  const char* labels[3] = {t.buttons[0], t.buttons[1], t.buttons[2]};
+  int act[3] = {0, 1, 2};
+  int n = 3;
+  if (relay_no_route_) labels[0] = nr.buttons[0], labels[1] = nr.buttons[1], act[0] = 2, act[1] = 0, n = 2;
+  const char* title = relay_no_route_ ? nr.title : t.title;
   const float sc = std::min(io.DisplaySize.x / 1280.0f, io.DisplaySize.y / 720.0f);
   const float title_size = 30 * sc, size = 21 * sc, pad = 28 * sc, w = 820 * sc;
   ImFont* font = g_menu_font;
@@ -605,20 +683,21 @@ bool OnlineOverlay::RelayDialog(ImGuiIO& io) {
   ImDrawList* dl = ImGui::GetForegroundDrawList();
   dl->AddRectFilled(ImVec2(0, 0), io.DisplaySize, IM_COL32(0, 0, 0, 140));
   dl->AddRectFilled(a, b, IM_COL32(10, 10, 14, 245), 8 * sc);
-  dl->AddRectFilled(a, ImVec2(a.x + 8 * sc, b.y), IM_COL32(230, 160, 30, 255), 8 * sc);
+  dl->AddRectFilled(a, ImVec2(a.x + 8 * sc, b.y),
+                    relay_no_route_ ? IM_COL32(215, 45, 40, 255) : IM_COL32(230, 160, 30, 255), 8 * sc);
   dl->AddRect(a, b, IM_COL32(235, 235, 240, 255), 8 * sc, 0, 2 * sc);
-  Text(dl, tfont, title_size, ImVec2(a.x + pad, a.y + pad), IM_COL32(255, 255, 255, 255), t.title);
+  Text(dl, tfont, title_size, ImVec2(a.x + pad, a.y + pad), IM_COL32(255, 255, 255, 255), title);
   dl->AddText(font ? font : ImGui::GetFont(), size, ImVec2(a.x + pad, a.y + pad + title_size + 18 * sc),
               IM_COL32(225, 225, 230, 255), relay_body_.c_str(), nullptr, wrap);
   // the buttons, in a row (CONTINUE first: the default)
   float bw[3], total = 0;
-  for (int k = 0; k < 3; ++k) total += bw[k] = TextSize(font, size, t.buttons[k]).x + 40 * sc;
-  total += 2 * 16 * sc;
+  for (int k = 0; k < n; ++k) total += bw[k] = TextSize(font, size, labels[k]).x + 40 * sc;
+  total += (n - 1) * 16 * sc;
   float x = b.x - pad - total;
   const float y = b.y - pad - button_h;
   int hovered = -1;
   ImVec2 box[3][2];
-  for (int k = 0; k < 3; ++k) {
+  for (int k = 0; k < n; ++k) {
     box[k][0] = ImVec2(x, y), box[k][1] = ImVec2(x + bw[k], y + button_h);
     if (io.MousePos.x >= x && io.MousePos.x < x + bw[k] && io.MousePos.y >= y && io.MousePos.y < y + button_h) hovered = k;
     x += bw[k] + 16 * sc;
@@ -631,25 +710,26 @@ bool OnlineOverlay::RelayDialog(ImGuiIO& io) {
   }
   const uint16_t pressed = relay_wait_ ? 0 : uint16_t(buttons & ~relay_prev_);
   relay_prev_ = buttons;
-  if (pressed & (X_INPUT_GAMEPAD_DPAD_LEFT | X_INPUT_GAMEPAD_DPAD_UP)) relay_sel_ = (relay_sel_ + 2) % 3;
-  if (pressed & (X_INPUT_GAMEPAD_DPAD_RIGHT | X_INPUT_GAMEPAD_DPAD_DOWN)) relay_sel_ = (relay_sel_ + 1) % 3;
+  if (relay_sel_ >= n) relay_sel_ = 0;
+  if (pressed & (X_INPUT_GAMEPAD_DPAD_LEFT | X_INPUT_GAMEPAD_DPAD_UP)) relay_sel_ = (relay_sel_ + n - 1) % n;
+  if (pressed & (X_INPUT_GAMEPAD_DPAD_RIGHT | X_INPUT_GAMEPAD_DPAD_DOWN)) relay_sel_ = (relay_sel_ + 1) % n;
   if (hovered >= 0 && (io.MouseDelta.x != 0 || io.MouseDelta.y != 0)) relay_sel_ = hovered;
-  int chosen = -1;
-  if (pressed & X_INPUT_GAMEPAD_A) chosen = relay_sel_;
+  int chosen = -1;  // (an action: 0 continue / stay, 1 don't show again, 2 back)
+  if (pressed & X_INPUT_GAMEPAD_A) chosen = act[relay_sel_];
   if (pressed & X_INPUT_GAMEPAD_START) chosen = 0;
   if (pressed & X_INPUT_GAMEPAD_B) chosen = 2;
-  if (hovered >= 0 && io.MouseClicked[0] && !relay_wait_) chosen = hovered;
-  for (int k = 0; k < 3; ++k) {
+  if (hovered >= 0 && io.MouseClicked[0] && !relay_wait_) chosen = act[hovered];
+  for (int k = 0; k < n; ++k) {
     const bool on = k == relay_sel_;
     dl->AddRectFilled(box[k][0], box[k][1], on ? IM_COL32(200, 30, 32, 255) : IM_COL32(40, 40, 48, 255), 6 * sc);
     dl->AddRect(box[k][0], box[k][1], IM_COL32(235, 235, 240, on ? 255 : 120), 6 * sc, 0, 1.5f * sc);
-    const ImVec2 ts = TextSize(font, size, t.buttons[k]);
+    const ImVec2 ts = TextSize(font, size, labels[k]);
     Text(dl, font, size, ImVec2((box[k][0].x + box[k][1].x - ts.x) * 0.5f, (box[k][0].y + box[k][1].y - ts.y) * 0.5f),
-         IM_COL32(255, 255, 255, 255), t.buttons[k]);
+         IM_COL32(255, 255, 255, 255), labels[k]);
   }
   if (chosen >= 0) {
     static const char* const kNames[] = {"continue", "don't show again", "back"};
-    REXLOG_INFO("online overlay: relay warning - {}", kNames[chosen]);
+    REXLOG_INFO("online overlay: relay warning - {}", relay_no_route_ && chosen == 0 ? "stay" : kNames[chosen]);
     if (chosen == 1) {
       rex::cvar::SetFlagByName("online_relay_warning", "false");
       SaveConfigSetting("online_relay_warning", "false");

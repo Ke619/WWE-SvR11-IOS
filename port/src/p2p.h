@@ -104,11 +104,15 @@ P2PLobby P2PMatchLobby();
 // The match session's way to the far-off players, decided in its lobby (the relay warning,
 // online_overlay.cpp): kUnknown until then, in a match, or with no session.
 struct P2PRelayPathInfo {
-  enum Kind : uint8_t { kUnknown, kDirect, kRelayed, kForced } kind = kUnknown;  // (kRelayed: direct failed)
+  // (kRelayed: direct failed; kNoRoute: direct failed and the server's matches don't go through the relay - match
+  // network p2p: this pair can't play)
+  enum Kind : uint8_t { kUnknown, kDirect, kRelayed, kForced, kNoRoute } kind = kUnknown;
   uint64_t session = 0;
   bool forced_by_server = false;  // (kForced: the server's match network; else p2p_force_relay)
   int side = 0;                   // whose router: 0 can't tell, 1 this player's (symmetric), 2 the other's (open here)
   uint16_t port = 0;              // this game's UDP port (p2p_port, or the next free one)
+  bool carrier_nat = false;       // this router's outside address is a private one: another NAT in front (a
+                                  // carrier's) - port forwarding and UPnP can't open it
 };
 P2PRelayPathInfo P2PRelayPath();
 // The lobby's superstar mods (online_mods.cpp): a message to every peer this

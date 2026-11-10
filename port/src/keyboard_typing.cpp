@@ -243,6 +243,8 @@ void UpdateSystemKeyboard() {
   if (g_text_input && !KeyboardOpen() && !g_overlay_text) SetTextInput(false);
 }
 
+bool OverlayTyping() { return g_overlay_text.load(); }
+
 void SetOverlayTyping(bool on) {
   if (g_overlay_text.exchange(on) == on || !g_window) return;
   g_window->app_context().CallInUIThread([on] {

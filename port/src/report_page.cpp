@@ -42,6 +42,7 @@
 #include <rex/logging.h>
 #include <rex/ppc.h>
 #include <rex/system/xmemory.h>
+#include <rex/ui/keybinds.h>
 #include <rex/ui/imgui_dialog.h>
 #include <rex/ui/immediate_drawer.h>
 #include <rex/ui/window.h>
@@ -52,6 +53,7 @@
 #include "frame_rate.h"
 #include "match_diag.h"
 #include "match_record.h"
+#include "keyboard_typing.h"
 #include "native/native_renderer.h"
 
 #include "../launcher/report_urls.h"
@@ -1240,6 +1242,18 @@ void InstallReportPage(rex::ui::ImGuiDrawer* drawer, rex::ui::ImmediateDrawer* i
   g_game_dir = user_data.parent_path();
   if (window) window->app_context().CallInUIThread([window] { window->AddInputListener(&g_touch, 951); });
   new ReportPage(drawer);  // lives for the whole run
+  // F12 (the keyboard only; rebindable: bind_report_problem) opens the page at once - suggestion 072930. Not while
+  // something is being typed in (the game's keyboard, an overlay's field, an ImGui text box) or while it's open.
+  rex::ui::RegisterBind("bind_report_problem", "F12", "Report a problem (opens REPORT A PROBLEM)", [] {
+    if (g_open || g_open_requested || g_wait_release) return;
+    if (GameKeyboardOpen() || OverlayTyping() || (ImGui::GetCurrentContext() && ImGui::GetIO().WantTextInput)) {
+      REXLOG_INFO("[svr2011] report page: F12 left alone (text is being typed)");
+      return;
+    }
+    const bool paused = g_memory && PauseMenuUp(g_memory->virtual_membase());   // (the pause menu's own way then)
+    REXLOG_INFO("[svr2011] report page: F12 - opened{}", paused ? " (from the pause menu)" : "");
+    OpenReportPage(paused);
+  });
 }
 
 void SetReportPageFonts(ImFont* menu, ImFont* title) {

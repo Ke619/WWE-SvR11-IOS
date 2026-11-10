@@ -14,6 +14,8 @@
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
+#include <rex/ui/keybinds.h>
+#include <rex/ui/ui_event.h>
 #include <spdlog/sinks/base_sink.h>
 
 #include "keyboard_typing.h"
@@ -279,6 +281,14 @@ void ScriptInputDriver::ParseLine(const std::string& line) {
     rex::cvar::SetFlagByName(name, value);
     REXLOG_INFO("script input: {}", line);
     return;
+  } else if (verb == "hotkey") {
+    in >> step.hotkey;
+    if (rex::ui::ParseVirtualKey(step.hotkey) == rex::ui::VirtualKey::kNone) {
+      REXLOG_WARN("script input: unknown key '{}'", line);
+      return;
+    }
+    step.ms = 100;
+    queue_.push_back(step);
   } else if (verb == "key") {
     static const struct {
       const char* name;
@@ -393,6 +403,11 @@ ScriptInputDriver::Step ScriptInputDriver::CurrentStep() {
     else if (current_.copy) CopyForTest();
     else if (!current_.text.empty()) TypeText(current_.text);
     if (current_.key) TypeKey(current_.key);
+    if (!current_.hotkey.empty()) {   // (as the window's key press reaches the binds: ReXApp::OnKeyDown)
+      rex::ui::KeyEvent e(nullptr, rex::ui::ParseVirtualKey(current_.hotkey), 0, false, false, false, false, false);
+      const bool bound = rex::ui::ProcessKeyEvent(e);
+      REXLOG_INFO("script input: hotkey {} {}", current_.hotkey, bound ? "-> a key bind" : "(no bind)");
+    }
     if (current_.touch) {
       TouchInject(current_.mouse ? kTouchMousePointer : kFinger, 0, current_.x0, current_.y0);
       if (current_.x1 != current_.x0 || current_.y1 != current_.y0) {

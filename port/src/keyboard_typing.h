@@ -45,5 +45,7 @@ void UpdateSystemKeyboard();
 // the window's text input is on (a phone's keyboard shows), and the keys that
 // type characters don't also act as the controller.
 void SetOverlayTyping(bool on);
+// An overlay's text field is being typed in (SetOverlayTyping on).
+bool OverlayTyping();
 
 }  // namespace svr2011

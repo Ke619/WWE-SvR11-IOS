@@ -11,6 +11,7 @@
 //   wait <ms>                   idle
 //   type <text>                 type on the PC keyboard (keyboard_typing.h)
 //   key <BACK|ENTER|ESC|LEFT|RIGHT|UP|DOWN>   press a PC keyboard key
+//   hotkey <F1-F12|...>         a window key through the key binds (rex/ui/keybinds.h), e.g. F12 REPORT A PROBLEM
 //   set <cvar> <value>          sets a setting at once (not queued; tests of live changes)
 //   connect                     an idle "Test Pad" connects now (not queued; late-controller tests;
 //                               SVR2011_TEST_SCRIPT_AS_KEYBOARD=1 lists the script as the keyboard)
@@ -105,6 +106,7 @@ class ScriptInputDriver final : public rex::input::InputDriver {
     bool paste = false, copy = false;
     int sd = 0;  // ("sdcopy" 1 / "sdpaste" 2: story_designer.h)  // ("paste <text>" / "copy": keyboard_typing.h test aids)
     uint16_t key = 0;  // PC keyboard key pressed when the step starts
+    std::string hotkey;  // a key bind's key (hotkey: rex::ui::ProcessKeyEvent)
     bool touch = false;  // a finger (touch_controls.h) from x0, y0 to x1, y1
     bool mouse = false;  // ... the mouse's left button instead (the menus by mouse: "click")
     float x0 = 0, y0 = 0, x1 = 0, y1 = 0;

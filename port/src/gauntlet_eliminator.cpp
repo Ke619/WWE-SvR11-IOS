@@ -123,6 +123,26 @@ class Panel final : public rex::ui::ImGuiDialog {
 
 }  // namespace
 
+// The reversal check sub_827FCDE0 (from the reversal code sub_828162C8, each CPU's update) reads the person it
+// faces through +20 without a null check. In G. ELIMINATOR: EXTREME RULES, an entrant came in at 60 s while the
+// two in it were outside the ring (they may leave it now - 574ce8 / 5d89c9) and +20 was empty: a read of guest
+// 0x218 (+536), crash. Empty: no reversal (1, as the check's own "can't reverse" answer).
+static std::atomic<bool> g_rev_guard_logged{false};
+REX_EXTERN(__imp__sub_827FCDE0);
+REX_HOOK_RAW(sub_827FCDE0) {
+  const uint32_t r = ctx.r3.u32;
+  if (r) {
+    const uint32_t p = Rd32(base + r);
+    if (p && Rd32(base + p + 552) && !Rd32(base + r + 20)) {
+      if (!g_rev_guard_logged.exchange(true))
+        REXLOG_WARN("[svr2011] reversal guard: no one faced (+20 empty) - no reversal (rule {:02X})", base[kLive]);
+      ctx.r3.u64 = 1;
+      return;
+    }
+  }
+  __imp__sub_827FCDE0(ctx, base);
+}
+
 namespace svr2011 {
 
 void InstallGauntletEliminatorOverlay(rex::ui::ImGuiDrawer* drawer) { new Panel(drawer); }

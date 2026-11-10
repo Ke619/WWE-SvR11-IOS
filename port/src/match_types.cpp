@@ -3970,11 +3970,23 @@ REX_HOOK_RAW(sub_828C48E8) {
     l[3] = 0, l[10] = 0, l[27] = 0;  // (+27 DISQUALIFICATION: 0 off - the game has masked the lock bit 0x80 off by now)
     const bool ring = StructureOf(rule) && (rule < kCellFirst || rule > kCellLast);  // (cage, inferno)
     if (rule != kSixManRule && rule != kGauntlet && !ring) l[56] = 1;  // (6-MAN / the six-person gauntlet / cage / inferno: not - see kPlacedSix, kPlacedRing)
-    if (rule == kGauntlet || ring) l[4] = 1;                            // (RING OUT: no exiting)
+    // (RING OUT: no exiting - cage / inferno only. It was set for the gauntlet too, as "no DQ" when +4 was taken
+    // for DQ: G. ELIMINATOR: EXTREME RULES let nobody leave the ring - 2.2.1 reports 574ce8 / 5d89c9. Out of the
+    // ring is fine there, as in Extreme Rules; no count-outs instead: a count-out ends a match outside the falls
+    // judge, which the gauntlet's eliminations go through - Three Stages of Hell's finding)
+    if (ring) l[4] = 1;
+    if (rule == kGauntlet) l[5] = 0;
     if (rule == kSixManRule) l[5] = 0;                                   // (6-MAN: no count-outs; out of the ring is fine, as in Extreme Rules)
     REXLOG_INFO("match types: WEAPONS EVERYWHERE - rule {:02X} with the Extreme Rules options", rule);
   }
   svr2011::MysteryOpponentLive(base, live);  // (entrances on: mystery_opponent.h)
+  // Test aid: SVR2011_TEST_LIVE_DUMP=1 - the live rules' first 64 bytes as built (+4 ring out: no exiting, +5
+  // count-out, +27 DQ - docs/MATCH_TYPES_RESEARCH.md "Live rule bytes")
+  if (static const bool dump = std::getenv("SVR2011_TEST_LIVE_DUMP") != nullptr; dump && live) {
+    std::string s;
+    for (uint32_t k = 0; k < 64; ++k) s += fmt::format("{}{:02X}", k % 8 ? " " : k ? " | " : "", base[live + k]);
+    REXLOG_INFO("match types: test - live rules for rule {:02X}: {}", rule, s);
+  }
   // Test aid (match replays, docs/MATCH_RECORDINGS.md): SVR2011_TEST_ENTRANCES=0|1 - the live rules' ENTRANCES
   // (+38) for this match: off, the people start in their in-ring places at the bell.
   if (const char* v = std::getenv("SVR2011_TEST_ENTRANCES"); v && live) {

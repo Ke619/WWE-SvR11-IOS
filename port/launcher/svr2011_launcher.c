@@ -149,7 +149,7 @@ enum {
     ID_SKIP_INTROS, ID_SKIP_TRAINING, ID_FAST_LOADS, ID_PLAY_NOMODS, ID_PL_EXPORT, ID_PL_IMPORT, ID_PL_NOTICE,
     /* settings */
     ID_WINDOWED, ID_FULLSCREEN, ID_RESOLUTION, ID_VSYNC, ID_INPUT, ID_AUDIO, ID_MUTE, ID_SHOWFPS, ID_MSAA, ID_RENDERER, ID_LANGUAGE, ID_FRAMERATE, ID_MUSIC_OPEN, ID_DEFAULTS, ID_SAVE,
-    ID_SETTINGS_STATUS, ID_PREPARE, ID_PRIORITY, ID_UNLOCK_ALL, ID_TEXTURES, ID_ARENA_LIGHT, ID_UPSCALE, ID_MATCH_CAMERA,
+    ID_SETTINGS_STATUS, ID_PREPARE, ID_PRIORITY, ID_UNLOCK_ALL, ID_TEXTURES, ID_ARENA_LIGHT, ID_UPSCALE, ID_MATCH_CAMERA, ID_VIBRATION,
     ID_FULLSCREEN_EX, ID_RENDER_RES, ID_RES_HINT,
     /* online */
     ID_ON_ENABLE, ID_ON_NAME, ID_ON_SERVER, ID_ON_SERVER_KIND, ID_ON_SAVE, ID_ON_STATUS,
@@ -2507,7 +2507,7 @@ static void settings_load(void)
     Lines l;
     int i, fullscreen = 0, vsync = 1, sdl = 0, sdl_audio = 0, mute = 0, fps = 1, perf = -1, w = 1280, h = 720, res = 0, in_section = 0;
     int msaa = 0, aa = 0, emulated = 0, api = 0, language = 1, online = 0, prepare = 1, frame_rate = 60;
-    int priority = 0, unlock_all = 1, textures = 0, skip_intros = 0, skip_training = 0, fast_loads = 0, arena_light = 100;
+    int priority = 0, unlock_all = 1, textures = 0, skip_intros = 0, skip_training = 0, fast_loads = 0, arena_light = 100, vibration = 1;
     int match_camera = 0;
     int share = 1, up_kbs = 0, up_peers = 0, mod_mb = 0, mods_mb = 0;  /* (the game's online mod settings) */
     int exclusive = 0, max_scale = 4, scene_height = 0, upscale = 0, upscale_quality = 1;
@@ -2547,6 +2547,7 @@ static void settings_load(void)
             else if (!strcmp(key, "skip_intros")) skip_intros = !strcmp(val, "true");
             else if (!strcmp(key, "skip_training")) skip_training = !strcmp(val, "true");
             else if (!strcmp(key, "fast_loads")) fast_loads = !strcmp(val, "true");
+            else if (!strcmp(key, "vibration")) vibration = strcmp(val, "false") != 0;
             else if (!strcmp(key, "arena_brightness")) arena_light = atoi(val);
             else if (!strcmp(key, "match_camera")) match_camera = atoi(val);
             else if (!strcmp(key, "native_texture_quality"))
@@ -2616,6 +2617,7 @@ static void settings_load(void)
     CheckDlgButton(s_wnd, ID_SKIP_INTROS, skip_intros ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(s_wnd, ID_SKIP_TRAINING, skip_training ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(s_wnd, ID_FAST_LOADS, fast_loads ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(s_wnd, ID_VIBRATION, vibration ? BST_CHECKED : BST_UNCHECKED);
     SendMessageW(ctl(ID_TEXTURES), CB_SETCURSEL, (WPARAM)textures, 0);
     /* (Off, then FSR 1 / FSR 2 / DLSS ultra quality .. performance: native_upscale_quality 0-3) */
     upscale_fill(upscale ? 1 + 4 * (upscale - 1) + (upscale_quality >= 0 && upscale_quality <= 3 ? upscale_quality : 1)
@@ -2632,7 +2634,7 @@ static void settings_load(void)
 
 static int settings_save(void)
 {
-    enum { NK = 44 };
+    enum { NK = 45 };
     static const char *keys[NK] = { "gpu_plugin", "input_backend", "resolution", "resolution_scale", "window_width",
                                     "window_height", "fullscreen", "vsync", "audio_mute", "audio_backend", "show_fps",
                                     "native_2x_msaa", "native_renderer", "gpu_backend", "user_language",
@@ -2643,7 +2645,7 @@ static int settings_save(void)
                                     "native_render_scale", "native_scene_height", "arena_brightness", "perf_overlay",
                                     "native_upscale", "native_upscale_quality", "match_camera",
                                     "online_mod_upload", "online_mod_upload_kbs", "online_mod_upload_peers",
-                                    "online_mod_max_mb", "online_mods_max_mb", "fast_loads" };
+                                    "online_mod_max_mb", "online_mods_max_mb", "fast_loads", "vibration" };
     const int renderer = (int)SendMessageW(ctl(ID_RENDERER), CB_GETCURSEL, 0, 0);
     char vals[NK][160];
     int done[NK] = { 0 };
@@ -2711,6 +2713,8 @@ static int settings_save(void)
     strcpy_s(vals[27], 64, IsDlgButtonChecked(s_wnd, ID_SKIP_INTROS) == BST_CHECKED ? "true" : "false");
     strcpy_s(vals[28], 64, IsDlgButtonChecked(s_wnd, ID_SKIP_TRAINING) == BST_CHECKED ? "true" : "false");
     strcpy_s(vals[43], 64, IsDlgButtonChecked(s_wnd, ID_FAST_LOADS) == BST_CHECKED ? "true" : "false");
+    /* (the game's OPTIONS -> CONTROLS -> VIBRATION: off, no controller rumbles - pad_types.cpp) */
+    strcpy_s(vals[44], 64, IsDlgButtonChecked(s_wnd, ID_VIBRATION) == BST_CHECKED ? "true" : "false");
     {
         static const char *k_textures[3] = { "\"high\"", "\"medium\"", "\"low\"" };
         const int ti = (int)SendMessageW(ctl(ID_TEXTURES), CB_GETCURSEL, 0, 0);
@@ -2832,6 +2836,7 @@ static void settings_defaults(void)
     CheckDlgButton(s_wnd, ID_SKIP_INTROS, BST_UNCHECKED);
     CheckDlgButton(s_wnd, ID_SKIP_TRAINING, BST_UNCHECKED);
     CheckDlgButton(s_wnd, ID_FAST_LOADS, BST_UNCHECKED);
+    CheckDlgButton(s_wnd, ID_VIBRATION, BST_CHECKED);
     SendMessageW(ctl(ID_TEXTURES), CB_SETCURSEL, 0, 0);
     SendMessageW(ctl(ID_UPSCALE), CB_SETCURSEL, 0, 0);
     SendMessageW(ctl(ID_ARENA_LIGHT), CB_SETCURSEL, 5, 0);
@@ -4611,7 +4616,10 @@ static void build_ui(void)
     SendMessageW(h, CB_ADDSTRING, 0, (LPARAM)L"SDL");
     add(TAB_SETTINGS, L"Button", L"Mute", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 464, 306, 84, 24, ID_MUTE);
     add(TAB_SETTINGS, L"Button", L"High CPU priority (helps on busy or weak PCs)", BS_AUTOCHECKBOX | WS_TABSTOP,
-        X0 + 16, 334, 530, 24, ID_PRIORITY);
+        X0 + 16, 334, 340, 24, ID_PRIORITY);
+    /* (vibration: the game's OPTIONS -> CONTROLS -> VIBRATION - off, no controller rumbles) */
+    add(TAB_SETTINGS, L"Button", L"Controller vibration", BS_AUTOCHECKBOX | WS_TABSTOP, X0 + 380, 334, 168, 24,
+        ID_VIBRATION);
     /* Launcher: its own settings (launcher.ini) - the update check (up_setup puts it here). Entrance music is on
        the Music page. */
     add(TAB_SETTINGS, L"Button", L"Launcher", BS_GROUPBOX, X0, 374, 560, 68, 0);
@@ -9472,7 +9480,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             }
             break;
         case ID_WINDOWED: case ID_FULLSCREEN: case ID_FULLSCREEN_EX: case ID_VSYNC: case ID_MUTE:
-        case ID_PREPARE: case ID_PRIORITY: case ID_UNLOCK_ALL: case ID_SKIP_INTROS: case ID_SKIP_TRAINING:
+        case ID_PREPARE: case ID_PRIORITY: case ID_UNLOCK_ALL: case ID_SKIP_INTROS: case ID_SKIP_TRAINING: case ID_VIBRATION:
             if (HIWORD(wp) == BN_CLICKED) {
                 if (LOWORD(wp) == ID_WINDOWED || LOWORD(wp) == ID_FULLSCREEN || LOWORD(wp) == ID_FULLSCREEN_EX)
                     display_hint();

@@ -164,7 +164,7 @@ constexpr uint32_t kMatchLoadFallbackMin = 64 * 1024;
 // every other heap keeps its size, heaps 0-11 their addresses too. SVR2011_TEST_HEAP12_MB=<MB> (4.5 / 0: the game's).
 constexpr uint32_t kHeapSizes = 0x82DAC2F8, kGameHeap12Kb = 4608;  // (pairs, not one a heap: heap 12's is looked up)
 constexpr uint32_t kGameBlock = 0x0B600000;
-uint32_t g_heap12_extra = 0;  // (bytes the block and heap 12 grow by; 0 when the table isn't the game's)
+uint32_t g_heap12_extra = 0;  // (bytes the block grows by - heap 12's and heap 41's; 0 when the table isn't the game's)
 // The game's heaps (table at *0x82EC5F48, 36 bytes each: start, end).
 void LogHeapTable(const uint8_t* base) {
   const uint32_t table = Rd32(base + 0x82EC5F48);
@@ -181,7 +181,11 @@ void LogHeapTable(const uint8_t* base) {
 // the heaps and the failure in the log, the "out of game memory" notice, then a crash report (abort). Other
 // threads that fail meanwhile wait for the end. (Any size: a forced failure of a 1.4 MB block there, lr 821EA528,
 // was written to as well.)
-constexpr uint32_t kExhaustedHeaps[] = {kMatchLoadHeap};
+// Heap 41 too (0.3 MB, grown below): its 88-byte blocks for the loader thread (sub_821593A8 -> sub_826A1D38 /
+// sub_826A41xx) - with 104 superstar + 55 arena mods it was full after some matches and the game read the 0 it got
+// (2.2.1 reports c92f5a, PC: lr 826A416C, the crash after quitting a match; 0c22ef, Android: the same thread).
+constexpr uint32_t kLoaderHeap = 41, kGameHeap41Kb = 300;
+constexpr uint32_t kExhaustedHeaps[] = {kMatchLoadHeap, kLoaderHeap};
 void HeapExhausted(const uint8_t* base, uint32_t heap, uint32_t size, uint32_t lr) {
   static std::atomic<bool> ending{false};
   if (ending.exchange(true))
@@ -591,6 +595,21 @@ void InstallRingRules(rex::memory::Memory* memory) {
     g_heap12_extra = (kb - kGameHeap12Kb) * 1024;
   }
   REXLOG_INFO("[svr2011] heap 12: {:.1f} MB (game's 4.5)", kb > kGameHeap12Kb && g_heap12_extra ? kb / 1024.0 : 4.5);
+  // Heap 41 to 2092 KB the same way (its KB in the pairs, the block's request that much bigger; only with heap 12's grow,
+  // which proved the table the game's). Test aid SVR2011_TEST_HEAP41_KB=<KB> (300: the game's).
+  uint32_t kb41 = 2092;  // (300 + 1792: the extra a multiple of 64 KB - else the block's reserve steps down and every heap moves)
+  if (const char* v = std::getenv("SVR2011_TEST_HEAP41_KB"); v && *v) kb41 = std::max(uint32_t(std::atoi(v)), kGameHeap41Kb);
+  uint32_t heap41_kb = 0;
+  for (uint32_t i = 0; i < 54 && !heap41_kb; ++i)
+    if (Rd32(b + kHeapSizes + i * 8) == kLoaderHeap) heap41_kb = kHeapSizes + i * 8 + 4;
+  if (!g_heap12_extra || !heap41_kb || Rd32(b + heap41_kb) != kGameHeap41Kb) {
+    REXLOG_WARN("[svr2011] heap 41: left at its size ({} KB in the table)", heap41_kb ? Rd32(b + heap41_kb) : 0);
+  } else if (kb41 > kGameHeap41Kb) {
+    b[heap41_kb] = uint8_t(kb41 >> 24), b[heap41_kb + 1] = uint8_t(kb41 >> 16), b[heap41_kb + 2] = uint8_t(kb41 >> 8),
+    b[heap41_kb + 3] = uint8_t(kb41);
+    g_heap12_extra += (kb41 - kGameHeap41Kb) * 1024;  // (the block grows by both)
+    REXLOG_INFO("[svr2011] heap 41: {} KB (game's {})", kb41, kGameHeap41Kb);
+  }
 }
 
 void SetRingRules(const std::string& manifest) {

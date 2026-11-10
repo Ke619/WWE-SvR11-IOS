@@ -150,7 +150,7 @@ Settings are saved in `svr2011.toml` in the game folder (the app's **Documents**
 | Discord Status | ➖ Not part of this port. |
 | Built-in DISCOVERY Tab | ➖ Not part of this port. |
 | Paint Tool | ✅ Working |
-| Custom Main Menu Backgrounds | ⚠️ Not available in the Launcher yet, Can be added manually and setup in-game. |
+| Custom Main Menu Backgrounds | ✅ Working |
 | Mod Maker | ➖ Not part of this port. |
 | In-Game `REPORT A PROBLEM` tab | ⛔️ Removed (Exclusive to Kaiko’s PC/android port). |
 ---

@@ -14,10 +14,17 @@
 // translation (+16) and bounding sphere (mesh +0xA4, node +64) is multiplied
 // - a uniform scale about the model's origin, the point the game places
 // (hand, shoulder, waist).
+//
+// Except the Rolled ones (2022-2030, 2052, 2307, 2310, 2514, 2422, 2548): those
+// are the belts worn ROUND THE WAIST (a Created Superstar's entrance, report
+// f00a1a: the CAW's 2024, an ECW champion's 2307). Scaled about the waist,
+// the loop was 20% wider than the body and stood off it, so they stay at x1.00.
 
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
+#include <set>
 #include <string>
 
 #include <rex/cvar.h>
@@ -59,6 +66,15 @@ bool IsBeltName(const char* n) {
          InRange(id, 3002, 3513) || InRange(id, 4002, 4513) || InRange(id, 5002, 5024);
 }
 
+// A Rolled belt: worn round the waist (kept at its own size, above).
+bool IsWaistBelt(const char* n) {
+  const int id = std::atoi(std::string(n, 4).c_str());
+  static const int kSingles[] = {2052, 2307, 2310, 2514, 2422, 2548};
+  for (int s : kSingles)
+    if (id == s) return true;
+  return InRange(id, 2022, 2030);
+}
+
 }  // namespace
 
 REX_EXTERN(__imp__sub_826B6BA8);
@@ -84,6 +100,14 @@ REX_HOOK_RAW(sub_826B6BA8) {
   char name[17] = {};
   std::memcpy(name, base + obj, 16);
   if (!IsBeltName(name)) return;
+  if (IsWaistBelt(name)) {
+    static std::mutex mu;
+    static std::set<std::string> told;  // (one line per model)
+    std::lock_guard<std::mutex> lock(mu);
+    if (told.insert(std::string(name, 4)).second)
+      REXLOG_INFO("[svr2011] title belts: {} worn on the waist - kept at x1.00", name);
+    return;
+  }
   const uint32_t nmesh = Rd32(m + 0x10), meshes = ptr(Rd32(m + 0x14));
   const uint32_t nnode = Rd32(m + 0x18), nodes = ptr(Rd32(m + 0x20));
   if (nmesh > 256 || nnode > 256 || (nmesh && !meshes) || (nnode && !nodes)) return;

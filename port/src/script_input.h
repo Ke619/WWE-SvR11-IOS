@@ -11,7 +11,7 @@
 //   wait <ms>                   idle
 //   type <text>                 type on the PC keyboard (keyboard_typing.h)
 //   key <BACK|ENTER|ESC|LEFT|RIGHT|UP|DOWN>   press a PC keyboard key
-//   hotkey <F1-F12|...>         a window key through the key binds (rex/ui/keybinds.h), e.g. F12 REPORT A PROBLEM
+//   bindkey <F1-F12|...>        a window key through the key binds (rex/ui/keybinds.h), e.g. F12 REPORT A PROBLEM
 //   set <cvar> <value>          sets a setting at once (not queued; tests of live changes)
 //   connect                     an idle "Test Pad" connects now (not queued; late-controller tests;
 //                               SVR2011_TEST_SCRIPT_AS_KEYBOARD=1 lists the script as the keyboard)

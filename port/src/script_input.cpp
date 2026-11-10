@@ -281,7 +281,7 @@ void ScriptInputDriver::ParseLine(const std::string& line) {
     rex::cvar::SetFlagByName(name, value);
     REXLOG_INFO("script input: {}", line);
     return;
-  } else if (verb == "hotkey") {
+  } else if (verb == "bindkey") {   // (not "hotkey": that is the free camera's, above)
     in >> step.hotkey;
     if (rex::ui::ParseVirtualKey(step.hotkey) == rex::ui::VirtualKey::kNone) {
       REXLOG_WARN("script input: unknown key '{}'", line);

@@ -1599,14 +1599,21 @@ void SetSigns(uint8_t* sr, const uint8_t* br, const Mod& m) {
 // built on an unused id (base 115 ...) carried that 6, and the rankings of every brand's title skip anyone not on the
 // title's brand (sub_825AF0F0 -> sub_828B8038(id, 1)): only the Unified Tag ranking, which takes teams, showed mods
 // (2.2.0 report e7e305). A 6 becomes RAW or SmackDown, by the slot (both brands get mods); a brand the player set stays.
-constexpr uint32_t kUniverseBrand = 17;
+// But FREE AGENT in Universe is that same 6 (2.2.1 report fe6cee: AJ Styles set to free agent went back to a brand
+// at the next match / Universe start - every record write made it RAW or SmackDown again). So only a record whose
+// other brand byte (+16) is 6 too - the base's "no brand", carried - is given one, once: +16 takes the same brand,
+// which marks the record done. A 6 at +17 with a brand at +16 is the player's free agent and stays.
+constexpr uint32_t kBrand = 16, kUniverseBrand = 17;
 void UniverseBrand(uint8_t* sr, const Mod& m) {
-  if (sr[kUniverseBrand] != 6) return;
-  sr[kUniverseBrand] = uint8_t(m.slot & 1);
-  static std::set<uint32_t> told;
-  if (told.insert(m.slot).second)
-    REXLOG_INFO("[svr2011] superstar mods: id {} in Universe on {} (its base's record had no brand)", m.slot,
-                m.slot & 1 ? "SmackDown" : "RAW");
+  if (sr[kBrand] != 6) return;  // (done, or a branded base: +17 is the player's - a 6 there is FREE AGENT)
+  if (sr[kUniverseBrand] == 6) {
+    sr[kUniverseBrand] = uint8_t(m.slot & 1);
+    static std::set<uint32_t> told;
+    if (told.insert(m.slot).second)
+      REXLOG_INFO("[svr2011] superstar mods: id {} in Universe on {} (its base's record had no brand)", m.slot,
+                  m.slot & 1 ? "SmackDown" : "RAW");
+  }
+  sr[kBrand] = sr[kUniverseBrand];  // (a 2.2.1 save's mod already moved off 6: marked too, as it is)
 }
 
 void SetHeight(uint8_t* sr, const uint8_t* br, const Mod& m) {

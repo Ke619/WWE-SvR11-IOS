@@ -972,7 +972,17 @@ void WriteMods(Writer& w) {
 
 // Why this game can't play the other side's (its version, then its mods;
 // "" when they match). A game from before the check has neither: an older version.
+// (the last Mismatch's DLC difference, short, for the search's notice: "DLC VOL03 MISSING" / "THEY LACK DLC VOL02";
+// "" when it wasn't the DLC - set and read on the searching thread)
+thread_local std::string t_dlc_short;
+
+std::string Upper(std::string s) {
+  for (char& c : s) c = char(std::toupper(static_cast<unsigned char>(c)));
+  return s;
+}
+
 std::string Mismatch(Reader& r) {
+  t_dlc_short.clear();
   if (!r.ok || r.at + 14 > r.n || Be32(r.p + r.at) != kModsTag) return svr2011::VersionDifference("");
   r.u32(), r.u64();
   const uint16_t n = r.u16();
@@ -991,7 +1001,13 @@ std::string Mismatch(Reader& r) {
     if (r.need(dn)) {
       const std::string dlc(reinterpret_cast<const char*>(r.p + r.at), dn);
       r.at += dn;
-      if (std::string why = svr2011::DlcDifference(svr2011::DlcSet(), dlc); !why.empty()) return why;
+      if (std::string why = svr2011::DlcDifference(svr2011::DlcSet(), dlc); !why.empty()) {
+        std::vector<std::string> here, there;
+        svr2011::DlcMissing(svr2011::DlcSet(), dlc, &here, &there);
+        t_dlc_short = !here.empty() ? Upper(here.front()) + (here.size() > 1 ? " AND MORE" : "") + " MISSING"
+                                    : "THEY LACK " + Upper(there.front());
+        return why;
+      }
     }
   }
   // (superstar and arena mods are checked in the lobby - per pick, per
@@ -2150,6 +2166,8 @@ std::vector<Session> Search() {
     if (g_relay_up) ToRelay(Mac{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}, request.data(), request.size());
   }, std::chrono::milliseconds(g_relay_up ? 1200 : 700));
   std::map<uint64_t, Session> found;
+  size_t dlc_hidden = 0;
+  std::map<std::string, size_t> dlc_why;  // (short reason -> sessions)
   for (const auto& reply : replies) {
     Reader r{reply.data(), reply.size()};
     const uint16_t count = r.u16();
@@ -2163,6 +2181,7 @@ std::vector<Session> Search() {
     // (the host's version and mods: others - its sessions left out, both told)
     if (const std::string why = Mismatch(r); !why.empty()) {
       REXLOG_INFO("p2p: {} session(s) left out - {}", got.size(), why);
+      if (!t_dlc_short.empty()) dlc_hidden += got.size(), dlc_why[t_dlc_short] += got.size();
       std::vector<uint64_t> ids;
       for (const auto& s : got) ids.push_back(s.id);
       Hidden(why, ids);
@@ -2170,6 +2189,25 @@ std::vector<Session> Search() {
       continue;
     }
     for (auto& s : got) found[s.id] = std::move(s);
+  }
+  // (some sessions shown, others hidden for their DLC: the game's own box only comes when none show - say it here;
+  // the search repeats every few seconds: once a minute for the same reason)
+  if (dlc_hidden && !found.empty()) {
+    static std::string told;
+    static std::chrono::steady_clock::time_point told_at{};
+    std::string top;
+    size_t most = 0;
+    for (const auto& [k, n] : dlc_why)
+      if (n > most) most = n, top = k;
+    const auto now = std::chrono::steady_clock::now();
+    if (top != told || now - told_at > std::chrono::minutes(1)) {
+      told = top, told_at = now;
+      REXLOG_INFO("p2p: search: {} session(s) hidden for their DLC ({})", dlc_hidden, top);
+      svr2011::OnlineOverlayNotice(std::to_string(dlc_hidden) + (dlc_hidden == 1 ? " SESSION" : " SESSIONS") +
+                                       " HIDDEN: " + top,
+                                   top.rfind("THEY LACK", 0) == 0 ? "THEY CAN'T PLAY YOUR DLC - THE OTHERS SHOW BELOW"
+                                                                  : "INSTALL IT FROM THE DLC TAB TO JOIN THEM", 8);
+    }
   }
   std::vector<Session> sessions;
   std::lock_guard lock(g_mutex);

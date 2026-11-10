@@ -724,17 +724,17 @@ const std::string& DlcSet() {
   return set;
 }
 
-std::string DlcDifference(const std::string& mine, const std::string& theirs) {
+void DlcMissing(const std::string& mine, const std::string& theirs, std::vector<std::string>* here_missing,
+                std::vector<std::string>* there_missing) {
   // By the volume's name: a volume missing keeps two games apart (its moves play otherwise without its motions); the
   // same volume with other files doesn't (report e0ec9d: a friend's Vol02 refused for a file nobody could name).
   std::map<std::string, std::string> a, b;
   for (const auto& [key, l] : ParseSet(mine)) a[l.name] = l.id;
   for (const auto& [key, l] : ParseSet(theirs)) b[l.name] = l.id;
-  std::vector<std::string> parts;
   for (const auto& [name, id] : b) {
     const auto it = a.find(name);
     if (it == a.end()) {
-      parts.push_back("they have " + name + ", you don't");
+      if (here_missing) here_missing->push_back(name);
     } else if (it->second != id) {
       static std::set<std::string> said;
       if (said.insert(it->second + id).second)
@@ -742,12 +742,30 @@ std::string DlcDifference(const std::string& mine, const std::string& theirs) {
     }
   }
   for (const auto& [name, id] : a)
-    if (!b.count(name)) parts.push_back("you have " + name + ", they don't");
-  if (parts.empty()) return "";
+    if (!b.count(name) && there_missing) there_missing->push_back(name);
+}
+
+std::string DlcDifference(const std::string& mine, const std::string& theirs) {
+  std::vector<std::string> here, there;
+  DlcMissing(mine, theirs, &here, &there);
+  if (here.empty() && there.empty()) return "";
+  auto names = [](const std::vector<std::string>& v) {
+    std::string s;
+    for (size_t i = 0; i < v.size(); ++i) s += (i ? (i + 1 == v.size() ? " and " : ", ") : "") + v[i];
+    return s;
+  };
+  // (what each side has, then the fix - this game's to make: install what it lacks)
   std::string out = "Your downloadable content doesn't match: ";
-  for (size_t i = 0; i < parts.size() && i < 2; ++i) out += (i ? "; " : "") + parts[i];
-  if (parts.size() > 2) out += "; and " + std::to_string(parts.size() - 2) + " more";
-  return out + ".";
+  if (!here.empty()) out += "they have " + names(here) + ", you don't";
+  if (!there.empty()) out += std::string(here.empty() ? "" : "; ") + "you have " + names(there) + ", they don't";
+  out += ".";
+#if defined(__ANDROID__)
+  if (!here.empty()) out += " Install " + names(here) + " from the app's DLC tab.";
+#else
+  if (!here.empty()) out += " Install " + names(here) + " from the launcher's DLC tab.";
+#endif
+  if (here.empty()) out += " Play with someone who has the same DLC.";
+  return out;
 }
 
 std::string ModSetDifference(const std::string& mine, const std::string& theirs, bool superstars) {

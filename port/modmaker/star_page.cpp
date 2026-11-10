@@ -212,6 +212,7 @@ struct Job {
   std::wstring moves, pack;
   std::map<int, std::string> gear;  // (entrance gear choices)
   std::map<MatKey, MatEdit> mats;   // (the material panel's edits)
+  std::vector<int> attire_cuts;     // (the model's own attires removed, in order: cut from ch.pac first)
 };
 
 // ---- entrances (D5)
@@ -1188,6 +1189,7 @@ bool PrepareJob(Job& j) {
   j.threads = g_star.threads;
   j.gear = g_star.gear;
   j.mats = g_star.mats;
+  if (g_star.attire_cuts_model == g_star.model) j.attire_cuts = g_star.attire_cuts;
   for (int a = 1; a < 4; ++a) j.attires[a] = g_star.attires[a], j.attire_names[a] = g_star.attire_names[a];
   j.picture = g_star.picture.image, j.picture_small = g_star.picture_small, j.picture_full = g_star.picture_full;
   j.picture_load = g_star.picture_load;
@@ -1207,6 +1209,20 @@ bool BuildFiles(Job& j, std::vector<ZipEntry>& files) {
   if (j.picture_small.w) {
     Progress("Putting the bust in the model's portrait ...");
     SetPortrait(ch, j.picture_small);
+  }
+  if (!j.attire_cuts.empty()) {  // attires removed: cut from the model (the later ones move down - the numbers below are after)
+    Epac e;
+    std::string err;
+    bool ok = EpacRead(ch, e);
+    for (const int c : j.attire_cuts) ok = ok && PacRemoveAttire(e, c, &err);
+    if (!ok) {
+      Status("An attire could not be removed from the model: " + err);
+      return false;
+    }
+    ch = EpacWrite(e);
+    std::string list;
+    for (const int c : j.attire_cuts) list += (list.empty() ? "" : ", ") + std::to_string(c);
+    Log("attires removed from the model: " + list);
   }
   {  // entrance gear choices for the model's own attires
     std::map<int, std::string> ops;
@@ -2276,10 +2292,86 @@ void FbxProblems(std::vector<Problem>& p) {
 
 // ---- entrance gear (EMD kind 4: the whole wrestler in the outfit worn for the entrance) per attire
 
-// The pac an attire comes from and its attire in it (the model's own, or an attire file's first).
+// The removals that apply: those made on the model now picked
+static const std::vector<int>& AttireCuts() {
+  static const std::vector<int> none;
+  return g_star.attire_cuts_model == g_star.model ? g_star.attire_cuts : none;
+}
+std::vector<int> OwnAttires() {
+  const std::vector<int> all = g_star.model.empty() ? std::vector<int>() : ModelAttires(g_star.model);
+  int n = 0;  // (the game counts them in order from 1)
+  while (std::find(all.begin(), all.end(), n + 1) != all.end()) ++n;
+  for (const int c : AttireCuts())
+    if (c >= 2 && c <= n) --n;
+  std::vector<int> v;
+  for (int a = 1; a <= n; ++a) v.push_back(a);
+  return v;
+}
+int PacAttireOf(int slot) {
+  const auto& cuts = AttireCuts();
+  for (auto it = cuts.rbegin(); it != cuts.rend(); ++it)
+    if (slot >= *it) ++slot;
+  return slot;
+}
+void RemoveAttire(int s) {
+  if (s < 2 || s > 4) return;
+  const std::vector<int> own = OwnAttires();
+  if (std::find(own.begin(), own.end(), s) != own.end()) {  // (the model pac's own: cut from it at Save)
+    if (g_star.attire_cuts_model != g_star.model) g_star.attire_cuts.clear(), g_star.attire_cuts_model = g_star.model;
+    g_star.attire_cuts.push_back(s);
+  }
+  for (int k = s - 1; k < 3; ++k) {  // (the later attires move down one)
+    g_star.attires[k] = g_star.attires[k + 1];
+    std::memcpy(g_star.attire_names[k], g_star.attire_names[k + 1], sizeof g_star.attire_names[k]);
+    g_star.attire_entrance[k] = g_star.attire_entrance[k + 1];
+  }
+  g_star.attires[3].clear(), g_star.attire_names[3][0] = 0, g_star.attire_entrance[3] = -1;
+  std::map<int, std::string> gear;  // (entrance gear per attire: "from<k>" names an attire too)
+  for (auto [a, op] : g_star.gear) {
+    if (a == s) continue;
+    if (op.rfind("from", 0) == 0) {
+      const int k = std::atoi(op.c_str() + 4);
+      if (k == s) op = "off";
+      else if (k > s) op = "from" + std::to_string(k - 1);
+    }
+    gear[a > s ? a - 1 : a] = op;
+  }
+  g_star.gear = std::move(gear);
+  std::map<MatKey, MatEdit> mats;  // (the material panel's edits, by attire)
+  for (const auto& [k, e] : g_star.mats) {
+    const int a = std::get<0>(k);
+    if (a == s) continue;
+    mats[{a > s ? a - 1 : a, std::get<1>(k), std::get<2>(k), std::get<3>(k)}] = e;
+  }
+  g_star.mats = std::move(mats);
+  if (!g_star.threads.empty()) {  // (threads.txt lines "<attire>.<part>=...")
+    std::string out;
+    size_t at = 0;
+    while (at < g_star.threads.size()) {
+      size_t e = g_star.threads.find('\n', at);
+      if (e == std::string::npos) e = g_star.threads.size();
+      std::string line = g_star.threads.substr(at, e - at);
+      at = e + 1;
+      const size_t dot = line.find('.');
+      if (dot != std::string::npos && dot > 0 && std::all_of(line.begin(), line.begin() + long(dot), [](char c) { return std::isdigit(uint8_t(c)); })) {
+        const int a = std::atoi(line.c_str());
+        if (a == s) continue;
+        if (a > s) line = std::to_string(a - 1) + line.substr(dot);
+      }
+      out += line + "\n";
+    }
+    g_star.threads = out;
+  }
+  if (g_view_attire >= s) g_view_attire = std::max(1, g_view_attire - 1);
+  Touch();
+  Status("Attire " + std::to_string(s) + " removed" + (s < 4 ? ": the attires after it moved up one." : "."));
+}
+
+// The pac an attire comes from and its attire in it (the model's own - its number in the pac as picked - or an
+// attire file's first).
 std::pair<std::wstring, int> AttireSource(int a) {
   if (a > 1 && !g_star.attires[a - 1].empty()) return {g_star.attires[a - 1], 1};
-  return {g_star.model, a};
+  return {g_star.model, PacAttireOf(a)};
 }
 std::vector<int> GearOf(const std::wstring& pac) {
   std::vector<int> v;
@@ -2298,7 +2390,7 @@ int AttirePages(const std::wstring& pac, int attire) {
   return 0;
 }
 std::vector<int> AttireCount() {  // the attires the mod has, 1..4
-  const std::vector<int> own = g_star.model.empty() ? std::vector<int>() : ModelAttires(g_star.model);
+  const std::vector<int> own = OwnAttires();
   std::vector<int> v;
   for (int a = 1; a <= 4; ++a)
     if (a == 1 || !g_star.attires[a - 1].empty() || std::find(own.begin(), own.end(), a) != own.end()) v.push_back(a);
@@ -3033,7 +3125,7 @@ void Problems(std::vector<Problem>& p) {
                       .With("Pick another...", [] { GoStep(kStepLook); }, "the Look step is open")
                       .With("Use the fighting style's body", use_style_model, "the fighting style's body is used"));
   }
-  const std::vector<int> own_attires = g_star.model.empty() ? std::vector<int>() : ModelAttires(g_star.model);
+  const std::vector<int> own_attires = OwnAttires();
   auto in_model_attire = [&](int n) {
     for (int k = 1; k <= n; ++k)
       if (std::find(own_attires.begin(), own_attires.end(), k) == own_attires.end()) return false;
@@ -3247,7 +3339,7 @@ int g_view_attire = 1;  // the attire the preview shows (1-4)
 
 void Preview() {
   // the attire shown: an attire<N> file's first attire, else the model's own attire N
-  const std::vector<int> own = g_star.model.empty() ? std::vector<int>() : ModelAttires(g_star.model);
+  const std::vector<int> own = OwnAttires();
   std::vector<int> have;
   for (int a = 1; a <= 4; ++a)
     if (a == 1 || !g_star.attires[a - 1].empty() || std::find(own.begin(), own.end(), a) != own.end()) have.push_back(a);
@@ -3256,9 +3348,9 @@ void Preview() {
   {  // entrance gear: the choice made for this attire (left out / another attire's)
     const int shown = GearShown(g_view_attire);
     if (char_preview::Gear() && shown && shown != g_view_attire && !from_file) {
-      char_preview::SetAttire(shown);
+      char_preview::SetAttire(PacAttireOf(shown));  // (in the model as picked: before any removed attire)
     } else {
-      char_preview::SetAttire(from_file ? 1 : g_view_attire);
+      char_preview::SetAttire(from_file ? 1 : PacAttireOf(g_view_attire));
       if (char_preview::Gear() && !shown) char_preview::SetGear(false);
     }
   }
@@ -3374,6 +3466,14 @@ void Draw() {
       for (const auto& m : MadeEntrances())
         if (std::to_string(m.id) == g_test_cae) UseMadeEntrance(m.id, m.name);
     ApplyTestMaterials();  // (--star-mat before the test save)
+    // test aid SVR2011_TEST_REMOVE_ATTIRE=<n>[,<n>...]: those attires removed, in that order, before the test save
+    if (const char* r = std::getenv("SVR2011_TEST_REMOVE_ATTIRE"); r && *r)
+      for (const char* p = r; *p;) {
+        const int n = std::atoi(p);
+        if (n) RemoveAttire(n), Log("test: attire " + std::to_string(n) + " removed");
+        while (*p && *p != ',') ++p;
+        if (*p == ',') ++p;
+      }
     if (!g_test_save.empty() && g_test_import.rfind("game:", 0) != 0) {  // (game: saves once the port is done)
       Job j;
       PrepareJob(j);
@@ -3565,7 +3665,7 @@ void Draw() {
           "A character model pac: one of the game's (pac\\ch\\chNNN.pac) or one converted from another game.");
   if (!g_star.model.empty()) {
     ImGui::SameLine();
-    if (ImGui::SmallButton("Export to FBX...")) ExportModelFbx(g_star.model, g_view_attire, g_star.name);
+    if (ImGui::SmallButton("Export to FBX...")) ExportModelFbx(g_star.model, PacAttireOf(g_view_attire), g_star.name);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("The model (the attire the preview shows) with its skeleton, skin weights and textures, for Blender and other tools.");
   }
   FbxRows(false);
@@ -3581,7 +3681,7 @@ void Draw() {
   ImGui::SameLine();
   BinkFromVideoButton("From a video...", g_star.movie, g_star.name);
   MovieSizeRow(g_star.movie);
-  const std::vector<int> own = g_star.model.empty() ? std::vector<int>() : ModelAttires(g_star.model);
+  const std::vector<int> own = OwnAttires();
   auto in_model = [&](int n) {  // (the game counts them contiguous from 1)
     for (int k = 1; k <= n; ++k)
       if (std::find(own.begin(), own.end(), k) == own.end()) return false;
@@ -3602,7 +3702,16 @@ void Draw() {
       ImGui::SameLine();
       ImGui::PushID(a);
       if (EntrancePicker("##ae", g_star.attire_entrance[a], "its entrance: the superstar's", 200)) Touch();
+      ImGui::SameLine();
+      const bool remove = ImGui::SmallButton("Remove attire");
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Takes attire %d out of the mod (its model%s, name and entrance); the attires after it move up one.",
+                          a + 1, inpac && g_star.attires[a].empty() ? ", cut from the model pac when you save" : "");
       ImGui::PopID();
+      if (remove) {
+        RemoveAttire(a + 1);
+        break;  // (the rows changed: drawn again next frame)
+      }
     }
   }
   ImGui::TextDisabled("%s", own.size() > 1 ? ("The model has " + std::to_string(std::min<size_t>(own.size(), 4)) +
@@ -3775,6 +3884,8 @@ std::string StateText() {
        "\npack=" + Utf8(g_star.pack) + "\nabil=" + std::to_string(g_star.own_abilities);
   for (int a : g_star.abilities) s += "," + std::to_string(a);
   for (const auto& [a, op] : g_star.gear) s += "\ngear" + std::to_string(a) + "=" + op;
+  s += "\nattire_cuts=";
+  for (const int c : g_star.attire_cuts) s += std::to_string(c) + ",";
   s += "\nfbx=" + Utf8(g_star.fbx) + "\nfbx_map=" + FbxMapText() + "\nfbx_on=" + PairsText(g_star.fbx_on) + "\nfbx_kind=" +
        PairsText(g_star.fbx_kind) + "\nfbx_pic=" + PairsText(g_star.fbx_pic) + "\nfbx_mat=" + std::to_string(g_star.fbx_mat.size()) + "\nsimple=" + std::to_string(g_star.simple);
   return s;
@@ -3903,6 +4014,11 @@ void WriteProject(ProjectOut& out) {
     out.Key("attire" + std::to_string(a + 1) + "_name", g_star.attire_names[a]);
     if (g_star.attire_entrance[a] > 0) out.Key("attire" + std::to_string(a + 1) + "_entrance", g_star.attire_entrance[a]);
   }
+  if (!g_star.attire_cuts.empty() && g_star.attire_cuts_model == g_star.model) {  // (attires removed from the model)
+    std::string cuts;
+    for (const int c : g_star.attire_cuts) cuts += (cuts.empty() ? "" : ",") + std::to_string(c);
+    out.Key("attire_cuts", cuts);
+  }
   if (g_star.entrance >= 0) out.Key("entrance", g_star.entrance);
   if (g_star.victory > 0) out.Key("victory", g_star.victory);
   out.File("victory_song", g_star.victory_song, "star/victory");
@@ -4008,6 +4124,17 @@ bool Read(const ProjectIn& in, bool mod) {
     return in.Extract(n);
   };
   g_star.model = file("model", "ch.pac");
+  g_star.attire_cuts.clear(), g_star.attire_cuts_model.clear();
+  if (!mod) {  // (attires removed from the model as picked; a mod's ch.pac has them cut already)
+    const std::string cuts = in.Get("attire_cuts");
+    for (size_t at = 0; at < cuts.size();) {
+      const int c = std::atoi(cuts.c_str() + at);
+      if (c >= 2 && c <= 4) g_star.attire_cuts.push_back(c);
+      const size_t comma = cuts.find(',', at);
+      at = comma == std::string::npos ? cuts.size() : comma + 1;
+    }
+    if (!g_star.attire_cuts.empty()) g_star.attire_cuts_model = g_star.model;
+  }
   g_star.fbx = Wide(in.Get("fbx"));
   ParseFbxMap(in.Get("fbx_map"));
   g_star.simple = in.GetInt("simple", 0) != 0;

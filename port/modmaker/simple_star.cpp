@@ -299,7 +299,7 @@ void StepAttires_() {
     PartFromAnotherGame(StarPart::kAttire, 2, g_attire_slot);
     return;
   }
-  const std::vector<int> own = g_star.model.empty() ? std::vector<int>() : ModelAttires(g_star.model);
+  const std::vector<int> own = OwnAttires();
   auto own_has = [&](int n) {  // (the game counts them in order from 1)
     for (int k = 1; k <= n; ++k)
       if (std::find(own.begin(), own.end(), k) == own.end()) return false;
@@ -325,11 +325,15 @@ void StepAttires_() {
       const std::wstring f = PickFile(false, L"A character model (ch.pac): its first attire", kPacFilter, 1);
       if (!f.empty()) g_star.attires[a] = f, Touch();
     }
-    if (!g_star.attires[a].empty()) {
-      ImGui::SameLine();
-      if (ImGui::SmallButton("Remove")) g_star.attires[a].clear(), Touch();
-    }
+    bool removed = false;
     if (!g_star.attires[a].empty() || from_model) {
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Remove")) RemoveAttire(a + 1), removed = true;  // (the later ones move up: shown next frame)
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Takes attire %d out of the mod%s; the attires after it move up one.", a + 1,
+                          from_model ? " (cut from the model when you save)" : "");
+    }
+    if (!removed && (!g_star.attires[a].empty() || from_model)) {
       ImGui::SameLine();
       if (ImGui::SmallButton("See it")) g_view_attire = a + 1;
       ImGui::SetNextItemWidth(220 * g_scale);
@@ -340,6 +344,7 @@ void StepAttires_() {
     ImGui::Unindent(90 * g_scale);
     ImGui::Spacing();
     ImGui::PopID();
+    if (removed) break;  // (the list changed: drawn again next frame)
     if (g_star.attires[a].empty() && !from_model) break;  // (in order: the next one after this)
   }
   ImGui::Separator();
@@ -582,7 +587,7 @@ void StepFinish() {
   {
     int extra = 0;
     for (int a = 1; a < 4; ++a) extra += !g_star.attires[a].empty();
-    const int own = g_star.model.empty() ? 0 : int(ModelAttires(g_star.model).size());
+    const int own = int(OwnAttires().size());
     row(kStepAttires, std::to_string(std::max(own, 1 + extra)) + " attire" + (std::max(own, 1 + extra) == 1 ? "" : "s"));
   }
   row(kStepMusic, !g_star.song.empty() ? FileName(g_star.song) : g_star.music > 0 ? "the game's theme: " + StockThemeName(g_star.music) : std::string("the style's"));

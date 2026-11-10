@@ -2404,8 +2404,19 @@ uint32_t KeyAlias(uint8_t* base, const char* n) {
     } else if (p == asked) {
       std::snprintf(out, sizeof out, "%.*s%s", int(n[0] == '/'), n, asked);
     } else {
-      if (!m || m->key == v) return 0;
-      std::snprintf(out, sizeof out, "%.*sEMD/%06u%02u", int(p - n), n, m->key, kind);
+      if (!m) return 0;
+      // An attire the mod no longer has (removed in the Mod Maker, suggestion 04d611 - a save or a setup can still
+      // pick it): the model is missing and the loader crashed in sub_826BB8A0, so attire 1's model stands in.
+      unsigned k = kind;
+      if (k % 10 == 2 && k / 10 >= m->attires) {
+        k = 2;
+        static std::atomic<int> said{0};
+        if (said++ < 8)
+          REXLOG_WARN("[svr2011] superstar mods: {} has no attire {} ({} attires): attire 1's model stands in", m->name,
+                      kind / 10 + 1, m->attires);
+      }
+      if (m->key == v && k == kind) return 0;
+      std::snprintf(out, sizeof out, "%.*sEMD/%06u%02u", int(p - n), n, m->key, k);
     }
   } else if (g_mods.empty()) {
     return 0;

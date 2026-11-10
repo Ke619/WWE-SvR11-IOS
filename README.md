@@ -148,7 +148,7 @@ Settings are saved in `svr2011.toml` in the game folder (the app's **Documents**
 | iOS GUI Launcher | ✅ Working |
 | Online | ✅ Working |
 | Discord Status | ➖ Not part of this port. |
-| Built-in DISCOVERY Tab | ➖ Not part of this port. |
+| Built-in `DISCOVERY` Tab | ➖ Not part of this port. |
 | Paint Tool | ✅ Working |
 | Custom Main Menu Backgrounds | ✅ Working |
 | Mod Maker | ➖ Not part of this port. |

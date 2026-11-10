@@ -1391,7 +1391,9 @@ void RelayCheck(const std::set<Mac>& gamers, bool in_match) {
     const Peer& p = it->second;
     if (!p.tunnel || now - p.game_traffic > std::chrono::seconds(5)) continue;
     ++remote;
-    if (p.relayed && (!p.data_v2 || now - p.direct_pong >= std::chrono::seconds(3))) failed = true;
+    // (no direct round trip: on the relay - or, on match network p2p, where the relay never carries it, nowhere)
+    const bool direct_ok = p.data_v2 && now - p.direct_pong < std::chrono::seconds(3);
+    if (!direct_ok && (p.relayed || NoRelayData())) failed = true;
   }
   if (!remote) {
     since = {};
@@ -1401,11 +1403,16 @@ void RelayCheck(const std::set<Mac>& gamers, bool in_match) {
   if (!failed) failing = {};
   else if (failing == Clock::time_point{}) failing = now;
   if (now - since < std::chrono::seconds(8)) return;
-  const uint8_t path = ForceRelay() ? 3 : failed && now - failing >= std::chrono::seconds(5) ? 2 : failed ? g_relay_path.load() : 1;
+  const uint8_t fail_kind = NoRelayData() ? 4 : 2;  // (p2p: no relay to fall back on)
+  const uint8_t path =
+      ForceRelay() ? 3 : failed && now - failing >= std::chrono::seconds(5) ? fail_kind : failed ? g_relay_path.load() : 1;
   if (!path) return;
   if (g_relay_path.exchange(path) != path)
-    REXLOG_INFO("p2p: session {:016X} plays {} ({} far-off player{}, this router: {})", sid,
-                path == 3 ? "through the relay (set so)" : path == 2 ? "through the relay (direct failed)" : "direct",
+    REXLOG_INFO("p2p: session {:016X} {} ({} far-off player{}, this router: {})", sid,
+                path == 4   ? "can't connect (direct failed; this server's matches don't go through the relay)"
+                : path == 3 ? "plays through the relay (set so)"
+                : path == 2 ? "plays through the relay (direct failed)"
+                            : "plays direct",
                 remote, remote == 1 ? "" : "s", NatKind().first);
 }
 
@@ -1445,6 +1452,13 @@ void PingLoop() {
         if (now - p.game_traffic > kPingAfterGame) continue;
         if (now - p.pinged > std::chrono::seconds(3)) p.direct_ok = p.relay_ok = now;  // (pinged again: a fresh start)
         p.pinged = now;
+        // (match network p2p: no match data through the relay, either way - a peer put on it before this session's
+        // mode latched (in the ONLINE menu, the mode auto) stayed there: the joiner's game packets went into the relay
+        // while the host answered only directly, and nothing came back - report 01a0ae)
+        if (NoRelayData() && p.relayed && !ForceRelay()) {
+          p.relayed = false;
+          REXLOG_INFO("p2p: peer {} off the relay (this server's matches don't go through it)", Ip(p.fake));
+        }
         Path direct = PathOf(mac, p);
         direct.relayed = false;
         // A pinging peer's path, checked every second: direct whenever a direct ping came back in the last 3 s, the
@@ -2753,6 +2767,7 @@ P2PRelayPathInfo P2PRelayPath() {
   const std::string nat = NatKind().first;
   info.side = nat == "mapped" || nat == "open" ? 2 : nat == "symmetric" ? 1 : 0;
   info.port = g_me.base;
+  info.carrier_nat = g_mapped_ip && !PublicIp(g_mapped_ip);  // (port_map: "behind another one")
   return info;
 }
 

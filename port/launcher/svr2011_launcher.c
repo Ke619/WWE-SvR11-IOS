@@ -4919,6 +4919,8 @@ static void build_ui(void)
     discover_build(s_wnd, add, TAB_DISCOVER, ID_DISCOVER_BASE, discover_server, discover_account);
     receipts_set_guard(test_run_refuses_url);   /* (a test run: never a server off this PC) */
     reports_build(s_wnd, add, TAB_REPORTS, ID_REPORTS_BASE, discover_server, reports_token);
+    /* (2.2.2: players looked for Report a problem on this tab and found only the list - the same window as Play's) */
+    add(TAB_REPORTS, L"Button", L"Report a problem\x2026", BS_PUSHBUTTON | WS_TABSTOP, 458, 532, 130, 28, ID_REPORT);
     suggestions_set_sign_in(go_sign_in);   /* (2.2.1: signed out, its Sign in button opens the Online tab) */
     suggestions_build(s_wnd, add, TAB_SUGGESTIONS, ID_SUGGEST_BASE, discover_server, reports_token, test_run_refuses_url,
                       PORT_VERSION);

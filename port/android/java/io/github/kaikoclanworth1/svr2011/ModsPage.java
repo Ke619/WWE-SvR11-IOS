@@ -558,6 +558,23 @@ final class ModsPage {
         String need = attire ? "attire.pac" : pic || titlePack || cawPart ? "manifest.txt" : signPack || mediaPack || matchType ? "manifest.txt" : star ? "ch.pac" : "arena.pac";
         File kind = dest.getParentFile(), mods = kind.getParentFile();
         File fresh = new File(mods, ".new-" + kind.getName() + "-" + id), old = new File(mods, ".old-" + kind.getName() + "-" + id);
+        // (its entrance / victory numbers another installed mod uses for different files: moved to free ones, kept on
+        // an update - EntranceClash, the PC launcher's entrance_clash.c; said in the result and in Mods/.install.log)
+        String clash = "";
+        try {
+            clash = EntranceClash.fix(mods, stage, dest, r.name);
+        } catch (IOException clashFailed) {
+            android.util.Log.w("SvR2011", "mods: entrance numbers not checked: " + clashFailed.getMessage());
+        }
+        if (!clash.isEmpty()) {
+            android.util.Log.i("SvR2011", "mods: " + clash);
+            try (OutputStream o = new FileOutputStream(new File(mods, ".install.log"), true)) {
+                o.write((new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.ROOT).format(new java.util.Date())
+                    + " " + clash.replace("\n", "\n                    ") + "\n").getBytes(StandardCharsets.UTF_8));
+            } catch (IOException ignored) {
+                // (the log is a help, not the install)
+            }
+        }
         deleteTree(fresh);
         deleteTree(old);
         kind.mkdirs();
@@ -590,6 +607,7 @@ final class ModsPage {
             }
             r.note = attireGuard(dest);
         }
+        if (!clash.isEmpty()) r.note = (clash.replace("\n", " ") + " " + r.note).trim();
         if (needsNewer(ctx, m.get("needs")))
             r.note = ("It needs game version " + m.get("needs").trim() + " or newer - this one is " + gameVersion(ctx)
                 + ": update the game first. " + r.note).trim();

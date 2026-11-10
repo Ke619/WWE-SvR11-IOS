@@ -2,7 +2,8 @@
 // launcher's, launcher/report.c): the zip ReportSend sends (made in the app's
 // cache, gone once sent - reports are sent, not saved) with the newest game logs, crash reports and svr2011.toml (the account's token and
 // password removed), plus report.txt (app version, phone, Android version),
-// saves_check.txt (the Created Superstar saves' checksums, not the saves) and
+// saves_check.txt (the Created Superstar saves' checksums, not the saves),
+// dlc_check.txt (the installed DLC packages' names and files) and
 // mods_text.txt (the superstar mods' text files) - port/docs/PROBLEM_REPORTS.md.
 
 package io.github.kaikoclanworth1.svr2011;
@@ -47,7 +48,8 @@ final class ProblemReport {
                 + "made: " + stamp + "\n"
                 + lastExits()
                 + "contents: the newest game logs (logs/), crash reports (crashes/) and svr2011.toml "
-                + "(account token and password removed)" + (withSave ? ", the main save (save/: SaveData.dat - "
+                + "(account token and password removed), dlc_check.txt (the installed DLC packages' names and files)"
+                + (withSave ? ", the main save (save/: SaveData.dat - "
                 + "no Created Superstars or Paint Tool)" : "") + "; IP addresses blanked (x.x.x.x)\n";
             // (the player's words first: what a reader looks for)
             if (description != null && !description.isEmpty()) info = description + "\n" + info;
@@ -67,6 +69,7 @@ final class ProblemReport {
                 put(zip, "svr2011.toml", out.toString().getBytes(StandardCharsets.UTF_8));
             }
             addSavesCheck(zip, gameFolder);
+            addDlcCheck(zip, gameFolder);   // (the installed DLC: report 16947c)
             addModsText(zip, gameFolder);
             if (withSave) addMainSave(zip, gameFolder);
         }
@@ -218,6 +221,103 @@ final class ProblemReport {
             }
         }
         put(zip, "saves_check.txt", t.toString().getBytes(StandardCharsets.UTF_8));
+    }
+
+    // dlc_check.txt (report 16947c), in launcher/report.c's add_dlc_check format (its \r\n lines too) so the
+    // dashboard reads both alike: the installed DLC packages - <game>/UserData/0000000000000000/5451085D/00000002/
+    // <package> - each one's name (its .header), whether it has a catalog, its pac files and the fingerprint the
+    // online compare uses (online_files.cpp DlcSet: FNV-1a of each pac file's lower-case path and size, the
+    // pac/string left out; a package without pac files isn't counted online); then <game>/DLC's packages (as given
+    // to the app's DLC tab). Names and sizes only - no player files.
+    static void addDlcCheck(ZipOutputStream zip, File gameFolder) throws IOException {
+        File dir = new File(gameFolder, "UserData/0000000000000000/5451085D/00000002");
+        StringBuilder t = new StringBuilder("Installed DLC packages in " + dir + "\r\n");
+        File[] pkgs = dir.listFiles(File::isDirectory);
+        int packages = 0;
+        if (pkgs != null) {
+            Arrays.sort(pkgs, (x, y) -> x.getName().compareToIgnoreCase(y.getName()));
+            for (File pkg : pkgs) {
+                if (packages >= 50) break;
+                packages++;
+                // (its name: the .header's UTF-16BE at 8)
+                StringBuilder title = new StringBuilder();
+                File header = new File(dir.getParentFile(), "Headers/00000002/" + pkg.getName() + ".header");
+                if (header.isFile()) {
+                    byte[] hd = read(header, 64 << 10);
+                    for (int i = 8; i + 1 < hd.length && i < 8 + 256 && title.length() < 259; i += 2) {
+                        int c = ((hd[i] & 0xFF) << 8) | (hd[i + 1] & 0xFF);
+                        if (c == 0) break;
+                        title.append(c >= 0x20 && c < 0x7F ? (char) c : c == 0x2013 || c == 0x2014 ? '-' : '?');
+                    }
+                }
+                java.util.List<String> rels = new java.util.ArrayList<>();
+                java.util.List<Long> sizes = new java.util.ArrayList<>();
+                pacList(new File(pkg, "pac"), "pac", rels, sizes, 256);
+                Integer[] order = new Integer[rels.size()];
+                for (int i = 0; i < order.length; i++) order[i] = i;
+                // (report.c sorts with strcmp: by the UTF-8 bytes)
+                Arrays.sort(order, (x, y) -> compareBytes(rels.get(x).getBytes(StandardCharsets.UTF_8),
+                    rels.get(y).getBytes(StandardCharsets.UTF_8)));
+                long total = 0, hash = 0xCBF29CE484222325L;
+                int counted = 0;
+                for (Integer i : order) {
+                    long size = sizes.get(i);
+                    total += size;
+                    if (rels.get(i).startsWith("pac/string")) continue;
+                    counted++;
+                    for (byte b : rels.get(i).getBytes(StandardCharsets.UTF_8)) hash = (hash ^ (b & 0xFF)) * 0x100000001B3L;
+                    for (int k = 0; k < 8; k++) hash = (hash ^ ((size >>> (8 * k)) & 0xFF)) * 0x100000001B3L;
+                }
+                t.append(String.format(Locale.US, "\r\n%s\r\n  name: %s\r\n  catalog: %s\r\n  pac files: %d (%d bytes)\r\n",
+                    pkg.getName(), title.length() > 0 ? title : "(no header)",
+                    new File(pkg, "info/catalog.dlc").exists() ? "yes" : "no", order.length, total));
+                for (int j = 0; j < order.length && j < 40; j++)
+                    t.append("    ").append(rels.get(order[j])).append(' ').append(sizes.get(order[j])).append("\r\n");
+                if (counted > 0)
+                    t.append(String.format(Locale.US, "  fingerprint: %016X%s - counted online\r\n", hash,
+                        hash == 0xFD7BF34EAD3CAE51L ? " (Vol02's usual files)"
+                        : hash == 0x5BC65024845FD378L ? " (Vol03's usual files)" : " (not the usual files)"));
+                else
+                    t.append("  no pac files - not counted online (a catalog only, or not fully installed)\r\n");
+            }
+        }
+        if (packages == 0) t.append("(none)\r\n");
+        // (the packages given to the app's DLC tab)
+        File given = new File(gameFolder, "DLC");
+        t.append("\r\n").append(given).append(":\r\n");
+        File[] files = given.listFiles();
+        int n = 0;
+        if (files != null) {
+            Arrays.sort(files, (x, y) -> x.getName().compareToIgnoreCase(y.getName()));
+            for (File f : files) {
+                if (n >= 60) break;
+                n++;
+                // (as report.c: a folder's name ends in a backslash, its size 0)
+                t.append("  ").append(f.getName()).append(f.isDirectory() ? "\\" : "").append(' ')
+                    .append(f.isDirectory() ? 0 : f.length()).append("\r\n");
+            }
+        }
+        if (n == 0) t.append("  (none)\r\n");
+        put(zip, "dlc_check.txt", t.toString().getBytes(StandardCharsets.UTF_8));
+    }
+
+    // Each file under dir as rel/<name>, the names lower-cased (A-Z only, as report.c), up to max files.
+    static void pacList(File dir, String rel, java.util.List<String> rels, java.util.List<Long> sizes, int max) {
+        File[] list = dir.listFiles();
+        if (list == null) return;
+        Arrays.sort(list, (x, y) -> x.getName().compareToIgnoreCase(y.getName()));
+        for (File f : list) {
+            StringBuilder r = new StringBuilder(rel).append('/');
+            for (char c : f.getName().toCharArray()) r.append(c >= 'A' && c <= 'Z' ? (char) (c - 'A' + 'a') : c);
+            if (f.isDirectory()) pacList(f, r.toString(), rels, sizes, max);
+            else if (rels.size() < max) { rels.add(r.toString()); sizes.add(f.length()); }
+        }
+    }
+
+    static int compareBytes(byte[] x, byte[] y) {
+        for (int i = 0; i < x.length && i < y.length; i++)
+            if (x[i] != y[i]) return (x[i] & 0xFF) - (y[i] & 0xFF);
+        return x.length - y.length;
     }
 
     // mods_text.txt: each superstar mod's manifest.txt, moves.txt and threads.txt (64 KB each, 512 KB in all).

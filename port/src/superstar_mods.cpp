@@ -4056,6 +4056,126 @@ REX_HOOK_RAW(sub_824C3B48) {
   __imp__sub_824C3B48(ctx, base);
 }
 
+// ---- Lists of "downloaded" superstars that stop at id 321 (report d742a8)
+// The game builds some superstar lists by walking ids up to 321 and keeping those of one kind - stock, downloaded
+// (DLC-flagged: every superstar mod) or created. Big roster's mods on ids 323-511 were never walked: they showed in
+// match select (its lists are the roster's positions and the MODS category) but not in CREATE A MOVE-SET's
+// DOWNLOADED SUPERSTAR list nor (the report) Community Creations' moveset lists. Three builders do it alike:
+// - sub_82B972C8(screen, kind) - 1 = downloaded; ids +1108, flags +2076, values +3044, 242 of each, the count +4012:
+//   CREATE A MOVE-SET's lists (seen in the test);
+// - its twin sub_82BA38B8(screen, kind) - 2 = downloaded; +1136, +3184, +5232, 512, +7280;
+// - sub_82518F38(screen): kind +33608, 1 = downloaded; ids at +36536, 222 of them, the count at +37424.
+// Which of the last two Community Creations' moveset download uses wasn't reached in a test: both are covered. Each
+// entry's flag says it can be picked (usable and owned: 1 for a mod) and its value is the superstar's 36-byte roster
+// entry's "downloaded" byte (+17, sub_8257AB68(sub_8257B240(id))). A list shorter than 24 is filled up with -1 / 0.
+// After the game's build, those mods are added in id order (the game's walk is in id order).
+// The 36-byte roster entries (sub_8257B240(id) = 0x82EBE9FC + id * 36) are a table of 322: for ids from 322 the
+// address ran on past it - into what follows - so they get entries of their own (zeroed, this run only).
+namespace {
+constexpr uint32_t kRoster36 = 0x82EBE9FC, kRoster36Size = 36;
+uint32_t g_roster36_ext = 0;  // (entries for ids 322 - kMaxIds-1)
+
+// The mods on ids from 322 not already in ids[0..n): in id order.
+std::vector<uint32_t> HighModsMissing(const uint8_t* base, uint32_t ids, uint32_t n) {
+  std::vector<uint32_t> out;
+  if (!svr2011::BigRosterOn()) return out;
+  for (uint32_t id : svr2011::SuperstarModIds(false)) {
+    if (id < 322 || id >= svr2011::kMaxIds) continue;
+    bool there = false;
+    for (uint32_t i = 0; i < n && !there; ++i) there = Rd32(base + ids + i * 4) == id;
+    if (!there) out.push_back(id);
+  }
+  std::sort(out.begin(), out.end());
+  return out;
+}
+
+// Community Creations' list: the real entries (id -1 = the padding), the mods added, padded to 24 again.
+void AddHighModsCc(PPCContext& ctx, uint8_t* base, uint32_t screen, uint32_t ids_at, uint32_t flags_at,
+                   uint32_t values_at, uint32_t count_at, uint32_t cap) {
+  const uint32_t count = std::min(Rd32(base + screen + count_at), cap);
+  uint32_t n = 0;
+  while (n < count && Rd32(base + screen + ids_at + n * 4) != 0xFFFFFFFFu) ++n;
+  const auto add = HighModsMissing(base, screen + ids_at, n);
+  if (add.empty()) return;
+  uint32_t added = 0;
+  for (uint32_t id : add) {
+    if (n >= cap) break;
+    PPCContext c = ctx;
+    c.r3.u64 = id;
+    sub_8257B240(c, base);
+    sub_8257AB68(c, base);
+    Wr32(base + screen + ids_at + n * 4, id);
+    Wr32(base + screen + flags_at + n * 4, 1);
+    Wr32(base + screen + values_at + n * 4, c.r3.u32);
+    ++n, ++added;
+  }
+  for (uint32_t i = n; i < 24 && i < cap; ++i) {  // (the game's padding, after them)
+    Wr32(base + screen + ids_at + i * 4, 0xFFFFFFFFu);
+    Wr32(base + screen + flags_at + i * 4, 0);
+    Wr32(base + screen + values_at + i * 4, 0);
+  }
+  Wr32(base + screen + count_at, std::max<uint32_t>(n, 24));
+  static std::atomic<int> told{0};
+  if (told.fetch_add(1) < 6)
+    REXLOG_INFO("[svr2011] superstar mods: a downloaded superstars list (CAM / CC) - {} mod(s) from id 322 added ({} in all)",
+                added, n);
+}
+}  // namespace
+
+REX_EXTERN(__imp__sub_8257B240);
+REX_HOOK_RAW(sub_8257B240) {
+  const uint32_t id = ctx.r3.u32;
+  if (id >= 322 && id < svr2011::kMaxIds && svr2011::BigRosterOn()) {
+    if (!g_roster36_ext && g_memory) {
+      g_roster36_ext = g_memory->SystemHeapAlloc((svr2011::kMaxIds - 322) * kRoster36Size, 0x10);
+      if (g_roster36_ext) std::memset(base + g_roster36_ext, 0, (svr2011::kMaxIds - 322) * kRoster36Size);
+    }
+    if (g_roster36_ext) {
+      ctx.r3.u64 = g_roster36_ext + (id - 322) * kRoster36Size;
+      return;
+    }
+  }
+  __imp__sub_8257B240(ctx, base);
+}
+
+REX_EXTERN(__imp__sub_82518F38);
+REX_HOOK_RAW(sub_82518F38) {
+  const uint32_t screen = ctx.r3.u32;
+  __imp__sub_82518F38(ctx, base);
+  constexpr uint32_t kKind = 33608, kIds = 36536, kCount = 37424, kCap = 222;
+  if (Rd32(base + screen + kKind) != 1) return;  // (DOWNLOADED SUPERSTAR)
+  uint32_t n = std::min(Rd32(base + screen + kCount), kCap);
+  const auto add = HighModsMissing(base, screen + kIds, n);
+  for (uint32_t id : add)
+    if (n < kCap) Wr32(base + screen + kIds + n * 4, id), ++n;
+  if (add.empty()) return;
+  Wr32(base + screen + kCount, n);
+  static std::atomic<int> told{0};
+  if (told.fetch_add(1) < 6)
+    REXLOG_INFO("[svr2011] superstar mods: CREATE A MOVE-SET's downloaded list - {} mod(s) from id 322 added ({} in all)",
+                add.size(), n);
+}
+
+REX_EXTERN(__imp__sub_82B972C8);
+REX_HOOK_RAW(sub_82B972C8) {
+  const uint32_t screen = ctx.r3.u32, kind = ctx.r4.u32;
+  const PPCContext entry = ctx;
+  __imp__sub_82B972C8(ctx, base);
+  if (kind != 1) return;
+  PPCContext c = entry;
+  AddHighModsCc(c, base, screen, 1108, 2076, 3044, 4012, 242);
+}
+
+REX_EXTERN(__imp__sub_82BA38B8);
+REX_HOOK_RAW(sub_82BA38B8) {
+  const uint32_t screen = ctx.r3.u32, kind = ctx.r4.u32;
+  const PPCContext entry = ctx;
+  __imp__sub_82BA38B8(ctx, base);
+  if (kind != 2) return;
+  PPCContext c = entry;
+  AddHighModsCc(c, base, screen, 1136, 3184, 5232, 7280, 512);
+}
+
 REX_EXTERN(__imp__sub_825B75A8);
 REX_HOOK_RAW(sub_825B75A8) {  // (id, need owned) -> in Universe
   if (ModOf(ctx.r3.u32) && !svr2011::UniverseModIn(ctx.r3.u32)) {  // (a mod past the side table's room)

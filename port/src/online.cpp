@@ -163,6 +163,7 @@ rex::memory::Memory* g_online_memory = nullptr;
 // guest: the game's "no game sessions" / join failure message with why hosts
 // were left out (p2p.h P2PHiddenReason: another version or other mods)
 uint32_t g_hidden_text = 0;
+constexpr uint32_t kHiddenTextSize = 512;  // (its details and the DLC fix: report 16947c)
 // guest: the CPU slots' help bar labels (online_cpu.cpp)
 constexpr uint32_t kAddCpuId = 0xEF10, kRemoveCpuId = 0xEF11, kWaitingId = 0xEF12;  // (16-bit: the bar holds u16 ids; blank in the game's table)
 constexpr uint32_t kPlayerInfoId = 0xB0A7;  // PLAYER INFO: the lobby's own Y label - its slot's icon is Y's glyph
@@ -178,10 +179,10 @@ constexpr uint32_t kNoSessionsId = 0xC6D4;  // "No game sessions were found. Sea
 constexpr uint32_t kJoinFailedId = 0xC67F;  // "Failed to find a session. Please try again." (an invite)
 
 // Text into a guest buffer (kOffTextSize).
-uint32_t GuestText(uint32_t buffer, const std::string& text) {
+uint32_t GuestText(uint32_t buffer, const std::string& text, uint32_t size = kOffTextSize) {
   if (!buffer || !g_online_memory) return 0;
   char* out = g_online_memory->TranslateVirtual<char*>(buffer);
-  const size_t n = std::min<size_t>(text.size(), kOffTextSize - 1);
+  const size_t n = std::min<size_t>(text.size(), size - 1);
   std::memcpy(out, text.data(), n);
   out[n] = 0;
   return buffer;
@@ -394,8 +395,8 @@ uint32_t OnlineString(uint32_t id) {
                                   : "Unable to join the session due to a difference in game versions.";
     if (id == kNoSessionsId)
       return GuestText(g_hidden_text, std::string(sessions == 1 ? "A game session was found. " : "Game sessions were found. ") +
-                                          head + "\n" + why + "\nSearch again?");
-    return GuestText(g_hidden_text, head + "\n" + why);
+                                          head + "\n" + why + "\nSearch again?", kHiddenTextSize);
+    return GuestText(g_hidden_text, head + "\n" + why, kHiddenTextSize);
   }
   return 0;
 }
@@ -428,7 +429,7 @@ void InstallOnline(rex::memory::Memory* memory, const std::filesystem::path& sav
   if (g_empty_string) std::memset(memory->TranslateVirtual<char*>(g_empty_string), 0, 4);
   g_online_memory = memory;
   g_online_off_text = memory->SystemHeapAlloc(kOffTextSize);
-  g_hidden_text = memory->SystemHeapAlloc(kOffTextSize);
+  g_hidden_text = memory->SystemHeapAlloc(kHiddenTextSize);
   g_mods_text = memory->SystemHeapAlloc(kOffTextSize);
   g_scratch = memory->SystemHeapAlloc(4096);
   {

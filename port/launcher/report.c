@@ -617,6 +617,136 @@ static void add_saves_check(Zip *z, const WCHAR *game_dir)
     free(t.p);
 }
 
+/* dlc_check.txt (report 16947c): the installed DLC packages - <game>\UserData\0000000000000000\5451085D\00000002\
+   <package> - each one's name (its .header), whether it has a catalog, its pac files and the fingerprint the online
+   compare uses (online_files.cpp DlcSet: FNV-1a of each pac file's lower-case path and size, the pac/string left out;
+   a package without pac files isn't counted online); then <game>\DLC's packages (names and sizes, as given to the
+   launcher's DLC tab). Names and sizes only - no player files. */
+typedef struct { char rel[200]; unsigned long long size; } PacFile;
+
+static int pac_cmp(const void *a, const void *b) { return strcmp(((const PacFile *)a)->rel, ((const PacFile *)b)->rel); }
+
+static void pac_list(const WCHAR *dir, const char *rel, PacFile *out, int *n, int max)
+{
+    WCHAR pat[MAX_PATH], sub[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+    swprintf_s(pat, MAX_PATH, L"%s\\*", dir);
+    h = FindFirstFileW(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE)
+        return;
+    do {
+        char name[160], r[200];
+        size_t k;
+        if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L".."))
+            continue;
+        WideCharToMultiByte(CP_UTF8, 0, fd.cFileName, -1, name, sizeof name, NULL, NULL);
+        sprintf_s(r, sizeof r, "%s/%s", rel, name);
+        for (k = 0; r[k]; k++)
+            if (r[k] >= 'A' && r[k] <= 'Z')
+                r[k] = (char)(r[k] - 'A' + 'a');
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            swprintf_s(sub, MAX_PATH, L"%s\\%s", dir, fd.cFileName);
+            pac_list(sub, r, out, n, max);
+        } else if (*n < max) {
+            strcpy_s(out[*n].rel, sizeof out[*n].rel, r);
+            out[*n].size = (unsigned long long)fd.nFileSizeHigh << 32 | fd.nFileSizeLow;
+            (*n)++;
+        }
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+}
+
+static void add_dlc_check(Zip *z, const WCHAR *game_dir)
+{
+    WCHAR dir[MAX_PATH], pat[MAX_PATH], path[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+    Text t = {0};
+    PacFile *files = (PacFile *)malloc(sizeof(PacFile) * 256);
+    int packages = 0;
+    swprintf_s(dir, MAX_PATH, L"%s\\UserData\\0000000000000000\\5451085D\\00000002", game_dir);
+    text_printf(&t, "Installed DLC packages in %ls\r\n", dir);
+    swprintf_s(pat, MAX_PATH, L"%s\\*", dir);
+    h = files ? FindFirstFileW(pat, &fd) : INVALID_HANDLE_VALUE;
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            char pkg[160], title[260] = "";
+            int n = 0, i, counted = 0;
+            unsigned long long total = 0, hash = 0xCBF29CE484222325ull;
+            size_t hs = 0;
+            uint8_t *hd;
+            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || !wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L".."))
+                continue;
+            packages++;
+            WideCharToMultiByte(CP_UTF8, 0, fd.cFileName, -1, pkg, sizeof pkg, NULL, NULL);
+            /* (its name: the .header's UTF-16BE at 8) */
+            swprintf_s(path, MAX_PATH, L"%s\\..\\Headers\\00000002\\%s.header", dir, fd.cFileName);
+            if ((hd = read_file(path, &hs, 64 << 10)) != NULL) {
+                size_t i2, k = 0;
+                for (i2 = 8; i2 + 1 < hs && i2 < 8 + 256 && k + 1 < sizeof title; i2 += 2) {
+                    const unsigned c = (unsigned)hd[i2] << 8 | hd[i2 + 1];
+                    if (!c)
+                        break;
+                    title[k++] = c >= 0x20 && c < 0x7F ? (char)c : c == 0x2013 || c == 0x2014 ? '-' : '?';
+                }
+                title[k] = 0;
+                free(hd);
+            }
+            swprintf_s(path, MAX_PATH, L"%s\\%s\\pac", dir, fd.cFileName);
+            pac_list(path, "pac", files, &n, 256);
+            qsort(files, (size_t)n, sizeof *files, pac_cmp);
+            for (i = 0; i < n; i++) {
+                size_t k;
+                total += files[i].size;
+                if (!strncmp(files[i].rel, "pac/string", 10))
+                    continue;
+                counted++;
+                for (k = 0; files[i].rel[k]; k++)
+                    hash = (hash ^ (unsigned char)files[i].rel[k]) * 0x100000001B3ull;
+                for (k = 0; k < 8; k++)
+                    hash = (hash ^ (uint8_t)(files[i].size >> (8 * k))) * 0x100000001B3ull;
+            }
+            swprintf_s(path, MAX_PATH, L"%s\\%s\\info\\catalog.dlc", dir, fd.cFileName);
+            text_printf(&t, "\r\n%s\r\n  name: %s\r\n  catalog: %s\r\n  pac files: %d (%llu bytes)\r\n", pkg,
+                        title[0] ? title : "(no header)", GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES ? "yes" : "no",
+                        n, total);
+            for (i = 0; i < n && i < 40; i++)
+                text_printf(&t, "    %s %llu\r\n", files[i].rel, files[i].size);
+            if (counted)
+                text_printf(&t, "  fingerprint: %016llX%s - counted online\r\n", hash,
+                            hash == 0xFD7BF34EAD3CAE51ull ? " (Vol02's usual files)"
+                            : hash == 0x5BC65024845FD378ull ? " (Vol03's usual files)" : " (not the usual files)");
+            else
+                text_printf(&t, "  no pac files - not counted online (a catalog only, or not fully installed)\r\n");
+        } while (FindNextFileW(h, &fd) && packages < 50);
+        FindClose(h);
+    }
+    if (!packages)
+        text_printf(&t, "(none)\r\n");
+    /* (the packages given to the launcher's DLC tab) */
+    swprintf_s(dir, MAX_PATH, L"%s\\DLC", game_dir);
+    text_printf(&t, "\r\n%ls:\r\n", dir);
+    swprintf_s(pat, MAX_PATH, L"%s\\*", dir);
+    packages = 0;
+    h = FindFirstFileW(pat, &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L".."))
+                continue;
+            packages++;
+            text_printf(&t, "  %ls%s %llu\r\n", fd.cFileName, fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY ? "\\" : "",
+                        (unsigned long long)fd.nFileSizeHigh << 32 | fd.nFileSizeLow);
+        } while (FindNextFileW(h, &fd) && packages < 60);
+        FindClose(h);
+    }
+    if (!packages)
+        text_printf(&t, "  (none)\r\n");
+    free(files);
+    zip_add(z, "dlc_check.txt", (const uint8_t *)t.p, t.n);
+    free(t.p);
+}
+
 /* mods_text.txt: each superstar mod's small text files (manifest.txt, moves.txt, threads.txt), one after
    another under their names - what a mod's freeze or look needs, without the models. */
 static void add_mods_text(Zip *z, const WCHAR *game_dir)
@@ -774,7 +904,8 @@ int report_make_match(const WCHAR *game_dir, const WCHAR *version, const char *d
                   "made: %04d-%02d-%02d %02d:%02d:%02d\r\n"
                   "contents: the newest game logs (logs/, with updater.log: the updates and repairs), crash reports (crashes/), svr2011.toml "
                   "(account token and password removed), saves_check.txt (the Created Superstar saves' "
-                  "checksums, not the saves), mods_text.txt (the superstar mods' text files), with its tick save/ "
+                  "checksums, not the saves), dlc_check.txt (the installed DLC packages' names and files), mods_text.txt "
+                  "(the superstar mods' text files), with its tick save/ "
                   "(the main save SaveData.dat - no Created Superstars or Paint Tool); "
                   "IP addresses blanked (x.x.x.x)\r\n",
                   version, os.dwMajorVersion, os.dwMinorVersion, os.dwBuildNumber, st.wYear, st.wMonth, st.wDay,
@@ -802,6 +933,7 @@ int report_make_match(const WCHAR *game_dir, const WCHAR *version, const char *d
     *crashes = add_newest(&z, sub, L"crash_*.txt", 3, "crashes", 1u << 20);
     add_settings(&z, game_dir);
     add_saves_check(&z, game_dir);
+    add_dlc_check(&z, game_dir);   /* (the installed DLC: report 16947c) */
     add_mods_text(&z, game_dir);
     if (match_dir && match_dir[0])
         add_match(&z, match_dir);

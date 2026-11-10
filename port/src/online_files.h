@@ -90,6 +90,11 @@ const std::string& DlcSet();
 // Why two games' DLC keep them apart ("" when the same): "Your downloadable content doesn't match: they have
 // DLC Vol02, you don't." Moves of a DLC's motions play otherwise without it - a lockstep match drifts apart.
 std::string DlcDifference(const std::string& mine, const std::string& theirs);
+// The volumes by name (DlcSet lines' names, "DLC Vol03"): those only the other has (this game lacks them) and
+// those only this game has - the refusal's details (report 16947c: a player had Vol02 but not Vol03, and the
+// message didn't say how to fix it).
+void DlcMissing(const std::string& mine, const std::string& theirs, std::vector<std::string>* here_missing,
+                std::vector<std::string>* there_missing);
 
 // Why two sets differ, for both players: "Your mods don't match: they have
 // Practice Arena 1.0, you don't; ..." (`theirs`: the other side's set;

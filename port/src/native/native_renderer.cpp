@@ -2465,11 +2465,15 @@ plume::RenderBlendOperation BlendOp(uint32_t xenos) {
   }
 }
 
-plume::RenderStencilOp StencilOp(uint32_t xenos) {  // keep, zero, replace, incr_wrap, decr_wrap, invert, incr_sat, decr_sat
+// Xenos stencil ops (xenos.h StencilOp, D3D9's numbers minus one): keep, zero, replace, incr_clamp, decr_clamp,
+// invert, incr_wrap, decr_wrap. (3/4 and 6/7 were swapped until 2.2.2: the game's stencil shadow volumes - the
+// ropes' and turnbuckles' (z-pass, front 6 / back 7) - clamped at 0 when a back face came first, leaving whole
+// faces of the volumes as dark rectangles on the mat.)
+plume::RenderStencilOp StencilOp(uint32_t xenos) {
   using S = plume::RenderStencilOp;
-  static const S ops[8] = {S::KEEP, S::ZERO, S::REPLACE, S::INCREMENT_AND_WRAP,
-                           S::DECREMENT_AND_WRAP, S::INVERT, S::INCREMENT_AND_CLAMP,
-                           S::DECREMENT_AND_CLAMP};
+  static const S ops[8] = {S::KEEP, S::ZERO, S::REPLACE, S::INCREMENT_AND_CLAMP,
+                           S::DECREMENT_AND_CLAMP, S::INVERT, S::INCREMENT_AND_WRAP,
+                           S::DECREMENT_AND_WRAP};
   return ops[xenos & 7];
 }
 

@@ -2859,6 +2859,149 @@ REX_HOOK_RAW(sub_8261EAB0) {
   if (NameCallLog() && buf)
     REXLOG_INFO("[svr2011] name call: commentary {} -> {} \"{:.40}\"", n, used, reinterpret_cast<const char*>(base + buf));
 }
+// ---- The wrestlers' commentary banks before the bell (reports a18f92 / 0f2a63)
+// sub_825FF060(loader, ...) - run by its callers at the picks, the entrances and in the match - keeps a commentary bank (Comm_<id>.bnk, the name from sub_8261EAB0)
+// loaded per person: 9 entries at loader +268, 12 bytes each (+0 the id loaded, 0 none; +4 the person's sound
+// object, +4 its state: 2 busy). For a person whose superstar (sub_8257C280(*0x82EC1A68, i) -> +0 -> sub_828B7028,
+// ids 50-69 + 9950; a Created Superstar's - sub_828B6CB0 - its nickname sub_828B5B48(roster, i) + 1) has commentary
+// (sub_825FDCD8) and isn't loaded, it loads it - one at a time, and only while two busy
+// checks (sub_8262AB00(0), sub_825F4238()) are clear. The entrances give it time: each wrestler's comes as his
+// entrance starts. With ENTRANCES off the match's sequencer (vtable 82008E28) leaves the entrances' stage (vtable
+// 8200A190) after 0.7 s; a bank still missing then came seconds into the match - or, on a slower PC, never (the
+// commentators didn't say the names; it stays loaded after, so a later match was fine).
+// Here that stage of the match's sequencer (sub_82320DD0 with its vtable; the menus' sequencer has a stage of that
+// vtable too) isn't done (its done check sub_8286E4C8: +8) while a wrestler's bank is missing, at most
+// kBankWaitMs. What gets the next bank going is sub_825FF618(obj, arg): it readies the 9 people's sound slots
+// (sub_825FE8F0 each - a slot's state +4 to 1) and runs the loader; the game calls it at the picks and as each
+// entrance starts, so with ENTRANCES off only once. While it waits it is called as the game calls it (its last
+// arguments) at once and again every 2 s: the same checks, one load at a time. Logged once per match.
+namespace {
+constexpr uint32_t kMatchSequencerVt = 0x82008E28, kEntrancesStageVt = 0x8200A190;
+constexpr int64_t kBankWaitMs = 6000;
+std::mutex g_bank_mutex;
+std::vector<uint32_t> g_banks_missing;  // (the loader's last frame: ids wanted, not loaded)
+int64_t g_banks_seen_at = 0;            // (ms: that frame)
+std::string g_banks_table;              // (test aid SVR2011_TEST_BANK_LOG=1: the loader's entries, that frame)
+bool BankLog() {
+  static const bool on = std::getenv("SVR2011_TEST_BANK_LOG") != nullptr;
+  return on;
+}
+int64_t g_bank_wait_from = 0, g_bank_last_ask = 0;
+bool g_bank_told = false;
+std::vector<uint32_t> g_bank_waited_for;
+thread_local bool t_match_sequencer = false;  // (inside the match's sequencer: sub_82320DD0)
+uint32_t g_ready_args[2] = {};  // (sub_825FF618's last run: r3 r4)
+int64_t g_ready_args_at = 0, g_ready_called_at = 0;
+int g_ready_calls = 0;
+
+uint32_t CallR3(PPCContext& ctx, uint8_t* base, void (*fn)(PPCContext&, uint8_t*), uint32_t r3, uint32_t r4 = 0) {
+  PPCContext c = ctx;
+  c.r3.u64 = r3, c.r4.u64 = r4;
+  fn(c, base);
+  return c.r3.u32;
+}
+}  // namespace
+
+REX_EXTERN(__imp__sub_825FF060);
+REX_HOOK_RAW(sub_825FF060) {
+  const uint32_t loader = ctx.r3.u32;
+  const PPCContext entry = ctx;
+  __imp__sub_825FF060(ctx, base);
+  const uint32_t people = Rd32(base + 0x82EC1A68);
+  if (!loader || !people || !Rd32(base + 0x82EDEA88)) return;
+  std::vector<uint32_t> missing;
+  std::string table;
+  PPCContext c = entry;
+  for (uint32_t i = 0; i < 9; ++i) {
+    const uint32_t e = loader + 268 + i * 12;
+    if (BankLog())
+      table += fmt::format(" {}:{}/{:08X}/{}", i, Rd32(base + e), Rd32(base + e + 4),
+                           Rd32(base + e + 4) ? Rd16(base + Rd32(base + e + 4) + 4) : 0);
+    if (!Rd32(base + e + 4)) continue;
+    const uint32_t p = CallR3(c, base, sub_8257C280, people, i);
+    if (!p) continue;
+    uint32_t id = CallR3(c, base, sub_828B7028, Rd32(base + p));
+    if (id >= 50 && id < 70) id += 9950;
+    if (CallR3(c, base, sub_828B6CB0, id)) id = uint32_t(int16_t(CallR3(c, base, sub_828B5B48, Rd32(base + 0x82EDEA88), i)) + 1);
+    if (!id || !CallR3(c, base, sub_825FDCD8, id)) continue;
+    if (Rd32(base + e) != id) missing.push_back(id);
+  }
+  std::lock_guard<std::mutex> lock(g_bank_mutex);
+  g_banks_missing = std::move(missing);
+  g_banks_seen_at = NowMs();
+  if (BankLog()) g_banks_table = std::move(table);
+}
+
+REX_EXTERN(__imp__sub_825FF618);
+REX_HOOK_RAW(sub_825FF618) {
+  {
+    std::lock_guard<std::mutex> lock(g_bank_mutex);
+    g_ready_args[0] = ctx.r3.u32, g_ready_args[1] = ctx.r4.u32;
+    g_ready_args_at = NowMs();
+  }
+  __imp__sub_825FF618(ctx, base);
+}
+
+REX_EXTERN(__imp__sub_82320DD0);
+REX_HOOK_RAW(sub_82320DD0) {
+  const bool was = t_match_sequencer;
+  t_match_sequencer = ctx.r3.u32 && Rd32(base + ctx.r3.u32) == kMatchSequencerVt;
+  __imp__sub_82320DD0(ctx, base);
+  t_match_sequencer = was;
+}
+
+REX_EXTERN(__imp__sub_8286E4C8);
+REX_HOOK_RAW(sub_8286E4C8) {
+  const uint32_t stage = ctx.r3.u32;
+  __imp__sub_8286E4C8(ctx, base);
+  if (!t_match_sequencer || !ctx.r3.u32 || !stage || Rd32(base + stage) != kEntrancesStageVt) return;
+  int64_t now = NowMs();
+  uint32_t args[2] = {};
+  {
+    std::lock_guard<std::mutex> lock(g_bank_mutex);
+    if (now - g_bank_last_ask > 2000)  // (a new match)
+      g_bank_wait_from = now, g_bank_told = false, g_bank_waited_for.clear(), g_ready_called_at = 0, g_ready_calls = 0;
+    g_bank_last_ask = now;
+    if (g_bank_told) return;
+    const bool missing = now - g_banks_seen_at < 30000 && !g_banks_missing.empty();
+    if (missing && g_ready_args[0] && now - g_ready_args_at < 30000 && now - g_ready_called_at >= 2000) {
+      args[0] = g_ready_args[0], args[1] = g_ready_args[1], g_ready_called_at = now, ++g_ready_calls;
+      for (uint32_t id : g_banks_missing)
+        if (std::find(g_bank_waited_for.begin(), g_bank_waited_for.end(), id) == g_bank_waited_for.end())
+          g_bank_waited_for.push_back(id);
+    }
+  }
+  if (args[0]) {  // (waiting: the slots readied and the loader run, as the game does as an entrance starts)
+    PPCContext c = ctx;
+    c.r3.u64 = args[0], c.r4.u64 = args[1];
+    sub_825FF618(c, base);
+    now = NowMs();
+  }
+  std::lock_guard<std::mutex> lock(g_bank_mutex);
+  const bool fresh = now - g_banks_seen_at < 30000;  // (the loader ran lately: else nothing to wait for)
+  const int64_t waited = now - g_bank_wait_from;
+  if (fresh && !g_banks_missing.empty() && waited < kBankWaitMs) {
+    for (uint32_t id : g_banks_missing)
+      if (std::find(g_bank_waited_for.begin(), g_bank_waited_for.end(), id) == g_bank_waited_for.end())
+        g_bank_waited_for.push_back(id);
+    ctx.r3.u64 = 0;  // (not done: the entrances' stage stays)
+    return;
+  }
+  g_bank_told = true;
+  if (BankLog())
+    REXLOG_INFO("[svr2011] commentary banks: test - loader seen {} ms ago, {} missing; entries{}", now - g_banks_seen_at,
+                g_banks_missing.size(), g_banks_table);
+  std::string ids, left;
+  for (uint32_t id : g_bank_waited_for) ids += fmt::format(" {}", id);
+  if (fresh)
+    for (uint32_t id : g_banks_missing) left += fmt::format(" {}", id);
+  if (g_bank_waited_for.empty())
+    REXLOG_INFO("[svr2011] commentary banks: the wrestlers' are loaded or loading at the bell's load (no wait)");
+  else
+    REXLOG_INFO("[svr2011] commentary banks: waited {:.2f} s for{} (slots readied {}x){}", waited / 1000.0, ids,
+                g_ready_calls, left.empty() ? " - all asked for" : " - gave up, still missing:" + left);
+}
+
 // ---- An entrance per attire (manifest attire<N>_entrance=<number>)
 //
 // The match takes a wrestler's entrance number from the entrance manager's

@@ -107,8 +107,13 @@ bool g_worker = false;
 
 void Make(const Job& job) {
   const auto t0 = std::chrono::steady_clock::now();
-  std::ifstream f(job.source, std::ios::binary);
-  const Bytes in((std::istreambuf_iterator<char>(f)), {});
+  // (in one read: a stream iterator reads 1 KB at a time - on the Switch each one a request to the card)
+  std::ifstream f(job.source, std::ios::binary | std::ios::ate);
+  const std::streamoff size = f ? std::streamoff(f.tellg()) : 0;
+  Bytes in(size > 0 ? size_t(size) : 0);
+  f.seekg(0);
+  if (!in.empty()) f.read(reinterpret_cast<char*>(in.data()), std::streamsize(in.size()));
+  if (!f) in.clear();
   Bytes out;
   int emptied = 0;
   std::error_code ec;

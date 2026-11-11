@@ -4,7 +4,7 @@
 
 ⚠️ **Only download the port from this GitHub page.** It's free. If someone sends you to Telegram or asks you to pay, it isn't us.
 
-Fixes marked "potential" couldn't be fully proven here, so please report it if the problem is still there.
+Fixes marked "potential" couldn't be fully proven here, so please report it if the problem is still there. On Android, the tag / 6-man tapping and **Check entrance numbers** were tested on PC but not yet on a phone - please report anything odd.
 
 ## 🆕 New
 - **Tap the tag team and 6-man selects** on phones (and click them with the PC mouse): your slot, every wrestler's pick, and CONTROL PARTNERS YES / NO.

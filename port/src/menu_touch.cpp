@@ -395,8 +395,9 @@ void SlotMoveTick() {
   if (g_slot_move.press) g_slot_move.press(button);
 }
 
-// After player 1's own pick and READY the game asks on their bar "CONTROL PARTNERS - YES / NO" (YES lit first): a tap on
-// YES is A, on NO right then A.
+// After player 1's own pick and READY the game asks on their bar "CONTROL PARTNERS - YES / NO". The lit answer isn't in
+// the words' elements (the red bar is drawn apart), but the team's other bars show it: "1P" while YES is lit, "COM" while
+// NO is. A tap on the lit answer is A; on the other, left / right to it, then A.
 bool PromptTap(float x, float y, svr2011::MenuTouchPress press) {
   float yes_x = -1, yes_y = 0, no_x = -1, no_y = 0;
   {
@@ -412,9 +413,16 @@ bool PromptTap(float x, float y, svr2011::MenuTouchPress press) {
   const auto on_word = [&](float tx, float ty, int letters) { return std::fabs(y - (ty + 5)) < 11 && std::fabs(x - (tx + letters * 4)) < 26; };
   const bool yes = on_word(yes_x, yes_y, 3), no = !yes && on_word(no_x, no_y, 2);
   if (!yes && !no) return false;
-  REXLOG_INFO("[svr2011] menu touch: control partners - {}", yes ? "YES" : "NO");
+  const bool left = yes_x < kMiddle;
+  bool yes_lit = false;
+  for (const Label& l : SlotLabels())
+    if (l.p1 && (l.x < kMiddle) == left) yes_lit = true;
+  REXLOG_INFO("[svr2011] menu touch: control partners - {} ({} lit)", yes ? "YES" : "NO", yes_lit ? "YES" : "NO");
   std::lock_guard lock(g_slot_mutex);
-  g_queue = yes ? std::vector<uint16_t>{0x1000} : std::vector<uint16_t>{0x0008, 0x1000};  // (A; d-pad right, A)
+  if (yes == yes_lit)
+    g_queue = {0x1000};  // (A)
+  else
+    g_queue = {uint16_t(yes ? 0x0004 : 0x0008), 0x1000};  // (d-pad left / right, A)
   g_queue_press = press, g_queue_last = Clock::time_point{};
   g_slot_moving = true;
   return true;

@@ -2874,7 +2874,8 @@ REX_HOOK_RAW(sub_8261EAB0) {
 // kBankWaitMs. What gets the next bank going is sub_825FF618(obj, arg): it readies the 9 people's sound slots
 // (sub_825FE8F0 each - a slot's state +4 to 1) and runs the loader; the game calls it at the picks and as each
 // entrance starts, so with ENTRANCES off only once. While it waits it is called as the game calls it (its last
-// arguments) at once and again every 2 s: the same checks, one load at a time. Logged once per match.
+// arguments) at once and again every 2 s: the same checks, one load at a time. Logged once per match. Not online
+// (P2POnlineMode): a lockstep match's two games must leave the stage on the same frame - left as the game has it.
 namespace {
 constexpr uint32_t kMatchSequencerVt = 0x82008E28, kEntrancesStageVt = 0x8200A190;
 constexpr int64_t kBankWaitMs = 6000;
@@ -2963,6 +2964,11 @@ REX_HOOK_RAW(sub_8286E4C8) {
       g_bank_wait_from = now, g_bank_told = false, g_bank_waited_for.clear(), g_ready_called_at = 0, g_ready_calls = 0;
     g_bank_last_ask = now;
     if (g_bank_told) return;
+    if (svr2011::P2POnlineMode()) {  // (lockstep: no hold, no extra readying)
+      g_bank_told = true;
+      REXLOG_INFO("[svr2011] commentary banks: online - the bell's load left as the game has it");
+      return;
+    }
     const bool missing = now - g_banks_seen_at < 30000 && !g_banks_missing.empty();
     if (missing && g_ready_args[0] && now - g_ready_args_at < 30000 && now - g_ready_called_at >= 2000) {
       args[0] = g_ready_args[0], args[1] = g_ready_args[1], g_ready_called_at = now, ++g_ready_calls;

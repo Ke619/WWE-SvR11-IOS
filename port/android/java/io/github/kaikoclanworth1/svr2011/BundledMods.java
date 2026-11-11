@@ -47,6 +47,7 @@ final class BundledMods {
     static final String kPref = "bundled_mods_version";
 
     private static boolean busy_;
+    static boolean busy() { return busy_; }   // (ModsPage.entranceCheckAtStart waits for them)
 
     static File modsFolder() { return new File(InstallActivity.gameFolder(), "Mods"); }
 

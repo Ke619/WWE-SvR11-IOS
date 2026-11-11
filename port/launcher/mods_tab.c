@@ -59,7 +59,8 @@ static WCHAR s_installed[MAX_PATH];  /* (defined with install_file below) */  /*
 static WCHAR s_game[MAX_PATH];
 static int s_filling;              /* (checkbox notifications while filling the list) */
 
-enum { M_LIST, M_ADD, M_REMOVE, M_FOLDER, M_MAKER, M_STATUS, M_BACKGROUND, M_ON, M_OFF, M_SHRINK, M_LEVEL, M_UPDATE };
+enum { M_LIST, M_ADD, M_REMOVE, M_FOLDER, M_MAKER, M_STATUS, M_BACKGROUND, M_ON, M_OFF, M_SHRINK, M_LEVEL, M_UPDATE,
+       M_ENTRANCES };
 
 static void status(const WCHAR *t)
 {
@@ -1921,6 +1922,39 @@ static void install_log(const WCHAR *game, const WCHAR *text)
     fclose(f);
 }
 
+int mods_entrance_check(const WCHAR *game_dir, int once, WCHAR *report, size_t report_n)
+{
+    WCHAR mark[MAX_PATH];
+    FILE *f;
+    int n;
+    if (report && report_n) report[0] = 0;
+    if (!game_dir || !game_dir[0]) return 0;
+    swprintf_s(mark, MAX_PATH, L"%s\\Mods\\.entrance_check", game_dir);
+    if (once && GetFileAttributesW(mark) != INVALID_FILE_ATTRIBUTES) return -1;
+    n = entrance_clash_recheck(game_dir, report, report_n);
+    if (n > 0 && report && report[0]) install_log(game_dir, report);
+    if (!_wfopen_s(&f, mark, L"wb") && f) {   /* (the check made: a start doesn't repeat it) */
+        fprintf(f, "1\r\n");
+        fclose(f);
+    }
+    return n;
+}
+
+/* Check entrance numbers (the button): the moves said in a box, a line on the status. */
+static void entrance_check(void)
+{
+    static WCHAR rep[8192];
+    HCURSOR old = SetCursor(LoadCursor(NULL, IDC_WAIT));
+    const int n = mods_entrance_check(s_game, 0, rep, 8192);
+    SetCursor(old);
+    if (n <= 0) {
+        status(L"Entrance numbers checked: no two mods use one number for different entrances.");
+        return;
+    }
+    status(L"Entrance numbers checked: some mods' entrances moved to free numbers (in Mods\\.install.log).");
+    MessageBoxW(s_wnd, rep, L"Check entrance numbers", MB_OK | MB_ICONINFORMATION);
+}
+
 static void collect_files(const WCHAR *dir, WCHAR (*files)[MAX_PATH], int *n, int cap)
 {
     WCHAR pat[MAX_PATH];
@@ -2423,6 +2457,8 @@ void mods_build(HWND wnd, mods_add_fn add, int tab, int id_base, HFONT title_fon
     /* (a mod from Discovery with a newer version there: the selected one updated - shown only while one has) */
     s_update = add(tab, L"Button", L"\x2191 Update", BS_PUSHBUTTON | WS_TABSTOP, 476, 428, 112, 30, id_base + M_UPDATE);
     ShowWindow(s_update, SW_HIDE);
+    /* (two mods with one entrance number for different entrances: the later one moved - entrance_check) */
+    add(tab, L"Button", L"Check entrance numbers", BS_PUSHBUTTON | WS_TABSTOP, 28, 496, 170, 30, id_base + M_ENTRANCES);
 }
 
 int mods_command(int id, int code)
@@ -2436,6 +2472,7 @@ int mods_command(int id, int code)
     if (id == s_base + M_BACKGROUND) { add_background(); return 1; }
     if (id == s_base + M_SHRINK) { shrink_start(L""); return 1; }
     if (id == s_base + M_LEVEL) { level_start(); return 1; }
+    if (id == s_base + M_ENTRANCES) { entrance_check(); return 1; }
     if (id == s_base + M_UPDATE) {   /* (the selected row's mod, from Discovery: the download and install as its page's) */
         const int k = selected();
         LVITEMW it;

@@ -980,6 +980,7 @@ static int s_bundled_answered;  /* (the questions of this start asked: the next 
 static int s_play_pending;  /* Play (1) / Start Without Mods (2) clicked while they were installed: started after */
 static int s_up_finishing;  /* (up_finish: the update's folders being fetched - the bundled install follows) */
 static int s_bundled_again;  /* (start_bundled while one ran - up_finish's new folders: once more after it) */
+static WCHAR s_entrance_report[8192];  /* (the once-only entrance check's moves, bundled_thread) */
 
 static void bundled_progress(int n, int total)
 {
@@ -995,6 +996,9 @@ static DWORD WINAPI bundled_thread(LPVOID arg)
     if (launcher[0] && !same_dir(game, launcher))
         install_bundled(game, launcher);
     mods_set_bundled_progress(NULL);
+    /* (the first start of a version with the entrance check: mods installed before it checked once - report 85741e;
+       said in a box once Play is free again, bundled_message) */
+    if (mods_entrance_check(game, 1, s_entrance_report, 8192) <= 0) s_entrance_report[0] = 0;
     free(dirs);
     PostMessageW(s_bundled_wnd, WM_APP_BUNDLED, (WPARAM)0xFFFFFFFF, 0);
     return 0;
@@ -1085,6 +1089,13 @@ static void bundled_message(WPARAM wp)
         s_play_pending = 0;
         refresh_play();
         if (s_cur_tab == TAB_MODS) mods_show(s_game_dir);
+        if (s_entrance_report[0]) {   /* (moves of the once-only entrance check: said once; also in Mods\.install.log) */
+            static WCHAR t[8400];
+            swprintf_s(t, 8400, L"Some installed mods used one entrance number for different entrances (one played "
+                                L"the other's). The later-installed ones now use free numbers:\r\n\r\n%s", s_entrance_report);
+            s_entrance_report[0] = 0;
+            if (!s_bundled_no_ask) MessageBoxW(s_wnd, t, L"Entrance numbers", MB_OK | MB_ICONINFORMATION);
+        }
         if (pending) play_with(pending == 2);  /* (the click made while they were installed) */
         return;
     }
@@ -10609,6 +10620,15 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         mods_bundled_reset();
         if (argc >= 5 && !wcscmp(argv[3], L"--answer")) mods_bundled_answer(NULL, !wcscmp(argv[4], L"yes") ? BUNDLED_YES : BUNDLED_NO);
         install_bundled(argv[2], argv[2]);
+        LocalFree(argv);
+        return 0;
+    }
+    /* Tests: --entrance-check <game folder> [--once]: the Mods tab's Check entrance numbers (--once: as a start does,
+       only if Mods\.entrance_check isn't there); prints the moves and their count. */
+    if (argv && argc >= 3 && !wcscmp(argv[1], L"--entrance-check")) {
+        static WCHAR rep[8192];
+        const int n = mods_entrance_check(argv[2], argc >= 4 && !wcscmp(argv[3], L"--once"), rep, 8192);
+        wprintf(L"%s%smoved %d\n", rep, rep[0] ? L"\n" : L"", n);
         LocalFree(argv);
         return 0;
     }

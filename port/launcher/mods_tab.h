@@ -77,3 +77,7 @@ void mods_set_bundled_progress(void (*progress)(int n, int total));
    update had just renamed into Mods\.old (2.1.4: an update installing four match types ran for two minutes before the
    window showed). 1 when it is gone. */
 int mods_delete_tree(const WCHAR *dir);
+/* Check entrance numbers: the installed mods' entrance / victory numbers against each other (entrance_clash_recheck),
+   the moves in Mods\.install.log. once: only if this game folder's Mods\.entrance_check isn't there yet (written after;
+   the first start of a version with the check - mods installed before it). -> the numbers moved (-1: done before). */
+int mods_entrance_check(const WCHAR *game_dir, int once, WCHAR *report, size_t report_n);

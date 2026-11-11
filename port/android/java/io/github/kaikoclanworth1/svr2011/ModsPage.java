@@ -88,6 +88,14 @@ final class ModsPage {
             else BundledMods.offer(a_, true, this::refresh);
         });
         c.addView(bundled, a_.fullWidth(8));
+        // (two mods with one entrance number for different entrances: the later one moved - entranceCheck)
+        Button entrances = a_.button("Check entrance numbers", LauncherActivity.kCard);
+        entrances.setOnClickListener(v -> {
+            if (!InstallActivity.installed()) a_.status("Install the game first.");
+            else if (GameActivity.running) a_.status("Close the game first.");
+            else entranceCheckRun(a_, false);
+        });
+        c.addView(entrances, a_.fullWidth(8));
         installed_ = a_.card(c, "Installed mods");
         refresh();
         return c;
@@ -400,6 +408,64 @@ final class ModsPage {
             Installed r = install(a_, raw, false, this::askMoves);
             return r.name + (r.note.isEmpty() ? "" : ". " + r.note);
         }
+    }
+
+    // ---- Check entrance numbers (the PC launcher's button and its once-only run at a start, mods_entrance_check):
+    // the installed mods' entrance / victory numbers against each other (EntranceClash.recheck), the moves in
+    // Mods/.install.log, Mods/.entrance_check written after. once: only while that isn't there (the first start of a
+    // version with the check - mods installed before it). -> the moves ("" none), null: done before.
+    static String entranceCheck(File mods, boolean once) {
+        File mark = new File(mods, ".entrance_check");
+        if (once && mark.exists()) return null;
+        String rep = "";
+        try {
+            rep = EntranceClash.recheck(mods);
+        } catch (IOException e) {
+            android.util.Log.w("SvR2011", "mods: entrance numbers not checked: " + e.getMessage());
+            return "";
+        }
+        if (!rep.isEmpty()) {
+            android.util.Log.i("SvR2011", "mods: entrance check: " + rep);
+            try (OutputStream o = new FileOutputStream(new File(mods, ".install.log"), true)) {
+                o.write((new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.ROOT).format(new java.util.Date())
+                    + " " + rep.replace("\n", "\n                    ") + "\n").getBytes(StandardCharsets.UTF_8));
+            } catch (IOException ignored) {
+                // (the log is a help, not the check)
+            }
+        }
+        try (OutputStream o = new FileOutputStream(mark)) {   // (the check made: a start doesn't repeat it)
+            o.write("1\r\n".getBytes(StandardCharsets.UTF_8));
+        } catch (IOException ignored) {
+        }
+        return rep;
+    }
+
+    // On a worker; the moves said in a box (once: only if there were any).
+    static void entranceCheckRun(LauncherActivity a, boolean once) {
+        final String[] rep = new String[1];
+        if (!once) a.status("Checking the entrance numbers…");
+        a.background(() -> rep[0] = entranceCheck(BundledMods.modsFolder(), once), () -> {
+            if (rep[0] == null || a.isFinishing()) return;
+            if (rep[0].isEmpty()) {
+                if (!once) a.status("Entrance numbers checked: no two mods use one number for different entrances.");
+                return;
+            }
+            a.status("Entrance numbers checked: some mods' entrances moved to free numbers (in Mods/.install.log).");
+            new android.app.AlertDialog.Builder(a, android.app.AlertDialog.THEME_DEVICE_DEFAULT_DARK)
+                .setTitle("Entrance numbers")
+                .setMessage((once ? "Some installed mods used one entrance number for different entrances (one played the "
+                    + "other's). The later-installed ones now use free numbers:\n\n" : "") + rep[0].replace("\n", "\n\n"))
+                .setPositiveButton("OK", null)
+                .show();
+        });
+    }
+
+    // The app's start (LauncherActivity): the once-only check, while no bundled mods are being installed and the
+    // game isn't running (else at a later start).
+    static void entranceCheckAtStart(LauncherActivity a) {
+        if (!InstallActivity.installed() || GameActivity.running || BundledMods.busy()) return;
+        if (new File(BundledMods.modsFolder(), ".entrance_check").exists()) return;
+        entranceCheckRun(a, true);
     }
 
     // The question before a mod with custom moves is installed (launcher/move_warning.c on PC), from the install's

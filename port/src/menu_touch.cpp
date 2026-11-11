@@ -142,7 +142,19 @@ void NoteText(const uint8_t* base, uint32_t layout, uint32_t element) {
   const float y = RdF(e + 164) + RdF(L + 148) + RdF(e + 8) * RdF(L + 164);
   const auto now = Clock::now();
   std::lock_guard lock(g_drawn_mutex);
-  Drawn& d = g_drawn[(element >> 8 ^ layout >> 6) & (kSlots - 1)];
+  // (its slot, or the next free or stale one: two elements drawn every frame on one slot took turns, and one - the tag
+  // and 6-man selects' "YES" - was never there when a tap looked)
+  const uint32_t h = (element >> 8 ^ layout >> 6) & (kSlots - 1);
+  Drawn* slot = &g_drawn[h];
+  for (uint32_t k = 0; k < 8; ++k) {
+    Drawn& s = g_drawn[(h + k) & (kSlots - 1)];
+    if (s.element == element) {
+      slot = &s;
+      break;
+    }
+    if (slot->element && slot->element != element && (!s.element || now - s.seen > std::chrono::seconds(1))) slot = &s;
+  }
+  Drawn& d = *slot;
   if (d.element != element || std::fabs(d.x - x) > 0.5f || std::fabs(d.y - y) > 0.5f) d.moved = now;
   d.element = element, d.id = Rd32(base + desc), d.x = x, d.y = y, d.seen = now;
   // (as ScriptMenuRow's labels: control codes, such as MY WWE's logo, are left out)
@@ -187,34 +199,57 @@ void Wr32(uint8_t* p, uint32_t v) {
   p[0] = uint8_t(v >> 24), p[1] = uint8_t(v >> 16), p[2] = uint8_t(v >> 8), p[3] = uint8_t(v);
 }
 
+// Before anyone picks (g_panel_mutex held): no panel has a cursor or has moved one - on the tag and 6-man selects player
+// 1's pad still on a slot bar (taps choose the slot), on 1v1 before the first A.
+bool SlotPhase() {
+  const auto now = Clock::now();
+  bool any = false;
+  for (const Panel& p : g_panels) {
+    if (!p.cursor || now - p.seen >= kRecent) continue;
+    any = true;
+    if (p.state == 2 || p.moved != Clock::time_point{}) return false;
+  }
+  return any;
+}
+
 // The tile under a tap on the grid: first the cursor goes there, a second tap on it presses A.
 bool GridTap(float x, float y, svr2011::MenuTouchPress press) {
   if (x < kGridX || y < kGridY) return false;
   const uint32_t col = uint32_t((x - kGridX) / kTileW), row = uint32_t((y - kGridY) / kTileH);
   if (col >= kGridCols || row >= kGridRows) return false;
   std::lock_guard lock(g_panel_mutex);
-  // The panel player 1's pad works: their own, then (a computer's slot, once theirs is settled) the next with a cursor.
+  // The panel player 1's pad works: the one with a cursor (on 1v1 their own, panel 0, then a computer's slot once theirs
+  // is settled; on the tag and 6-man selects the slot they took, then their partners' and the other team's).
   const auto now = Clock::now();
   const auto here = [&](const Panel& p) { return p.cursor && now - p.seen < kRecent; };
-  Panel& first = g_panels[0];
-  if (!here(first) || !g_base) return false;
+  if (!g_base) return false;
+  bool any = false;
   Panel* in_play = nullptr;
-  if (first.state == 2) {
-    in_play = &first;
-  } else {
-    for (Panel& p : g_panels)
-      if (!in_play && &p != &first && here(p) && p.state == 2) in_play = &p;
+  for (Panel& p : g_panels) {
+    if (!here(p)) continue;
+    any = true;
+    if (p.state == 2 && (!in_play || &p == &g_panels[0])) in_play = &p;
   }
-  if (!in_play && first.state == 0 && first.col == 0 && first.row == 0 && first.moved == Clock::time_point{}) in_play = &first;
-  if (!in_play || in_play->mode != 0) return false;  // (a list is open: not yet)
-  if (in_play->state == 2 && !in_play->picking) return false;  // (READY: the pad's A or X)
+  if (g_log) {
+    std::string s;
+    for (uint32_t k = 0; k < 6; ++k) {
+      const Panel& p = g_panels[k];
+      if (here(p)) s += fmt::format(" [{} st {} pick {} mode {} at {},{}]", k, p.state, p.picking, p.mode, p.col, p.row);
+    }
+    REXLOG_INFO("[svr2011] menu touch: grid tap {},{} panels{}", col, row, s);
+  }
+  if (!any) return false;
   const uint32_t kind = g_kinds[row][col];
-  if (in_play->state != 2) {
-    REXLOG_INFO("[svr2011] menu touch: tile {},{} kind {} panel {:08X}: A brings the cursor up", col, row, kind, in_play->cursor);
-    g_pending = Pending{in_play->cursor, col, row, true, now, press};
+  if (!in_play) {
+    // (no cursor yet, nothing picked: player 1's first A brings one up - on their slot's panel; the move waits for it)
+    if (!SlotPhase()) return false;
+    REXLOG_INFO("[svr2011] menu touch: tile {},{} kind {}: A brings the cursor up", col, row, kind);
+    g_pending = Pending{0, col, row, true, now, press};
     if (press) press(0x1000);  // (A)
     return true;
   }
+  if (in_play->mode != 0) return false;  // (a list is open: not yet)
+  if (!in_play->picking) return false;  // (READY: the pad's A or X)
   bool same = in_play->row == row && in_play->col == col;
   if (!same && in_play->row == row && in_play->col < kGridCols && kind != kCharacterTile && g_kinds[row][in_play->col] == kind) {
     const uint32_t lo = std::min(col, in_play->col), hi = std::max(col, in_play->col);
@@ -283,6 +318,131 @@ bool VsTap(float x, float y, svr2011::MenuTouchPress press) {
   return false;
 }
 
+// The tag and 6-man selects (their own menu groups; the grid, the panels and the VS screen as 1v1's). Before the first
+// pick player 1's pad sits on one of the slot bars - 2 or 3 a team, left and right of VS - and the d-pad moves it (left /
+// right: the other team; up / down: the team's next bar, down past the last one to the tray of no slot); A takes it. The
+// bars' labels are texts (id 1002: "1P" on player 1's, "COM" on the others) at the left or right end of each bar.
+constexpr uint32_t kTagGroup = 0x7D3, kSixGroup = 0x7D8, kSlotLabelId = 1002;
+constexpr float kMiddle = 320;
+
+struct Label {
+  float x, y;
+  bool p1;
+};
+std::vector<Label> SlotLabels() {
+  std::vector<Label> out;
+  const auto now = Clock::now();
+  std::lock_guard lock(g_drawn_mutex);
+  for (const Drawn& d : g_drawn)
+    if (d.element && d.id == kSlotLabelId && d.text[0] && d.y < kGridY && now - d.seen < kRecent && now - d.moved > kSettled)
+      out.push_back({d.x, d.y, std::strcmp(d.text, "1P") == 0});
+  return out;
+}
+
+// A bar tapped: the pad goes there one d-pad press at a time, each after the last has shown ("1P" moved): the moves
+// wrap and pass the tray, so the way is found by looking, not counted. It stops on the bar (A is a second tap), after 8
+// presses, or after 4 s.
+struct SlotMove {
+  bool left = false;
+  float y = 0;
+  int presses = 0;
+  Clock::time_point at, last;
+  svr2011::MenuTouchPress press = nullptr;
+} g_slot_move;
+std::atomic<bool> g_slot_moving{false};
+std::mutex g_slot_mutex;
+
+// A few presses in a row, 200 ms apart (SlotMoveTick sends them).
+std::vector<uint16_t> g_queue;
+svr2011::MenuTouchPress g_queue_press = nullptr;
+Clock::time_point g_queue_last;
+
+void QueueTick() {
+  if (g_queue.empty() || Clock::now() - g_queue_last < std::chrono::milliseconds(200)) return;
+  const uint16_t b = g_queue.front();
+  g_queue.erase(g_queue.begin());
+  g_queue_last = Clock::now();
+  if (g_queue_press) g_queue_press(b);
+  if (g_queue.empty()) g_slot_moving = false;
+}
+
+void SlotMoveTick() {
+  if (!g_slot_moving.load(std::memory_order_relaxed)) return;
+  std::lock_guard lock(g_slot_mutex);
+  if (!g_slot_moving) return;
+  if (!g_queue.empty()) {
+    QueueTick();
+    return;
+  }
+  const auto now = Clock::now();
+  if (now - g_slot_move.last < std::chrono::milliseconds(250)) return;  // (the last press's move shown first)
+  const auto labels = SlotLabels();
+  const auto p1 = std::find_if(labels.begin(), labels.end(), [](const Label& l) { return l.p1; });
+  const bool there = p1 != labels.end() && (p1->x < kMiddle) == g_slot_move.left && std::fabs(p1->y - g_slot_move.y) < 2;
+  if (there || g_slot_move.presses >= 8 || now - g_slot_move.at > std::chrono::seconds(4) || labels.empty()) {
+    REXLOG_INFO("[svr2011] menu touch: slot {} ({} presses)", there ? "reached" : "not reached - stopped", g_slot_move.presses);
+    g_slot_moving = false;
+    return;
+  }
+  uint16_t button;
+  if (p1 == labels.end())
+    button = 0x0001;  // (in the tray: up onto the bars)
+  else if ((p1->x < kMiddle) != g_slot_move.left)
+    button = g_slot_move.left ? 0x0004 : 0x0008;  // (d-pad left, right: the other team)
+  else
+    button = g_slot_move.y > p1->y ? 0x0002 : 0x0001;  // (down, up)
+  ++g_slot_move.presses, g_slot_move.last = now;
+  if (g_slot_move.press) g_slot_move.press(button);
+}
+
+// After player 1's own pick and READY the game asks on their bar "CONTROL PARTNERS - YES / NO" (YES lit first): a tap on
+// YES is A, on NO right then A.
+bool PromptTap(float x, float y, svr2011::MenuTouchPress press) {
+  float yes_x = -1, yes_y = 0, no_x = -1, no_y = 0;
+  {
+    const auto now = Clock::now();
+    std::lock_guard lock(g_drawn_mutex);
+    for (const Drawn& d : g_drawn) {
+      if (!d.element || d.id != 1000 || d.y >= kGridY || now - d.seen >= kRecent || now - d.moved <= kSettled) continue;
+      if (std::strcmp(d.text, "YES") == 0) yes_x = d.x, yes_y = d.y;
+      if (std::strcmp(d.text, "NO") == 0) no_x = d.x, no_y = d.y;
+    }
+  }
+  if (yes_x < 0 || no_x < 0) return false;
+  const auto on_word = [&](float tx, float ty, int letters) { return std::fabs(y - (ty + 5)) < 11 && std::fabs(x - (tx + letters * 4)) < 26; };
+  const bool yes = on_word(yes_x, yes_y, 3), no = !yes && on_word(no_x, no_y, 2);
+  if (!yes && !no) return false;
+  REXLOG_INFO("[svr2011] menu touch: control partners - {}", yes ? "YES" : "NO");
+  std::lock_guard lock(g_slot_mutex);
+  g_queue = yes ? std::vector<uint16_t>{0x1000} : std::vector<uint16_t>{0x0008, 0x1000};  // (A; d-pad right, A)
+  g_queue_press = press, g_queue_last = Clock::time_point{};
+  g_slot_moving = true;
+  return true;
+}
+
+bool SlotTap(float x, float y, svr2011::MenuTouchPress press) {
+  {
+    std::lock_guard lock(g_panel_mutex);
+    if (!SlotPhase()) return false;
+  }
+  const auto labels = SlotLabels();
+  const Label* bar = nullptr;
+  for (const Label& l : labels)
+    if ((l.x < kMiddle) == (x < kMiddle) && std::fabs(y - l.y) < 13 && (!bar || std::fabs(y - l.y) < std::fabs(y - bar->y)))
+      bar = &l;
+  if (!bar) return false;
+  if (bar->p1) {
+    REXLOG_INFO("[svr2011] menu touch: slot bar {:.0f},{:.0f} - player 1's: A", bar->x, bar->y);
+    if (press) press(0x1000);  // (A)
+    return true;
+  }
+  REXLOG_INFO("[svr2011] menu touch: slot bar {:.0f},{:.0f} - the pad goes there", bar->x, bar->y);
+  std::lock_guard lock(g_slot_mutex);
+  g_slot_move = SlotMove{bar->x < kMiddle, bar->y, 0, Clock::now(), Clock::time_point{}, press};
+  g_slot_moving = true;
+  return true;
+}
+
 }  // namespace
 
 namespace svr2011 {
@@ -314,12 +474,14 @@ void MenuTouchPanel(PPCContext& ctx, uint8_t* base, uint32_t cursor) {
       p.seen = now;
       p.state = state, p.picking = Rd32(c + kPanelPicking);
     }
-    if (g_pending.cursor == cursor) {
+    // (a wake has no panel yet: the first one whose cursor comes up - player 1's slot)
+    const bool waking = g_pending.wake && !g_pending.cursor && g_pending.at != Clock::time_point{};
+    if (g_pending.cursor == cursor || waking) {
       if (now - g_pending.at > std::chrono::seconds(2)) {
-        g_pending.cursor = 0;
+        g_pending = Pending{};
       } else if (!g_pending.wake || state == 2) {
         apply = true, apply_col = g_pending.col, apply_row = g_pending.row, apply_press = g_pending.press;
-        g_pending.cursor = 0;
+        g_pending = Pending{};
       }
     }
   }
@@ -353,12 +515,14 @@ void MenuTouchPanel(PPCContext& ctx, uint8_t* base, uint32_t cursor) {
 bool MenuTouchTap(float fx, float fy, MenuTouchPress press) {
   if (fx < 0 || fx > 1 || fy < 0 || fy > 1) return false;
   g_shot_again = true;
-  if (GuestPagesHoldInput() || GameKeyboardOpen() || g_row_moving) return false;
+  if (GuestPagesHoldInput() || GameKeyboardOpen() || g_row_moving || g_slot_moving) return false;
   if (P2POnlineMode()) return false;  // (first version: online screens may be synced by input; steer with the pad)
   uint32_t group = 0, cursor = 0;
   if (!ScriptMenuState(&group, &cursor)) return false;
   const float x = fx * 640, y = fy * 360;
   if (group == kSelectGroup) return VsTap(x, y, press) || GridTap(x, y, press);
+  if (group == kTagGroup || group == kSixGroup)
+    return VsTap(x, y, press) || PromptTap(x, y, press) || SlotTap(x, y, press) || GridTap(x, y, press);
   std::vector<Drawn> drawn;
   {
     const auto now = Clock::now();
@@ -427,6 +591,7 @@ REX_HOOK_RAW(sub_823D4008) {
   if (g_log) LogElement(base, ctx.r3.u32, ctx.r4.u32);
   NoteText(base, ctx.r3.u32, ctx.r4.u32);
   RowMoveTick();
+  SlotMoveTick();
   ShotAid();
   __imp__sub_823D4008(ctx, base);
 }

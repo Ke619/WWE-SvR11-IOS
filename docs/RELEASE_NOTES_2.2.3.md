@@ -10,6 +10,11 @@ Fixes marked "potential" couldn't be fully proven here, so please report it if t
 - **Tap the tag team and 6-man selects** on phones (and click them with the PC mouse): your slot, every wrestler's pick, and CONTROL PARTNERS YES / NO.
 - **Check entrance numbers** in Mods (PC launcher and Android app): mods installed before 2.2.2 that share an entrance number with a different entrance are moved to a free number, so each plays its own. It also runs once by itself after updating, and tells you what moved.
 
+## 🎮 Nintendo Switch
+- **Long black screen with the crowd turned off** - fixed (the game copied the arena files a tiny piece at a time; it's fast now).
+- **Install check**: if the game files on the SD card are missing or incomplete, the game now says so (what's missing and how to fix it) instead of crashing. Setup -> Switch in the PC launcher also checks the card after making the files.
+- **Recording / SysDVR**: set `switch_recording = true` in `SvR2011/svr2011.toml` to give the console's recording its memory (off by default - it uses 96 MB).
+
 ## 🛠️ Fixes
 - **Big square shadows under the ring ropes** - gone. The ropes now cast thin shadows (every version had this).
 - **Android: slow motion after a pin**, then in the replays, menus and next match - fixed (a 2.2.2 rule for CPU kick-outs stayed on after the match).

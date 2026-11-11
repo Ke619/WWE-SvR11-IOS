@@ -52,6 +52,9 @@ void NoteMatchLoading(bool loading);
 // A block CawHeapFallback gave is freed (operator delete's hook,
 // frame_rate.cpp): true when it was one of them (freed here).
 bool CawHeapFree(uint32_t ptr);
+// Whether `address` lies in a fallback block given now (a game object there - the stage's, from its full heap - lives
+// at a system-heap address, outside the game heaps' ranges: frame_rate.cpp's render-command check asks).
+bool InFallbackBlock(uint32_t address);
 // The fallback memory in use now (bytes): match recordings' loaded.txt.
 uint32_t FallbackBytesInUse();
 

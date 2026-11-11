@@ -185,8 +185,8 @@ static const char* StartRecording() {
     snprintf(why, sizeof(why), "not available (0x%X)", rc);
     return why;
   }
-  const Result on = appletSetGamePlayRecordingState(true);
-  snprintf(why, sizeof(why), R_SUCCEEDED(on) ? "on (96 MB buffer)" : "buffer given, state refused (0x%X)", on);
+  const Result state = appletSetGamePlayRecordingState(true);
+  snprintf(why, sizeof(why), R_SUCCEEDED(state) ? "on (96 MB buffer)" : "buffer given, state refused (0x%X)", state);
   return why;
 }
 

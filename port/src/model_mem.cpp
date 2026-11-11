@@ -421,9 +421,9 @@ std::string GuestName(const uint8_t* base, uint32_t a) {
 }
 
 struct CacheAlloc {
-  bool active = false, stuck = false, given = false;
+  bool active = false, stuck = false, given = false, virtual_tried = false;
   uint32_t size = 0, tries = 0;
-  std::chrono::steady_clock::time_point t0;
+  std::chrono::steady_clock::time_point t0, refused_at;  // (refused_at: the first ask that found no block, since the last that did)
   std::string name;  // (the file it is for: noted when it is found stuck)
 };
 thread_local CacheAlloc t_alloc;
@@ -548,7 +548,7 @@ REX_HOOK_RAW(sub_826A1420) {
 REX_EXTERN(__imp__sub_826BA928);
 REX_HOOK_RAW(sub_826BA928) {
   const bool loader = ctx.r3.u32 == Rd32(base, kLoaderCache);
-  if (loader) t_alloc = CacheAlloc{true, false, false, ctx.r4.u32, 0, std::chrono::steady_clock::now()};
+  if (loader) t_alloc = CacheAlloc{true, false, false, false, ctx.r4.u32, 0, std::chrono::steady_clock::now()};
   const uint32_t size = ctx.r4.u32;
   const std::string name = loader ? RequestName(base) : std::string();
   __imp__sub_826BA928(ctx, base);
@@ -604,7 +604,39 @@ uint32_t LoaderCacheFallback(uint32_t size) {
   // (a request of 0 bytes: a file no mounted pac has - its directory entry not found, size 0 - e.g. a character's
   // model under a name no pac carries. It never fits nothing, so it spun forever: a small zeroed block instead,
   // the read empty - the load goes on, and the log names the missing file)
-  const uint32_t p = FallbackBlock(std::max(size, 2048u));
+  // (a motion file - MOT/.., MOTP/.. - only the CPU reads: the virtual system heap first. The physical pool is the
+  // 512 MB the GPU sees, shared with every model and texture, and after one match it may have no 26 MB in one piece:
+  // report 79be36, a triple threat after a 1v1 with 72 move packs - MOT/RR00 and RR01 (DLC Vol. 2's per-wrestler banks,
+  // grown to 23 and 21 MB) had the physical fallback, RR02 (26 MB) found no room, and the cache's loop asked for it
+  // for good: the match never loaded. The physical pool after it, if the virtual heap has none)
+  const uint32_t want = std::max(size, 2048u);
+  const bool motion = r.name.find("MOT/") != std::string::npos || r.name.find("MOTP/") != std::string::npos;
+  uint32_t p = motion ? FallbackBlock(want, true, 0x1000) : 0;
+  if (!p) p = FallbackBlock(want);
+  const auto now = std::chrono::steady_clock::now();
+  if (p) {
+    r.refused_at = {};
+  } else if (r.refused_at == std::chrono::steady_clock::time_point{}) {
+    r.refused_at = now;
+  } else if (!motion && !r.virtual_tried && now - r.refused_at >= std::chrono::seconds(5)) {
+    // (another file, and the physical pool still has no room after 5 s: the virtual heap rather than no load at all -
+    // the CPU reads it right; a texture in it would draw wrong (the GPU reads physical addresses), never crash)
+    r.virtual_tried = true;
+    p = FallbackBlock(want, true, 0x1000);
+    REXLOG_ERROR("[svr2011] file cache: {} ({} bytes) - the physical memory has had no room for 5 s, {}", r.name, size,
+                 p ? fmt::format("given from the virtual heap instead, at {:08X} (if it holds textures they may draw "
+                                 "wrong)", p)
+                   : std::string("nor the virtual heap"));
+    if (p) r.refused_at = {};
+  }
+  // (truly out of memory - no block anywhere for 60 s, nothing idle the cache could free: the game would wait for
+  // ever, a hang the player can only close. Ended with a reason in the log and the crash report instead)
+  if (!p && r.refused_at != std::chrono::steady_clock::time_point{} && now - r.refused_at >= std::chrono::seconds(60)) {
+    REXLOG_ERROR("[svr2011] file cache: out of memory - {} ({} bytes) found no room in 60 s (fallback in use {:.1f} MB); "
+                 "the load can't go on - the game is ended rather than left hanging",
+                 r.name, size, FallbackBytesInUse() / 1048576.0);
+    std::abort();
+  }
   // (no room: the cache's retry loop asks again at once, over a million times a second - SVR2011_TEST_FALLBACK_NO_ROOM;
   // report bd538a, a phone with no 22 MB left: the frame rate down for good. A short wait between its asks)
   if (!p && r.given) std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -614,7 +646,9 @@ uint32_t LoaderCacheFallback(uint32_t size) {
   if (!r.given) {
     r.given = true;
     REXLOG_WARN("[svr2011] file cache: {} bytes {}", size,
-                p ? fmt::format("from the fallback memory instead, at {:08X}", p) : std::string("- no fallback memory either"));
+                p ? fmt::format("from the fallback memory instead, at {:08X}{}", p,
+                                p < 0x40000000u ? " (the virtual heap: a motion file, only the CPU reads it)" : "")
+                  : std::string("- no fallback memory either"));
   }
   return p;
 }

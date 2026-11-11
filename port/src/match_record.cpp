@@ -168,6 +168,7 @@ struct Recording {
   std::array<std::vector<uint64_t>, 4> table_steps;
   std::array<uint8_t, 4> last_table{};
   uint32_t trail_second = ~0u;
+  uint32_t last_clock = 0;  // (the match clock's last value: a story's next match starts it again)
   std::string start;
   std::chrono::steady_clock::time_point started;
   uint32_t rule = 0, arena = 0;
@@ -657,6 +658,22 @@ void Start(PPCContext& ctx, uint8_t* base, uint32_t clock) {  // (under g_rec)
   REXLOG_INFO("[svr2011] record: this match in {}", g.dir.string());
 }
 
+// A story's segment the game went on from without ending it (Road to WrestleMania: a backstage brawl, then the match
+// - no new load, no match end): its folder closed as it is (result "segment", done.txt - nothing more comes), so the
+// next match gets a folder of its own. Report 3fd493: the match was written into the segment's folder, under the
+// segment's people and rule.
+void EndSegment() {  // (under g_rec)
+  if (g.inputs) std::fclose(g.inputs);
+  if (g.trail) std::fclose(g.trail);
+  g.inputs = g.trail = nullptr;
+  g.result = "segment";
+  WriteJson(false);
+  if (FILE* f = std::fopen((g.dir / "done.txt").string().c_str(), "wb")) std::fclose(f);
+  REXLOG_INFO("[svr2011] record: the segment's folder closed - the next match starts without a new load ({})",
+              g.dir.filename().string());
+  g.on = false;
+}
+
 }  // namespace
 
 // The random table is seeded (a match's load, and other places): logged with SVR2011_TEST_SEED_LOG (replay research).
@@ -752,6 +769,20 @@ void MatchRecordUpdate(PPCContext& ctx, uint8_t* base) {
   {
     std::lock_guard lock(g_rec);
     const bool match = clock && c0 >= 0x40000000u && !(c0 & 3);
+    // A story's next match without a new load (EndSegment): the clock starts again under another rule or arena, with
+    // other wrestlers (a gauntlet's next opponent keeps the rule and arena, Three Stages of Hell its people: one
+    // folder, as before).
+    if (g.on && match && clock <= 2 && g.last_clock > clock + 60 && !g_replay.on &&
+        (base[kLive] != g.rule || Rd32(base + kLive + 64) != g.arena)) {
+      std::set<std::pair<uint32_t, uint32_t>> was, now;   // (person, superstar) of the wrestlers
+      for (const auto& p : g.people) if (p.person < 6) was.insert({p.person, p.superstar});
+      for (const auto& p : svr2011::MatchPeople(base)) if (p.person < 6) now.insert({p.person, p.superstar});
+      if (!now.empty() && now != was) {
+        EndSegment();
+        g_loaded = true;  // (this bell starts the next one's, below)
+      }
+    }
+    if (g.on && match) g.last_clock = clock;
     if (match && !g.on && clock <= 2) {  // (the bell: with a referee, after a match's load - not an attract match)
       bool referee = false;
       for (uint32_t i = 0; i < 10; ++i)

@@ -354,6 +354,8 @@ static void match_label(const WCHAR *dir, const WCHAR *name, WCHAR *out, int n)
         }
         /* (result: "running", "ended" or "crash" - docs/MATCH_RECORDINGS.md; no done.txt: not complete) */
         if (!strcmp(result, "crash")) strncat_s(line, sizeof line, " (crashed)", _TRUNCATE);
+        else if (!strcmp(result, "segment"))   /* (a story's segment: its match is the next recording - match_record.cpp) */
+            strncat_s(line, sizeof line, " (story segment - its match is listed above it)", _TRUNCATE);
         else if (GetFileAttributesW(done) == INVALID_FILE_ATTRIBUTES) strncat_s(line, sizeof line, " (unfinished)", _TRUNCATE);
         else if (result[0] && strcmp(result, "ended") && strcmp(result, "running")) {
             strncat_s(line, sizeof line, " (", _TRUNCATE);

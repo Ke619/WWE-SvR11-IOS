@@ -66,7 +66,12 @@ with `inputs.bin` at 192 bytes.
 - `result` is one of:
   - `running`: the match is still going, or the game was closed during it;
   - `ended`: the match's end task started;
-  - `crash`: the crash report was written while the match ran.
+  - `crash`: the crash report was written while the match ran;
+  - `segment`: a story's segment the game went on from without ending it (Road to WrestleMania: a backstage brawl,
+    then the match, with no new load). The clock starts again under another rule or arena, so the segment's folder is
+    closed (with `done.txt`) and the match gets a folder of its own. Before this (report 3fd493) the match was written
+    into the segment's folder, under the segment's people and rule. A gauntlet's next opponent keeps the rule and
+    arena: one folder, as before.
 - `people` lists every character in the match, the referee (`person` 6) and the announcers included.
 - `cpu` is true when the CPU plays the wrestler, that is, when no local player's pad plays them (the character's
   +1152 is not a connected pad; the select screen's CPU picks have 6). The pick slot's controller byte (-8) is not

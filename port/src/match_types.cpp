@@ -224,6 +224,7 @@ bool g_ge = false;  // the match set up is a Gauntlet Eliminator
 // (sub_827374A0) sees it, but the match's live rules are built again from
 // the session's rule at its start (sub_828C48E8): there it's swapped too.
 uint32_t g_online_from = ~0u, g_online_to = ~0u;
+uint32_t g_setup_serial = 0;  // (match set-ups so far: the people builder's gauntlet line once per match)
 uint32_t g_ge_text[4] = {};
 
 // ELIMINATION: after NORMAL in TRIPLE THREAT (rule 0x0D) and FATAL-4-WAY
@@ -1303,6 +1304,7 @@ REX_HOOK_RAW(sub_827374A0) {
     }
   svr2011::SetMatchLoading(true);  // (arena_mods: a custom arena's loading pictures)
   RestoreRule(base);
+  ++g_setup_serial;
   g_lumberjacks_chosen = false;
   // FREE-ROAMING BACKSTAGE is removed (its rows: MatchTypeSwitches): a whole-backstage rule reaching here anyway - a
   // saved match, Universe, a CPU set-up - plays the first named room instead (PARKING LOT: 0x1B, 2 on 2: 0x70).
@@ -1544,6 +1546,19 @@ REX_HOOK_RAW(sub_828BBEF0) {
   }
   if (base[0x82E3DE00] == kLumberjack && !Rd32(base + kStoryContext) && ctx.r3.u32) {
     FillLumberjackSlots(base, ctx.r3.u32);
+  }
+  // (report 6d63a6: SLOBBER KNOCKER with nobody waiting - 2 people, the match over at the first fall - with no fill
+  // line logged. Once per match set-up, when a gauntlet row is on or the live rule is the gauntlet: what this
+  // hook's conditions saw and slots 2-5's picks, +8 - 51200 empty)
+  if (static uint32_t told = ~0u; told != g_setup_serial && (g_slobber || g_ge || base[0x82E3DE00] == kGauntlet)) {
+    told = g_setup_serial;
+    std::string picks;
+    for (uint32_t i = 2; ctx.r3.u32 && i < 6; ++i)
+      picks += fmt::format(" {}", Rd32(base + ctx.r3.u32 + kSlots + i * kSlotSize + 8));
+    REXLOG_INFO("match types: people built - slobber {} g. eliminator {} live rule {:02X} online to {:02X} story {:08X} "
+                "match {:08X} chosen {} from {:08X}; slots 2-5:{}",
+                g_slobber, g_ge, base[0x82E3DE00], g_online_to & 0xFF, Rd32(base + kStoryContext), ctx.r3.u32,
+                g_lumberjacks_chosen, uint32_t(ctx.lr), picks);
   }
   if (g_slobber && g_online_to != kGauntlet && base[0x82E3DE00] == kGauntlet && ctx.r3.u32) {  // (the 2 waiting opponents; online: the lobby's)
     if (const uint32_t rules = Rd32(base + kRules))

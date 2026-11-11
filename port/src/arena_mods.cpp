@@ -149,6 +149,27 @@ fs::path Served(const fs::path& requested, const std::string& name) {
   });
 }
 
+// A copy in big pieces. (The Switch's card has no hard links, so pac/bg is copied once into the overlay; copy_file
+// went 1 KB at a time there, each read a request to the card - about ten minutes for the 285 MB.) false: none made.
+bool CopyBig(const fs::path& from, const fs::path& to) {
+  std::ifstream in(from, std::ios::binary);
+  std::ofstream out(to, std::ios::binary | std::ios::trunc);
+  if (!in || !out) return false;
+  std::vector<char> buffer(8u << 20);
+  while (in) {
+    in.read(buffer.data(), std::streamsize(buffer.size()));
+    const std::streamsize got = in.gcount();
+    if (got > 0 && !out.write(buffer.data(), got)) break;
+  }
+  const bool ok = in.eof() && out.good();
+  out.close();
+  if (!ok) {
+    std::error_code ec;
+    fs::remove(to, ec);
+  }
+  return ok;
+}
+
 // overlay/<name> := link to (or copy of) what Served says.
 bool Place(const fs::path& requested, const std::string& name) {
   const fs::path source = Served(requested, name);
@@ -164,7 +185,11 @@ bool Place(const fs::path& requested, const std::string& name) {
   fs::create_hard_link(source, dst, ec);
   if (ec) {
     ec.clear();
+#if defined(__SWITCH__)
+    if (!CopyBig(source, dst)) ec = std::make_error_code(std::errc::io_error);  // (dst was removed above)
+#else
     fs::copy_file(source, dst, fs::copy_options::none, ec);  // (never over an entry: it could be a link)
+#endif
     if (ec) {
       REXLOG_WARN("[svr2011] arena mods: cannot place {} ({})", name, ec.message());
       return false;

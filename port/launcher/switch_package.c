@@ -258,6 +258,41 @@ static void write_online(const WCHAR *game_dir, const WCHAR *to)
     }
 }
 
+/* What the console's install check (port/switch/nx_install_check.cpp) needs, looked at on the card: "" when all
+   is there, else the first missing ones. */
+static void card_check(const WCHAR *to, WCHAR *out, int n)
+{
+    static const struct { const WCHAR *path; int folder; uint64_t min; } needs[] = {
+        { L"default.xex", 0, 1 << 20 }, { L"plist360.arc", 0, 64 << 10 }, { L"pac\\_startup.pac", 0, 64 << 10 },
+        { L"pac\\menu", 1, 0 }, { L"sound\\Game.pck", 0, 1 << 20 }, { L"movies", 1, 0 } };
+    int i, found = 0;
+    out[0] = 0;
+    for (i = 0; i < (int)(sizeof needs / sizeof needs[0]); i++) {
+        WCHAR p[MAX_PATH];
+        WIN32_FILE_ATTRIBUTE_DATA a;
+        int ok;
+        swprintf_s(p, MAX_PATH, L"%s\\%s", to, needs[i].path);
+        ok = GetFileAttributesExW(p, GetFileExInfoStandard, &a) != 0;
+        if (ok && needs[i].folder) {
+            WIN32_FIND_DATAW fd;
+            HANDLE h;
+            wcscat_s(p, MAX_PATH, L"\\*.*");
+            ok = 0;
+            if ((h = FindFirstFileW(p, &fd)) != INVALID_HANDLE_VALUE) {
+                do ok |= fd.cFileName[0] != L'.'; while (!ok && FindNextFileW(h, &fd));
+                FindClose(h);
+            }
+        } else if (ok) {
+            ok = !(a.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
+                 ((((uint64_t)a.nFileSizeHigh << 32) | a.nFileSizeLow) >= needs[i].min);
+        }
+        if (!ok && found++ < 4) {
+            if (out[0]) wcscat_s(out, n, L", ");
+            wcscat_s(out, n, needs[i].path);
+        }
+    }
+}
+
 static void write_howto(const WCHAR *out_dir)
 {
     static const char text[] =
@@ -304,8 +339,8 @@ int switch_package(const WCHAR *game_dir, const WCHAR *nsp, const WCHAR *out_fol
                    volatile LONG *cancel, switch_progress_fn progress, WCHAR *err, int errn)
 {
     WCHAR out_dir[MAX_PATH];
-    static const WCHAR *const files[] = { L"default.xex", L"plist360.arc", L"plist360_4x3.arc" };
-    static const WCHAR *const folders[] = { L"pac", L"sound", L"movies", L"DLC", L"pad_icons", L"nxeart" };
+    static const WCHAR *const files[] = { L"default.xex", L"plist360.arc", L"plist360_4x3.arc", L"nxeart" };
+    static const WCHAR *const folders[] = { L"pac", L"sound", L"movies", L"DLC", L"pad_icons" };
     static const WCHAR *const no_mods[] = { L"ArenaOverlay", L"SuperstarOverlay", L".backup", L".install.log", NULL };
     static const WCHAR *const no_saves[] = { L".mount", NULL };
     Job j;
@@ -342,7 +377,7 @@ int switch_package(const WCHAR *game_dir, const WCHAR *nsp, const WCHAR *out_fol
         WIN32_FILE_ATTRIBUTE_DATA a;
         swprintf_s(s, MAX_PATH, L"%s\\%s", game_dir, files[i]);
         swprintf_s(d, MAX_PATH, L"%s\\%s", to, files[i]);
-        if (GetFileAttributesExW(s, GetFileExInfoStandard, &a) &&
+        if (GetFileAttributesExW(s, GetFileExInfoStandard, &a) && !(a.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
             !add_item(&j, s, d, ((uint64_t)a.nFileSizeHigh << 32) | a.nFileSizeLow, &a.ftLastWriteTime, 0))
             goto out_of_memory;
     }
@@ -415,6 +450,14 @@ int switch_package(const WCHAR *game_dir, const WCHAR *nsp, const WCHAR *out_fol
     }
     write_online(game_dir, to);
     write_howto(out_dir);
+    {   /* (the card as the console will see it) */
+        WCHAR miss[400];
+        card_check(to, miss, 400);
+        if (miss[0]) {
+            swprintf_s(err, errn, L"The files were copied, but the card still lacks: %s. Make Switch files again.", miss);
+            goto done;
+        }
+    }
     if (progress) progress(1000, NULL);
     ok = 1;
     goto done;

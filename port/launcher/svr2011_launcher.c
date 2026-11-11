@@ -7824,7 +7824,7 @@ static void nx_message(WPARAM wp, WCHAR *msg)
     if (wp == APK_OK) {
         set_busy(0);
         SendMessageW(ctl(ID_NX_PROGRESS), PBM_SETPOS, 1000, 0);
-        swprintf_s(t, 800, L"Done. Now install svr2011.nsp with DBI (see \"Install on Switch.txt\" in %s).", s_nx_out);
+        swprintf_s(t, 800, L"Done: the card has the files the game needs. Now install svr2011.nsp with DBI (see \"Install on Switch.txt\" in %s).", s_nx_out);
         set_text(ID_NX_STATUS, t);
     } else if (wp == APK_FAILED) {
         set_busy(0);

@@ -136,6 +136,7 @@ public class LauncherActivity extends Activity {
         if (getPreferences(MODE_PRIVATE).getBoolean("check_updates", true)) checkUpdates(false);
         // The mods that come with the port, once for each app version (BundledMods).
         BundledMods.atStart(this);
+        ModsPage.entranceCheckAtStart(this);   // (once: mods installed before the entrance check - report 85741e)
         // Edge to edge (Android 15+): keep clear of the status and navigation bars
         // and the camera cut-out.
         if (android.os.Build.VERSION.SDK_INT >= 30) root.setOnApplyWindowInsetsListener((v, insets) -> {

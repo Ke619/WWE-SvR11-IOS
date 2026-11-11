@@ -64,6 +64,7 @@ final class EntranceClash {
     static final class Use {
         int kind, base;
         long hash;
+        int rank;   // (the check of installed mods: its mod's place in the install order)
         File owner;
     }
 
@@ -359,24 +360,52 @@ final class EntranceClash {
         return uses;
     }
 
+    // The record of a mod's moves (folder/.entrance_moves). merge: the record already there kept, a number moved again
+    // followed on ("entrance 504 105" + 105 -> 106: "entrance 504 106"), new ones added (entrance_clash.c write_record).
+    static void writeRecord(File folder, List<Move> mv, boolean merge) throws IOException {
+        if (mv.isEmpty()) return;
+        List<Move> rec = merge ? readRecord(folder) : new ArrayList<>();
+        for (Move m : mv) {
+            Move hit = null;
+            for (Move r : rec) if (r.kind == m.kind && r.to == m.from) { hit = r; break; }
+            if (hit != null) hit.to = m.to;
+            else rec.add(m);
+        }
+        StringBuilder rs = new StringBuilder();
+        for (Move m : rec)
+            if (m.from != m.to)
+                rs.append(m.kind == kVictory ? "victory" : "entrance").append(' ').append(m.from).append(' ').append(m.to).append("\r\n");
+        try (OutputStream o = new FileOutputStream(new File(folder, ".entrance_moves"))) {
+            o.write(rs.toString().getBytes(StandardCharsets.ISO_8859_1));
+        }
+    }
+
     // incoming: the mod unpacked (rewritten in place); dest: the folder it will replace or take (its old copy's
     // record read; left out of the installed mods compared); mods: the Mods folder. -> one plain line per move
     // ("" none).
     static String fix(File mods, File incoming, File dest, String name) throws IOException {
+        return fixCore(incoming, dest, name, installedUses(mods, dest), -1, Integer.MAX_VALUE, false, new ArrayList<>());
+    }
+
+    // The fix itself: incoming's numbers against uses - skip: a mod's own (its rank), below: only those of mods before
+    // it clash. recheck: a mod already in place (incoming is its folder) - only its clashes move, its record is added to.
+    static String fixCore(File incoming, File dest, String name, List<Use> uses, int skip, int below, boolean recheck,
+                          List<Move> mv) throws IOException {
         List<Pack> packs = modPacks(incoming);
         if (packs.isEmpty()) return "";
         List<Use> mine = new ArrayList<>();
         addUses(incoming, packs, mine);
         if (mine.isEmpty()) return "";
-        List<Use> uses = installedUses(mods, dest);
-        List<Move> rec = readRecord(dest), mv = new ArrayList<>();
+        List<Use> others = new ArrayList<>();
+        for (Use x : uses) if (x.rank != skip) others.add(x);
+        List<Move> rec = recheck ? new ArrayList<>() : readRecord(dest);   // (a recheck moves clashes only)
         for (Use u : mine) {
             Use clash = null;
-            for (Use x : uses) if (x.kind == u.kind && x.base == u.base && x.hash != u.hash) { clash = x; break; }
+            for (Use x : others) if (x.rank < below && x.kind == u.kind && x.base == u.base && x.hash != u.hash) { clash = x; break; }
             int prev = 0, to = 0;
             for (Move r : rec) if (r.kind == u.kind && r.from == u.base) prev = r.to;
-            if (prev != 0 && prev != u.base && !taken(u.kind, prev, uses, mine, mv)) to = prev;
-            else if (clash != null) to = freeNumber(u.kind, u.base, uses, mine, mv);
+            if (prev != 0 && prev != u.base && !taken(u.kind, prev, others, mine, mv)) to = prev;
+            else if (clash != null) to = freeNumber(u.kind, u.base, others, mine, mv);
             if (to == 0) continue;
             Move m = new Move();
             m.kind = u.kind;
@@ -390,11 +419,7 @@ final class EntranceClash {
         for (Move m : mv) for (Pack p : packs) moveInPack(p, m);
         if (mv.isEmpty()) return "";
         moveInManifest(incoming, mv);
-        StringBuilder rs = new StringBuilder();
-        for (Move m : mv) rs.append(m.kind == kVictory ? "victory" : "entrance").append(' ').append(m.from).append(' ').append(m.to).append("\r\n");
-        try (OutputStream o = new FileOutputStream(new File(incoming, ".entrance_moves"))) {
-            o.write(rs.toString().getBytes(StandardCharsets.ISO_8859_1));
-        }
+        writeRecord(incoming, mv, recheck);
         StringBuilder report = new StringBuilder();
         for (Move m : mv) {
             String what = m.kind == kVictory ? "victory scene" : "entrance";
@@ -407,6 +432,70 @@ final class EntranceClash {
                 report.append('"').append(name).append("\" keeps ").append(what).append(' ').append(m.to)
                     .append(", the number it was moved to before (its own ").append(m.from).append(' ')
                     .append(m.clash == 2 ? "is another mod's" : "was moved").append(").");
+        }
+        return report.toString();
+    }
+
+    // When a mod was installed: its manifest.txt's time (written by the install - a fresh file, not the .svrmod's
+    // time); the folder's when it has none. (The PC reads the folder's creation time; Android's file systems keep none.)
+    static long installedAt(File folder) {
+        File man = new File(folder, "manifest.txt");
+        long t = man.isFile() ? man.lastModified() : 0;
+        return t != 0 ? t : folder.lastModified();
+    }
+
+    // The mods already installed checked with the same rules (mods installed before the fix, report 85741e;
+    // entrance_clash.c entrance_clash_recheck): in the order they were installed, each against the ones before it - a
+    // number used with different files moves in the later mod (pack, scripts, manifest; added to its .entrance_moves).
+    // Shared entrances (the same files) and numbers moved before are left alone; a second run moves nothing.
+    // -> one plain line per move ("" none).
+    static String recheck(File mods) throws IOException {
+        List<File> folders = new ArrayList<>();
+        File[] types = mods.listFiles();
+        if (types == null) return "";
+        for (File t : types) {
+            if (!t.isDirectory() || t.getName().startsWith(".") || t.getName().equalsIgnoreCase("PacOverlay")) continue;
+            File[] ms = t.listFiles();
+            if (ms == null) continue;
+            for (File m : ms)
+                if (m.isDirectory() && !m.getName().startsWith(".") && !new File(m, "disabled").exists()
+                        && (new File(m, "pack.txt").isFile() || new File(m, "moves/pack.txt").isFile()))
+                    folders.add(m);
+        }
+        final java.util.Map<File, Long> at = new java.util.HashMap<>();
+        for (File f : folders) at.put(f, installedAt(f));
+        folders.sort((x, y) -> {
+            int c = Long.compare(at.get(x), at.get(y));
+            return c != 0 ? c : x.getAbsolutePath().compareToIgnoreCase(y.getAbsolutePath());
+        });
+        List<Use> uses = new ArrayList<>();
+        for (int i = 0; i < folders.size(); i++) {
+            List<Pack> packs = modPacks(folders.get(i));
+            int from = uses.size();
+            addUses(folders.get(i), packs, uses);
+            for (int k = from; k < uses.size(); k++) uses.get(k).rank = i;
+        }
+        StringBuilder report = new StringBuilder();
+        for (int i = 0; i < folders.size(); i++) {
+            boolean clash = false;
+            for (Use u : uses) {
+                if (u.rank != i) continue;
+                for (Use x : uses)
+                    if (x.rank < i && x.kind == u.kind && x.base == u.base && x.hash != u.hash) { clash = true; break; }
+                if (clash) break;
+            }
+            if (!clash) continue;
+            File f = folders.get(i);
+            List<Move> mv = new ArrayList<>();
+            String one = fixCore(f, f, manifestName(f), uses, i, i, true, mv);
+            for (Use u : uses)   // (a moved script hashes as before: the move followed on)
+                if (u.rank == i)
+                    for (Move m : mv)
+                        if (u.kind == m.kind && u.base == m.from) { u.base = m.to; break; }
+            if (!one.isEmpty()) {
+                if (report.length() > 0) report.append('\n');
+                report.append(one);
+            }
         }
         return report.toString();
     }

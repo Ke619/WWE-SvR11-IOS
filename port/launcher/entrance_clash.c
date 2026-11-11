@@ -36,7 +36,7 @@ static const unsigned short k_stock_victories[] = {
     9000, 9001, 9002, 9003, 9004, 9005, 9100, 9101, 9102, 9103, 9200, 9201, 9202, 9203, 9400
 };
 
-enum { K_ENTRANCE, K_VICTORY, MAX_LINES = 512, MAX_USES = 4096, MAX_MOVES = 32 };
+enum { K_ENTRANCE, K_VICTORY, MAX_LINES = 512, MAX_USES = 16384, MAX_MOVES = 32, MAX_MODS = 2048, MAX_MINE = 1024 };
 
 typedef struct {
     char text[600];        /* the line as read (no line end) */
@@ -54,8 +54,13 @@ typedef struct {
 typedef struct {
     int kind, base;
     unsigned long long hash;
+    int rank;                /* (the check of installed mods: its mod's place in the install order) */
     WCHAR owner[MAX_PATH];   /* the mod folder */
 } Use;
+
+/* Which installed numbers a fix weighs: skip - a mod's own (its rank); clash - only those of mods before it. */
+typedef struct { int skip, below; } Scope;
+static const Scope k_all = { -1, 0x7FFFFFFF };
 
 static unsigned long long fnv(const void *p, size_t n, unsigned long long h)
 {
@@ -218,7 +223,7 @@ static void free_packs(Pack *p, int n)
 }
 
 /* Adds a folder's numbers (kind, base -> the sum of its lines' hashes) to uses. */
-static void add_uses(const WCHAR *folder, Pack *packs, int np, Use *uses, int *nu)
+static void add_uses(const WCHAR *folder, Pack *packs, int np, Use *uses, int *nu, int cap)
 {
     int i, j, k;
     for (i = 0; i < np; i++)
@@ -228,10 +233,11 @@ static void add_uses(const WCHAR *folder, Pack *packs, int np, Use *uses, int *n
             for (k = 0; k < *nu; k++)
                 if (uses[k].kind == l->kind && uses[k].base == l->base && !_wcsicmp(uses[k].owner, folder)) break;
             if (k == *nu) {
-                if (*nu >= MAX_USES) continue;
+                if (*nu >= cap) continue;
                 uses[k].kind = l->kind;
                 uses[k].base = l->base;
                 uses[k].hash = 0;
+                uses[k].rank = 0;
                 wcscpy_s(uses[k].owner, MAX_PATH, folder);
                 (*nu)++;
             }
@@ -279,23 +285,26 @@ static void range_of(int kind, int base, int *lo, int *hi)
 
 typedef struct { int kind, from, to, clash; WCHAR other[128]; } Move;
 
-static int taken(int kind, int n, const Use *uses, int nu, const Use *mine, int nm, const Move *mv, int nmv, int self)
+static int taken(const Scope *sc, int kind, int n, const Use *uses, int nu, const Use *mine, int nm, const Move *mv,
+                 int nmv, int self)
 {
     int i;
     if (stock(kind, n)) return 1;
-    for (i = 0; i < nu; i++) if (uses[i].kind == kind && uses[i].base == n) return 1;
+    for (i = 0; i < nu; i++)
+        if (uses[i].kind == kind && uses[i].base == n && uses[i].rank != sc->skip) return 1;
     for (i = 0; i < nm; i++) if (mine[i].kind == kind && mine[i].base == n && n != self) return 1;
     for (i = 0; i < nmv; i++) if (mv[i].kind == kind && mv[i].to == n) return 1;
     return 0;
 }
 
-static int free_number(int kind, int base, const Use *uses, int nu, const Use *mine, int nm, const Move *mv, int nmv)
+static int free_number(const Scope *sc, int kind, int base, const Use *uses, int nu, const Use *mine, int nm,
+                       const Move *mv, int nmv)
 {
     int lo, hi, n;
     range_of(kind, base, &lo, &hi);
     for (n = lo; n <= hi; n++) {
         if (kind == K_ENTRANCE && lo == 100 && n >= 700 && n <= 799) continue;
-        if (!taken(kind, n, uses, nu, mine, nm, mv, nmv, -1)) return n;
+        if (!taken(sc, kind, n, uses, nu, mine, nm, mv, nmv, -1)) return n;
     }
     return 0;
 }
@@ -481,7 +490,7 @@ static void installed_uses(const WCHAR *game, const WCHAR *dst, Use *uses, int *
             swprintf_s(off, MAX_PATH, L"%s\\disabled", folder);
             if ((dst && !_wcsicmp(folder, dst)) || GetFileAttributesW(off) != INVALID_FILE_ATTRIBUTES) continue;
             if ((np = mod_packs(folder, packs)) > 0) {
-                add_uses(folder, packs, np, uses, nu);
+                add_uses(folder, packs, np, uses, nu, MAX_USES);
                 free_packs(packs, np);
             }
         } while (FindNextFileW(hm, &m));
@@ -490,33 +499,54 @@ static void installed_uses(const WCHAR *game, const WCHAR *dst, Use *uses, int *
     FindClose(ht);
 }
 
-int entrance_clash_fix(const WCHAR *game, const WCHAR *incoming, const WCHAR *dst, const WCHAR *name, WCHAR *report,
-                       size_t report_n)
+/* The record of a mod's moves (folder\.entrance_moves). merge: the record already there kept, a number moved
+   again followed on ("entrance 504 105" + 105 -> 106: "entrance 504 106"), new ones added. */
+static void write_record(const WCHAR *folder, const Move *mv, int nmv, int merge)
+{
+    WCHAR path[MAX_PATH];
+    FILE *f;
+    Move rec[MAX_MOVES * 2];
+    int n = merge ? read_record(folder, rec, MAX_MOVES) : 0, i, j;
+    if (!nmv) return;
+    for (i = 0; i < nmv; i++) {
+        for (j = 0; j < n; j++)
+            if (rec[j].kind == mv[i].kind && rec[j].to == mv[i].from) { rec[j].to = mv[i].to; break; }
+        if (j == n && n < MAX_MOVES * 2) rec[n++] = mv[i];
+    }
+    swprintf_s(path, MAX_PATH, L"%s\\.entrance_moves", folder);
+    if (_wfopen_s(&f, path, L"wb") || !f) return;
+    for (i = 0; i < n; i++)
+        if (rec[i].from != rec[i].to)
+            fprintf(f, "%s %d %d\r\n", rec[i].kind == K_VICTORY ? "victory" : "entrance", rec[i].from, rec[i].to);
+    fclose(f);
+}
+
+/* The fix itself: incoming's numbers against uses (sc: which count). recheck: a mod already in place (incoming is
+   its folder) - only its clashes move, its record is added to. -> the moves (out), their count. */
+static int fix_core(const Scope *sc, const WCHAR *incoming, const WCHAR *dst, const WCHAR *name, const Use *uses,
+                    int nu, int recheck, WCHAR *report, size_t report_n, Move *out)
 {
     Pack packs[2];
-    Use *uses, *mine;
-    int nu = 0, nm = 0, np, i, j, nmv = 0, nrec;
-    Move mv[MAX_MOVES], rec[MAX_MOVES];
+    Use *mine;
+    int nm = 0, np, i, j, nmv = 0, nrec;
+    Move *mv = out, rec[MAX_MOVES];
     if (report && report_n) report[0] = 0;
-    if (!game || !game[0] || !incoming || (np = mod_packs(incoming, packs)) == 0) return 0;
-    uses = (Use *)calloc(MAX_USES, sizeof(Use));
-    mine = (Use *)calloc(256, sizeof(Use));
-    if (!uses || !mine) { free(uses); free(mine); free_packs(packs, np); return 0; }
-    add_uses(incoming, packs, np, mine, &nm);
-    if (!nm) { free(uses); free(mine); free_packs(packs, np); return 0; }
-    installed_uses(game, dst, uses, &nu);
-    nrec = read_record(dst, rec, MAX_MOVES);
+    if (!incoming || (np = mod_packs(incoming, packs)) == 0) return 0;
+    if (!(mine = (Use *)calloc(MAX_MINE, sizeof(Use)))) { free_packs(packs, np); return 0; }
+    add_uses(incoming, packs, np, mine, &nm, MAX_MINE);
+    nrec = recheck ? 0 : read_record(dst, rec, MAX_MOVES);   /* (a recheck moves clashes only) */
     for (i = 0; i < nm && nmv < MAX_MOVES; i++) {
         const Use *u = &mine[i];
         int clash = -1, prev = 0, to = 0;
         for (j = 0; j < nu; j++)
-            if (uses[j].kind == u->kind && uses[j].base == u->base && uses[j].hash != u->hash) { clash = j; break; }
+            if (uses[j].rank != sc->skip && uses[j].rank < sc->below && uses[j].kind == u->kind &&
+                uses[j].base == u->base && uses[j].hash != u->hash) { clash = j; break; }
         for (j = 0; j < nrec; j++)
             if (rec[j].kind == u->kind && rec[j].from == u->base) prev = rec[j].to;
-        if (prev && prev != u->base && !taken(u->kind, prev, uses, nu, mine, nm, mv, nmv, -1))
+        if (prev && prev != u->base && !taken(sc, u->kind, prev, uses, nu, mine, nm, mv, nmv, -1))
             to = prev;   /* (moved before, still free: kept - the player's saved entrance points there) */
         else if (clash >= 0)
-            to = free_number(u->kind, u->base, uses, nu, mine, nm, mv, nmv);
+            to = free_number(sc, u->kind, u->base, uses, nu, mine, nm, mv, nmv);
         if (!to) continue;
         ZeroMemory(&mv[nmv], sizeof mv[nmv]);
         mv[nmv].kind = u->kind;
@@ -530,16 +560,7 @@ int entrance_clash_fix(const WCHAR *game, const WCHAR *incoming, const WCHAR *ds
     for (i = 0; i < nmv; i++)
         for (j = 0; j < np; j++) move_in_pack(&packs[j], &mv[i]);
     if (nmv) move_in_manifest(incoming, mv, nmv);
-    {   /* (the record, for the next update) */
-        WCHAR path[MAX_PATH];
-        FILE *f;
-        swprintf_s(path, MAX_PATH, L"%s\\.entrance_moves", incoming);
-        if (nmv && !_wfopen_s(&f, path, L"wb") && f) {
-            for (i = 0; i < nmv; i++)
-                fprintf(f, "%s %d %d\r\n", mv[i].kind == K_VICTORY ? "victory" : "entrance", mv[i].from, mv[i].to);
-            fclose(f);
-        }
-    }
+    write_record(incoming, mv, nmv, recheck);   /* (the record, for the next update) */
     for (i = 0; i < nmv && report; i++) {
         WCHAR t[600];
         const WCHAR *what = mv[i].kind == K_VICTORY ? L"victory scene" : L"entrance";
@@ -553,8 +574,116 @@ int entrance_clash_fix(const WCHAR *game, const WCHAR *incoming, const WCHAR *ds
         if (report[0]) wcscat_s(report, report_n, L"\r\n");
         wcsncat_s(report, report_n, t, _TRUNCATE);
     }
-    free(uses);
     free(mine);
     free_packs(packs, np);
     return nmv;
+}
+
+int entrance_clash_fix(const WCHAR *game, const WCHAR *incoming, const WCHAR *dst, const WCHAR *name, WCHAR *report,
+                       size_t report_n)
+{
+    Use *uses;
+    Move mv[MAX_MOVES];
+    int nu = 0, n;
+    if (report && report_n) report[0] = 0;
+    if (!game || !game[0] || !incoming) return 0;
+    if (!(uses = (Use *)calloc(MAX_USES, sizeof(Use)))) return 0;
+    installed_uses(game, dst, uses, &nu);
+    n = fix_core(&k_all, incoming, dst, name, uses, nu, 0, report, report_n, mv);
+    free(uses);
+    return n;
+}
+
+typedef struct { WCHAR dir[MAX_PATH]; FILETIME made; } Installed;
+
+static int cmp_installed(const void *a, const void *b)
+{
+    const Installed *x = (const Installed *)a, *y = (const Installed *)b;
+    const int c = CompareFileTime(&x->made, &y->made);
+    return c ? c : _wcsicmp(x->dir, y->dir);
+}
+
+int entrance_clash_recheck(const WCHAR *game, WCHAR *report, size_t report_n)
+{
+    WCHAR pat[MAX_PATH];
+    WIN32_FIND_DATAW t, m;
+    HANDLE ht, hm;
+    Installed *mods;
+    Use *uses;
+    int nmods = 0, nu = 0, i, j, k, total = 0;
+    if (report && report_n) report[0] = 0;
+    if (!game || !game[0]) return 0;
+    mods = (Installed *)calloc(MAX_MODS, sizeof(Installed));
+    uses = (Use *)calloc(MAX_USES, sizeof(Use));
+    if (!mods || !uses) { free(mods); free(uses); return 0; }
+    /* The installed mods with a pack (as installed_uses: disabled ones left out), by the time their folder was made:
+       an install (or an update) puts a fresh folder in place, so that's the order they were installed in. */
+    swprintf_s(pat, MAX_PATH, L"%s\\Mods\\*", game);
+    if ((ht = FindFirstFileW(pat, &t)) != INVALID_HANDLE_VALUE) {
+        do {
+            WCHAR tdir[MAX_PATH];
+            if (!(t.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || t.cFileName[0] == L'.' ||
+                !_wcsicmp(t.cFileName, L"PacOverlay"))
+                continue;
+            swprintf_s(tdir, MAX_PATH, L"%s\\Mods\\%s", game, t.cFileName);
+            swprintf_s(pat, MAX_PATH, L"%s\\*", tdir);
+            if ((hm = FindFirstFileW(pat, &m)) == INVALID_HANDLE_VALUE) continue;
+            do {
+                WCHAR folder[MAX_PATH], off[MAX_PATH], p1[MAX_PATH], p2[MAX_PATH];
+                if (!(m.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || m.cFileName[0] == L'.' || nmods >= MAX_MODS)
+                    continue;
+                swprintf_s(folder, MAX_PATH, L"%s\\%s", tdir, m.cFileName);
+                swprintf_s(off, MAX_PATH, L"%s\\disabled", folder);
+                swprintf_s(p1, MAX_PATH, L"%s\\pack.txt", folder);
+                swprintf_s(p2, MAX_PATH, L"%s\\moves\\pack.txt", folder);
+                if (GetFileAttributesW(off) != INVALID_FILE_ATTRIBUTES ||
+                    (GetFileAttributesW(p1) == INVALID_FILE_ATTRIBUTES && GetFileAttributesW(p2) == INVALID_FILE_ATTRIBUTES))
+                    continue;
+                wcscpy_s(mods[nmods].dir, MAX_PATH, folder);
+                mods[nmods].made = m.ftCreationTime;
+                nmods++;
+            } while (FindNextFileW(hm, &m));
+            FindClose(hm);
+        } while (FindNextFileW(ht, &t));
+        FindClose(ht);
+    }
+    qsort(mods, (size_t)nmods, sizeof *mods, cmp_installed);
+    for (i = 0; i < nmods; i++) {
+        Pack packs[2];
+        const int from = nu, np = mod_packs(mods[i].dir, packs);
+        if (np <= 0) continue;
+        add_uses(mods[i].dir, packs, np, uses, &nu, MAX_USES);
+        free_packs(packs, np);
+        for (k = from; k < nu; k++) uses[k].rank = i;
+    }
+    /* Each mod against the ones installed before it: a number they use with different files moves (the later mod's;
+       a moved script hashes as before, so a move is followed on in uses). */
+    for (i = 0; i < nmods; i++) {
+        int clash = 0;
+        for (k = 0; k < nu && !clash; k++) {
+            if (uses[k].rank != i) continue;
+            for (j = 0; j < nu; j++)
+                if (uses[j].rank < i && uses[j].kind == uses[k].kind && uses[j].base == uses[k].base &&
+                    uses[j].hash != uses[k].hash) { clash = 1; break; }
+        }
+        if (clash) {
+            const Scope sc = { i, i };
+            WCHAR name[128], one[2048];
+            Move mv[MAX_MOVES];
+            int n, q;
+            manifest_name(mods[i].dir, name, 128);
+            n = fix_core(&sc, mods[i].dir, mods[i].dir, name, uses, nu, 1, one, 2048, mv);
+            for (k = 0; k < nu; k++)
+                for (q = 0; q < n && uses[k].rank == i; q++)
+                    if (uses[k].kind == mv[q].kind && uses[k].base == mv[q].from) { uses[k].base = mv[q].to; break; }
+            if (n && report && report_n) {
+                if (report[0]) wcscat_s(report, report_n, L"\r\n");
+                wcsncat_s(report, report_n, one, _TRUNCATE);
+            }
+            total += n;
+        }
+    }
+    free(mods);
+    free(uses);
+    return total;
 }

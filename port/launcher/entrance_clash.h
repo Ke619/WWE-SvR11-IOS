@@ -21,6 +21,13 @@ extern "C" {
 int entrance_clash_fix(const WCHAR *game, const WCHAR *incoming, const WCHAR *dst, const WCHAR *name, WCHAR *report,
                        size_t report_n);
 
+/* The mods already installed checked with the same rules (mods installed before the fix, report 85741e): in the
+   order they were installed (their folders' creation times), each against the ones before it - a number used with
+   different files moves in the later mod (its pack, scripts and manifest; added to its .entrance_moves). Shared
+   entrances (the same files) and numbers moved before are left alone; a second run moves nothing. -> the numbers
+   moved; report: one line per move. */
+int entrance_clash_recheck(const WCHAR *game, WCHAR *report, size_t report_n);
+
 #ifdef __cplusplus
 }
 #endif

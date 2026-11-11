@@ -168,16 +168,17 @@ bool NxInstallCheck();  // (nx_install_check.cpp)
 
 // Video recording, so the console's capture (and SysDVR) can take the game's picture: the NSP's control.nacp says
 // VideoCapture Manual, and the game hands the system its recording buffer (96 MB of the game's own memory) here,
-// before the game takes the rest. "switch_recording = false" in svr2011.toml turns it off. Returns what happened.
+// before the game takes the rest. Off unless "switch_recording = true" is in svr2011.toml: the game keeps the memory
+// (for SysDVR or the console's own recording, turn it on). Returns what happened.
 static const char* StartRecording() {
+  bool on = false;
   if (FILE* f = fopen(SVR_GAME_DIR "/svr2011.toml", "r")) {
     char line[256];
-    bool off = false;
     while (fgets(line, sizeof(line), f))
-      if (!strncmp(line, "switch_recording", 16) && strstr(line, "false")) off = true;
+      if (!strncmp(line, "switch_recording", 16)) on = strstr(line, "true") != nullptr;
     fclose(f);
-    if (off) return "off (switch_recording = false)";
   }
+  if (!on) return "off (switch_recording = true in svr2011.toml turns it on)";
   static char why[96];
   const Result rc = appletInitializeGamePlayRecording();
   if (R_FAILED(rc)) {

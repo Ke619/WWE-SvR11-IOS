@@ -164,9 +164,37 @@ static void WriteSettings() {
   fclose(f);
 }
 
+bool NxInstallCheck();  // (nx_install_check.cpp)
+
+// Video recording, so the console's capture (and SysDVR) can take the game's picture: the NSP's control.nacp says
+// VideoCapture Manual, and the game hands the system its recording buffer (96 MB of the game's own memory) here,
+// before the game takes the rest. "switch_recording = false" in svr2011.toml turns it off. Returns what happened.
+static const char* StartRecording() {
+  if (FILE* f = fopen(SVR_GAME_DIR "/svr2011.toml", "r")) {
+    char line[256];
+    bool off = false;
+    while (fgets(line, sizeof(line), f))
+      if (!strncmp(line, "switch_recording", 16) && strstr(line, "false")) off = true;
+    fclose(f);
+    if (off) return "off (switch_recording = false)";
+  }
+  static char why[96];
+  const Result rc = appletInitializeGamePlayRecording();
+  if (R_FAILED(rc)) {
+    snprintf(why, sizeof(why), "not available (0x%X)", rc);
+    return why;
+  }
+  const Result on = appletSetGamePlayRecordingState(true);
+  snprintf(why, sizeof(why), R_SUCCEEDED(on) ? "on (96 MB buffer)" : "buffer given, state refused (0x%X)", on);
+  return why;
+}
+
 void userAppInit(void) {
   socketInitializeDefault();
   romfsMountFromCurrentProcess("romfs");  // (fails harmlessly without one)
+  // Before anything reads the game's files: are they on the card? If not, a message instead of a crash.
+  if (!NxInstallCheck()) exit(0);
+  const char* recording = StartRecording();
   mkdir(SVR_GAME_DIR, 0777);
   mkdir(SVR_GAME_DIR "/logs", 0777);
   setenv("REX_APP_FOLDER", SVR_GAME_DIR, 1);
@@ -189,6 +217,7 @@ void userAppInit(void) {
     svcGetInfo(&used, InfoType_UsedMemorySize, CUR_PROCESS_HANDLE, 0);
     fprintf(f, "started: applet %d, total %llu MB, used %llu MB\n", appletGetAppletType(),
             (unsigned long long)(total >> 20), (unsigned long long)(used >> 20));
+    fprintf(f, "video recording: %s\n", recording);
     fclose(f);
   }
 }

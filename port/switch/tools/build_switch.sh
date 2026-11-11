@@ -133,6 +133,9 @@ nsp() {
   sed 's/svr_nsptest/svr2011/' "$PORT/switch/tests/vktest/nsp.json" > game.json
   npdmtool game.json exefs/main.npdm 2> /dev/null
   nacptool --create "WWE SmackDown vs. Raw 2011" "SvR 2011 port" "${NX_VER:-0.1.0}" control/control.nacp --titleid=$TITLE
+  # VideoCapture = Manual (1): the game gives the system its recording buffer (nx_main.cpp StartRecording), so the
+  # console's capture and SysDVR can take the game's picture. (Byte 0x3035 of the NACP.)
+  printf '\001' | dd of=control/control.nacp bs=1 seek=$((0x3035)) conv=notrunc status=none
   cp "$PORT/switch/icon.jpg" control/icon_AmericanEnglish.dat
   cp "$WORK/b/svr2011.nro" romfs/svr2011.nro
   cp "$NX_SPVC"/*.spvc romfs/game/native_shaders/

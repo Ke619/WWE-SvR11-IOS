@@ -645,6 +645,7 @@ Output Send(const Input& in) {
     zip.Add("report.txt", text, kMaxZip);
     AddLogs(zip, in.game_dir);
     AddFile(zip, in.game_dir + "/logs/nx_crash.txt", "crashes/nx_crash.txt", 256u << 10, true);
+    AddFile(zip, in.game_dir + "/logs/nx_install_check.txt", "logs/nx_install_check.txt", 64u << 10, true);
     AddSettings(zip, in.game_dir);
     if (in.with_save) AddSave(zip, in.game_dir);
     if (!zip.Finish()) {

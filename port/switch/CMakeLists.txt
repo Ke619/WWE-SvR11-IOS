@@ -68,7 +68,7 @@ list(APPEND SVR_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/nx_stubs.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/nx_profile.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/nx_ab.cpp ${CMAKE_CURRENT_SOURCE_DIR}/nx_fast.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/nx_report.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/nx_report.cpp ${CMAKE_CURRENT_SOURCE_DIR}/nx_install_check.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/sdl3_nx/sdl_nx.cpp
   ${PLUME_DIR}/plume_vulkan.cpp)
 

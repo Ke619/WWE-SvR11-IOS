@@ -126,6 +126,24 @@ constexpr uint32_t kSignIds = 210;               // u16[4]: the crowd signs its 
 constexpr uint32_t kSelectTile = 226;            // u16: its tile in the select grid's portrait table
 constexpr int kMinUsableMoves = 40;  // (EnsureMoveset: fewer usable moves than this - the move-set doesn't work)
 bool g_moves_checked = false;        // (CheckModProfiles: the mods' moves checked since the profiles were set up)
+// The profile ApplyRecords last set up for a mod's slot from its base (slot -> bytes). A slot that still reads as
+// "blank" right after that set-up (one of its recorded placeholder versions equals the mod's own profile) was set up
+// again on every frame by CheckModProfiles, three log lines each time (report 752e29: ids 66 and 253, ~100 lines a
+// second on a phone). CheckModProfiles leaves a slot alone while it holds exactly what was set there.
+std::map<uint32_t, std::vector<uint8_t>> g_set_up;
+std::mutex g_set_up_mutex;
+bool HoldsSetUp(uint32_t slot, const uint8_t* profile) {
+  std::lock_guard lock(g_set_up_mutex);
+  const auto it = g_set_up.find(slot);
+  return it != g_set_up.end() && !std::memcmp(it->second.data(), profile, it->second.size());
+}
+// A log line said once per text (the same line again: nothing).
+bool FirstTime(const std::string& line) {
+  static std::set<std::string> seen;
+  static std::mutex mu;
+  std::lock_guard lock(mu);
+  return seen.insert(line).second;
+}
 constexpr uint32_t kIdToIndex = 0x82DB3610;  // u16 per id
 constexpr uint32_t kRecords = 0x82E407C0, kRecordSize = 260;
 constexpr uint32_t kProfiles = 0x82E7C920, kProfileSize = 1056;
@@ -586,7 +604,7 @@ void SetOwnMoves(uint8_t* profile, const Mod& m) {
     }
     profile[off] = uint8_t(id >> 8), profile[off + 1] = uint8_t(id);
   }
-  if (!skipped.empty())
+  if (!skipped.empty() && FirstTime(m.folder + " kept:" + skipped))
     REXLOG_WARN("[svr2011] superstar mods: {}: moves the game doesn't have, the base's kept:{}", m.folder, skipped);
   if (m.entrance >= 0)
     for (uint32_t k : {0x14u, 0x16u, 0x18u})
@@ -683,7 +701,9 @@ void SetEntranceMedia(uint8_t* profile, const Mod& m, const uint8_t* base_profil
         e[k] = uint8_t(m.entrance >> 8), e[k + 1] = uint8_t(m.entrance);
   }
   SetCaeParts(e, m, b);
-  if (std::memcmp(before, e, sizeof before))
+  if (std::memcmp(before, e, sizeof before) &&
+      FirstTime(fmt::format("entrance {} {} {}", m.slot, int(e[kMusic] << 8 | e[kMusic + 1]),
+                            int(e[kMovie] << 8 | e[kMovie + 1]))))
     REXLOG_INFO("[svr2011] superstar mods: id {} entrance: music {}{}, movie {}", m.slot,
                 int(e[kMusic] << 8 | e[kMusic + 1]), m.song.empty() ? "" : " (" + m.song + ")",
                 int(e[kMovie] << 8 | e[kMovie + 1]));
@@ -1898,11 +1918,19 @@ void ApplyRecords(uint8_t* base) {
         std::memcpy(sp, bp, kProfileSize);
         svr2011::ThreadsSlots(sp, m.folder);  // (not the base's Threads slots)
         SetOwnMoves(sp, m);
-        REXLOG_INFO("[svr2011] superstar mods: profile {} -> id {}{}", m.base, m.slot,
-                    m.moves.empty() && m.entrance < 0 ? "" : " (its own moves / entrance)");
+        if (FirstTime(fmt::format("profile {} {}", m.base, m.slot)))
+          REXLOG_INFO("[svr2011] superstar mods: profile {} -> id {}{}", m.base, m.slot,
+                      m.moves.empty() && m.entrance < 0 ? "" : " (its own moves / entrance)");
       }
     }
     if (have_blank) SetEntranceMedia(sp, m, bp);
+    if (have_blank && IsBlank(m.slot, sp)) {  // (still "blank" as set up: CheckModProfiles mustn't redo it)
+      std::lock_guard lock(g_set_up_mutex);
+      if (!g_set_up.count(m.slot))
+        REXLOG_INFO("[svr2011] superstar mods: id {} as set up equals one of its placeholder versions - not set up "
+                    "again while it holds this", m.slot);
+      g_set_up[m.slot].assign(sp, sp + kProfileSize);
+    }
     SetSigns(sr, br, m);
     // (the save's profile for the slot made for another mod or an older version of this one: CheckSavedProfiles)
     const bool stale = g_stale.erase(m.slot) > 0;
@@ -3924,7 +3952,8 @@ void CheckModProfiles(uint8_t* base) {
     if (si >= 512) continue;
     bool have_blank = false;
     for (const auto& b : g_blank) have_blank |= b.first == m.slot;
-    if (have_blank && IsBlank(m.slot, base + svr2011::RosterEntry(kProfiles, kProfileSize, si))) {
+    const uint8_t* sp = base + svr2011::RosterEntry(kProfiles, kProfileSize, si);
+    if (have_blank && IsBlank(m.slot, sp) && !HoldsSetUp(m.slot, sp)) {
       ApplyRecords(base);
       g_moves_checked = false;  // (the profiles were set up again: checked again)
       return;

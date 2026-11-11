@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 #include <mutex>
 #include <set>
@@ -498,6 +499,50 @@ REX_HOOK_RAW(sub_826BAB40) {
   if (loader) t_request = ctx.r4.u32;
   __imp__sub_826BAB40(ctx, base);
   if (loader) t_request = 0;
+}
+
+// A loaded file's sub-archive (sub_821C5CD8(archive, entry id, owner), from the loader's done-callback: it finds the
+// entry, unpacks it into a new buffer - sub_826A1420 - reads that as a PACH and registers it). sub_826A1420 gives 0
+// when the entry unpacks to nothing or no buffer could be had, and sub_821C5CD8 read a PACH at address 0 anyway:
+// the loader thread's crash at lr 826A0FC0 (report 752e29: the mod arenas WCW FallBrawl and ECW On TNN, on phones).
+// (The test harness's HIAC, rule 31, in arena 1 crashes at the same lr by another way: sub_8227DD80 asks for entries
+// arena 1's file doesn't have at all - not a player's path, left as it is.) An empty PACH is given instead (no entries: what the registering code finds
+// when the archive has none - nothing registered), from the fallback memory, which the caller's delete gives back.
+REX_EXTERN(__imp__sub_826A1088);
+REX_EXTERN(__imp__sub_826A1200);
+REX_EXTERN(__imp__sub_826A1420);
+REX_HOOK_RAW(sub_826A1420) {
+  const uint32_t lr = uint32_t(ctx.lr), archive = ctx.r3.u32, index = ctx.r4.u32;
+  __imp__sub_826A1420(ctx, base);
+  // (test aid SVR2011_TEST_UNPACK_FAIL=<n>: the n-th unpack at this call and every one after it gives 0, as a
+  // failed one did on the phones)
+  static const int fail_from = [] { const char* v = std::getenv("SVR2011_TEST_UNPACK_FAIL"); return v ? std::atoi(v) : 0; }();
+  static std::atomic<int> calls{0};
+  if (lr == 0x821C5D78 && fail_from > 0 && ++calls >= fail_from && ctx.r3.u32) {
+    REXLOG_INFO("[svr2011] file loader: test - unpack {} of {:08X} made to fail ({:08X} dropped)", index, archive, ctx.r3.u32);
+    ctx.r3.u64 = 0;  // (the real block leaks: a test only)
+  }
+  if (lr != 0x821C5D78 || ctx.r3.u32) return;
+  PPCContext c = ctx;
+  c.r3.u64 = archive, c.r4.u64 = index;
+  __imp__sub_826A1088(c, base);
+  const uint32_t entry = c.r3.u32;
+  c = ctx;
+  c.r3.u64 = archive, c.r4.u64 = index;
+  __imp__sub_826A1200(c, base);
+  const uint32_t unpacked = c.r3.u32;
+  const uint32_t tag = entry ? Rd32(base, entry) : 0;
+  const uint32_t block = svr2011::FallbackBlock(16, true);
+  static std::atomic<uint32_t> times{0};
+  if (times++ < 20)
+    REXLOG_WARN("[svr2011] file loader: sub-archive entry {} of {:08X} (for {}) unpacked to nothing - entry at "
+                "{:08X}, tag {:08X}, {} bytes unpacked - an empty archive given instead ({:08X})",
+                index, archive, RequestName(base), entry, tag, unpacked, block);
+  if (!block) return;  // (no fallback memory either: the game's own way)
+  uint8_t* p = base + block;
+  const uint8_t empty[16] = {'P', 'A', 'C', 'H', 0, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+  std::memcpy(p, empty, sizeof empty);
+  ctx.r3.u64 = block;
 }
 
 REX_EXTERN(__imp__sub_826BA928);

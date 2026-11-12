@@ -43,7 +43,7 @@ Tested on an **iPhone 15 Pro (Apple A17 Pro chip)**, running inside LiveContaine
 > This port will perform better with the increased memory limit entitlement. More information on how to set it up can be found here: [iRAM Repository](https://github.com/NexSideloading/iRAM-Plus)
 
 <p align="center">
-  <img src="Screenshots/IMG_9459.png" width="400">
+  <img src="Screenshots/IMG_9491.png" width="400">
 </p>
 
 <div align="center">

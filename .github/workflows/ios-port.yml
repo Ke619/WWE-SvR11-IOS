@@ -2,7 +2,7 @@ name: ios-port
 env:
   # >>> THE APP'S VERSION - change it here, e.g. "1.1.2". It becomes the app's version number (Info.plist) and the
   # "v..." shown in the top right corner of the launcher.
-  APP_VERSION: "2.2.3"
+  APP_VERSION: "2.2.4"
   # (the build cache)
   CCACHE_DIR: ${{ github.workspace }}/.ccache
   CCACHE_MAXSIZE: 2G
